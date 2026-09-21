@@ -90,6 +90,18 @@ bubblewrap build
 
 ---
 
+## 📦 GitHub Actions outputs
+
+Every push to `main`/`master` (or a manual workflow run) now produces:
+
+- **GitHub Pages deployment** from the Vite/PWA `dist/` directory.
+- **`pwa-web-dist`** downloadable web/PWA artifact.
+- **`mrwater-distribution-ledger-apk`** downloadable Android **debug APK**.
+
+The Android project is generated in CI with Capacitor, so the repository does not need to commit the generated `android/` directory.
+
+After a workflow completes, open the run in **GitHub → Actions** and download the APK from **Artifacts**. The APK is an installable debug build; a production Play Store release should use a managed signing key/keystore rather than committing credentials to the repository.
+
 ## 📦 Project Structure
 
 - `server.ts` — Production Express server serving API endpoints and static Vite assets on port 3000.

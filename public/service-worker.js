@@ -1,5 +1,10 @@
-const CACHE_NAME = "radhika-ledger-v1";
-const APP_SHELL = ["/", "/index.html", "/manifest.json"];
+const CACHE_NAME = "mrwater-ledger-v1";
+const BASE_PATH = new URL(".", self.location.href).pathname;
+const APP_SHELL = [
+  BASE_PATH,
+  `${BASE_PATH}index.html`,
+  `${BASE_PATH}manifest.json`,
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -30,7 +35,7 @@ self.addEventListener("fetch", (event) => {
           }
           return response;
         })
-        .catch(() => cached || caches.match("/index.html"));
+        .catch(() => cached || caches.match(`${BASE_PATH}index.html`));
       return cached || network;
     })
   );

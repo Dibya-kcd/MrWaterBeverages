@@ -6,8 +6,9 @@ export default function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
 
   window.addEventListener("load", () => {
+    const swUrl = new URL('service-worker.js', import.meta.env.BASE_URL).href;
     navigator.serviceWorker
-      .register("/service-worker.js")
+      .register(swUrl)
       .catch((err) => console.error("Service worker registration failed:", err));
   });
 }
