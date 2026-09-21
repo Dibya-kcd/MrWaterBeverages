@@ -1,0 +1,36 @@
+{
+  "packageId": "com.mrwater.ledger",
+  "host": "localhost",
+  "name": "MrWater Distribution Ledger",
+  "launcherName": "MrWaterApp",
+  "themeColor": "#16324F",
+  "navigationColor": "#16324F",
+  "backgroundColor": "#FBF8F2",
+  "startUrl": "/",
+  "iconUrl": "/pwa-512x512.png",
+  "maskableIconUrl": "/pwa-maskable-512x512.png",
+  "appVersionName": "1.0.0",
+  "appVersionCode": 1,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "/manifest.json",
+  "fallbackType": "customtabs",
+  "features": {
+    "locationDelegation": {
+      "enabled": true
+    },
+    "playBilling": {
+      "enabled": false
+    }
+  },
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isAndroidXEnabled": true,
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "android"
+  }
+}

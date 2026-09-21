@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Radhika Distribution Ledger",
-  "short_name": "RadhikaApp",
+  "name": "MrWater Distribution Ledger",
+  "short_name": "MrWaterApp",
   "description": "Accessible beverage billing and distribution ledger with offline stock management, schemes, vehicle trip reconciliation, and audits.",
   "start_url": "/",
   "scope": "/",

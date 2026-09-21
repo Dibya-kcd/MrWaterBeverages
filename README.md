@@ -1,6 +1,24 @@
-# Radhika Distribution Ledger — Production PWA & Android Ready
+# MrWater Distribution Ledger — Production PWA & Android Ready
 
-A high-performance, accessible wholesale beverage distribution ledger and field salesman billing application with full offline-first capabilities, Supabase cloud sync, and vehicle trip reconciliation.
+A high-performance, accessible wholesale beverage distribution ledger and field salesman billing application with full offline-first capabilities, Supabase cloud sync, vehicle trip reconciliation, and automated GitHub CI/CD build pipelines.
+
+---
+
+## ⚡ Automated CI/CD (GitHub Actions)
+
+This repository includes a pre-configured GitHub Actions workflow in `.github/workflows/build.yml`.
+When you push this repository to GitHub (`main` or `master` branch):
+
+1. **Automatic PWA Build**:
+   - Checks out the repository.
+   - Installs dependencies and runs `npm run lint`.
+   - Executes `npm run build` to compile the Vite PWA frontend and Node Express server bundle (`dist/server.cjs`).
+   - Automatically uploads the ready-to-deploy PWA package as a downloadable artifact in the GitHub Actions **Artifacts** tab.
+
+2. **Automated Android APK Preparation**:
+   - Sets up Java 17 and Android build toolchains.
+   - Uses the included `twa-manifest.json` and Bubblewrap CLI to prepare the Android Trusted Web Activity package.
+   - Ready for one-click release generation or direct download of the APK.
 
 ---
 

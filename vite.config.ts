@@ -21,8 +21,8 @@ export default defineConfig(() => {
         ],
         manifest: {
           id: '/',
-          name: 'Radhika Distribution Ledger',
-          short_name: 'RadhikaApp',
+          name: 'MrWater Distribution Ledger',
+          short_name: 'MrWaterApp',
           description:
             'Accessible beverage billing and distribution ledger with offline stock management, schemes, vehicle trip reconciliation, and audits.',
           theme_color: '#16324F',
@@ -87,7 +87,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
+          enabled: process.env.DISABLE_HMR !== 'true',
           type: 'module',
         },
       }),
