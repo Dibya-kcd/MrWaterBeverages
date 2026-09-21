@@ -1090,6 +1090,17 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, [fontSize, highContrast, lowVisionMode, lowVisionStickyPosition]);
 
+  // Push the font-size scale onto the document root as a CSS variable.
+  // Many screens (Salesman Cart, Low Vision Billing, Sale Workflow, etc.)
+  // size their text with plain Tailwind classes (text-xs, text-sm, text-[11px]...)
+  // instead of the fz() inline-style helper, so those classes never reacted
+  // to fontSize before. index.css scales those utility classes using this
+  // variable, so setting it here makes the A / A+ / A++ toggle affect every
+  // screen, including ones that only use Tailwind text classes.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--app-font-scale', String(scale));
+  }, [scale]);
+
   // Supabase Database state & operations
   const [supabaseConfig, setSupabaseConfigState] = useState<SupabaseConfig>(getSupabaseConfig);
   const [supabaseStatus, setSupabaseStatus] = useState({
