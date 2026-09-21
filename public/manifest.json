@@ -1,0 +1,61 @@
+{
+  "id": "/",
+  "name": "Radhika Distribution Ledger",
+  "short_name": "RadhikaApp",
+  "description": "Accessible beverage billing and distribution ledger with offline stock management, schemes, vehicle trip reconciliation, and audits.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "theme_color": "#16324F",
+  "background_color": "#FBF8F2",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64",
+      "type": "image/x-icon"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Make Sale",
+      "short_name": "Sell",
+      "description": "Quick van billing and invoice creation",
+      "url": "/?tab=salesman",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Van Stock",
+      "short_name": "Stock",
+      "description": "View live loaded vehicle stock",
+      "url": "/?tab=salesman",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Customer Due",
+      "short_name": "Due",
+      "description": "Look up customer balance and collect payment",
+      "url": "/?tab=salesman",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192" }]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "MrWater Distribution Ledger",
+  "description": "Accessible beverage billing and distribution ledger with offline stock management, schemes, vehicle trip reconciliation, and audits.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
