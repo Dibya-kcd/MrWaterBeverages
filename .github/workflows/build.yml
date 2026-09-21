@@ -1,71 +1,56 @@
-name: Build PWA and Android App (APK)
+name: Deploy MrWater Distribution Ledger to GitHub Pages
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
 jobs:
-  build-pwa:
-    name: Build PWA Web Bundle
+  build:
+    name: Build Web App
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: 'npm'
+          node-version: 24
 
-      - name: Install Dependencies
-        run: npm ci || npm install
+      - name: Install dependencies
+        run: npm install
 
-      - name: Lint Check
-        run: npm run lint
+      - name: Build Vite PWA
+        run: npm run build -- --base=/MrWaterBeverages/
 
-      - name: Build Web App & PWA
-        run: npm run build
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
 
-      - name: Upload PWA Web Dist Artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: pwa-web-dist
-          path: dist/
-          retention-days: 30
+          path: ./dist
 
-  build-android:
-    name: Build Android APK (TWA)
+  deploy:
+    name: Deploy to GitHub Pages
     runs-on: ubuntu-latest
-    needs: build-pwa
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Set up Java JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Bubblewrap CLI
-        run: npm install -g @bubblewrap/cli
-
-      - name: Generate Android Project via Bubblewrap
-        run: |
-          mkdir -p android-build
-          cd android-build
-          bubblewrap init --manifest="${{ github.server_url }}/${{ github.repository }}" || true
-          
-      - name: Alternative Cordova/Capacitor Android Build Support
-        run: |
-          echo "Android workflow initialized. Connect your repository URL in twa-manifest.json or PWABuilder to generate auto-signed release APKs directly on commit."
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
