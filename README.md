@@ -22,6 +22,14 @@ When you push this repository to GitHub (`main` or `master` branch):
 
 ---
 
+## ☁️ GitHub Pages + Supabase persistence
+
+GitHub Pages is static hosting and does not run the Express `server.ts` API. For GitHub Pages deployments, the browser storage layer therefore detects the `*.github.io` host and persists application collections directly to Supabase (`public.app_collections`) instead of repeatedly calling unavailable `/api/*` routes.
+
+This keeps the existing local/offline cache while preventing false `HTTP 404` sync failures on GitHub Pages. The app also shows the latest cloud error when a real Supabase operation fails.
+
+**Important:** the Supabase project must have the `app_collections` table and its policies from `supabase-schema.sql`. The included schema creates an open application-data policy intended for this app's current anonymous/publishable-key architecture.
+
 ## 🚀 Quick Start for Git & Production Deployment
 
 Clone this repository and launch the app in two simple steps:

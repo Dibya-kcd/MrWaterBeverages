@@ -76,7 +76,7 @@ export const App: React.FC = () => {
             <span>
               {!syncStatus.isOnline
                 ? 'Offline Mode — You are currently disconnected. All transactions are preserved locally and will sync once online.'
-                : `Cloud Persistence Warning: ${syncStatus.consecutiveFailures} sync attempts failed. Local cache is safe. Verify your Supabase connection.`}
+                : `Cloud Persistence Warning: ${syncStatus.consecutiveFailures} cloud sync attempt${syncStatus.consecutiveFailures === 1 ? '' : 's'} failed. Local cache is safe.${syncStatus.lastError ? ` Last error: ${syncStatus.lastError}` : ' Verify your Supabase connection.'}`}
             </span>
           </div>
           <button

@@ -6,6 +6,7 @@
  */
 
 import { AuthUser, Salesman } from '../types';
+import { getSupabaseClient } from '../lib/supabase';
 
 export interface Order {
   id: string | number;
@@ -240,7 +241,133 @@ function writeLocalCache<T>(key: string, data: T): void {
   }
 }
 
+const STATIC_API_COLLECTIONS: Record<string, string> = {
+  '/api/bills': 'bills',
+  '/api/trips': 'trips',
+  '/api/settings/billing': 'billing_settings',
+  '/api/settings/profile': 'organization_profile',
+  '/api/collections/partners': 'partners',
+  '/api/inventory': 'inventory',
+  '/api/inventory/import': 'inventory',
+  '/api/collections/stock_transactions': 'stock_transactions',
+  '/api/warehouses': 'warehouses',
+  '/api/collections/warehouse_bays': 'warehouse_bays',
+  '/api/schemes': 'schemes',
+  '/api/collections/vehicle_trip': 'vehicle_trip',
+  '/api/products': 'products',
+  '/api/batches': 'inventory_batches',
+  '/api/salesmen': 'salesmen',
+};
+
+function isStaticDeployment(): boolean {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname;
+  return host.endsWith('.github.io') || host === 'github.io';
+}
+
+function staticCollectionKey(url: string): string | null {
+  try {
+    const path = new URL(url, window.location.origin).pathname.replace(/\/+$/, '') || '/';
+    return STATIC_API_COLLECTIONS[path] || null;
+  } catch {
+    return null;
+  }
+}
+
+function extractStaticPayload(path: string, payload: any): any {
+  if (path === '/api/bills') return payload?.bills ?? payload ?? [];
+  if (path === '/api/trips') return payload?.trips ?? payload ?? [];
+  if (path === '/api/settings/billing') return payload?.settings ?? payload ?? null;
+  if (path === '/api/settings/profile') return payload?.profile ?? payload ?? null;
+  if (path === '/api/inventory/import') return payload?.items ?? payload ?? [];
+  if (path === '/api/warehouses') return payload?.warehouses ?? payload ?? [];
+  if (path === '/api/products') return payload?.products ?? payload ?? [];
+  if (path === '/api/batches') return payload?.batches ?? payload ?? [];
+  if (path === '/api/salesmen') return payload?.salesmen ?? payload ?? [];
+  if (path.startsWith('/api/collections/')) return payload?.data ?? payload ?? [];
+  if (path === '/api/schemes') return payload?.schemes ?? payload ?? [];
+  return payload;
+}
+
+async function fetchFromStaticCollection<T>(url: string): Promise<T | null> {
+  const key = staticCollectionKey(url);
+  if (!key) return null;
+  const client = getSupabaseClient();
+  if (!client) {
+    notifySyncStatus({ lastError: 'Supabase is not configured' });
+    return null;
+  }
+
+  try {
+    const { data, error } = await client
+      .from('app_collections')
+      .select('data')
+      .eq('key', key)
+      .maybeSingle();
+    if (error) throw error;
+
+    const value = data?.data ?? (key === 'billing_settings' || key === 'organization_profile' ? null : []);
+    notifySyncStatus({
+      consecutiveFailures: 0,
+      lastSuccessfulSync: new Date().toISOString(),
+      lastError: null,
+    });
+    return value as T;
+  } catch (err: any) {
+    const message = err?.message || 'Supabase collection read failed';
+    console.warn(`[Storage] Supabase read failed for ${key}:`, message);
+    notifySyncStatus({
+      consecutiveFailures: syncStatusState.consecutiveFailures + 1,
+      lastError: message,
+    });
+    return null;
+  }
+}
+
+async function saveToStaticCollection(url: string, payload: any): Promise<boolean> {
+  const key = staticCollectionKey(url);
+  if (!key) return false;
+  const client = getSupabaseClient();
+  if (!client) {
+    notifySyncStatus({ lastError: 'Supabase is not configured' });
+    return false;
+  }
+
+  try {
+    const path = new URL(url, window.location.origin).pathname.replace(/\/+$/, '') || '/';
+    const data = extractStaticPayload(path, payload);
+    const { error } = await client.from('app_collections').upsert(
+      { key, data, updated_at: new Date().toISOString() },
+      { onConflict: 'key' }
+    );
+    if (error) throw error;
+
+    notifySyncStatus({
+      isSyncing: false,
+      consecutiveFailures: 0,
+      lastSuccessfulSync: new Date().toISOString(),
+      lastError: null,
+    });
+    return true;
+  } catch (err: any) {
+    const message = err?.message || 'Supabase collection write failed';
+    console.warn(`[Storage] Supabase write failed for ${key}:`, message);
+    notifySyncStatus({
+      isSyncing: false,
+      consecutiveFailures: syncStatusState.consecutiveFailures + 1,
+      lastError: message,
+    });
+    return false;
+  }
+}
+
 async function fetchFromServer<T>(url: string): Promise<T | null> {
+  // GitHub Pages is static hosting: /api/* does not exist there. Use Supabase
+  // directly through app_collections instead of repeatedly calling dead routes.
+  if (isStaticDeployment() && staticCollectionKey(url)) {
+    return fetchFromStaticCollection<T>(url);
+  }
+
   try {
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
@@ -254,7 +381,6 @@ async function fetchFromServer<T>(url: string): Promise<T | null> {
       lastSuccessfulSync: new Date().toISOString(),
       lastError: null,
     });
-    // Support either raw array or { data: [...] } wrapper
     if (json && typeof json === 'object' && 'data' in json) {
       return json.data as T;
     }
@@ -270,6 +396,11 @@ async function fetchFromServer<T>(url: string): Promise<T | null> {
 }
 
 async function postOrPutServer<T>(url: string, method: 'POST' | 'PUT', payload: any): Promise<boolean> {
+  if (isStaticDeployment() && staticCollectionKey(url)) {
+    notifySyncStatus({ isSyncing: true });
+    return saveToStaticCollection(url, payload);
+  }
+
   try {
     notifySyncStatus({ isSyncing: true });
     const res = await fetch(url, {
