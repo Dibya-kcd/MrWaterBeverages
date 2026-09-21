@@ -7,7 +7,7 @@ export default function registerServiceWorker() {
   registerSW({
     immediate: true,
     onOfflineReady() {
-      console.log('Radhika Ledger is ready for full offline use.');
+      console.log('MrWater Ledger is ready for full offline use.');
     },
     onNeedRefresh() {
       console.log('New content available, refreshing...');

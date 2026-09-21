@@ -46,7 +46,7 @@ import {
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { Bill, BillItem, ExistingCustomer, PriceType, Product, Trip } from '../../types';
-import { buildBillText, computeLine, money, whatsappLink } from '../../utils/billing';
+import { billTotals, buildBillText, computeLine, money, whatsappLink } from '../../utils/billing';
 import { downloadInvoicePdf } from '../../utils/invoicePdf';
 import { isSpeechRecognitionSupported, speakAssistiveText, startSpeechRecognition } from '../../utils/speechRecognition';
 import { CustomerSelector } from '../common/CustomerSelector';
@@ -76,6 +76,7 @@ export const SalesmanView: React.FC = () => {
     scale,
     orgProfile,
     billingSettings,
+    gstMode,
     currentUser,
     currentRole,
     activeSalesman,
@@ -411,21 +412,19 @@ export const SalesmanView: React.FC = () => {
     }
   }, [selectedProduct, quantity]);
 
-  // Calculate bill totals for items currently in cart
+  // Calculate bill totals for items currently in cart.
+  // Uses the same shared billTotals() helper as the admin Billing screen
+  // (instead of a separate hand-rolled calculation) so the salesman's
+  // on-screen total, the WhatsApp receipt, and the saved bill always
+  // agree — including when gstMode is 'exclusive' or 'off', not just
+  // the 'inclusive' case this used to assume.
   const cartTotals = useMemo(() => {
-    const subtotal = cart.items.reduce((s, i) => s + i.amount, 0);
-    const cgst = cart.items.reduce((s, i) => s + (i.amount * (i.gst / 2)) / (1 + i.gst), 0);
-    const sgst = cgst;
-    const discount = cart.items.reduce((s, i) => s + (i.discount || 0), 0);
+    const totals = billTotals(cart.items, gstMode, 0);
     return {
-      subtotal,
-      cgst,
-      sgst,
-      total: subtotal,
-      discount,
+      ...totals,
       itemCount: cart.items.reduce((s, i) => s + i.qty, 0),
     };
-  }, [cart.items]);
+  }, [cart.items, gstMode]);
 
   // Bills created by this salesman / vehicle trip
   const tripBills = useMemo(() => {
@@ -1983,7 +1982,7 @@ export const SalesmanView: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => {
-                                const text = `Invoice #${bill.id} from Radhika Distribution: ₹${bill.total} for ${bill.retailer}. Thank you!`;
+                                const text = `Invoice #${bill.id} from ${orgProfile?.name || 'MrWater Distribution'}: ₹${bill.total} for ${bill.retailer}. Thank you!`;
                                 window.open(`https://wa.me/${bill.phone ? '91' + bill.phone.replace(/\D/g, '') : ''}?text=${encodeURIComponent(text)}`, '_blank');
                               }}
                               className="p-2 rounded-lg border-2 cursor-pointer bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"

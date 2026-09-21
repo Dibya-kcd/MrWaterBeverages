@@ -59,11 +59,11 @@ export const AccessibilityBar: React.FC = () => {
             backgroundColor: 'rgba(255, 255, 255, 0.08)',
             ...fz(12.5),
           }}
-          title={`${orgProfile?.name || 'Radhika Beverages'} — ${orgProfile?.tagline || 'Distribution Ledger'}`}
+          title={`${orgProfile?.name || 'MrWater Distribution'} — ${orgProfile?.tagline || 'Distribution Ledger'}`}
         >
           <Building2 size={15} className="shrink-0 text-white/80" aria-hidden="true" />
           <span className="truncate max-w-[110px] sm:max-w-[280px] md:max-w-[360px]">
-            {orgProfile?.name || 'Radhika Beverages'}
+            {orgProfile?.name || 'MrWater Distribution'}
           </span>
           <span className="hidden lg:inline-block px-1.5 py-0.5 rounded text-[10px] uppercase font-mono font-bold bg-white/15 text-white/90">
             Wholesale Depot

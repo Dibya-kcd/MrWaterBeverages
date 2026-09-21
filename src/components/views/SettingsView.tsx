@@ -643,7 +643,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ initialSection = 'or
                   required
                   value={profileForm.name}
                   onChange={(e) => handleProfileChange('name', e.target.value)}
-                  placeholder="e.g. Radhika Beverages & Distribution"
+                  placeholder="e.g. MrWater Beverages & Distribution"
                   className="w-full px-3 py-2 focus-ring"
                   style={inputStyle}
                 />

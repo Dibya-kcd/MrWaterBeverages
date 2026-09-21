@@ -543,7 +543,7 @@ export const ReportsView: React.FC = () => {
           : period;
       filename = `sales-report-${dateTag}.csv`;
 
-      csvContent = `"SALES & DISPATCH REPORT - ${orgProfile?.name || 'Radhika Beverages'}"\n`;
+      csvContent = `"SALES & DISPATCH REPORT - ${orgProfile?.name || 'MrWater Distribution'}"\n`;
       csvContent += `"Report Period: ${dateTag}"\n`;
       csvContent += `"Generated On: ${new Date().toLocaleString('en-IN')}"\n`;
       csvContent += `"Total Invoices: ${filteredBills.length}, Total Gross Turnover: ${totalSalesRevenue}, Total Cases: ${totalCasesSold}, Cash/UPI Collected: ${totalSalesPaid}, Outstanding Credit: ${totalSalesOutstanding}"\n\n`;
@@ -1133,7 +1133,7 @@ export const ReportsView: React.FC = () => {
           <div className="hidden print:block mb-4 border-b-2 pb-3">
             <div className="flex justify-between items-start">
               <div>
-                <h1 className="text-2xl font-black text-black">{orgProfile?.name || 'Radhika Beverages'}</h1>
+                <h1 className="text-2xl font-black text-black">{orgProfile?.name || 'MrWater Distribution'}</h1>
                 <p className="text-xs text-neutral-700">
                   {orgProfile?.address || 'Depot Area, Station Road'}, {orgProfile?.city || ''} | Ph: {orgProfile?.phone || ''}
                 </p>
@@ -1932,7 +1932,7 @@ export const ReportsView: React.FC = () => {
                   <tbody>
                     {debtorsLedger.map((d, idx) => {
                       const waText = encodeURIComponent(
-                        `Dear ${d.retailer},\nGreetings from ${orgProfile?.name || 'Radhika Beverages'}.\nThis is a friendly reminder that your outstanding balance is ₹${money(
+                        `Dear ${d.retailer},\nGreetings from ${orgProfile?.name || 'MrWater Distribution'}.\nThis is a friendly reminder that your outstanding balance is ₹${money(
                           d.balance
                         )} against your beverage delivery bills.\nKindly clear the dues at your earliest convenience. Thank you!`
                       );

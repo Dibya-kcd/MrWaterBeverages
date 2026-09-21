@@ -154,7 +154,6 @@ interface LedgerContextType {
   deleteProduct: (id: number) => void;
   applyBulkImport: (rows: ImportRow[]) => void;
   receiveInwardStock: (params: InwardStockParams) => { productId: number; batchId: string } | undefined;
-  loadRadhikaSupplierInvoice?: (warehouseId?: string) => void;
   productWarehouseStock: (productId: number) => { warehouseId: string; warehouseName: string; crates: number }[];
 
   // Warehouses
@@ -327,6 +326,19 @@ interface LedgerContextType {
 const LedgerContext = createContext<LedgerContextType | null>(null);
 
 const STORAGE_KEY = 'mrwater_distribution_ledger_v4';
+
+// Removes every local-storage key this app (and its earlier "Radhika"
+// branding) has ever used for the offline business-data cache, now that
+// the app runs strictly in direct Supabase cloud mode. Kept as one shared
+// helper so the current and legacy v1/v2/v3 keys can't drift out of sync
+// between the two places that purge local data.
+function purgeLegacyLocalStorageKeys() {
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem('mrwater_distribution_ledger_v3');
+  localStorage.removeItem('mrwater_distribution_ledger_v2');
+  localStorage.removeItem('mrwater_distribution_ledger_v1');
+  localStorage.removeItem('radhika_distribution_ledger');
+}
 
 const emptyCart = (): CartState => ({
   retailer: '',
@@ -1063,11 +1075,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           });
         }
         // Permanently purge local database keys as instructed
-        localStorage.removeItem(STORAGE_KEY);
-        localStorage.removeItem('mrwater_distribution_ledger_v3');
-        localStorage.removeItem('mrwater_distribution_ledger_v2');
-        localStorage.removeItem('mrwater_distribution_ledger_v1');
-        localStorage.removeItem('radhika_distribution_ledger');
+        purgeLegacyLocalStorageKeys();
         console.log('Local database purged. Operating strictly in direct Supabase cloud mode.');
       }
     } catch (e) {
@@ -1451,7 +1459,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
         if (!existing) {
           maxId++;
-          const autoSku = item.sku || generateSkuId(item.productName, item.category || 'energy', maxId);
+          const autoSku = item.sku || generateAutoSku(item.productName, item.category || 'energy', maxId);
           const newP: Product = {
             id: maxId,
             name: item.productName.trim(),
@@ -1598,7 +1606,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
         if (!existing) {
           maxId++;
-          const autoSku = item.sku || generateSkuId(item.productName, item.category || 'energy', maxId);
+          const autoSku = item.sku || generateAutoSku(item.productName, item.category || 'energy', maxId);
           current.push({
             id: maxId,
             name: item.productName.trim(),
@@ -1719,11 +1727,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const deleteLocalDatabase = () => {
     try {
-      localStorage.removeItem(STORAGE_KEY);
-      localStorage.removeItem('mrwater_distribution_ledger_v3');
-      localStorage.removeItem('mrwater_distribution_ledger_v2');
-      localStorage.removeItem('mrwater_distribution_ledger_v1');
-      localStorage.removeItem('radhika_distribution_ledger');
+      purgeLegacyLocalStorageKeys();
       console.log('Local database purged.');
     } catch (e) {
       console.warn('Error purging local storage:', e);
@@ -2491,10 +2495,6 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return { productId: targetProductId, batchId };
   }
 
-  function loadRadhikaSupplierInvoice(_warehouseId?: string) {
-    // Deprecated: sample invoice removed to keep database clean
-  }
-
   // Promotions CRUD
   function addPromotion(promo: Omit<Promotion, 'id'>) {
     const nextId = promotions.length ? Math.max(...promotions.map((p) => p.id)) + 1 : 1;
@@ -2997,7 +2997,6 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         deleteProduct,
         applyBulkImport,
         receiveInwardStock,
-        loadRadhikaSupplierInvoice,
         productWarehouseStock,
         warehouses,
         setWarehouses,

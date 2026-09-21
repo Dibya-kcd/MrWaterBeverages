@@ -45,7 +45,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
         id="btn-pwa-install-app"
         onClick={handleInstallClick}
         className={`flex items-center justify-center gap-1.5 rounded-xl border-2 border-amber-600 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-slate-950 font-black text-xs min-h-[40px] px-3.5 py-1.5 cursor-pointer shadow-xs transition-colors whitespace-nowrap ${className}`}
-        title="Install Radhika Ledger App on this phone or desktop"
+        title="Install MrWater Ledger App on this phone or desktop"
         aria-label="Install App"
       >
         <Download size={15} className="shrink-0 stroke-[2.5]" />

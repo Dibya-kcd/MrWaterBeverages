@@ -7,3 +7,31 @@
     -webkit-font-smoothing: antialiased;
   }
 }
+
+/* ---------------------------------------------------------------------
+   Accessibility: font-size scaling for screens that use plain Tailwind
+   text-size classes instead of the fz() inline-style helper.
+
+   The Standard / Large (A+) / Extra Large (A++) toggle sets
+   --app-font-scale (1 / 1.25 / 1.55) on <html> from LedgerContext.
+   Elements that already use fz() keep working exactly as before, since
+   an inline style="font-size:..." always outranks these class rules.
+   This block is what makes screens like the Salesman Cart, the Low
+   Vision Billing view, and the Sale Workflow (which were hardcoded to
+   fixed Tailwind sizes) finally respond to the setting.
+   ------------------------------------------------------------------- */
+:root {
+  --app-font-scale: 1;
+}
+
+.text-\[8px\]  { font-size: calc(8px  * var(--app-font-scale)) !important; }
+.text-\[9px\]  { font-size: calc(9px  * var(--app-font-scale)) !important; }
+.text-\[10px\] { font-size: calc(10px * var(--app-font-scale)) !important; }
+.text-\[11px\] { font-size: calc(11px * var(--app-font-scale)) !important; }
+.text-xs   { font-size: calc(0.75rem  * var(--app-font-scale)) !important; }
+.text-sm   { font-size: calc(0.875rem * var(--app-font-scale)) !important; }
+.text-base { font-size: calc(1rem     * var(--app-font-scale)) !important; }
+.text-lg   { font-size: calc(1.125rem * var(--app-font-scale)) !important; }
+.text-xl   { font-size: calc(1.25rem  * var(--app-font-scale)) !important; }
+.text-2xl  { font-size: calc(1.5rem   * var(--app-font-scale)) !important; }
+.text-3xl  { font-size: calc(1.875rem * var(--app-font-scale)) !important; }

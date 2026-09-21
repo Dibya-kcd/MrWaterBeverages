@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Bill } from '../../types';
 import { money } from '../../utils/billing';
+import { useLedger } from '../../context/LedgerContext';
 import { isSpeechRecognitionSupported, startSpeechRecognition } from '../../utils/speechRecognition';
 
 export interface CustomerDueRecord {
@@ -46,6 +47,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
   isLowVision = false,
   speakAssistiveText,
 }) => {
+  const { orgProfile } = useLedger();
   const [searchQuery, setSearchQuery] = useState('');
   const [filterDueOnly, setFilterDueOnly] = useState(true);
   const [isVoiceSearching, setIsVoiceSearching] = useState(false);
@@ -474,7 +476,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
                       href={`https://wa.me/91${cust.phone.replace(/\D/g, '')}?text=${encodeURIComponent(
                         `Hello ${cust.name}, this is regarding your balance payment of ₹${money(
                           cust.balanceDue
-                        )} for beverage supplies from Radhika Distribution.`
+                        )} for beverage supplies from ${orgProfile?.name || 'MrWater Distribution'}.`
                       )}`}
                       target="_blank"
                       rel="noreferrer"
