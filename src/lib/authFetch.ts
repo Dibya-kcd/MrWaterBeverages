@@ -49,6 +49,7 @@ async function currentToken(): Promise<string | null> {
 
 function isOwnApiCall(url: string): boolean {
   if (url.startsWith("/api/")) return true;
+  if (API_BASE && url.startsWith(API_BASE + "/api/")) return true;
   try {
     const u = new URL(url, window.location.origin);
     return u.origin === window.location.origin && u.pathname.startsWith("/api/");
@@ -57,7 +58,30 @@ function isOwnApiCall(url: string): boolean {
   }
 }
 
-const NO_TOKEN_NEEDED = ["/api/health", "/api/auth/"];
+const NO_TOKEN_NEEDED = ["/api/auth/"];
+
+/**
+ * Address of the Express server (server.ts) when the app is NOT served by that server itself, i.e. the GitHub Pages
+ * build and the Android / iOS (Capacitor) builds. Set VITE_API_BASE_URL at build time, e.g. https://api.example.com
+ * Leave it empty when server.ts serves the web app: relative /api calls then keep working unchanged.
+ */
+const API_BASE: string = ((import.meta as any).env?.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
+
+/** Rewrites a relative "/api/..." URL to the configured server. Anything else is returned untouched. */
+function withApiBase(input: RequestInfo | URL): RequestInfo | URL {
+  if (!API_BASE) return input;
+  if (typeof input === "string") return input.startsWith("/api/") ? API_BASE + input : input;
+  if (input instanceof URL) return input;
+  try {
+    const u = new URL(input.url);
+    if (u.origin === window.location.origin && u.pathname.startsWith("/api/")) {
+      return new Request(API_BASE + u.pathname + u.search, input);
+    }
+  } catch {
+    /* not rewritable */
+  }
+  return input;
+}
 
 export function installAuthFetch() {
   if (typeof window === "undefined" || (window as any).__mrwaterAuthFetch) return;
@@ -67,7 +91,8 @@ export function installAuthFetch() {
     if (typeof window.fetch !== "function") return;
     const original = window.fetch.bind(window);
 
-    const customFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const customFetch = async (rawInput: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const input = withApiBase(rawInput);
       try {
         const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
         if (!isOwnApiCall(url)) return original(input, init);
