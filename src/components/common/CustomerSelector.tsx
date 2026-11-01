@@ -12,9 +12,13 @@ import {
   MicOff,
   Volume2,
   Zap,
+  UserPlus,
 } from 'lucide-react';
 import { ExistingCustomer } from '../../types';
 import { money } from '../../utils/billing';
+import { AddCustomerModal } from './AddCustomerModal';
+import { useBeatFilter } from '../../hooks/useBeatFilter';
+import { BeatFilterBar } from './BeatFilterBar';
 import {
   startSpeechRecognition,
   isSpeechRecognitionSupported,
@@ -54,6 +58,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
   const [isListening, setIsListening] = useState(false);
   const [speechFeedback, setSpeechFeedback] = useState<string | null>(null);
   const [highContrastMode, setHighContrastMode] = useState(false);
+  const [showAddModal, setShowAddModal] = useState(false);
   const speechSessionRef = useRef<ActiveSpeechSession | null>(null);
 
   // Stop speech session on unmount
@@ -105,8 +110,10 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
     });
   };
 
+  const beatFilter = useBeatFilter();
+
   const filtered = useMemo(() => {
-    let list = customers;
+    let list = beatFilter.apply(customers);
 
     // Alphabet group filtering
     if (activeAlphaGroup !== 'ALL') {
@@ -128,7 +135,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
         c.name.toLowerCase().includes(q) ||
         (c.phone && c.phone.toLowerCase().includes(q))
     );
-  }, [customers, searchTerm, activeAlphaGroup]);
+  }, [customers, searchTerm, activeAlphaGroup, beatFilter.apply]);
 
   // Handle Spot Cash selection (1-tap)
   const handleSelectCash = () => {
@@ -186,7 +193,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
         >
           <div className="flex items-center gap-3">
             <div
-              className={`w-10 h-10 rounded-lg flex items-center justify-center font-black shadow-xs ${
+              className={`w-10 h-10 rounded-lg flex items-center justify-center font-black shadow-sm ${
                 highContrastMode ? 'bg-yellow-400 text-black' : 'text-white'
               }`}
               style={highContrastMode ? {} : { backgroundColor: palette.accent }}
@@ -211,6 +218,17 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Add New Customer Button */}
+            <button
+              type="button"
+              onClick={() => setShowAddModal(true)}
+              className="px-3 py-1.5 text-xs font-black rounded-lg border-2 bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 flex items-center gap-1.5 cursor-pointer shadow-sm transition-transform active:scale-[0.99]"
+              title="Add New Customer / Retailer"
+            >
+              <UserPlus size={14} />
+              <span>+ Customer</span>
+            </button>
+
             {/* High Contrast Accessibility Toggle */}
             <button
               type="button"
@@ -257,7 +275,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
           <button
             type="button"
             onClick={handleSelectCash}
-            className={`w-full py-3 px-4 rounded-lg font-black text-sm sm:text-base border-2 flex items-center justify-between shadow-xs transition-transform active:scale-[0.99] cursor-pointer ${
+            className={`w-full py-3 px-4 rounded-lg font-black text-sm sm:text-base border-2 flex items-center justify-between shadow-sm transition-transform active:scale-[0.99] cursor-pointer ${
               highContrastMode
                 ? 'bg-yellow-400 text-black border-yellow-300 hover:bg-yellow-300'
                 : 'bg-amber-100 text-amber-950 border-amber-400 hover:bg-amber-200'
@@ -282,6 +300,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
           }`}
           style={highContrastMode ? {} : { borderColor: palette.border }}
         >
+          <BeatFilterBar value={beatFilter.value} onChange={beatFilter.setValue} options={beatFilter.options} />
           <div className="flex items-center gap-2">
             {/* Search Input */}
             <div className="relative flex-1">
@@ -291,7 +310,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
                   highContrastMode ? 'text-yellow-400' : 'opacity-50'
                 }`}
               />
-              <input
+              <input enterKeyHint="search"
                 type="text"
                 autoFocus
                 placeholder="Type name, phone, or tap mic to speak..."
@@ -300,7 +319,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
                 className={`w-full pl-10 pr-16 py-3 rounded-lg text-base font-bold border-2 transition-all focus:outline-none focus:ring-3 ${
                   highContrastMode
                     ? 'bg-zinc-900 text-yellow-300 border-yellow-400 placeholder-yellow-600 focus:ring-yellow-400'
-                    : 'border-slate-300 bg-slate-50 focus:ring-blue-400'
+                    : 'border-slate-300 bg-slate-50 focus:ring-sky-400'
                 }`}
                 style={{ minHeight: '50px' }}
                 id="customer-search-input"
@@ -332,7 +351,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
                   ? 'bg-red-600 text-white border-red-700 animate-pulse ring-4 ring-red-400'
                   : highContrastMode
                   ? 'bg-yellow-400 text-black border-yellow-300 hover:bg-yellow-300'
-                  : 'bg-blue-900 text-white border-blue-950 hover:bg-blue-800'
+                  : 'bg-sky-600 text-white border-blue-950 hover:bg-sky-500'
               }`}
               style={{ minHeight: '50px' }}
               title="Tap to speak retailer or customer name"
@@ -360,7 +379,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
                   ? 'bg-red-50 text-red-900 border-red-300'
                   : highContrastMode
                   ? 'bg-zinc-900 text-yellow-300 border-yellow-400'
-                  : 'bg-blue-50 text-blue-900 border-blue-200'
+                  : 'bg-sky-50 text-sky-700 border-sky-200'
               }`}
             >
               <div className="flex items-center gap-2">
@@ -378,7 +397,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
           )}
 
           {/* Alphabet Quick Filter Jump Pills */}
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
+          <div className="flex items-center gap-1.5 overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm pb-1 scrollbar-thin">
             {ALPHABET_GROUPS.map((g) => {
               const isCurrent = activeAlphaGroup === g.label;
               return (
@@ -393,7 +412,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
                     isCurrent
                       ? highContrastMode
                         ? 'bg-yellow-400 text-black border-yellow-300 shadow-sm'
-                        : 'bg-blue-900 text-white border-blue-950 shadow-sm'
+                        : 'bg-sky-600 text-white border-blue-950 shadow-sm'
                       : highContrastMode
                       ? 'bg-zinc-900 text-yellow-200 border-yellow-500 hover:bg-zinc-800'
                       : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
@@ -433,27 +452,37 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
               </p>
 
               {searchTerm.trim() && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleSelectCustomer({
-                      name: searchTerm.trim(),
-                      phone: '',
-                      totalBills: 0,
-                      totalBilled: 0,
-                      totalPaid: 0,
-                      balanceDue: 0,
-                      lastBillDate: '',
-                    });
-                  }}
-                  className={`mt-4 px-5 py-2.5 rounded-lg font-black text-sm border-2 cursor-pointer shadow-md ${
-                    highContrastMode
-                      ? 'bg-yellow-400 text-black border-yellow-300'
-                      : 'bg-blue-900 text-white border-blue-950'
-                  }`}
-                >
-                  Use &quot;{searchTerm.trim()}&quot; for this bill
-                </button>
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-2 mt-4">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddModal(true)}
+                    className="px-5 py-2.5 rounded-lg font-black text-sm border-2 bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 cursor-pointer shadow-md flex items-center gap-1.5"
+                  >
+                    <UserPlus size={16} />
+                    <span>+ Register "{searchTerm.trim()}" as Customer</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleSelectCustomer({
+                        name: searchTerm.trim(),
+                        phone: '',
+                        totalBills: 0,
+                        totalBilled: 0,
+                        totalPaid: 0,
+                        balanceDue: 0,
+                        lastBillDate: '',
+                      });
+                    }}
+                    className={`px-4 py-2.5 rounded-lg font-bold text-xs border-2 cursor-pointer ${
+                      highContrastMode
+                        ? 'bg-yellow-400 text-black border-yellow-300'
+                        : 'bg-slate-100 text-slate-800 border-slate-300 hover:bg-slate-200'
+                    }`}
+                  >
+                    Use once for this bill
+                  </button>
+                </div>
               )}
             </div>
           ) : (
@@ -471,7 +500,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
                     isSelected
                       ? highContrastMode
                         ? 'bg-yellow-400 text-black border-yellow-300 ring-4 ring-yellow-500'
-                        : 'bg-blue-50 border-blue-900 ring-2 ring-blue-800'
+                        : 'bg-sky-50 border-sky-600 ring-2 ring-blue-800'
                       : highContrastMode
                       ? 'bg-zinc-900 text-yellow-300 border-yellow-500 hover:bg-zinc-800'
                       : 'bg-white text-stone-900 border-slate-300 hover:bg-slate-50'
@@ -607,6 +636,31 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Add New Customer Modal */}
+      <AddCustomerModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        initialName={searchTerm.trim()}
+        isLowVision={highContrastMode}
+        onCustomerCreated={(newCust) => {
+          handleSelectCustomer({
+            id: newCust.id,
+            name: newCust.name,
+            phone: newCust.phone || '',
+            address: newCust.address,
+            city: newCust.city,
+            gstin: newCust.gstin,
+            creditLimit: newCust.creditLimit || 0,
+            openingBalance: newCust.openingBalance || 0,
+            totalBills: 0,
+            totalBilled: 0,
+            totalPaid: 0,
+            balanceDue: newCust.openingBalance || 0,
+            lastBillDate: '',
+          });
+        }}
+      />
     </div>
   );
 };

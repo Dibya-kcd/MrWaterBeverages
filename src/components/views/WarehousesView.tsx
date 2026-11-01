@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { notify } from "../../utils/toast";
 import {
   AlertCircle,
   AlertTriangle,
@@ -23,10 +24,11 @@ import {
   X,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
-import { InventoryBatch, StockTransfer, Warehouse } from '../../types';
+import type { InventoryBatch, StockTransfer, Warehouse } from '../../types';
 import { generateBatchNumber, money } from '../../utils/billing';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { IconButton } from '../common/IconButton';
+import { todayISO } from "../../utils/dateLocal";
 
 export interface WarehousesViewProps {
   embedded?: boolean;
@@ -95,7 +97,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
   // Transfer Modal State
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [transferForm, setTransferForm] = useState({
-    date: new Date().toISOString().slice(0, 10),
+    date: todayISO(),
     fromWarehouseId: warehouses[0]?.id || '',
     toWarehouseId: warehouses[1]?.id || warehouses[0]?.id || '',
     productId: products[0]?.id || 0,
@@ -249,7 +251,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
     setBatchForm({
       productId: prod?.id || 0,
       batchNumber: generateBatchNumber(prod?.name),
-      mfgDate: new Date().toISOString().slice(0, 10),
+      mfgDate: todayISO(),
       expiryDate: prod?.expiry || '2026-12-31',
       warehouseId: defaultWarehouse?.id || warehouses[0]?.id || '',
       quantity: 50,
@@ -308,17 +310,69 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
     setShowBatchModal(false);
   };
 
+  // Available stock at source for the current transfer form (batch-aware).
+  // Prefer physical batch qty when a lot is selected; otherwise min(physical lots, sellable).
+  const getTransferAvailable = (
+    fromWarehouseId: string,
+    productId: number,
+    batchNumber?: string,
+  ): { available: number; label: string; batches: InventoryBatch[] } => {
+    const pid = Number(productId) || 0;
+    const bn = (batchNumber || '').trim().toUpperCase();
+    const batchesAtSource = inventoryBatches.filter(
+      (b) =>
+        b.productId === pid &&
+        b.warehouseId === fromWarehouseId &&
+        (Number(b.quantity) || 0) > 0,
+    );
+    if (bn) {
+      const match = batchesAtSource.find(
+        (b) => (b.batchNumber || '').toUpperCase() === bn,
+      );
+      const qty = match ? Number(match.quantity) || 0 : 0;
+      return {
+        available: Math.max(0, qty),
+        label: match
+          ? `Batch ${match.batchNumber}: ${qty} cases`
+          : `Batch ${bn}: not found in source (0 cases)`,
+        batches: match ? [match] : [],
+      };
+    }
+    const physical = batchesAtSource.reduce(
+      (s, b) => s + (Number(b.quantity) || 0),
+      0,
+    );
+    const sellable = Math.max(0, warehouseStock(fromWarehouseId, pid));
+    const finalAvail =
+      batchesAtSource.length > 0
+        ? Math.min(physical, sellable > 0 ? sellable : physical)
+        : sellable;
+    return {
+      available: Math.max(0, finalAvail),
+      label:
+        batchesAtSource.length > 0
+          ? `${finalAvail} cases in source (${batchesAtSource.length} lot${
+              batchesAtSource.length === 1 ? '' : 's'
+            })`
+          : `${finalAvail} cases available in source`,
+      batches: batchesAtSource,
+    };
+  };
+
   // Stock Transfer Actions
   const handleOpenTransfer = (preselectedBatch?: InventoryBatch) => {
     const fromWh = preselectedBatch?.warehouseId || warehouses[0]?.id || '';
     const otherWh = warehouses.find((w) => w.id !== fromWh)?.id || fromWh;
+    const pid = preselectedBatch?.productId || products[0]?.id || 0;
+    const bn = preselectedBatch?.batchNumber || '';
+    const { available } = getTransferAvailable(fromWh, pid, bn);
     setTransferForm({
-      date: new Date().toISOString().slice(0, 10),
+      date: todayISO(),
       fromWarehouseId: fromWh,
       toWarehouseId: otherWh,
-      productId: preselectedBatch?.productId || products[0]?.id || 0,
-      batchNumber: preselectedBatch?.batchNumber || '',
-      quantity: Math.min(10, preselectedBatch?.quantity || 10),
+      productId: pid,
+      batchNumber: bn,
+      quantity: Math.min(Math.max(1, available), available > 0 ? available : 1),
       referenceNote: '',
     });
     setShowTransferModal(true);
@@ -332,19 +386,45 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
       transferForm.fromWarehouseId === transferForm.toWarehouseId ||
       transferForm.quantity <= 0
     ) {
-      alert('Please select two distinct warehouses and enter a valid quantity.');
+      notify('Please select two distinct warehouses and enter a valid quantity.');
       return;
     }
 
-    addStockTransfer({
+    const qty = Number(transferForm.quantity) || 0;
+    const { available, label } = getTransferAvailable(
+      transferForm.fromWarehouseId,
+      Number(transferForm.productId),
+      transferForm.batchNumber,
+    );
+
+    if (available <= 0) {
+      notify(
+        `No stock available at the source warehouse for this product.\n(${label})`,
+      );
+      return;
+    }
+    if (qty > available) {
+      notify(
+        `Cannot transfer ${qty} cases — only ${available} available at source.\n(${label})\n\nNegative stock is not allowed.`,
+      );
+      return;
+    }
+
+    const ok = addStockTransfer({
       date: transferForm.date,
       fromWarehouseId: transferForm.fromWarehouseId,
       toWarehouseId: transferForm.toWarehouseId,
       productId: Number(transferForm.productId),
       batchNumber: transferForm.batchNumber.trim().toUpperCase(),
-      quantity: Number(transferForm.quantity),
+      quantity: qty,
       referenceNote: transferForm.referenceNote.trim(),
     });
+    if (ok === false) {
+      notify(
+        'Transfer failed — insufficient stock at source. Negative stock is not allowed.',
+      );
+      return;
+    }
     setShowTransferModal(false);
   };
 
@@ -367,14 +447,23 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
   }).length;
 
   return (
-    <div id="view-warehouses" className={embedded ? 'w-full' : 'p-4 sm:p-6 max-w-7xl mx-auto'}>
+    <div id="view-warehouses" className={embedded ? 'w-full' : 'py-1 lg:p-6 max-w-none lg:max-w-7xl mx-auto'}>
       {/* Header (hidden when embedded inside unified Inventory View) */}
       {!embedded && (
         <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
           <div>
-            <h1 style={fz(26, { fontWeight: 700, color: palette.ink })}>
-              Warehouse & Batch Management
-            </h1>
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center shadow-md shadow-sky-600/20 shrink-0">
+                <WarehouseIcon className="w-5 h-5" aria-hidden="true" />
+              </div>
+              <div>
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <h1 className="text-xl sm:text-2xl font-black tracking-tight text-slate-900">
+                    Warehouse & Batch Management
+                  </h1>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -439,8 +528,9 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
           <div className="flex items-center gap-2 flex-wrap">
             {activeSubTab === 'warehouses' && (
               <button
+                type="button"
                 onClick={handleOpenAddWarehouse}
-                className="flex items-center gap-1.5 px-3 py-1.5 font-bold rounded text-xs text-white bg-blue-700 hover:bg-blue-800 cursor-pointer"
+                className="flex items-center gap-1.5 px-3.5 py-2 font-semibold rounded-full text-xs text-white bg-[#0d4a3a] hover:bg-[#0a3d30] cursor-pointer shadow-sm"
               >
                 <Plus size={14} />
                 Add Godown
@@ -448,8 +538,9 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
             )}
             {activeSubTab === 'batches' && (
               <button
+                type="button"
                 onClick={() => handleOpenAddBatch()}
-                className="flex items-center gap-1.5 px-3 py-1.5 font-bold rounded text-xs text-white bg-blue-700 hover:bg-blue-800 cursor-pointer"
+                className="flex items-center gap-1.5 px-3.5 py-2 font-semibold rounded-full text-xs text-white bg-[#0d4a3a] hover:bg-[#0a3d30] cursor-pointer shadow-sm"
               >
                 <Plus size={14} />
                 Add Batch Lot
@@ -542,44 +633,39 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
         </div>
       </div>
 
-      {/* Navigation Subtabs */}
-      <div className="flex items-center border-b-2 gap-2 mb-6" style={{ borderColor: palette.line }}>
-        <button
-          id="tab-btn-warehouses"
-          onClick={() => setActiveSubTab('warehouses')}
-          className="pb-2.5 px-4 font-bold border-b-4 -mb-[2px] transition-colors cursor-pointer"
-          style={{
-            borderColor: activeSubTab === 'warehouses' ? palette.navy : 'transparent',
-            color: activeSubTab === 'warehouses' ? palette.navy : palette.muted,
-            ...fz(15),
-          }}
-        >
-          Warehouses & Godowns ({warehouses.length})
-        </button>
-        <button
-          id="tab-btn-batches"
-          onClick={() => setActiveSubTab('batches')}
-          className="pb-2.5 px-4 font-bold border-b-4 -mb-[2px] transition-colors cursor-pointer"
-          style={{
-            borderColor: activeSubTab === 'batches' ? palette.navy : 'transparent',
-            color: activeSubTab === 'batches' ? palette.navy : palette.muted,
-            ...fz(15),
-          }}
-        >
-          Batches & Expiry ({inventoryBatches.length})
-        </button>
-        <button
-          id="tab-btn-transfers"
-          onClick={() => setActiveSubTab('transfers')}
-          className="pb-2.5 px-4 font-bold border-b-4 -mb-[2px] transition-colors cursor-pointer"
-          style={{
-            borderColor: activeSubTab === 'transfers' ? palette.navy : 'transparent',
-            color: activeSubTab === 'transfers' ? palette.navy : palette.muted,
-            ...fz(15),
-          }}
-        >
-          Stock Transfers ({stockTransfers.length})
-        </button>
+      {/* Navigation Subtabs — pill bar, scrollable on mobile */}
+      <div className="w-full overflow-x-auto no-scrollbar mb-5">
+        <div className="inline-flex min-w-full sm:min-w-0 sm:w-full bg-[#ebe8e1] rounded-full p-1 gap-0.5">
+          {(
+            [
+              { id: 'warehouses' as const, label: 'Godowns', count: warehouses.length },
+              { id: 'batches' as const, label: 'Batches', count: inventoryBatches.length },
+              { id: 'transfers' as const, label: 'Transfers', count: stockTransfers.length },
+            ] as const
+          ).map((t) => {
+            const active = activeSubTab === t.id;
+            return (
+              <button
+                key={t.id}
+                id={`tab-btn-${t.id}`}
+                type="button"
+                onClick={() => setActiveSubTab(t.id)}
+                className={`flex-1 min-w-[6rem] flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-full text-xs sm:text-sm font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                  active ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>{t.label}</span>
+                <span
+                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full tabular-nums ${
+                    active ? 'bg-[#ebe8e1] text-[#0d4a3a]' : 'bg-black/5 text-slate-500'
+                  }`}
+                >
+                  {t.count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* 1. SUB-TAB: WAREHOUSES */}
@@ -773,7 +859,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                     onClick={() => setShowBatchFilterDropdown((prev) => !prev)}
                     className={`flex items-center gap-2 px-3 py-2 border-2 rounded text-xs sm:text-sm font-bold cursor-pointer transition-colors focus-ring ${
                       showBatchFilterDropdown || activeBatchFiltersCount > 0
-                        ? 'bg-blue-900 text-white border-blue-900'
+                        ? 'bg-sky-600 text-white border-sky-600'
                         : 'bg-white hover:bg-slate-50 text-slate-800'
                     }`}
                     style={{
@@ -797,12 +883,12 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                   {showBatchFilterDropdown && (
                     <div
                       id="popover-batch-filters"
-                      className="absolute left-0 sm:right-0 sm:left-auto top-full mt-2 w-72 sm:w-80 bg-white border-2 rounded-xl shadow-2xl z-50 p-4 space-y-3.5 animate-in fade-in duration-150"
+                      className="absolute left-0 sm:right-0 sm:left-auto top-full mt-2 w-72 sm:w-80 max-w-[calc(100vw-1.5rem)] bg-white border-2 rounded-xl shadow-2xl z-50 p-4 space-y-3.5 animate-in fade-in duration-150"
                       style={{ borderColor: palette.navy }}
                     >
                       <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                         <div className="flex items-center gap-1.5">
-                          <SlidersHorizontal size={15} className="text-blue-900" />
+                          <SlidersHorizontal size={15} className="text-sky-700" />
                           <span className="text-xs font-black uppercase tracking-wider text-slate-800">
                             Batch Filter Options
                           </span>
@@ -828,7 +914,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                           id="select-batch-wh"
                           value={batchWarehouseFilter}
                           onChange={(e) => setBatchWarehouseFilter(e.target.value)}
-                          className="w-full border-2 px-2.5 py-1.5 text-xs font-semibold rounded bg-white focus:outline-none focus:border-blue-900"
+                          className="w-full border-2 px-2.5 py-1.5 text-xs font-semibold rounded bg-white focus:outline-none focus:border-sky-600"
                           style={{ borderColor: palette.line, color: palette.ink }}
                         >
                           <option value="all">All Warehouses ({warehouses.length})</option>
@@ -849,7 +935,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                           id="select-batch-prod"
                           value={batchProductFilter}
                           onChange={(e) => setBatchProductFilter(e.target.value)}
-                          className="w-full border-2 px-2.5 py-1.5 text-xs font-semibold rounded bg-white focus:outline-none focus:border-blue-900"
+                          className="w-full border-2 px-2.5 py-1.5 text-xs font-semibold rounded bg-white focus:outline-none focus:border-sky-600"
                           style={{ borderColor: palette.line, color: palette.ink }}
                         >
                           <option value="all">All Products ({products.length})</option>
@@ -869,7 +955,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                         <button
                           type="button"
                           onClick={() => setShowBatchFilterDropdown(false)}
-                          className="px-3.5 py-1.5 text-xs font-bold rounded bg-blue-900 text-white hover:bg-blue-950 cursor-pointer shadow-xs"
+                          className="px-3.5 py-1.5 text-xs font-bold rounded bg-sky-600 text-white hover:bg-sky-700 cursor-pointer shadow-sm"
                         >
                           Apply Filters
                         </button>
@@ -901,7 +987,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
               <div className="flex items-center gap-2 flex-wrap text-xs">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Active Filters:</span>
                 {batchWarehouseFilter !== 'all' && (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold bg-blue-100 text-blue-900 border border-blue-200">
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold bg-blue-100 text-sky-700 border border-sky-200">
                     Godown: {warehouses.find((w) => w.id === batchWarehouseFilter)?.name || batchWarehouseFilter}
                     <button
                       type="button"
@@ -929,7 +1015,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                 <button
                   type="button"
                   onClick={clearBatchFilters}
-                  className="text-xs text-blue-900 hover:underline font-bold cursor-pointer ml-1"
+                  className="text-xs text-sky-700 hover:underline font-bold cursor-pointer ml-1"
                 >
                   Clear all
                 </button>
@@ -968,8 +1054,8 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
             </div>
           ) : (
             <>
-              <div className="hidden lg:block border-2 overflow-x-auto" style={cardStyle}>
-                <table className="w-full text-left border-collapse min-w-[760px]">
+              <div className="hidden lg:block overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 shadow-sm" style={cardStyle}>
+                <table className="w-full text-left data-table border-collapse min-w-[640px]">
                 <thead>
                   <tr style={{ backgroundColor: '#f8fafc', borderBottom: `2px solid ${palette.line}` }}>
                     <th className="p-3" style={fz(13, { fontWeight: 700, color: palette.ink })}>
@@ -1095,7 +1181,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                 return (
                   <div
                     key={b.id}
-                    className="border-2 rounded-xl p-3.5 sm:p-4 shadow-xs flex flex-col justify-between"
+                    className="border-2 rounded-xl p-3.5 sm:p-4 shadow-sm flex flex-col justify-between"
                     style={cardStyle}
                   >
                     <div>
@@ -1182,7 +1268,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 style={fz(18, { fontWeight: 700, color: palette.ink })}>Inter-Warehouse Movement Log</h3>
-              <p style={fz(14, { color: palette.muted })}>
+              <p className="hidden sm:block" style={fz(14, { color: palette.muted })}>
                 Audit record of case transfers between central depots and local distributing godowns.
               </p>
             </div>
@@ -1214,8 +1300,8 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
           ) : (
             <>
               {/* Desktop Table */}
-              <div className="hidden md:block border-2 overflow-x-auto" style={cardStyle}>
-                <table className="w-full text-left border-collapse min-w-[700px]">
+              <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 shadow-sm" style={cardStyle}>
+                <table className="w-full text-left data-table border-collapse min-w-[640px]">
                   <thead>
                     <tr style={{ backgroundColor: '#f8fafc', borderBottom: `2px solid ${palette.line}` }}>
                       <th className="p-3" style={fz(13, { fontWeight: 700, color: palette.ink })}>
@@ -1288,12 +1374,12 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                   return (
                     <div
                       key={st.id}
-                      className="border-2 rounded-xl p-3.5 bg-white shadow-xs"
+                      className="border-2 rounded-xl p-3.5 bg-white shadow-sm"
                       style={cardStyle}
                     >
                       <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-2 mb-2">
                         <span className="text-xs font-mono text-slate-500 font-bold">{st.date}</span>
-                        <span className="text-xs font-bold px-2 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200">
+                        <span className="text-xs font-bold px-2 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200">
                           {st.quantity} Cases
                         </span>
                       </div>
@@ -1342,7 +1428,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
               <h2 style={fz(18, { fontWeight: 700, color: palette.ink })}>
                 {editingWarehouseId ? 'Edit Warehouse Facility' : 'Add New Warehouse / Godown'}
               </h2>
-              <button
+              <button aria-label="Close"
                 id="btn-close-wh-modal"
                 onClick={() => setShowWarehouseModal(false)}
                 className="p-1 cursor-pointer"
@@ -1409,7 +1495,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                 </div>
                 <div>
                   <label style={labelStyle}>Contact Phone</label>
-                  <input
+                  <input inputMode="tel" autoComplete="tel"
                     id="input-wh-phone"
                     type="text"
                     placeholder="9876543210"
@@ -1426,7 +1512,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                   <label style={labelStyle}>Capacity (Cases)</label>
                   <input
                     id="input-wh-capacity"
-                    type="number"
+                    type="number" inputMode="numeric"
                     min="0"
                     value={whForm.capacityCases}
                     onChange={(e) => setWhForm({ ...whForm, capacityCases: Number(e.target.value) })}
@@ -1496,7 +1582,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
               <h2 style={fz(18, { fontWeight: 700, color: palette.ink })}>
                 {editingBatchId ? 'Edit Batch Registration' : 'Register Product Batch'}
               </h2>
-              <button
+              <button aria-label="Close"
                 id="btn-close-batch-modal"
                 onClick={() => setShowBatchModal(false)}
                 className="p-1 cursor-pointer"
@@ -1597,7 +1683,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                   <label style={labelStyle}>Quantity (Cases) *</label>
                   <input
                     id="input-batch-qty"
-                    type="number"
+                    type="number" inputMode="numeric"
                     min="0"
                     required
                     value={batchForm.quantity}
@@ -1610,7 +1696,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                   <label style={labelStyle}>Cost / Case (₹)</label>
                   <input
                     id="input-batch-cost"
-                    type="number"
+                    type="number" inputMode="decimal"
                     step="0.01"
                     value={batchForm.costPrice}
                     onChange={(e) => setBatchForm({ ...batchForm, costPrice: Number(e.target.value) })}
@@ -1622,7 +1708,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                   <label style={labelStyle}>MRP / Case (₹)</label>
                   <input
                     id="input-batch-mrp"
-                    type="number"
+                    type="number" inputMode="decimal"
                     step="0.01"
                     value={batchForm.mrp}
                     onChange={(e) => setBatchForm({ ...batchForm, mrp: Number(e.target.value) })}
@@ -1670,168 +1756,360 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
       )}
 
       {/* MODAL: STOCK TRANSFER */}
-      {showTransferModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-          <div
-            className="w-full max-w-lg border-2 p-6 shadow-xl"
-            style={{ backgroundColor: palette.panel, borderColor: palette.line }}
-          >
-            <div className="flex items-center justify-between pb-3 border-b-2 mb-4" style={{ borderColor: palette.line }}>
-              <h2 style={fz(18, { fontWeight: 700, color: palette.ink })}>Inter-Warehouse Stock Transfer</h2>
-              <button
-                id="btn-close-transfer-modal"
-                onClick={() => setShowTransferModal(false)}
-                className="p-1 cursor-pointer"
+      {showTransferModal && (() => {
+        const availInfo = getTransferAvailable(
+          transferForm.fromWarehouseId,
+          Number(transferForm.productId),
+          transferForm.batchNumber,
+        );
+        const available = availInfo.available;
+        const overQty =
+          Number(transferForm.quantity) > 0 &&
+          Number(transferForm.quantity) > available;
+        const fromName =
+          warehouses.find((w) => w.id === transferForm.fromWarehouseId)?.name ||
+          'Source';
+        const productOptions = [...products].sort((a, b) => {
+          const qa = warehouseStock(transferForm.fromWarehouseId, a.id);
+          const qb = warehouseStock(transferForm.fromWarehouseId, b.id);
+          if (qa > 0 && qb <= 0) return -1;
+          if (qb > 0 && qa <= 0) return 1;
+          return a.name.localeCompare(b.name);
+        });
+        const batchesForProduct = inventoryBatches.filter(
+          (b) =>
+            b.productId === Number(transferForm.productId) &&
+            b.warehouseId === transferForm.fromWarehouseId &&
+            (Number(b.quantity) || 0) > 0,
+        );
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50">
+            <div
+              className="w-full sm:max-w-lg max-h-[95dvh] overflow-y-auto border-0 sm:border-2 p-4 sm:p-6 shadow-xl rounded-t-2xl sm:rounded-none"
+              style={{ backgroundColor: palette.panel, borderColor: palette.line }}
+            >
+              <div
+                className="flex items-center justify-between pb-3 border-b-2 mb-4"
+                style={{ borderColor: palette.line }}
               >
-                <X size={20} color={palette.muted} />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveTransfer} className="space-y-3">
-              <div>
-                <label style={labelStyle}>Transfer Date *</label>
-                <input
-                  id="input-transfer-date"
-                  type="date"
-                  required
-                  value={transferForm.date}
-                  onChange={(e) => setTransferForm({ ...transferForm, date: e.target.value })}
-                  className="w-full px-3 py-2 border-2 focus-ring"
-                  style={inputStyle}
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label style={labelStyle}>From Warehouse (Source) *</label>
-                  <select
-                    id="select-transfer-from"
-                    required
-                    value={transferForm.fromWarehouseId}
-                    onChange={(e) => setTransferForm({ ...transferForm, fromWarehouseId: e.target.value })}
-                    className="w-full px-3 py-2 border-2 focus-ring cursor-pointer"
-                    style={inputStyle}
-                  >
-                    {warehouses.map((w) => (
-                      <option key={w.id} value={w.id}>
-                        {w.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label style={labelStyle}>To Warehouse (Destination) *</label>
-                  <select
-                    id="select-transfer-to"
-                    required
-                    value={transferForm.toWarehouseId}
-                    onChange={(e) => setTransferForm({ ...transferForm, toWarehouseId: e.target.value })}
-                    className="w-full px-3 py-2 border-2 focus-ring cursor-pointer"
-                    style={inputStyle}
-                  >
-                    {warehouses.map((w) => (
-                      <option key={w.id} value={w.id}>
-                        {w.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label style={labelStyle}>Product *</label>
-                <select
-                  id="select-transfer-prod"
-                  required
-                  value={transferForm.productId}
-                  onChange={(e) => {
-                    const pid = Number(e.target.value);
-                    const matchingBatches = inventoryBatches.filter(
-                      (b) => b.productId === pid && b.warehouseId === transferForm.fromWarehouseId
-                    );
-                    setTransferForm({
-                      ...transferForm,
-                      productId: pid,
-                      batchNumber: matchingBatches[0]?.batchNumber || '',
-                    });
-                  }}
-                  className="w-full px-3 py-2 border-2 focus-ring cursor-pointer"
-                  style={inputStyle}
-                >
-                  {products.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label style={labelStyle}>Batch Number</label>
-                  <input
-                    id="input-transfer-batch"
-                    type="text"
-                    placeholder="Batch Lot (optional)"
-                    value={transferForm.batchNumber}
-                    onChange={(e) => setTransferForm({ ...transferForm, batchNumber: e.target.value.toUpperCase() })}
-                    className="w-full px-3 py-2 border-2 focus-ring font-mono font-bold uppercase"
-                    style={inputStyle}
-                  />
-                </div>
-
-                <div>
-                  <label style={labelStyle}>Quantity to Transfer (Cases) *</label>
-                  <input
-                    id="input-transfer-qty"
-                    type="number"
-                    min="1"
-                    required
-                    value={transferForm.quantity}
-                    onChange={(e) => setTransferForm({ ...transferForm, quantity: Number(e.target.value) })}
-                    className="w-full px-3 py-2 border-2 focus-ring font-bold"
-                    style={inputStyle}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label style={labelStyle}>Delivery Challan / Reference Note</label>
-                <input
-                  id="input-transfer-note"
-                  type="text"
-                  placeholder="e.g. Challan #CH-882, vehicle tempo MH-12-AB-1234"
-                  value={transferForm.referenceNote}
-                  onChange={(e) => setTransferForm({ ...transferForm, referenceNote: e.target.value })}
-                  className="w-full px-3 py-2 border-2 focus-ring"
-                  style={inputStyle}
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-4 border-t-2" style={{ borderColor: palette.line }}>
+                <h2 style={fz(18, { fontWeight: 700, color: palette.ink })}>
+                  Inter-Warehouse Stock Transfer
+                </h2>
                 <button
-                  id="btn-cancel-transfer"
+                  id="btn-close-transfer-modal"
                   type="button"
                   onClick={() => setShowTransferModal(false)}
-                  className="px-4 py-2 border-2 cursor-pointer font-semibold"
-                  style={{ borderColor: palette.line, color: palette.ink }}
+                  className="p-1 cursor-pointer"
+                  aria-label="Close"
                 >
-                  Cancel
-                </button>
-                <button
-                  id="btn-submit-transfer"
-                  type="submit"
-                  className="px-5 py-2 font-bold cursor-pointer"
-                  style={{ backgroundColor: palette.navy, color: '#FFFFFF' }}
-                >
-                  Execute Transfer
+                  <X size={20} color={palette.muted} />
                 </button>
               </div>
-            </form>
+
+              <form onSubmit={handleSaveTransfer} className="space-y-3">
+                <div>
+                  <label style={labelStyle}>Transfer Date *</label>
+                  <input
+                    id="input-transfer-date"
+                    type="date"
+                    required
+                    value={transferForm.date}
+                    onChange={(e) =>
+                      setTransferForm({ ...transferForm, date: e.target.value })
+                    }
+                    className="w-full px-3 py-2 border-2 focus-ring"
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label style={labelStyle}>From Warehouse (Source) *</label>
+                    <select
+                      id="select-transfer-from"
+                      required
+                      value={transferForm.fromWarehouseId}
+                      onChange={(e) => {
+                        const fromId = e.target.value;
+                        const pid = Number(transferForm.productId);
+                        const matching = inventoryBatches.filter(
+                          (b) =>
+                            b.productId === pid &&
+                            b.warehouseId === fromId &&
+                            (Number(b.quantity) || 0) > 0,
+                        );
+                        const bn =
+                          matching.find(
+                            (b) =>
+                              (b.batchNumber || '').toUpperCase() ===
+                              (transferForm.batchNumber || '').toUpperCase(),
+                          )?.batchNumber ||
+                          matching[0]?.batchNumber ||
+                          '';
+                        const { available: av } = getTransferAvailable(
+                          fromId,
+                          pid,
+                          bn,
+                        );
+                        setTransferForm({
+                          ...transferForm,
+                          fromWarehouseId: fromId,
+                          batchNumber: bn,
+                          quantity: Math.min(
+                            Math.max(1, transferForm.quantity),
+                            av > 0 ? av : 1,
+                          ),
+                        });
+                      }}
+                      className="w-full px-3 py-2 border-2 focus-ring cursor-pointer"
+                      style={inputStyle}
+                    >
+                      {warehouses.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>To Warehouse (Destination) *</label>
+                    <select
+                      id="select-transfer-to"
+                      required
+                      value={transferForm.toWarehouseId}
+                      onChange={(e) =>
+                        setTransferForm({
+                          ...transferForm,
+                          toWarehouseId: e.target.value,
+                        })
+                      }
+                      className="w-full px-3 py-2 border-2 focus-ring cursor-pointer"
+                      style={inputStyle}
+                    >
+                      {warehouses.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label style={labelStyle}>Product *</label>
+                  <select
+                    id="select-transfer-prod"
+                    required
+                    value={transferForm.productId}
+                    onChange={(e) => {
+                      const pid = Number(e.target.value);
+                      const matchingBatches = inventoryBatches.filter(
+                        (b) =>
+                          b.productId === pid &&
+                          b.warehouseId === transferForm.fromWarehouseId &&
+                          (Number(b.quantity) || 0) > 0,
+                      );
+                      const bn = matchingBatches[0]?.batchNumber || '';
+                      const { available: av } = getTransferAvailable(
+                        transferForm.fromWarehouseId,
+                        pid,
+                        bn,
+                      );
+                      setTransferForm({
+                        ...transferForm,
+                        productId: pid,
+                        batchNumber: bn,
+                        quantity: Math.min(Math.max(1, av), av > 0 ? av : 1),
+                      });
+                    }}
+                    className="w-full px-3 py-2 border-2 focus-ring cursor-pointer"
+                    style={inputStyle}
+                  >
+                    {productOptions.map((p) => {
+                      const qty = warehouseStock(
+                        transferForm.fromWarehouseId,
+                        p.id,
+                      );
+                      return (
+                        <option key={p.id} value={p.id}>
+                          {p.name} — {qty} cases @ {fromName}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Quantities shown are available stock in the selected source
+                    warehouse.
+                  </p>
+                </div>
+
+                {/* Live availability banner */}
+                <div
+                  className={`rounded-xl border-2 px-3 py-2.5 text-sm ${
+                    available <= 0
+                      ? 'border-rose-200 bg-rose-50 text-rose-800'
+                      : overQty
+                        ? 'border-amber-200 bg-amber-50 text-amber-900'
+                        : 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                  }`}
+                >
+                  <div className="font-bold flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                    <span>Available at {fromName}:</span>
+                    <span className="tabular-nums text-base">
+                      {available} cases
+                    </span>
+                  </div>
+                  <div className="text-[11px] mt-0.5 opacity-90">
+                    {availInfo.label}
+                    {available <= 0 &&
+                      ' — transfer not allowed (would create negative stock).'}
+                    {overQty &&
+                      available > 0 &&
+                      ` — reduce quantity to ${available} or less.`}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label style={labelStyle}>Batch / Lot</label>
+                    {batchesForProduct.length > 0 ? (
+                      <select
+                        id="select-transfer-batch"
+                        value={transferForm.batchNumber}
+                        onChange={(e) => {
+                          const bn = e.target.value;
+                          const { available: av } = getTransferAvailable(
+                            transferForm.fromWarehouseId,
+                            Number(transferForm.productId),
+                            bn,
+                          );
+                          setTransferForm({
+                            ...transferForm,
+                            batchNumber: bn,
+                            quantity: Math.min(
+                              Math.max(1, transferForm.quantity),
+                              av > 0 ? av : 1,
+                            ),
+                          });
+                        }}
+                        className="w-full px-3 py-2 border-2 focus-ring cursor-pointer font-mono"
+                        style={inputStyle}
+                      >
+                        <option value="">All lots (auto FEFO)</option>
+                        {batchesForProduct.map((b) => (
+                          <option key={b.id} value={b.batchNumber}>
+                            {b.batchNumber} — {b.quantity} cases
+                            {b.expiryDate ? ` · exp ${b.expiryDate}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        id="input-transfer-batch"
+                        type="text"
+                        placeholder="No lots in source (optional)"
+                        value={transferForm.batchNumber}
+                        onChange={(e) =>
+                          setTransferForm({
+                            ...transferForm,
+                            batchNumber: e.target.value.toUpperCase(),
+                          })
+                        }
+                        className="w-full px-3 py-2 border-2 focus-ring font-mono font-bold uppercase"
+                        style={inputStyle}
+                      />
+                    )}
+                  </div>
+
+                  <div>
+                    <label style={labelStyle}>
+                      Quantity to Transfer (Cases) *
+                    </label>
+                    <input
+                      id="input-transfer-qty"
+                      type="number" inputMode="numeric"
+                      min={1}
+                      max={available > 0 ? available : undefined}
+                      required
+                      value={transferForm.quantity}
+                      onChange={(e) =>
+                        setTransferForm({
+                          ...transferForm,
+                          quantity: Number(e.target.value),
+                        })
+                      }
+                      className={`w-full px-3 py-2 border-2 focus-ring font-bold ${
+                        overQty ? 'border-rose-400' : ''
+                      }`}
+                      style={inputStyle}
+                    />
+                    {available > 0 && (
+                      <button
+                        type="button"
+                        className="mt-1 text-[11px] font-semibold text-sky-700 hover:underline cursor-pointer"
+                        onClick={() =>
+                          setTransferForm({
+                            ...transferForm,
+                            quantity: available,
+                          })
+                        }
+                      >
+                        Use max ({available})
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <label style={labelStyle}>
+                    Delivery Challan / Reference Note
+                  </label>
+                  <input
+                    id="input-transfer-note"
+                    type="text"
+                    placeholder="e.g. Challan #CH-882, vehicle tempo MH-12-AB-1234"
+                    value={transferForm.referenceNote}
+                    onChange={(e) =>
+                      setTransferForm({
+                        ...transferForm,
+                        referenceNote: e.target.value,
+                      })
+                    }
+                    className="w-full px-3 py-2 border-2 focus-ring"
+                    style={inputStyle}
+                  />
+                </div>
+
+                <div
+                  className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-4 border-t-2"
+                  style={{ borderColor: palette.line }}
+                >
+                  <button
+                    id="btn-cancel-transfer"
+                    type="button"
+                    onClick={() => setShowTransferModal(false)}
+                    className="px-4 py-2.5 border-2 cursor-pointer font-semibold rounded-lg"
+                    style={{ borderColor: palette.line, color: palette.ink }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    id="btn-submit-transfer"
+                    type="submit"
+                    disabled={available <= 0 || overQty}
+                    className="px-5 py-2.5 font-bold cursor-pointer rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                    style={{ backgroundColor: palette.navy, color: '#FFFFFF' }}
+                  >
+                    Execute Transfer
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Delete Warehouse Confirmation Modal */}
       {warehouseToDelete && (

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { notify } from "../../utils/toast";
 import {
   X,
   Plus,
@@ -15,15 +16,25 @@ import {
   Clock,
   ArrowRight,
 } from 'lucide-react';
-import { Bill, BillItem, ExistingCustomer, PriceType, Product, Promotion, Warehouse } from '../../types';
+import { Bill, BillItem, ExistingCustomer, PriceType, Product, Promotion, Trip, Warehouse } from '../../types';
+import type { BillEditPreview } from '../../context/LedgerContext';
 import { CATS } from '../../constants/initialData';
-import { billTotals, computeLine, money, schemeLabel, statusOf } from '../../utils/billing';
+import { billTotals, issuedGstMode, isWholeRupee, computeLine,
+  normalizeGstFraction, money, schemeLabel, statusOf, resolveProductGstRate, resolveProductHsn } from '../../utils/billing';
 import { CustomerSelector } from './CustomerSelector';
+import { ConfirmModal } from '../ui/ConfirmModal';
+import { todayISO } from "../../utils/dateLocal";
 
 interface EditBillModalProps {
   bill: Bill | null;
   onClose: () => void;
-  onSave: (updatedBill: Bill) => void;
+  /** Return true when saved. The modal stays open (nothing is lost) when this returns false. */
+  onSave: (updatedBill: Bill, opts: { comment: string; requestedPaid?: number }) => boolean | void;
+  /** Dry run: what changed, does it touch stock, what would block it. */
+  previewEdit?: (bill: Bill, requestedPaid?: number) => BillEditPreview;
+  /** Reopen the trip this bill was sold from (stock changes on closed trips need this). */
+  onReopenTrip?: (tripId: number) => void;
+  trips?: Trip[];
   onRequestDelete: (bill: Bill) => void;
   products: Product[];
   promotions: Promotion[];
@@ -39,6 +50,9 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
   bill,
   onClose,
   onSave,
+  previewEdit,
+  onReopenTrip,
+  trips,
   onRequestDelete,
   products,
   promotions,
@@ -56,6 +70,16 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
   const [warehouseId, setWarehouseId] = useState('');
   const [items, setItems] = useState<BillItem[]>([]);
   const [amountPaid, setAmountPaid] = useState<number>(0);
+  const [invoiceFormat, setInvoiceFormat] = useState<'gst' | 'non_gst'>('non_gst');
+  const [customerGstin, setCustomerGstin] = useState('');
+  const [ewayBillNo, setEwayBillNo] = useState('');
+  const [irn, setIrn] = useState('');
+  const [transporterName, setTransporterName] = useState('');
+  const [transportDistanceKm, setTransportDistanceKm] = useState('');
+  const [editComment, setEditComment] = useState('');
+  const [saveError, setSaveError] = useState('');
+  // The finished edit waiting for the user's "yes, save" (stock and payment effects are shown first).
+  const [pendingBill, setPendingBill] = useState<Bill | null>(null);
 
   // New item draft inside the modal
   const [selectedProductId, setSelectedProductId] = useState<number>(products[0]?.id || 0);
@@ -66,16 +90,45 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
   // Customer Selector Popup
   const [showCustomerPicker, setShowCustomerPicker] = useState(false);
 
+  // Pre-fill draft rate with base price when selected product or price type changes
+  // (Depends on the price itself, not on the products array, which is a new array after every
+  // background sync and used to wipe the rate you were typing.)
+  const draftProduct = products.find((p) => p.id === selectedProductId);
+  const draftBasePrice = draftProduct
+    ? draftPriceType === 'Retail'
+      ? draftProduct.retail
+      : draftProduct.wholesale
+    : undefined;
+  useEffect(() => {
+    if (!selectedProductId || !draftProduct) return;
+    setDraftCustomRate(draftBasePrice ? String(draftBasePrice) : '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProductId, draftPriceType, draftBasePrice]);
+
   useEffect(() => {
     if (bill) {
       setRetailer(bill.retailer || '');
       setPhone(bill.phone || '');
-      setDate(bill.date || new Date().toISOString().slice(0, 10));
+      setDate(bill.date || todayISO());
       setWarehouseId(bill.warehouseId || '');
       setItems(bill.items ? JSON.parse(JSON.stringify(bill.items)) : []);
       setAmountPaid(bill.amountPaid || 0);
+      const isGst =
+        bill.invoiceType === 'tax_invoice' || bill.isGstInvoice === true
+          ? true
+          : bill.invoiceType === 'retail' || bill.invoiceType === 'bill_of_supply' || bill.isGstInvoice === false
+            ? false
+            : bill.supplyType === 'B2B' && Boolean(bill.customerGstin);
+      setInvoiceFormat(isGst ? 'gst' : 'non_gst');
+      setCustomerGstin(bill.customerGstin || '');
+      setEwayBillNo(bill.ewayBillNo || '');
+      setIrn(bill.irn || '');
+      setTransporterName(bill.transporterName || '');
+      setTransportDistanceKm(bill.transportDistanceKm ? String(bill.transportDistanceKm) : '');
+      setEditComment('');
+      setSaveError('');
     }
-  }, [bill]);
+  }, [bill?.id]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -86,7 +139,11 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
   }, [onClose, showCustomerPicker]);
 
   const activePromoForProduct = (productId: number): Promotion | null => {
-    return promotions.find((promo) => promo.productIds?.includes(productId)) || null;
+    return (
+      promotions.find(
+        (promo) => promo.type !== 'bundle' && promo.productIds?.includes(productId)
+      ) || null
+    );
   };
 
   // Recalculate an item when qty or rate or priceType or scheme changes
@@ -161,7 +218,9 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
     if (!product) return;
 
     const baseRate = draftPriceType === 'Retail' ? product.retail : product.wholesale;
-    const rate = draftCustomRate !== '' ? Math.max(0, Number(draftCustomRate)) : baseRate;
+    const rate = draftCustomRate !== '' 
+      ? Math.max(0, Number(draftCustomRate)) 
+      : baseRate;
     const qty = Math.max(1, draftQty);
 
     const promo = activePromoForProduct(product.id);
@@ -180,11 +239,11 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       chargeableQty: computed.chargeableQty,
       discount: computed.discount,
       amount: computed.amount,
-      gst: CATS[product.category]?.gst ?? 0.18,
+      gst: resolveProductGstRate(product),
       promoLabel: promo ? schemeLabel(promo) : null,
       schemeSkipped: false,
       batchNumber: product.batchNumber,
-      hsn: product.hsn || CATS[product.category]?.hsn || '2202',
+      hsn: resolveProductHsn(product),
       expiryDate: product.expiry,
       warehouseId: product.warehouseId,
     };
@@ -195,31 +254,80 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
   };
 
   // Live Recalculated Financials
+  // An edit must never change the invoice's money just because it was opened and saved:
+  //  - the invoice-level (trade) discount saved on the bill is kept, and
+  //  - the bill keeps the GST treatment it was issued with (the app-wide GST switch may have changed since).
+  const keptExtraDiscount = Math.max(0, Number(bill?.additionalDiscount) || 0);
+  const editGstMode: 'inclusive' | 'exclusive' | 'off' = useMemo(
+    () => (bill ? issuedGstMode(bill, gstMode) : gstMode),
+    [bill, gstMode],
+  );
   const totals = useMemo(() => {
-    return billTotals(items, gstMode);
-  }, [items, gstMode]);
+    // A bill issued without round-off stays unrounded, so opening and saving it changes nothing.
+    return billTotals(items, editGstMode, keptExtraDiscount, { round: bill ? isWholeRupee(bill.total) : undefined });
+  }, [items, editGstMode, keptExtraDiscount, bill]);
 
   const dueBalance = Math.max(0, totals.total - amountPaid);
   const status = statusOf(totals.total, amountPaid);
+
+  // Draft of the bill as currently edited (used for the live stock-impact preview and for saving).
+  const draftBill: Bill | null = bill
+    ? {
+        ...bill,
+        retailer: retailer.trim(),
+        phone: phone.trim(),
+        date,
+        // A bill sold from a trip / specific godown keeps it: an empty selection must not silently
+        // move the sale to the default godown.
+        warehouseId: warehouseId || bill.warehouseId,
+        items,
+        subtotal: totals.subtotal,
+        cgst: totals.cgst,
+        sgst: totals.sgst,
+        total: totals.total,
+        discount: totals.discount,
+        amountPaid: Math.min(totals.total, Math.max(0, amountPaid)),
+      }
+    : null;
+  const preview: BillEditPreview | null = useMemo(
+    () => (draftBill && previewEdit ? previewEdit(draftBill, Math.max(0, amountPaid)) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [bill?.id, retailer, phone, date, warehouseId, items, amountPaid, totals.total, trips],
+  );
+  const sourceTrip =
+    preview?.source.kind === 'trip' && trips
+      ? trips.find((t) => Number(t.id) === preview.source.tripId)
+      : undefined;
+  const blockedByStock = !!preview && preview.problems.length > 0;
 
   if (!bill) return null;
 
   const handleSave = () => {
     if (!retailer.trim()) {
-      alert('Please enter or select a retailer name.');
+      notify('Please enter or select a retailer name.');
       return;
     }
     if (items.length === 0) {
-      alert('The bill must contain at least one product line item.');
+      notify('The bill must contain at least one product line item.');
+      return;
+    }
+
+    if (editComment.trim().length < 3) {
+      setSaveError('Please write a short comment explaining why this bill is being edited.');
+      return;
+    }
+    if (preview && preview.problems.length > 0) {
+      setSaveError(preview.problems.join('\n'));
       return;
     }
 
     const updatedBill: Bill = {
+      ...bill,
       id: bill.id,
       retailer: retailer.trim(),
       phone: phone.trim(),
       date,
-      warehouseId,
+      warehouseId: warehouseId || bill.warehouseId,
       items,
       subtotal: totals.subtotal,
       cgst: totals.cgst,
@@ -227,13 +335,81 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       total: totals.total,
       discount: totals.discount,
       amountPaid: Math.min(totals.total, Math.max(0, amountPaid)),
+      supplyType: invoiceFormat === 'gst' && customerGstin.trim() ? 'B2B' : 'B2C',
+      customerGstin: invoiceFormat === 'gst' && customerGstin.trim() ? customerGstin.trim().toUpperCase() : undefined,
+      invoiceType: invoiceFormat === 'gst' ? 'tax_invoice' : 'retail',
+      isGstInvoice: invoiceFormat === 'gst',
+      ewayBillNo: ewayBillNo.replace(/\D/g, '').slice(0, 12) || undefined,
+      irn: irn.trim() || undefined,
+      transporterName: transporterName.trim() || undefined,
+      transportDistanceKm: Number(transportDistanceKm) > 0 ? Math.round(Number(transportDistanceKm)) : undefined,
     };
 
-    onSave(updatedBill);
+    // Show what this save does to stock and money and wait for a yes before saving anything.
+    setPendingBill(updatedBill);
+  };
+
+  const confirmSave = () => {
+    if (!pendingBill) return;
+    const toSave = pendingBill;
+    setPendingBill(null);
+    // `requestedPaid` is what was typed before it was capped at the new total, so money received
+    // above a lowered total is kept as an advance instead of being dropped.
+    // Close only when the save really happened; otherwise keep the form so no edit is lost.
+    const ok = onSave(toSave, { comment: editComment.trim(), requestedPaid: Math.max(0, amountPaid) });
+    if (ok === false) {
+      setSaveError('Not saved. Read the message shown on screen, fix it and press Save again. Your changes are still here.');
+      return;
+    }
     onClose();
   };
 
+  const rupees = (n: number) => `₹${money(n)}`;
+  const confirmImpact = (() => {
+    const items: { label: string; detail?: string; qtyChange?: string }[] = [];
+    if (!preview) return items;
+    items.push({
+      label: preview.stockChanged ? 'Stock will be adjusted' : 'Stock is not affected',
+      detail: preview.stockChanged
+        ? `Only the products whose crates changed · ${preview.source.label}`
+        : `Same crates, products and source · ${preview.source.label}`,
+    });
+    for (const c of preview.changes) items.push({ label: c });
+    const pay = preview.payment;
+    if (pay.movedToCustomer) {
+      items.push({
+        label: `Receipts move to ${pay.movedToCustomer}`,
+        detail: `The ${rupees(pay.receivedBefore)} received on this bill follows the invoice to the new customer`,
+      });
+    }
+    if (pay.keptAsAdvance > 0) {
+      items.push({
+        label: 'Received money kept as advance',
+        detail: `The new total is lower than what was received, so the extra stays on the customer's account`,
+        qtyChange: rupees(pay.keptAsAdvance),
+      });
+    }
+    if (pay.removedAsCorrection > 0) {
+      items.push({
+        label: 'Receipts removed (paid amount lowered)',
+        detail: 'Treated as a correction, not a refund. Use Refund on the customer if cash goes back',
+        qtyChange: rupees(pay.removedAsCorrection),
+      });
+    }
+    if (pay.keptAsAdvance <= 0 && pay.removedAsCorrection <= 0 && !pay.movedToCustomer) {
+      items.push({
+        label: 'Payments',
+        detail:
+          pay.paidAfter > pay.receivedBefore
+            ? `${rupees(pay.paidAfter - pay.receivedBefore)} more recorded as received`
+            : 'No change to payments already received',
+      });
+    }
+    return items;
+  })();
+
   return (
+    <>
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/65 backdrop-blur-xs animate-in fade-in duration-150 overflow-y-auto"
       onClick={onClose}
@@ -254,7 +430,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
         >
           <div className="flex items-center gap-3">
             <div
-              className="w-9 h-9 rounded-lg flex items-center justify-center font-bold text-white shadow-xs"
+              className="w-9 h-9 rounded-lg flex items-center justify-center font-bold text-white shadow-sm"
               style={{ backgroundColor: palette.accent }}
             >
               #{bill.id}
@@ -271,7 +447,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   {status.label}
                 </span>
               </div>
-              <p className="text-xs opacity-70">
+              <p className="hidden sm:block text-xs opacity-70">
                 Direct in-place bill editor with live product price and quantity adjustment
               </p>
             </div>
@@ -313,7 +489,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowCustomerPicker(true)}
-                className="text-xs font-bold px-2.5 py-1 rounded-md border flex items-center gap-1.5 shadow-2xs hover:shadow-xs transition-all"
+                className="text-xs font-bold px-2.5 py-1 rounded-md border flex items-center gap-1.5 shadow-sm hover:shadow-sm transition-all"
                 style={{
                   borderColor: palette.accent,
                   color: palette.accent,
@@ -393,6 +569,8 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                 </label>
                 <select
                   value={warehouseId}
+                  disabled={preview?.source.kind === 'trip'}
+                  title={preview?.source.kind === 'trip' ? 'This bill was sold from a trip. Godown follows the trip.' : undefined}
                   onChange={(e) => setWarehouseId(e.target.value)}
                   className="w-full px-3 py-2 text-sm border-2 rounded-lg focus:outline-none focus:ring-1"
                   style={{
@@ -411,7 +589,182 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                 </select>
               </div>
             </div>
+
+            {/* Document Format Option (GST vs Non-GST) */}
+            <div className="pt-2 border-t flex flex-wrap items-center justify-between gap-3" style={{ borderColor: palette.border }}>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold uppercase opacity-80">Document Format:</span>
+                <div className="inline-flex items-center rounded-lg border p-0.5 bg-stone-100" style={{ borderColor: palette.border }}>
+                  <button
+                    type="button"
+                    onClick={() => setInvoiceFormat('non_gst')}
+                    className={`px-2.5 py-1 text-xs font-bold rounded cursor-pointer transition-all ${
+                      invoiceFormat === 'non_gst'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'text-stone-700 hover:text-stone-900'
+                    }`}
+                  >
+                    🛒 Non-GST Retail Bill
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setInvoiceFormat('gst')}
+                    className={`px-2.5 py-1 text-xs font-bold rounded cursor-pointer transition-all ${
+                      invoiceFormat === 'gst'
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : 'text-stone-700 hover:text-stone-900'
+                    }`}
+                  >
+                    🏢 GST Tax Invoice
+                  </button>
+                </div>
+              </div>
+
+              {invoiceFormat === 'gst' && (
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-bold opacity-80">Buyer GSTIN:</label>
+                  <input autoCapitalize="characters" autoComplete="off" autoCorrect="off" spellCheck={false}
+                    type="text"
+                    value={customerGstin}
+                    onChange={(e) => setCustomerGstin(e.target.value.toUpperCase())}
+                    placeholder="15-character GSTIN"
+                    maxLength={15}
+                    className="px-2.5 py-1 text-xs font-mono font-bold uppercase border rounded focus:outline-none"
+                    style={{ borderColor: palette.border, backgroundColor: '#ffffff' }}
+                  />
+                </div>
+              )}
+
+              {/* Transport / e-way bill (needed when goods worth more than Rs 50,000 are moved) */}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <label className="text-xs font-bold opacity-80">E-way bill no.:</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={ewayBillNo}
+                  onChange={(e) => setEwayBillNo(e.target.value.replace(/\D/g, '').slice(0, 12))}
+                  placeholder="12 digits"
+                  className="px-2.5 py-1 text-xs font-mono font-bold border rounded focus:outline-none w-32"
+                  style={{ borderColor: palette.border, backgroundColor: '#ffffff' }}
+                />
+                <label className="text-xs font-bold opacity-80">Transporter:</label>
+                <input
+                  type="text"
+                  value={transporterName}
+                  onChange={(e) => setTransporterName(e.target.value)}
+                  placeholder="optional"
+                  className="px-2.5 py-1 text-xs border rounded focus:outline-none w-36"
+                  style={{ borderColor: palette.border, backgroundColor: '#ffffff' }}
+                />
+                <label className="text-xs font-bold opacity-80">IRN (e-invoice):</label>
+                <input
+                  type="text"
+                  value={irn}
+                  onChange={(e) => setIrn(e.target.value.trim().slice(0, 64))}
+                  placeholder="only if e-invoicing applies"
+                  className="px-2.5 py-1 text-xs font-mono border rounded focus:outline-none w-44"
+                  style={{ borderColor: palette.border, backgroundColor: '#ffffff' }}
+                />
+                <label className="text-xs font-bold opacity-80">Distance (km):</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={transportDistanceKm}
+                  onChange={(e) => setTransportDistanceKm(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  className="px-2.5 py-1 text-xs border rounded focus:outline-none w-16"
+                  style={{ borderColor: palette.border, backgroundColor: '#ffffff' }}
+                />
+              </div>
+            </div>
           </div>
+
+          {/* Where this bill's stock came from + what this edit does to stock */}
+          {preview && (
+            <div
+              className="p-4 rounded-xl border space-y-2.5"
+              style={{ borderColor: palette.border, backgroundColor: palette.bg }}
+              id="edit-modal-source-panel"
+            >
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="text-xs">
+                  <span className="font-bold uppercase tracking-wider opacity-75">Sold from: </span>
+                  <span className="font-bold">
+                    {preview.source.kind === 'trip' ? '🚚 ' : '🏭 '}
+                    {preview.source.label}
+                  </span>
+                  {preview.source.kind === 'trip' && (
+                    <span
+                      className={`ml-2 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase text-white ${
+                        preview.source.tripStatus === 'closed' ? 'bg-stone-600' : 'bg-emerald-600'
+                      }`}
+                    >
+                      {preview.source.tripStatus === 'closed' ? 'Closed' : 'Open'}
+                    </span>
+                  )}
+                </div>
+                {preview.source.kind === 'trip' && preview.source.tripStatus === 'closed' && onReopenTrip && preview.source.tripId != null && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(`Reopen trip #${preview.source.tripId}? Its sales stay as they are; you can then change quantities on this bill and close the trip again.`)) {
+                        onReopenTrip(preview.source.tripId as number);
+                      }
+                    }}
+                    className="text-xs font-bold px-2.5 py-1 rounded-md border shadow-sm"
+                    style={{ borderColor: palette.accent, color: palette.accent }}
+                    id="edit-modal-reopen-trip-btn"
+                  >
+                    Reopen trip to change stock
+                  </button>
+                )}
+              </div>
+
+              {!preview.stockChanged ? (
+                <div className="text-xs rounded-lg px-3 py-2 bg-emerald-50 text-emerald-800 border border-emerald-200">
+                  ✔ Stock is <b>not</b> affected by this edit (same crates, same products, same source). Price, customer, date and payment
+                  changes are saved without any stock check and the batch trail of this bill is kept as it is.
+                </div>
+              ) : blockedByStock ? (
+                <div className="text-xs rounded-lg px-3 py-2 bg-red-50 text-red-800 border border-red-200 whitespace-pre-line">
+                  ⚠ This edit changes crates / products, which moves live stock, and it cannot be saved yet:
+                  {'\n'}
+                  {preview.problems.map((m) => `• ${m}`).join('\n')}
+                  {'\n'}You can still save price / customer / payment changes by putting the crates back to what they were.
+                </div>
+              ) : (
+                <div className="text-xs rounded-lg px-3 py-2 bg-amber-50 text-amber-900 border border-amber-200">
+                  ℹ This edit changes crates / products, so live stock will be adjusted only for the products whose crates changed.
+                </div>
+              )}
+
+              {(preview.payment.keptAsAdvance > 0 || preview.payment.removedAsCorrection > 0 || preview.payment.movedToCustomer) && (
+                <div className="text-xs rounded-lg px-3 py-2 bg-sky-50 text-sky-900 border border-sky-200">
+                  {preview.payment.keptAsAdvance > 0 && (
+                    <div>💰 ₹{money(preview.payment.keptAsAdvance)} already received is more than the new total, so it will be kept as an advance on the customer's account.</div>
+                  )}
+                  {preview.payment.removedAsCorrection > 0 && (
+                    <div>💰 ₹{money(preview.payment.removedAsCorrection)} of receipts will be removed because the paid amount was lowered (a correction, not a refund).</div>
+                  )}
+                  {preview.payment.movedToCustomer && (
+                    <div>💰 Receipts on this bill will move to {preview.payment.movedToCustomer}.</div>
+                  )}
+                </div>
+              )}
+
+              {preview.changes.length > 0 && (
+                <ul className="text-[11px] opacity-80 list-disc pl-5 space-y-0.5">
+                  {preview.changes.map((c, i) => (
+                    <li key={i}>{c}</li>
+                  ))}
+                </ul>
+              )}
+              {sourceTrip && preview.source.tripStatus !== 'closed' && (
+                <p className="text-[11px] opacity-60">
+                  Trip is open: you can also adjust the van load from Trips if you need more crates on this vehicle.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Line Items Table with Inline Quantity & Price Editing */}
           <div className="space-y-2">
@@ -434,10 +787,10 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
               </div>
             ) : (
               <div
-                className="border-2 rounded-xl overflow-hidden shadow-2xs"
+                className="border-2 rounded-xl overflow-hidden shadow-sm"
                 style={{ borderColor: palette.border }}
               >
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
                   <table className="w-full text-xs text-left border-collapse">
                     <thead
                       className="border-b uppercase tracking-wider font-bold opacity-80"
@@ -497,7 +850,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
 
                             {/* Inline Quantity with +/- Tactile Buttons */}
                             <td className="px-3 py-2.5">
-                              <div className="inline-flex items-center rounded-lg border overflow-hidden bg-white shadow-2xs" style={{ borderColor: palette.border }}>
+                              <div className="inline-flex items-center rounded-lg border overflow-hidden bg-white shadow-sm" style={{ borderColor: palette.border }}>
                                 <button
                                   type="button"
                                   onClick={() => updateLineItem(idx, { qty: it.qty - 1 })}
@@ -509,7 +862,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                                   -
                                 </button>
                                 <input
-                                  type="number"
+                                  type="number" inputMode="numeric"
                                   min="1"
                                   value={it.qty}
                                   onChange={(e) =>
@@ -539,7 +892,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                                   ₹
                                 </span>
                                 <input
-                                  type="number"
+                                  type="number" inputMode="decimal"
                                   step="0.01"
                                   min="0"
                                   value={it.rate}
@@ -579,7 +932,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                                   </label>
                                   {isPromoActive && it.freeQty > 0 && (
                                     <div className="text-[10px] text-green-700 font-bold">
-                                      +{it.freeQty} Free Case{it.freeQty !== 1 ? 's' : ''}
+                                      {it.freeQty} Free Case{it.freeQty !== 1 ? 's' : ''} (incl.)
                                     </div>
                                   )}
                                   {isPromoActive && it.discount > 0 && (
@@ -669,7 +1022,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                 {/* Qty */}
                 <div className="sm:col-span-2">
                   <input
-                    type="number"
+                    type="number" inputMode="numeric"
                     min="1"
                     placeholder="Qty"
                     value={draftQty}
@@ -683,7 +1036,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                 {/* Custom Rate (Optional Override) */}
                 <div className="sm:col-span-2">
                   <input
-                    type="number"
+                    type="number" inputMode="decimal"
                     step="0.01"
                     placeholder="Custom Rate ₹"
                     value={draftCustomRate}
@@ -691,6 +1044,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                     className="w-full px-2 py-1.5 text-xs border rounded-lg bg-white"
                     style={{ borderColor: palette.border }}
                     id="edit-modal-draft-rate"
+                    title="Custom rate per case"
                   />
                 </div>
 
@@ -699,7 +1053,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   <button
                     type="button"
                     onClick={addDraftItem}
-                    className="w-full py-1.5 rounded-lg text-xs font-bold text-white shadow-2xs transition-all hover:opacity-90 flex items-center justify-center"
+                    className="w-full py-1.5 rounded-lg text-xs font-bold text-white shadow-sm transition-all hover:opacity-90 flex items-center justify-center"
                     style={{ backgroundColor: palette.accent }}
                     title="Add to line items"
                     id="edit-modal-add-item-btn"
@@ -731,7 +1085,13 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   <span>-₹{money(totals.discount)}</span>
                 </div>
               )}
-              {gstMode !== 'off' && (
+              {keptExtraDiscount > 0 && (
+                <div className="flex justify-between text-stone-600">
+                  <span>Invoice discount (kept from the original bill):</span>
+                  <span>-₹{money(keptExtraDiscount)}</span>
+                </div>
+              )}
+              {editGstMode !== 'off' && (
                 <>
                   <div className="flex justify-between text-stone-600">
                     <span>CGST (Central Tax):</span>
@@ -774,7 +1134,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   Amount Received / Collected (₹)
                 </label>
                 <input
-                  type="number"
+                  type="number" inputMode="decimal"
                   step="0.01"
                   min="0"
                   max={totals.total}
@@ -834,6 +1194,46 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
           </div>
         </div>
 
+        {/* Edit comment + history */}
+        <div className="px-5 py-3 border-t shrink-0 space-y-2" style={{ borderColor: palette.border, backgroundColor: palette.cardBg || '#ffffff' }}>
+          <label className="block text-xs font-bold opacity-80">
+            Reason / comment for this edit * <span className="font-normal opacity-60">(saved in the bill's edit history)</span>
+          </label>
+          <textarea
+            value={editComment}
+            onChange={(e) => {
+              setEditComment(e.target.value);
+              if (saveError) setSaveError('');
+            }}
+            rows={2}
+            placeholder="e.g. Rate corrected as agreed with customer / wrong quantity entered"
+            className="w-full px-3 py-2 text-sm border-2 rounded-lg focus:outline-none"
+            style={{ borderColor: palette.border, backgroundColor: palette.cardBg || '#ffffff', color: palette.text }}
+            id="edit-modal-comment-input"
+          />
+          {saveError && (
+            <p className="text-xs text-red-600 font-semibold whitespace-pre-line" id="edit-modal-save-error">
+              {saveError}
+            </p>
+          )}
+          {bill.editHistory && bill.editHistory.length > 0 && (
+            <details className="text-[11px]">
+              <summary className="cursor-pointer font-bold opacity-75">
+                Edit history ({bill.editHistory.length})
+              </summary>
+              <ul className="mt-1 space-y-1 max-h-28 overflow-y-auto">
+                {[...bill.editHistory].reverse().map((h, i) => (
+                  <li key={i} className="border-l-2 pl-2" style={{ borderColor: palette.border }}>
+                    <b>{new Date(h.at).toLocaleString('en-IN')}</b> · {h.by} · “{h.comment}”
+                    {h.changes.length > 0 && <div className="opacity-70">{h.changes.join('; ')}</div>}
+                    {h.stockChanged && <div className="text-amber-700">Stock was adjusted</div>}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+
         {/* Footer Actions */}
         <div
           className="px-5 py-3.5 bg-stone-50 border-t flex items-center justify-between gap-3 shrink-0"
@@ -852,7 +1252,8 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
           <button
             type="button"
             onClick={handleSave}
-            className="px-6 py-2 rounded-lg text-sm font-bold text-white shadow-md hover:opacity-90 transition-all flex items-center gap-2"
+            disabled={blockedByStock}
+            className="px-6 py-2 rounded-lg text-sm font-bold text-white shadow-md hover:opacity-90 transition-all flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ backgroundColor: palette.good }}
             id="edit-modal-save-btn"
           >
@@ -878,5 +1279,24 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
         />
       )}
     </div>
+    {pendingBill && (
+      <ConfirmModal
+        isOpen
+        title={`Save changes to Bill #${invoicePrefix}${bill.id}?`}
+        subtitle="Check what this edit does to stock and payments"
+        warningNote={
+          preview?.payment.keptAsAdvance || preview?.payment.removedAsCorrection || preview?.stockChanged
+            ? 'This edit moves stock and/or money. It is saved in the bill\'s edit history with your comment.'
+            : undefined
+        }
+        impactItems={confirmImpact}
+        confirmButtonLabel="Yes, Save Changes"
+        variant="warning"
+        confirmIcon={<Save className="w-3.5 h-3.5" />}
+        onConfirm={confirmSave}
+        onClose={() => setPendingBill(null)}
+      />
+    )}
+    </>
   );
 };

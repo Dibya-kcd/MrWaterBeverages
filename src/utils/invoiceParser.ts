@@ -1,6 +1,19 @@
 import * as XLSX from 'xlsx';
 import { CategoryKey, GrnSchemeType, Product } from '../types';
-import { generateBatchNumber, generateSkuId } from './billing';
+import {
+  generateBatchNumber,
+  generateSkuId,
+  normalizeTo8DigitHsn,
+  gstRateFromHsn,
+  inferUnitsPerCase,
+  detectPack,
+  volumeFromName,
+  detectPackAndVolume,
+  STANDARD_VOLUMES,
+  VOLUME_UNIT_RE,
+  MULTIPACK_VOLUME_RE,
+} from './billing';
+import { todayISO } from "./dateLocal";
 
 export interface ParsedInvoiceItem {
   id: string;
@@ -15,6 +28,10 @@ export interface ParsedInvoiceItem {
   qty: number;
   freeQty: number;
   unitPrice: number;
+  listPrice?: number;
+  isGstIncluded?: boolean;
+  calculatedGstAmount?: number;
+  priceInclGst?: number;
   discountPercent: number;
   discountFlat?: number;
   discountAmount: number;
@@ -55,6 +72,8 @@ export interface ParsedInvoiceData {
   totalCases: number;
   items: ParsedInvoiceItem[];
   detectedSource: 'ai_vision' | 'spreadsheet' | 'reference_preset' | 'client_fallback';
+  /** Human-readable notes from the AI cross-checks (row arithmetic, totals, GSTIN ...) */
+  warnings?: string[];
 }
 
 /**
@@ -69,29 +88,57 @@ export function detectCategory(name: string): CategoryKey {
   return 'general';
 }
 
-/**
- * Extract bottle pack and volume from beverage description
- */
-export function detectPackAndVolume(name: string): { pack: string; volume: number } {
-  const upper = name.toUpperCase();
-  let pack = 'PET';
-  if (upper.includes('CAN')) pack = 'Can';
-  else if (upper.includes('GLASS') || upper.includes('RGB')) pack = 'Glass';
-  else if (upper.includes('TETRA')) pack = 'Tetra';
-  else if (upper.includes('PET')) pack = 'PET';
+export {
+  detectPack,
+  volumeFromName,
+  detectPackAndVolume,
+  STANDARD_VOLUMES,
+  VOLUME_UNIT_RE,
+  MULTIPACK_VOLUME_RE,
+};
 
-  const volMatch = upper.match(/(\d+)\s*(ML|L|LTR)/i);
-  let volume = 150;
-  if (volMatch) {
-    const val = parseInt(volMatch[1], 10);
-    const unit = volMatch[2].toUpperCase();
-    volume = unit.startsWith('L') ? val * 1000 : val;
-  }
-  return { pack, volume };
+/** Words that carry beverage flavour or specific product variant identity */
+const VARIANT_WORDS = new Set([
+  'orange', 'lemon', 'lime', 'nimbu', 'jeera', 'masala', 'mango', 'apple', 'guava',
+  'lychee', 'litchi', 'grape', 'berry', 'energy', 'boost', 'power', 'charge',
+  'soda', 'water', 'diet', 'zero', 'light', 'ginger', 'clear', 'pulpy', 'tonic',
+  'cola', 'jeeru', 'fizzy', 'masalazip', 'club'
+]);
+
+/** Extract variant/flavor keywords from name */
+function extractVariantKeywords(name: string): Set<string> {
+  const tokens = name.toLowerCase().split(/[^a-z0-9]+/);
+  return new Set(tokens.filter((t) => VARIANT_WORDS.has(t)));
+}
+
+/** Words that carry no product identity */
+const MATCH_STOP_WORDS = new Set([
+  'case', 'cases', 'ctn', 'crate', 'box', 'cs', 'bottle', 'bottles',
+  'btl', 'pcs', 'the', 'and', 'of', 'mrp', 'new', 'sku', 'inr', 'rs'
+]);
+
+/** Identity words of a product description (pack count and volume removed). */
+function identityWords(name: string): Set<string> {
+  const cleaned = name
+    .toLowerCase()
+    .replace(new RegExp(VOLUME_UNIT_RE.source, 'gi'), ' ')
+    .replace(new RegExp(MULTIPACK_VOLUME_RE.source, 'gi'), ' ');
+
+  return new Set(
+    cleaned
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 2 && !MATCH_STOP_WORDS.has(t) && !/^\d+x?\d*$/.test(t))
+  );
 }
 
 /**
- * Match parsed invoice description with catalog products
+ * Match parsed invoice description with catalog products.
+ *
+ * Order: exact name -> alphanumeric-normalised name -> best scored candidate.
+ * Guarantees:
+ * - NEVER matches products with different volume (e.g. 250ml vs 750ml vs 2.25L).
+ * - NEVER matches conflicting flavours / variants (e.g. Campa Orange vs Campa Lemon, Coke Zero vs Coca Cola).
+ * - Differentiates pack types (Can vs PET vs Glass RGB).
  */
 export function matchProductCatalog(
   rawName: string,
@@ -100,10 +147,11 @@ export function matchProductCatalog(
   isNewProduct: boolean;
   matchedProduct?: Product;
 } {
-  const norm = rawName.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  const cleanRaw = rawName.trim().toLowerCase();
+  const norm = cleanRaw.replace(/[^a-z0-9]/g, '');
 
   // 1. Exact name match
-  const exact = catalog.find((p) => p.name.trim().toLowerCase() === rawName.trim().toLowerCase());
+  const exact = catalog.find((p) => p.name.trim().toLowerCase() === cleanRaw);
   if (exact) return { isNewProduct: false, matchedProduct: exact };
 
   // 2. Normalized alphanumeric match
@@ -112,735 +160,85 @@ export function matchProductCatalog(
   );
   if (normMatch) return { isNewProduct: false, matchedProduct: normMatch };
 
-  // 3. Substring / significant token overlap
-  const tokens = rawName
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((t) => t.length > 2 && !['150ml', 'pet', 'case', 'ctn'].includes(t));
+  // 3. Scored match on identity words, strictly guarded by volume, pack, and flavour
+  const rawWords = identityWords(rawName);
+  if (rawWords.size === 0) return { isNewProduct: true, matchedProduct: undefined };
 
-  if (tokens.length > 0) {
-    const candidate = catalog.find((p) => {
-      const pLower = p.name.toLowerCase();
-      const matchCount = tokens.filter((t) => pLower.includes(t)).length;
-      return matchCount >= Math.min(2, tokens.length);
+  const rawVol = volumeFromName(rawName);
+  const rawPack = detectPack(rawName);
+  const rawVariants = extractVariantKeywords(rawName);
+
+  let best: Product | undefined;
+  let bestScore = 0;
+
+  for (const p of catalog) {
+    const pVol = volumeFromName(p.name) ?? (Number((p as any).volume) > 0 ? Number((p as any).volume) : null) ?? volumeFromName((p as any).packSize || '');
+    const pPack = (p as any).pack || detectPack(p.name);
+    const pVariants = extractVariantKeywords(p.name);
+
+    // Rule A: DIFFERENT VOLUME = NEVER MATCH (e.g. 250ml vs 750ml vs 2.25L)
+    if (rawVol && pVol && Math.abs(rawVol - pVol) > 1) {
+      continue;
+    }
+
+    // Rule B: CONFLICTING FLAVOURS / VARIANTS = NEVER MATCH (e.g. Orange vs Lemon vs Mango vs Zero)
+    if (rawVariants.size > 0 && pVariants.size > 0) {
+      let variantOverlap = false;
+      rawVariants.forEach((v) => {
+        if (pVariants.has(v)) variantOverlap = true;
+      });
+      if (!variantOverlap) {
+        continue; // Different flavour or variant
+      }
+    }
+
+    // Rule C: CONFLICTING PACK TYPE = NEVER MATCH if both explicitly specified (e.g. Can vs PET vs Glass RGB)
+    const rawHasExplicitPack = /(?:can|tin|glass|rgb|tetra|pet)\b/i.test(rawName);
+    const pHasExplicitPack = /(?:can|tin|glass|rgb|tetra|pet)\b/i.test(p.name) || Boolean(p.pack);
+    if (rawHasExplicitPack && pHasExplicitPack && rawPack.toLowerCase() !== (pPack || '').toLowerCase()) {
+      continue;
+    }
+
+    const pWords = identityWords(p.name);
+    if (pWords.size === 0) continue;
+
+    let inter = 0;
+    rawWords.forEach((w) => {
+      if (pWords.has(w)) inter++;
     });
-    if (candidate) return { isNewProduct: false, matchedProduct: candidate };
+    if (inter === 0) continue;
+
+    const smaller = Math.min(rawWords.size, pWords.size);
+    const containment = inter / smaller;
+    const jaccard = inter / (rawWords.size + pWords.size - inter);
+    const accepted = (containment === 1 && (inter >= 2 || smaller === 1)) || jaccard >= 0.6;
+    if (!accepted) continue;
+
+    let score = jaccard + (containment === 1 ? 0.3 : 0);
+
+    // Volume match bonus
+    if (rawVol && pVol && Math.abs(rawVol - pVol) <= 1) {
+      score += 0.5;
+    }
+
+    // Pack match bonus
+    if (rawPack === pPack) {
+      score += 0.25;
+    }
+
+    // Variant match bonus
+    if (rawVariants.size > 0 && pVariants.size > 0) {
+      score += 0.3;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = p;
+    }
   }
 
-  return { isNewProduct: true, matchedProduct: undefined };
+  return best ? { isNewProduct: false, matchedProduct: best } : { isNewProduct: true, matchedProduct: undefined };
 }
-
-/**
- * Reference Tax Invoice #38/26-27 (from user's uploaded WhatsApp photo)
- */
-export const REFERENCE_TAX_INVOICE_38: ParsedInvoiceData = {
-  supplierName: 'RADHIKA ENTERPRISES',
-  supplierGstin: '21FSDPR8480R1ZU',
-  supplierAddress: 'Main Road, Near Bus Stand, Kuchinda, Sambalpur, Odisha - 768222',
-  supplierPhone: '+91 94370 84801',
-  supplierEmail: 'radhika.beverages@gmail.com',
-  invoiceNo: '38/26-27',
-  invoiceDate: '2026-09-12',
-  vehicleNo: 'OD15AF7869',
-  placeOfSupply: 'Odisha (21)',
-  billedTo: 'NEW BIJAYA PUSTAK BHANDRA',
-  shippedTo: 'NEW BIJAYA PUSTAK BHANDRA, KHATIYAN NO-80, SAHAJBAHAL',
-  overallDiscount: 0,
-  grandTotal: 122179.0,
-  totalCases: 560,
-  detectedSource: 'reference_preset',
-  items: [
-    {
-      id: 'ref_item_1',
-      rawName: 'CAMPA POWER UP 150ML PET',
-      productName: 'Campa Power Up 150ml PET',
-      category: 'energy',
-      pack: 'PET',
-      volume: 150,
-      packSize: '24 x 150ml PET',
-      unitsPerCrate: 24,
-      hsn: '22021090',
-      qty: 150,
-      freeQty: 50,
-      unitPrice: 222.0,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'b2g1',
-      schemeBuyQty: 2,
-      schemeFreeQty: 1,
-      schemeDescription: 'Buy 2 Get 1 Free (50 Free out of 150 cs)',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-CMP-260912-001',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 245,
-      retailRate: 260,
-      lineTotal: 33300.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'ref_item_2',
-      rawName: 'CAMPA NEON BOOST 150ML PET',
-      productName: 'Campa Neon Boost 150ml PET',
-      category: 'energy',
-      pack: 'PET',
-      volume: 150,
-      packSize: '24 x 150ml PET',
-      unitsPerCrate: 24,
-      hsn: '22021090',
-      qty: 75,
-      freeQty: 25,
-      unitPrice: 222.0,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'b2g1',
-      schemeBuyQty: 2,
-      schemeFreeQty: 1,
-      schemeDescription: 'Buy 2 Get 1 Free (25 Free out of 75 cs)',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-CMP-260912-002',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 245,
-      retailRate: 260,
-      lineTotal: 16650.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'ref_item_3',
-      rawName: 'CAMPA LEMON BOOST 150ML PET',
-      productName: 'Campa Lemon Boost 150ml PET',
-      category: 'energy',
-      pack: 'PET',
-      volume: 150,
-      packSize: '24 x 150ml PET',
-      unitsPerCrate: 24,
-      hsn: '22021090',
-      qty: 75,
-      freeQty: 25,
-      unitPrice: 222.0,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'b2g1',
-      schemeBuyQty: 2,
-      schemeFreeQty: 1,
-      schemeDescription: 'Buy 2 Get 1 Free (25 Free out of 75 cs)',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-CMP-260912-003',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 245,
-      retailRate: 260,
-      lineTotal: 16650.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'ref_item_4',
-      rawName: 'CAMPA ORANGE BOOST 150ML PET',
-      productName: 'Campa Orange Boost 150ml PET',
-      category: 'energy',
-      pack: 'PET',
-      volume: 150,
-      packSize: '24 x 150ml PET',
-      unitsPerCrate: 24,
-      hsn: '22021090',
-      qty: 45,
-      freeQty: 15,
-      unitPrice: 222.0,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'b2g1',
-      schemeBuyQty: 2,
-      schemeFreeQty: 1,
-      schemeDescription: 'Buy 2 Get 1 Free (15 Free out of 45 cs)',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-CMP-260912-004',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 245,
-      retailRate: 260,
-      lineTotal: 9990.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'ref_item_5',
-      rawName: 'CAMPA PURPLE BOOST 150ML PET',
-      productName: 'Campa Purple Boost 150ml PET',
-      category: 'energy',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021090',
-      qty: 30,
-      freeQty: 0,
-      unitPrice: 222.0,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-CMP-260912-005',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 245,
-      retailRate: 260,
-      lineTotal: 6660.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'ref_item_6',
-      rawName: 'E.H. VIBE COLA 150ML',
-      productName: 'E.H. Vibe Cola 150ml',
-      category: 'vibe',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021010',
-      qty: 50,
-      freeQty: 0,
-      unitPrice: 210.0,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-VB-260912-006',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 230,
-      retailRate: 250,
-      lineTotal: 10500.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'ref_item_7',
-      rawName: 'E.H. VIBE ORANGE 150ML PET',
-      productName: 'E.H. Vibe Orange 150ml PET',
-      category: 'vibe',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021010',
-      qty: 50,
-      freeQty: 0,
-      unitPrice: 210.0,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-VB-260912-007',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 230,
-      retailRate: 250,
-      lineTotal: 10500.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'ref_item_8',
-      rawName: 'E.H. VIBE CLEAR LEMON 150ML PET',
-      productName: 'E.H. Vibe Clear Lemon 150ml PET',
-      category: 'vibe',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021010',
-      qty: 50,
-      freeQty: 0,
-      unitPrice: 210.0,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-VB-260912-008',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 230,
-      retailRate: 250,
-      lineTotal: 10500.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'ref_item_9',
-      rawName: 'SOSYO JOOS MANGO 150ML PET',
-      productName: 'Sosyo Joos Mango 150ml PET',
-      category: 'joos',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22029920',
-      qty: 10,
-      freeQty: 0,
-      unitPrice: 212.26,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 2.5,
-      sgstPercent: 2.5,
-      batchNumber: 'LOT-JS-260912-009',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 235,
-      retailRate: 250,
-      lineTotal: 2122.6,
-      isNewProduct: false,
-    },
-    {
-      id: 'ref_item_10',
-      rawName: 'SOSYO JOOS APPLE 150ML PET',
-      productName: 'Sosyo Joos Apple 150ml PET',
-      category: 'joos',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22029920',
-      qty: 10,
-      freeQty: 0,
-      unitPrice: 212.26,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 2.5,
-      sgstPercent: 2.5,
-      batchNumber: 'LOT-JS-260912-010',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 235,
-      retailRate: 250,
-      lineTotal: 2122.6,
-      isNewProduct: false,
-    },
-    {
-      id: 'ref_item_11',
-      rawName: 'SOSYO JOOS MIX FRUIT 150ML PET',
-      productName: 'Sosyo Joos Mix Fruit 150ml PET',
-      category: 'joos',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22029920',
-      qty: 10,
-      freeQty: 0,
-      unitPrice: 212.26,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 2.5,
-      sgstPercent: 2.5,
-      batchNumber: 'LOT-JS-260912-011',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 235,
-      retailRate: 250,
-      lineTotal: 2122.6,
-      isNewProduct: false,
-    },
-    {
-      id: 'ref_item_12',
-      rawName: 'SOSYO JOOS NIMBU PAANI 150ML PET',
-      productName: 'Sosyo Joos Nimbu Paani 150ml PET',
-      category: 'joos',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22029920',
-      qty: 5,
-      freeQty: 0,
-      unitPrice: 212.26,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 2.5,
-      sgstPercent: 2.5,
-      batchNumber: 'LOT-JS-260912-012',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 235,
-      retailRate: 250,
-      lineTotal: 1061.3,
-      isNewProduct: false,
-    },
-  ],
-};
-
-/**
- * Reference Sales Quotation #2 (from user's PDF with 14 items and ₹25,530 scheme discount)
- */
-export const REFERENCE_SALES_QUOTATION_2: ParsedInvoiceData = {
-  supplierName: 'RADHIKA ENTERPRISES',
-  supplierGstin: '21FSDPR8480R1ZU',
-  supplierAddress: 'Main Road, Near Bus Stand, Kuchinda, Sambalpur, Odisha - 768222',
-  supplierPhone: '+91 94370 84801',
-  supplierEmail: 'radhika.beverages@gmail.com',
-  invoiceNo: 'QUOT-002',
-  invoiceDate: '2026-09-11',
-  vehicleNo: 'OD15AF7869',
-  placeOfSupply: 'Odisha (21)',
-  billedTo: 'KUCHINDA DEPOT',
-  shippedTo: 'KUCHINDA GODOWN',
-  overallDiscount: 25530.0,
-  grandTotal: 141049.1,
-  totalCases: 760,
-  detectedSource: 'reference_preset',
-  items: [
-    {
-      id: 'quote_item_1',
-      rawName: 'CAMPA POWER UP 150ML PET',
-      productName: 'Campa Power Up 150ml PET',
-      category: 'energy',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021090',
-      qty: 150,
-      freeQty: 0,
-      unitPrice: 158.57,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-CMP-260911-001',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 180,
-      retailRate: 200,
-      lineTotal: 33300.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_2',
-      rawName: 'CAMPA NEON BOOST 150ML PET',
-      productName: 'Campa Neon Boost 150ml PET',
-      category: 'energy',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021090',
-      qty: 75,
-      freeQty: 0,
-      unitPrice: 158.57,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-CMP-260911-002',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 180,
-      retailRate: 200,
-      lineTotal: 16650.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_3',
-      rawName: 'CAMPA LEMON BOOST 150ML PET',
-      productName: 'Campa Lemon Boost 150ml PET',
-      category: 'energy',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021090',
-      qty: 75,
-      freeQty: 0,
-      unitPrice: 158.57,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-CMP-260911-003',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 180,
-      retailRate: 200,
-      lineTotal: 16650.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_4',
-      rawName: 'CAMPA ORANGE BOOST 150ML PET',
-      productName: 'Campa Orange Boost 150ml PET',
-      category: 'energy',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021090',
-      qty: 45,
-      freeQty: 0,
-      unitPrice: 158.57,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-CMP-260911-004',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 180,
-      retailRate: 200,
-      lineTotal: 9990.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_5',
-      rawName: 'CAMPA PURPLE BOOST 150ML PET',
-      productName: 'Campa Purple Boost 150ml PET',
-      category: 'energy',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021090',
-      qty: 30,
-      freeQty: 0,
-      unitPrice: 158.57,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-CMP-260911-005',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 180,
-      retailRate: 200,
-      lineTotal: 6660.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_6',
-      rawName: 'E.H. VIBE COLA 150ML',
-      productName: 'E.H. Vibe Cola 150ml',
-      category: 'vibe',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021010',
-      qty: 50,
-      freeQty: 0,
-      unitPrice: 150.0,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-VB-260911-006',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 170,
-      retailRate: 190,
-      lineTotal: 10500.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_7',
-      rawName: 'E.H. VIBE ORANGE 150ML PET',
-      productName: 'E.H. Vibe Orange 150ml PET',
-      category: 'vibe',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021010',
-      qty: 50,
-      freeQty: 0,
-      unitPrice: 150.0,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-VB-260911-007',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 170,
-      retailRate: 190,
-      lineTotal: 10500.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_8',
-      rawName: 'E.H. VIBE CLEAR LEMON 150ML PET',
-      productName: 'E.H. Vibe Clear Lemon 150ml PET',
-      category: 'vibe',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021010',
-      qty: 50,
-      freeQty: 0,
-      unitPrice: 150.0,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-VB-260911-008',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 170,
-      retailRate: 190,
-      lineTotal: 10500.0,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_9',
-      rawName: 'SOSYO JOOS MANGO 150ML PET',
-      productName: 'Sosyo Joos Mango 150ml PET',
-      category: 'joos',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22029920',
-      qty: 10,
-      freeQty: 0,
-      unitPrice: 202.15,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 2.5,
-      sgstPercent: 2.5,
-      batchNumber: 'LOT-JS-260911-009',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 225,
-      retailRate: 240,
-      lineTotal: 2122.6,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_10',
-      rawName: 'SOSYO JOOS APPLE 150ML PET',
-      productName: 'Sosyo Joos Apple 150ml PET',
-      category: 'joos',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22029920',
-      qty: 10,
-      freeQty: 0,
-      unitPrice: 202.15,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 2.5,
-      sgstPercent: 2.5,
-      batchNumber: 'LOT-JS-260911-010',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 225,
-      retailRate: 240,
-      lineTotal: 2122.6,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_11',
-      rawName: 'SOSYO JOOS MIX FRUIT 150ML PET',
-      productName: 'Sosyo Joos Mix Fruit 150ml PET',
-      category: 'joos',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22029920',
-      qty: 10,
-      freeQty: 0,
-      unitPrice: 202.15,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 2.5,
-      sgstPercent: 2.5,
-      batchNumber: 'LOT-JS-260911-011',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 225,
-      retailRate: 240,
-      lineTotal: 2122.6,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_12',
-      rawName: 'SOSYO JOOS NIMBU PAANI 150ML PET',
-      productName: 'Sosyo Joos Nimbu Paani 150ml PET',
-      category: 'joos',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22029920',
-      qty: 5,
-      freeQty: 0,
-      unitPrice: 202.15,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 2.5,
-      sgstPercent: 2.5,
-      batchNumber: 'LOT-JS-260911-012',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 225,
-      retailRate: 240,
-      lineTotal: 1061.3,
-      isNewProduct: false,
-    },
-    {
-      id: 'quote_item_13',
-      rawName: 'SOSYO RUNNER GOLD 150ML PET',
-      productName: 'Sosyo Runner Gold 150ml PET',
-      category: 'vibe',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021090',
-      qty: 100,
-      freeQty: 0,
-      unitPrice: 158.57,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-SSY-260911-013',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 180,
-      retailRate: 200,
-      lineTotal: 22200.0,
-      isNewProduct: true, // Example new product
-    },
-    {
-      id: 'quote_item_14',
-      rawName: 'SOSYO RUNNER BERRY 150ML PET',
-      productName: 'Sosyo Runner Berry 150ml PET',
-      category: 'vibe',
-      pack: 'PET',
-      volume: 150,
-      hsn: '22021090',
-      qty: 100,
-      freeQty: 0,
-      unitPrice: 158.57,
-      discountPercent: 0,
-      discountAmount: 0,
-      schemeType: 'none',
-      schemeDescription: '',
-      cgstPercent: 20.0,
-      sgstPercent: 20.0,
-      batchNumber: 'LOT-SSY-260911-014',
-      expiryDate: '2027-03-31',
-      mfgDate: '2026-09-01',
-      wholesaleRate: 180,
-      retailRate: 200,
-      lineTotal: 22200.0,
-      isNewProduct: true, // Example new product
-    },
-  ],
-};
 
 /**
  * Helper to safely extract clean number from cell value (removes ₹, commas, spaces)
@@ -867,13 +265,14 @@ export async function parseSpreadsheetInvoice(
     throw new Error('Spreadsheet appears to be empty. Please upload a valid invoice spreadsheet.');
   }
 
-  let supplierName = 'RADHIKA ENTERPRISES';
-  let supplierGstin = '21FSDPR8480R1ZU';
-  let supplierAddress = 'Main Road, Near Bus Stand, Kuchinda, Sambalpur, Odisha - 768222';
-  let supplierPhone = '+91 94370 84801';
-  let supplierEmail = 'radhika.beverages@gmail.com';
+  // No silent supplier: if the sheet has no supplier details the user must fill them in on review.
+  let supplierName = '';
+  let supplierGstin = '';
+  let supplierAddress = '';
+  let supplierPhone = '';
+  let supplierEmail = '';
   let invoiceNo = `INV-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`;
-  let invoiceDate = new Date().toISOString().slice(0, 10);
+  let invoiceDate = todayISO();
   let vehicleNo = 'OD15AF7869';
   let placeOfSupply = 'Odisha (21)';
   let billedTo = 'NEW BIJAYA PUSTAK BHANDRA';
@@ -967,7 +366,6 @@ export async function parseSpreadsheetInvoice(
     }
 
     // Direct string match extraction
-    if (/radhika/i.test(lineStr)) supplierName = 'RADHIKA ENTERPRISES';
     const suppMatch = lineStr.match(/(?:supplier|provider|distributor|vendor|m\/s|from)[\s.:-]+([^|,\n]+)/i);
     if (suppMatch && suppMatch[1]?.trim() && !/gstin|address|phone|email/i.test(suppMatch[1])) {
       supplierName = suppMatch[1].trim();
@@ -1104,15 +502,77 @@ export async function parseSpreadsheetInvoice(
 
     const qty = Math.max(1, parseNumericCell(qtyKey ? row[qtyKey] : 50, 50));
     const freeQty = Math.max(0, parseNumericCell(freeKey ? row[freeKey] : 0, 0));
-    const unitPrice = parseNumericCell(rateKey ? row[rateKey] : 158.57, 158.57);
-    const hsn = hsnKey && row[hsnKey] ? String(row[hsnKey]).trim() : '22021090';
+    const rawListPrice = parseNumericCell(rateKey ? row[rateKey] : 158.57, 158.57);
+    const hsn = hsnKey && row[hsnKey] ? String(row[hsnKey]).trim() : '';
 
-    let cgstPercent = cgstKey ? parseNumericCell(row[cgstKey], 20) : 20;
-    let sgstPercent = sgstKey ? parseNumericCell(row[sgstKey], 20) : 20;
+    const hsnDefaultRate = gstRateFromHsn(normalizeTo8DigitHsn(hsn, undefined, rawName));
+    const hsnHalf = hsnDefaultRate != null ? (hsnDefaultRate * 100) / 2 : 20;
+    let cgstPercent = cgstKey ? parseNumericCell(row[cgstKey], hsnHalf) : hsnHalf;
+    let sgstPercent = sgstKey ? parseNumericCell(row[sgstKey], hsnHalf) : hsnHalf;
     if (igstKey && row[igstKey]) {
       const totalGst = parseNumericCell(row[igstKey], 40);
       cgstPercent = totalGst / 2;
       sgstPercent = totalGst / 2;
+    }
+
+    const totalGstRate = (cgstPercent + sgstPercent) / 100;
+
+    // Check if list price is included GST? If not then calculate:
+    const gstIncludedKey = Object.keys(row).find((k) =>
+      /is_?gst_?included|gst_?inclusive|tax_?inclusive|incl_?gst|inclusive_?tax|rate_?type|price_?type|tax_?type|is_?inclusive|price_?includes_?gst/i.test(k)
+    );
+    const isRateHeaderIncl = rateKey ? /incl.*gst|gst.*incl|with.*gst|cum.*tax/i.test(rateKey) : false;
+    const isRateHeaderExcl = rateKey ? /excl.*gst|gst.*excl|basic.*rate|ex.*gst|without.*gst|taxable.*rate/i.test(rateKey) : false;
+
+    let isGstIncluded = false;
+    if (gstIncludedKey && row[gstIncludedKey] !== undefined) {
+      const val = String(row[gstIncludedKey]).toLowerCase().trim();
+      if (/^(yes|true|y|1|incl|inclusive|with\s*gst|tax\s*incl)/i.test(val)) {
+        isGstIncluded = true;
+      } else if (/^(no|false|n|0|excl|exclusive|without\s*gst|plus\s*gst)/i.test(val)) {
+        isGstIncluded = false;
+      }
+    } else if (isRateHeaderIncl) {
+      isGstIncluded = true;
+    } else if (isRateHeaderExcl) {
+      isGstIncluded = false;
+    } else {
+      // Check mathematically against row totals if present in the spreadsheet
+      const taxableKey = Object.keys(row).find((k) => /taxable|base\s*amount/i.test(k));
+      const totalKey = Object.keys(row).find((k) => /total\s*amount|line\s*total|net\s*amount/i.test(k));
+      const rowTaxable = taxableKey ? parseNumericCell(row[taxableKey]) : 0;
+      const rowTotal = totalKey ? parseNumericCell(row[totalKey]) : 0;
+
+      if (rowTotal > 0 && Math.abs(qty * rawListPrice - rowTotal) < 1.5) {
+        // Raw list price multiplied by qty equals row total -> list price is already GST-inclusive
+        isGstIncluded = true;
+      } else if (rowTaxable > 0 && Math.abs(qty * rawListPrice - rowTaxable) < 1.5) {
+        // Raw list price multiplied by qty equals taxable value -> list price excludes GST
+        isGstIncluded = false;
+      } else if (rowTotal > 0 && Math.abs((qty * rawListPrice) * (1 + totalGstRate) - rowTotal) < 1.5) {
+        // Adding GST to raw list price yields total -> list price excludes GST
+        isGstIncluded = false;
+      } else {
+        // Default: list price is exclusive of GST (standard B2B trade list price); GST will be calculated
+        isGstIncluded = false;
+      }
+    }
+
+    // Calculate unitPrice (taxable base), calculated GST, and priceInclGst:
+    let unitPrice = rawListPrice;
+    let calculatedGstAmount = 0;
+    let priceInclGst = rawListPrice;
+
+    if (!isGstIncluded) {
+      // List price does NOT include GST -> calculate GST and add to get landed price
+      calculatedGstAmount = rawListPrice * totalGstRate;
+      priceInclGst = rawListPrice + calculatedGstAmount;
+      unitPrice = rawListPrice; // Taxable base rate is the list price
+    } else {
+      // List price DOES include GST -> back-calculate base taxable rate
+      unitPrice = totalGstRate > 0 ? rawListPrice / (1 + totalGstRate) : rawListPrice;
+      calculatedGstAmount = rawListPrice - unitPrice;
+      priceInclGst = rawListPrice;
     }
 
     const discountPercent = discPctKey ? parseNumericCell(row[discPctKey], 0) : 0;
@@ -1141,10 +601,10 @@ export async function parseSpreadsheetInvoice(
 
     const grossAmount = qty * unitPrice;
     const taxable = Math.max(0, grossAmount - discountAmount);
-    const tax = (taxable * (cgstPercent + sgstPercent)) / 100;
+    const tax = taxable * totalGstRate;
     const lineTotal = taxable + tax;
     const totalUnits = qty + freeQty;
-    const landedCost = totalUnits > 0 ? lineTotal / totalUnits : unitPrice;
+    const landedCost = totalUnits > 0 ? lineTotal / totalUnits : priceInclGst;
 
     const { isNewProduct, matchedProduct } = matchProductCatalog(rawName, catalog);
     const cat = (catKey && row[catKey] ? String(row[catKey]).toLowerCase() : null) as CategoryKey ||
@@ -1156,15 +616,21 @@ export async function parseSpreadsheetInvoice(
 
     const wholesaleRate = wsRateKey && row[wsRateKey]
       ? parseNumericCell(row[wsRateKey], Math.round(landedCost * 1.15))
-      : matchedProduct?.wholesale || Math.round(landedCost * 1.15) || Math.round(unitPrice * 1.15);
+      : matchedProduct?.wholesale || Math.round(landedCost * 1.15) || Math.round(priceInclGst * 1.15);
 
     const retailRate = retRateKey && row[retRateKey]
       ? parseNumericCell(row[retRateKey], Math.round(landedCost * 1.25))
-      : matchedProduct?.retail || Math.round(landedCost * 1.25) || Math.round(unitPrice * 1.25);
+      : matchedProduct?.retail || Math.round(landedCost * 1.25) || Math.round(priceInclGst * 1.25);
 
-    const batchNumber = batchKey && row[batchKey]
-      ? String(row[batchKey]).trim()
-      : matchedProduct?.batchNumber || generateBatchNumber(rawName);
+    // Each batch/tag number should be auto generated for each product inwards .. should NOT use old one
+    const existingBatches = catalog.map((p) => p.batchNumber).filter(Boolean) as string[];
+    const uploadedBatch = batchKey && row[batchKey] ? String(row[batchKey]).trim() : '';
+    const isOldBatch = uploadedBatch ? existingBatches.includes(uploadedBatch) : false;
+
+    // Auto-generate fresh unique batch/tag number if not given or if it matches an old catalog batch
+    const batchNumber = (!uploadedBatch || isOldBatch)
+      ? generateBatchNumber(matchedProduct ? matchedProduct.name : rawName, undefined, existingBatches, idx, invoiceDate)
+      : uploadedBatch;
 
     const expiryDate = expKey && row[expKey]
       ? String(row[expKey]).trim()
@@ -1172,21 +638,26 @@ export async function parseSpreadsheetInvoice(
 
     const mfgDate = mfgKey && row[mfgKey]
       ? String(row[mfgKey]).trim()
-      : new Date().toISOString().slice(0, 10);
+      : todayISO();
 
     const schemeLabel = schemeLabelKey && row[schemeLabelKey] ? String(row[schemeLabelKey]).trim() : '';
 
     parsedItems.push({
       id: `parsed_${Date.now()}_${idx}`,
       rawName,
-      productName: matchedProduct ? matchedProduct.name : rawName,
+      productName: String(matchedProduct ? matchedProduct.name : rawName).trim().toUpperCase(),
       category: cat,
       pack,
       volume,
-      hsn: matchedProduct?.hsn || hsn,
+      hsn: normalizeTo8DigitHsn(matchedProduct?.hsn || hsn, cat, rawName),
+      unitsPerCrate: matchedProduct?.unitsPerCrate || inferUnitsPerCase(`${rawName} ${matchedProduct?.pack || ''}`, matchedProduct?.volume || volume),
       qty,
       freeQty,
       unitPrice,
+      listPrice: rawListPrice,
+      isGstIncluded,
+      calculatedGstAmount,
+      priceInclGst,
       discountPercent,
       discountFlat,
       discountAmount,
@@ -1231,7 +702,50 @@ export async function parseSpreadsheetInvoice(
 }
 
 /**
- * Call Server-Side Gemini API with Multimodal Image or PDF
+ * Phone photos are often 6-12 MB. Re-encoding to a sensible size makes upload faster and the
+ * request far less likely to time out, without losing readable text. EXIF rotation is applied.
+ */
+async function prepareImageForAi(file: File): Promise<{ base64: string; mimeType: string } | null> {
+  const MAX_EDGE = 2600;
+  const SMALL_ENOUGH = 1.5 * 1024 * 1024;
+  try {
+    if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return null;
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' } as ImageBitmapOptions);
+    const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+    if (scale === 1 && file.size <= SMALL_ENOUGH) {
+      bitmap.close?.();
+      return null; // already fine, send the original bytes
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close?.();
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    return { base64: dataUrl.split(',')[1], mimeType: 'image/jpeg' };
+  } catch {
+    return null;
+  }
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(',')[1]);
+    reader.onerror = (e) => reject(e);
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Call the server-side Gemini pipeline (/api/recognize-invoice) with an image or PDF.
+ * The server returns data that is already normalised and cross-checked; this function only
+ * links rows to the catalog and fills catalog-dependent defaults. It never invents numbers:
+ * a value that could not be read stays empty/0 and is reported in `warnings`.
  */
 export async function recognizeInvoiceWithAi(
   file: File,
@@ -1244,31 +758,30 @@ export async function recognizeInvoiceWithAi(
   if (!isImage && !isPdf) {
     throw new Error('Only PDF or Image files can be processed with AI Vision.');
   }
+  if (file.size > 18 * 1024 * 1024) {
+    throw new Error('This file is larger than 18 MB. Please compress the PDF or upload a smaller photo/scan.');
+  }
 
-  // Convert file to base64
-  const base64Data = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const res = reader.result as string;
-      const base64 = res.split(',')[1];
-      resolve(base64);
-    };
-    reader.onerror = (e) => reject(e);
-    reader.readAsDataURL(file);
-  });
-
-  const mimeType = isPdf ? 'application/pdf' : file.type || `image/${extension === 'jpg' ? 'jpeg' : extension}`;
+  let base64Data: string;
+  let mimeType: string;
+  if (isPdf) {
+    base64Data = await fileToBase64(file);
+    mimeType = 'application/pdf';
+  } else {
+    const prepared = await prepareImageForAi(file);
+    if (prepared) {
+      base64Data = prepared.base64;
+      mimeType = prepared.mimeType;
+    } else {
+      base64Data = await fileToBase64(file);
+      mimeType = file.type || `image/${extension === 'jpg' ? 'jpeg' : extension}`;
+    }
+  }
 
   const response = await fetch('/api/recognize-invoice', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      fileBase64: base64Data,
-      mimeType,
-      fileName: file.name,
-    }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileBase64: base64Data, mimeType, fileName: file.name }),
   });
 
   if (!response.ok) {
@@ -1276,66 +789,112 @@ export async function recognizeInvoiceWithAi(
     const message = errorJson.error || `Server returned ${response.status}: Failed to recognize invoice.`;
     const err = new Error(message);
     (err as any).status = response.status;
-    (err as any).isTemporary = errorJson.isTemporary || response.status === 503;
+    (err as any).isTemporary = errorJson.isTemporary || response.status === 503 || response.status === 429;
     throw err;
   }
 
   const result = await response.json();
-  const data = result.data;
+  const data = result.data || {};
+  const warnings: string[] = Array.isArray(result.warnings) ? [...result.warnings] : [];
 
-  // Process raw AI items and enrich with catalog match & calculations
-  const rawItems = Array.isArray(data.items) ? data.items : [];
+  const rawItems: any[] = Array.isArray(data.items) ? data.items : [];
   const processedItems: ParsedInvoiceItem[] = rawItems.map((item: any, idx: number) => {
     const rawName = String(item.rawName || item.productName || `Item ${idx + 1}`).trim();
     const { isNewProduct, matchedProduct } = matchProductCatalog(rawName, catalog);
     const category = matchedProduct?.category || (item.category as CategoryKey) || detectCategory(rawName);
-    const { pack, volume } = detectPackAndVolume(rawName);
+    const detected = detectPackAndVolume(rawName);
+    const pack = matchedProduct?.pack || item.pack || detected.pack;
+    const volume = matchedProduct?.volume || item.volume || detected.volume;
+    const hsn = normalizeTo8DigitHsn(matchedProduct?.hsn || item.hsn, category, rawName);
 
     const qty = Math.max(1, Number(item.qty) || 1);
-    const freeQty = Math.max(0, Number(item.freeQty) || 0);
-    const unitPrice = Number(item.unitPrice) || 158.57;
+    const freeQty = Math.min(qty, Math.max(0, Number(item.freeQty) || 0));
+    const rawListPrice = Math.max(0, Number(item.unitPrice) || 0);
     const discountPercent = Number(item.discountPercent) || 0;
-    const discountAmount =
-      Number(item.discountAmount) || (qty * unitPrice * discountPercent) / 100;
+    const discountAmount = Number(item.discountAmount) || 0;
 
-    const cgstPercent = Number(item.cgstPercent) || 20;
-    const sgstPercent = Number(item.sgstPercent) || 20;
+    // GST: use what the invoice printed; only when it printed nothing fall back to the HSN slab.
+    const hsnRate = gstRateFromHsn(hsn);
+    const hsnHalf = hsnRate != null ? (hsnRate * 100) / 2 : 20;
+    let cgstPercent: number;
+    let sgstPercent: number;
+    if (item.cgstPercent === null || item.cgstPercent === undefined || item.sgstPercent === null || item.sgstPercent === undefined) {
+      cgstPercent = hsnHalf;
+      sgstPercent = hsnHalf;
+      warnings.push(`Line ${idx + 1} (${rawName}): GST rate was not readable; used ${hsnHalf * 2}% from HSN ${hsn}.`);
+    } else {
+      cgstPercent = Number(item.cgstPercent);
+      sgstPercent = Number(item.sgstPercent);
+      if (hsnRate != null && cgstPercent + sgstPercent === 0 && hsnRate > 0) {
+        warnings.push(`Line ${idx + 1} (${rawName}): invoice shows 0% GST but HSN ${hsn} is normally ${hsnRate * 100}% - please verify.`);
+      }
+    }
 
-    const grossAmount = qty * unitPrice;
-    const taxable = grossAmount - discountAmount;
-    const tax = (taxable * (cgstPercent + sgstPercent)) / 100;
-    const lineTotal = Number(item.lineTotal) || taxable + tax;
+    const totalGstRate = (cgstPercent + sgstPercent) / 100;
+    const itemPrintedLineTotal = Number(item.lineTotal) || 0;
+    const expectedExGstTotal = (qty - freeQty) * rawListPrice - discountAmount;
+    const isGstIncluded = itemPrintedLineTotal > 0 && Math.abs(expectedExGstTotal - itemPrintedLineTotal) < 1.5;
+
+    let unitPrice = rawListPrice;
+    let calculatedGstAmount = 0;
+    let priceInclGst = rawListPrice;
+
+    if (!isGstIncluded) {
+      calculatedGstAmount = rawListPrice * totalGstRate;
+      priceInclGst = rawListPrice + calculatedGstAmount;
+      unitPrice = rawListPrice;
+    } else {
+      unitPrice = totalGstRate > 0 ? rawListPrice / (1 + totalGstRate) : rawListPrice;
+      calculatedGstAmount = rawListPrice - unitPrice;
+      priceInclGst = rawListPrice;
+    }
+
+    const taxable = Math.max(0, (qty - freeQty) * unitPrice - discountAmount);
+    const lineTotal = itemPrintedLineTotal || taxable * (1 + totalGstRate);
+    const landedPerCase = qty > 0 ? lineTotal / qty : priceInclGst;
 
     let schemeType: 'none' | 'free_cases' | 'discount_percent' | 'discount_flat' = 'none';
     if (freeQty > 0) schemeType = 'free_cases';
     else if (discountPercent > 0) schemeType = 'discount_percent';
 
+    // Auto-generate fresh unique batch/tag number (never reuse old catalog batch)
+    const existingBatches = catalog.map((p) => p.batchNumber).filter(Boolean) as string[];
+    const isOldBatch = item.batchNumber ? existingBatches.includes(item.batchNumber) : false;
+    const batchNumber = (!item.batchNumber || isOldBatch)
+      ? generateBatchNumber(matchedProduct ? matchedProduct.name : rawName, undefined, existingBatches, idx, data.invoiceDate)
+      : item.batchNumber;
+
     return {
       id: `ai_item_${Date.now()}_${idx}`,
       rawName,
-      productName: matchedProduct ? matchedProduct.name : item.productName || rawName,
+      productName: String(matchedProduct ? matchedProduct.name : item.productName || rawName).trim().toUpperCase(),
       category,
-      pack: matchedProduct?.pack || item.pack || pack,
-      volume: matchedProduct?.volume || item.volume || volume,
-      hsn: matchedProduct?.hsn || String(item.hsn || '22021090'),
+      pack,
+      volume,
+      hsn,
+      unitsPerCrate:
+        matchedProduct?.unitsPerCrate ||
+        item.unitsPerCase ||
+        inferUnitsPerCase(`${rawName} ${item.pack || ''}`, volume),
       qty,
       freeQty,
       unitPrice,
+      listPrice: rawListPrice,
+      isGstIncluded,
+      calculatedGstAmount,
+      priceInclGst,
       discountPercent,
       discountAmount,
       schemeType,
-      schemeDescription: item.schemeDescription || (freeQty > 0 ? `+${freeQty} Bonus Crates` : ''),
+      schemeDescription: item.schemeDescription || (freeQty > 0 ? `+${freeQty} Free Crates` : ''),
       cgstPercent,
       sgstPercent,
-      batchNumber:
-        matchedProduct?.batchNumber || item.batchNumber || generateBatchNumber(rawName),
-      expiryDate:
-        matchedProduct?.expiry || item.expiryDate || '2027-03-31',
-      mfgDate: item.mfgDate || new Date().toISOString().slice(0, 10),
-      wholesaleRate:
-        matchedProduct?.wholesale || Math.round((lineTotal / (qty + freeQty)) * 1.15) || Math.round(unitPrice * 1.15),
-      retailRate:
-        matchedProduct?.retail || Math.round((lineTotal / (qty + freeQty)) * 1.25) || Math.round(unitPrice * 1.25),
+      batchNumber,
+      // not printed and not in the catalog -> stay empty so the review screen flags it (never invent a date)
+      expiryDate: item.expiryDate || matchedProduct?.expiry || '',
+      mfgDate: item.mfgDate || todayISO(),
+      wholesaleRate: matchedProduct?.wholesale || Math.round(landedPerCase * 1.15) || Math.round(priceInclGst * 1.15),
+      retailRate: matchedProduct?.retail || Math.round(landedPerCase * 1.25) || Math.round(priceInclGst * 1.25),
       lineTotal,
       isNewProduct,
       matchedProductId: matchedProduct?.id,
@@ -1345,18 +904,23 @@ export async function recognizeInvoiceWithAi(
   });
 
   return {
-    supplierName: data.supplierName || 'RADHIKA ENTERPRISES',
-    supplierGstin: data.supplierGstin || '21FSDPR8480R1ZU',
-    invoiceNo: data.invoiceNo || `INV-${new Date().getFullYear()}-001`,
-    invoiceDate: data.invoiceDate || new Date().toISOString().slice(0, 10),
-    vehicleNo: data.vehicleNo || 'OD15AF7869',
+    supplierName: data.supplierName || '',
+    supplierGstin: data.supplierGstin || '',
+    supplierAddress: data.supplierAddress || '',
+    supplierPhone: data.supplierPhone || '',
+    supplierEmail: data.supplierEmail || '',
+    invoiceNo: data.invoiceNo || '',
+    invoiceDate: data.invoiceDate || todayISO(),
+    vehicleNo: data.vehicleNo || '',
     placeOfSupply: data.placeOfSupply || 'Odisha (21)',
     billedTo: data.billedTo || '',
     shippedTo: data.shippedTo || '',
     overallDiscount: Number(data.overallDiscount) || 0,
-    grandTotal: Number(data.grandTotal) || processedItems.reduce((s, it) => s + it.lineTotal, 0),
+    // 0 = "not printed": the review screen then skips the amount cross-check instead of comparing with itself
+    grandTotal: Number(data.grandTotal) || 0,
     totalCases: Number(data.totalCases) || processedItems.reduce((s, it) => s + it.qty, 0),
     items: processedItems,
     detectedSource: 'ai_vision',
+    warnings,
   };
 }

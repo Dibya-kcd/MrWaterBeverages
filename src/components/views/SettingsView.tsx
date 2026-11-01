@@ -1,235 +1,487 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  Activity,
-  AlertTriangle,
-  Building2,
   Check,
   ChevronDown,
-  Cloud,
-  CreditCard,
-  Database,
-  Download,
-  ExternalLink,
-  Eye,
-  FileText,
-  Filter,
-  HelpCircle,
-  Receipt,
-  RefreshCw,
-  RotateCcw,
-  Save,
-  Search,
-  ShieldCheck,
-  Sliders,
-  SlidersHorizontal,
-  Sparkles,
-  SunMoon,
-  Tag,
-  Trash2,
-  Type,
-  Upload,
-  UserCheck,
   X,
-  ZoomIn,
+  Plus,
+  Save,
+  Trash2,
+  Database,
+  Eye,
+  Sliders,
+  RotateCcw,
+  Download,
+  Upload,
+  RefreshCw,
+  Cloud,
+  Building2,
+  Receipt,
+  Users,
+  ShieldCheck,
+  SunMoon,
+  AlertTriangle,
+  CreditCard,
+  Truck,
+  Warehouse as WarehouseIcon,
+  Pencil,
+  Key,
 } from 'lucide-react';
-import { DEMO_PRESETS } from '../../constants/demoPresets';
-import { FONT_SCALES } from '../../constants/initialData';
 import { useLedger } from '../../context/LedgerContext';
-import { DemoPresetId, FontSize, GstMode, PriceType } from '../../types';
-import { DatabaseSettingsView } from './DatabaseSettingsView';
-import { WarehousesView } from './WarehousesView';
-import { SalesmenManagementSection } from './SalesmenManagementSection';
+import { BeatsSettings } from './BeatsSettings';
+import { FontSize, GstMode, PriceType, StickyTotalPosition, Salesman } from '../../types';
+import { validateOrgProfile, summarizeErrors, normalizeGstin } from '../../utils/validation';
 
-export type SettingsSection =
-  | 'org'
-  | 'salesmen'
-  | 'warehouses'
-  | 'billing'
-  | 'display'
-  | 'promotions'
-  | 'database'
-  | 'demo';
+const INDIAN_STATES = [
+  '27 Maharashtra',
+  '24 Gujarat',
+  '29 Karnataka',
+  '07 Delhi',
+  '36 Telangana',
+  '33 Tamil Nadu',
+  '09 Uttar Pradesh',
+  '19 West Bengal',
+  '23 Madhya Pradesh',
+  '08 Rajasthan',
+  '21 Odisha',
+  '03 Punjab',
+  '06 Haryana',
+  '32 Kerala',
+  '10 Bihar',
+  '37 Andhra Pradesh',
+];
 
-export interface SettingsViewProps {
-  initialSection?: SettingsSection;
-}
+type SettingsSection = 'business' | 'billing' | 'fleet' | 'beats' | 'staff' | 'display' | 'cloud' | 'backups';
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ initialSection = 'org' }) => {
+export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'warehouses' }> = ({ initialSection }) => {
   const {
-    palette,
-    fz,
-    scale,
+    orgProfile,
+    updateOrgProfile,
+    pullOrgProfileFromCloud,
+    billingSettings,
+    updateBillingSettings,
+    pullBillingSettingsFromCloud,
+    warehouses,
+    addWarehouse,
+    deleteWarehouse,
+    salesmen,
+    addSalesman,
+    updateSalesman,
+    deleteSalesman,
+    toggleSalesmanActive,
+    currentUser,
+    trips,
     fontSize,
     setFontSize,
     highContrast,
     setHighContrast,
     lowVisionMode,
-    setLowVisionMode,
     toggleLowVisionMode,
     lowVisionStickyPosition,
     setLowVisionStickyPosition,
-    orgProfile,
-    updateOrgProfile,
-    pullOrgProfileFromCloud,
     supabaseConfig,
     supabaseStatus,
     checkSupabaseConnection,
-    billingSettings,
-    updateBillingSettings,
-    pullBillingSettingsFromCloud,
-    promotions,
-    setTab,
-    loadDemoPreset,
+    syncToCloud,
+    pullFromCloud,
     exportBackup,
     importBackup,
+    cleanDatabase,
     clearTransactions,
     resetToDefault,
-    cleanDatabase,
   } = useLedger();
 
-  const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
-  const [profileForm, setProfileForm] = useState(orgProfile);
-  const [billingForm, setBillingForm] = useState(billingSettings);
-  const [savingProfile, setSavingProfile] = useState(false);
-  const [pullingProfile, setPullingProfile] = useState(false);
-  const [savingBilling, setSavingBilling] = useState(false);
-  const [pullingBilling, setPullingBilling] = useState(false);
-  const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
-  const [importStatus, setImportStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Active section filter for navigation (default: business)
+  const [activeSection, setActiveSection] = useState<SettingsSection>(
+    // Godowns are managed under the 'fleet' section (Warehouses & Vehicles).
+    initialSection === 'warehouses' ? 'fleet' : initialSection || 'business',
+  );
 
-  // Smart Section Selector & Filter Dropdown State
-  const [showSectionDropdown, setShowSectionDropdown] = useState(false);
-  const [sectionSearch, setSectionSearch] = useState('');
-  const sectionDropdownRef = useRef<HTMLDivElement | null>(null);
+  // Edit Staff Modal State
+  const [editingStaff, setEditingStaff] = useState<Salesman | null>(null);
+  const [editStaffName, setEditStaffName] = useState('');
+  const [editStaffPhone, setEditStaffPhone] = useState('');
+  const [editStaffVehicle, setEditStaffVehicle] = useState('');
+  const [editStaffActive, setEditStaffActive] = useState(true);
+  const [editStaffNewPin, setEditStaffNewPin] = useState('');
+  const [editStaffError, setEditStaffError] = useState<string | null>(null);
+  const [isStaffSubmitting, setIsStaffSubmitting] = useState(false);
 
+  // Dedicated In-App Set PIN Modal State
+  const [pinModalStaff, setPinModalStaff] = useState<Salesman | null>(null);
+  const [targetPin, setTargetPin] = useState('');
+  const [pinModalError, setPinModalError] = useState<string | null>(null);
+  const [isPinSubmitting, setIsPinSubmitting] = useState(false);
+
+  // Delete Staff Modal State
+  const [deletingStaff, setDeletingStaff] = useState<Salesman | null>(null);
+
+  // Real Database Business Profile Form State (synced from orgProfile)
+  const [profileForm, setProfileForm] = useState({
+    name: orgProfile.name || '',
+    tagline: orgProfile.tagline || '',
+    ownerName: orgProfile.ownerName || '',
+    phone: orgProfile.phone || '',
+    email: orgProfile.email || '',
+    address: orgProfile.address || '',
+    city: orgProfile.city || '',
+    state: orgProfile.state || '27 Maharashtra',
+    stateCode: orgProfile.stateCode || '27',
+    gstin: orgProfile.gstin || '',
+    pan: orgProfile.gstin && orgProfile.gstin.length >= 12 ? orgProfile.gstin.slice(2, 12) : '',
+    fssai: orgProfile.fssai || '',
+    bankName: orgProfile.bankName || '',
+    accountNumber: orgProfile.accountNumber || '',
+    ifsc: orgProfile.ifsc || '',
+    upiId: orgProfile.upiId || '',
+    invoiceTerms: orgProfile.invoiceTerms || '',
+  });
+
+  // Real Database Billing Settings Form State (synced from billingSettings)
+  const [billingForm, setBillingForm] = useState({
+    printLayout: 'A4',
+    creditLimitCrossed: 'Warn',
+    expiryAlertDays: 60,
+    sellEarliestExpiryFirst: true,
+    allowSellingWithoutStock: false,
+    invoicePrefix: billingSettings.invoicePrefix || 'INV',
+    defaultSaleType: billingSettings.defaultSaleType || ('Retail' as PriceType),
+    defaultGstMode: billingSettings.defaultGstMode || ('inclusive' as GstMode),
+    lowStockThreshold: billingSettings.lowStockThreshold || 5,
+    maxSalesmanDiscountPercent: billingSettings.maxSalesmanDiscountPercent ?? 10,
+    roundOffGrandTotal: billingSettings.roundOffGrandTotal ?? true,
+    showBatchOnInvoice: billingSettings.showBatchOnInvoice ?? false,
+    gstOnFreeCases: billingSettings.gstOnFreeCases !== false,
+    schemesEnabled: billingSettings.schemesEnabled !== false,
+    autoApplyPromotions: billingSettings.autoApplyPromotions ?? true,
+  });
+
+  // Keep forms in sync whenever database record changes
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (sectionDropdownRef.current && !sectionDropdownRef.current.contains(e.target as Node)) {
-        setShowSectionDropdown(false);
-      }
-    };
-    if (showSectionDropdown) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [showSectionDropdown]);
-
-  useEffect(() => {
-    setProfileForm(orgProfile);
+    setProfileForm({
+      name: orgProfile.name || '',
+      tagline: orgProfile.tagline || '',
+      ownerName: orgProfile.ownerName || '',
+      phone: orgProfile.phone || '',
+      email: orgProfile.email || '',
+      address: orgProfile.address || '',
+      city: orgProfile.city || '',
+      state: orgProfile.state || '27 Maharashtra',
+      stateCode: orgProfile.stateCode || '27',
+      gstin: orgProfile.gstin || '',
+      pan: orgProfile.gstin && orgProfile.gstin.length >= 12 ? orgProfile.gstin.slice(2, 12) : '',
+      fssai: orgProfile.fssai || '',
+      bankName: orgProfile.bankName || '',
+      accountNumber: orgProfile.accountNumber || '',
+      ifsc: orgProfile.ifsc || '',
+      upiId: orgProfile.upiId || '',
+      invoiceTerms: orgProfile.invoiceTerms || '',
+    });
   }, [orgProfile]);
 
   useEffect(() => {
-    setBillingForm(billingSettings);
+    setBillingForm((prev) => ({
+      ...prev,
+      invoicePrefix: billingSettings.invoicePrefix || 'INV',
+      defaultSaleType: billingSettings.defaultSaleType || 'Retail',
+      defaultGstMode: billingSettings.defaultGstMode || 'inclusive',
+      lowStockThreshold: billingSettings.lowStockThreshold || 5,
+      maxSalesmanDiscountPercent: billingSettings.maxSalesmanDiscountPercent ?? 10,
+      roundOffGrandTotal: billingSettings.roundOffGrandTotal ?? true,
+      showBatchOnInvoice: billingSettings.showBatchOnInvoice ?? false,
+      gstOnFreeCases: billingSettings.gstOnFreeCases !== false,
+      schemesEnabled: billingSettings.schemesEnabled !== false,
+      autoApplyPromotions: billingSettings.autoApplyPromotions ?? true,
+    }));
   }, [billingSettings]);
 
-  const cardStyle: React.CSSProperties = {
-    backgroundColor: palette.panel,
-    borderColor: palette.line,
-    borderWidth: 2,
-    borderRadius: '0.75rem',
+  // Loading & Feedback states
+  const [isSaving, setIsSaving] = useState(false);
+  const [isPulling, setIsPulling] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // New Warehouse Form State
+  const [newWhName, setNewWhName] = useState('');
+  const [newWhType, setNewWhType] = useState<'vehicle' | 'warehouse'>('vehicle');
+  const [newWhRegNo, setNewWhRegNo] = useState('');
+
+  // New Staff Form State
+  const [newStaffIdentifier, setNewStaffIdentifier] = useState('');
+  const [newStaffRole, setNewStaffRole] = useState<'driver' | 'salesman' | 'manager' | 'accountant' | 'admin'>('driver');
+  const [newStaffPin, setNewStaffPin] = useState('');
+
+  // Derive distinct vehicles from database trips and salesmen
+  const existingVehicles = Array.from(
+    new Set([
+      ...trips.map((t) => t.vehicle).filter(Boolean),
+      ...salesmen.map((s) => s.defaultVehicle).filter(Boolean),
+    ])
+  ) as string[];
+
+  // Save Settings directly to Supabase cloud and local database
+  const handleSaveAll = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsSaving(true);
+
+    const validationErrors = validateOrgProfile({
+      name: profileForm.name,
+      phone: profileForm.phone,
+      email: profileForm.email,
+      gstin: profileForm.gstin,
+    });
+
+    if (Object.keys(validationErrors).length > 0) {
+      setToastMessage(summarizeErrors(validationErrors));
+      setIsSaving(false);
+      return;
+    }
+
+    try {
+      const normalizedGstinVal = profileForm.gstin ? normalizeGstin(profileForm.gstin) : profileForm.gstin;
+
+      const profileRes = await updateOrgProfile({
+        name: profileForm.name,
+        tagline: profileForm.tagline,
+        ownerName: profileForm.ownerName,
+        phone: profileForm.phone,
+        email: profileForm.email,
+        address: profileForm.address,
+        city: profileForm.city,
+        state: profileForm.state,
+        stateCode: profileForm.state.slice(0, 2),
+        gstin: normalizedGstinVal,
+        fssai: profileForm.fssai,
+        bankName: profileForm.bankName,
+        accountNumber: profileForm.accountNumber,
+        ifsc: profileForm.ifsc,
+        upiId: profileForm.upiId,
+        invoiceTerms: profileForm.invoiceTerms,
+      });
+
+      const billingRes = await updateBillingSettings({
+        invoicePrefix: billingForm.invoicePrefix,
+        defaultSaleType: billingForm.defaultSaleType,
+        defaultGstMode: billingForm.defaultGstMode,
+        lowStockThreshold: billingForm.lowStockThreshold,
+        maxSalesmanDiscountPercent: billingForm.maxSalesmanDiscountPercent,
+        roundOffGrandTotal: billingForm.roundOffGrandTotal,
+        showBatchOnInvoice: billingForm.showBatchOnInvoice,
+        gstOnFreeCases: billingForm.gstOnFreeCases,
+        schemesEnabled: billingForm.schemesEnabled,
+        autoApplyPromotions: billingForm.autoApplyPromotions,
+      });
+
+      if (profileRes.cloudSynced && billingRes.cloudSynced) {
+        setToastMessage('Settings saved locally & synchronized to Supabase PostgreSQL cloud!');
+      } else {
+        setToastMessage('Settings saved successfully!');
+      }
+    } catch (err: any) {
+      setToastMessage(`Saved locally (${err?.message || 'Offline mode'}).`);
+    } finally {
+      setIsSaving(false);
+      setTimeout(() => setToastMessage(null), 4000);
+    }
   };
 
-  const inputStyle: React.CSSProperties = {
-    backgroundColor: palette.panel,
-    color: palette.ink,
-    borderColor: palette.line,
-    borderWidth: 2,
-    ...fz(14),
+  // Pull fresh settings from Supabase Cloud Database
+  const handlePullCloud = async () => {
+    setIsPulling(true);
+    try {
+      const pRes = await pullOrgProfileFromCloud();
+      const bRes = await pullBillingSettingsFromCloud();
+      if (pRes.success || bRes.success) {
+        setToastMessage('Refreshed latest settings from Supabase cloud database!');
+      } else {
+        setToastMessage('Supabase cloud: No remote changes found or already up to date.');
+      }
+    } catch (err: any) {
+      setToastMessage(`Pull notice: ${err?.message || 'Offline'}`);
+    } finally {
+      setIsPulling(false);
+      setTimeout(() => setToastMessage(null), 4000);
+    }
   };
 
-  const labelStyle: React.CSSProperties = {
-    display: 'block',
-    color: palette.ink,
-    fontWeight: 600,
-    marginBottom: '0.25em',
-    ...fz(13),
-  };
-
-  const handleProfileChange = (field: keyof typeof profileForm, value: string) => {
-    setProfileForm((prev) => ({ ...prev, [field]: value }));
-  };
-
-  const handleBillingChange = <K extends keyof typeof billingForm>(field: K, value: typeof billingForm[K]) => {
-    setBillingForm((prev) => ({ ...prev, [field]: value }));
-  };
-
-  const handleSaveProfile = async (e: React.FormEvent) => {
+  // Add Warehouse or Vehicle directly to database
+  const handleAddWarehouseOrVehicle = (e: React.FormEvent) => {
     e.preventDefault();
-    setSavingProfile(true);
-    try {
-      const res = await updateOrgProfile(profileForm);
-      if (res.cloudSynced) {
-        setSaveSuccessMsg('Organisation profile saved locally & synchronized to Supabase PostgreSQL cloud!');
-      } else if (res.message) {
-        setSaveSuccessMsg(`Organisation profile saved locally. (Supabase cloud notice: ${res.message})`);
-      } else {
-        setSaveSuccessMsg('Organisation profile saved locally!');
-      }
-    } catch (err: any) {
-      setSaveSuccessMsg(`Saved locally. (${err?.message || 'Offline'})`);
-    } finally {
-      setSavingProfile(false);
-      setTimeout(() => setSaveSuccessMsg(null), 5000);
+    if (!newWhName.trim()) return;
+
+    if (newWhType === 'warehouse') {
+      const code = 'WH-' + newWhName.replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase();
+      addWarehouse({
+        name: newWhName.trim(),
+        code,
+        location: profileForm.city || 'Main Depot',
+        manager: profileForm.ownerName || 'Depot Manager',
+        phone: profileForm.phone || '',
+        isDefault: warehouses.length === 0,
+      });
+      setToastMessage(`Warehouse "${newWhName.trim()}" created in database.`);
+    } else {
+      // Vehicle: add vehicle to the fleet
+      const vehicleLabel = newWhRegNo ? `${newWhName.trim()} (${newWhRegNo.trim().toUpperCase()})` : newWhName.trim();
+      addWarehouse({
+        name: vehicleLabel,
+        code: 'VEH-' + Math.floor(Math.random() * 900 + 100),
+        location: 'Mobile Delivery Van',
+        manager: 'Driver',
+        phone: '',
+        isDefault: false,
+        notes: `Vehicle Registration: ${newWhRegNo.trim().toUpperCase()}`,
+      });
+      setToastMessage(`Vehicle "${vehicleLabel}" added to distribution fleet.`);
     }
+
+    setNewWhName('');
+    setNewWhRegNo('');
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
-  const handlePullProfile = async () => {
-    setPullingProfile(true);
-    try {
-      const res = await pullOrgProfileFromCloud();
-      if (res.success) {
-        setSaveSuccessMsg('Organisation profile refreshed from Supabase cloud database!');
-      } else {
-        setSaveSuccessMsg(`Could not pull from Supabase: ${res.message || 'No record found'}`);
-      }
-    } catch (err: any) {
-      setSaveSuccessMsg(`Pull error: ${err?.message || 'Network error'}`);
-    } finally {
-      setPullingProfile(false);
-      setTimeout(() => setSaveSuccessMsg(null), 5000);
-    }
-  };
-
-  const handleSaveBilling = async (e: React.FormEvent) => {
+  // Add Staff Member directly to database
+  const handleAddStaffMember = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSavingBilling(true);
-    try {
-      const res = await updateBillingSettings(billingForm);
-      if (res.cloudSynced) {
-        setSaveSuccessMsg('Billing & stock parameters saved locally & synchronized to Supabase PostgreSQL cloud!');
-      } else if (res.message) {
-        setSaveSuccessMsg(`Billing settings saved locally. (Supabase cloud notice: ${res.message})`);
-      } else {
-        setSaveSuccessMsg('Billing & stock preferences saved successfully!');
-      }
-    } catch (err: any) {
-      setSaveSuccessMsg(`Saved locally. (${err?.message || 'Offline'})`);
-    } finally {
-      setSavingBilling(false);
-      setTimeout(() => setSaveSuccessMsg(null), 5000);
+    if (!newStaffIdentifier.trim()) return;
+
+    const identifier = newStaffIdentifier.trim();
+    const isEmail = identifier.includes('@');
+    const name = isEmail ? identifier.split('@')[0] : identifier;
+    const phone = isEmail ? '9' + Math.floor(100000000 + Math.random() * 900000000) : identifier;
+
+    // A real PIN is required: the old form silently gave everyone 1234.
+    if (!/^\d{4,6}$/.test(newStaffPin)) {
+      setToastMessage('Enter a 4 to 6 digit PIN for this staff member (6 digits is safer).');
+      setTimeout(() => setToastMessage(null), 3500);
+      return;
     }
+
+    const res = await addSalesman(
+      {
+        name,
+        phone,
+        active: true,
+        defaultVehicle: existingVehicles[0] || 'Van 1',
+      },
+      newStaffPin
+    );
+
+    if (res.success) {
+      setToastMessage(`${name} added. They sign in on the salesman login with phone ${phone} and the PIN you set.`);
+      setNewStaffIdentifier('');
+      setNewStaffPin('');
+    } else {
+      setToastMessage(res.error || 'Failed to add staff member.');
+    }
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
-  const handlePullBilling = async () => {
-    setPullingBilling(true);
+  // Open Edit Staff Modal
+  const handleOpenEditStaff = (staff: Salesman) => {
+    setEditingStaff(staff);
+    setEditStaffName(staff.name || '');
+    setEditStaffPhone(staff.phone || '');
+    setEditStaffVehicle(staff.defaultVehicle || staff.default_vehicle || '');
+    setEditStaffActive(staff.active !== false);
+    setEditStaffNewPin('');
+    setEditStaffError(null);
+  };
+
+  // Save Edit Staff Details
+  const handleSaveEditStaff = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingStaff) return;
+    if (!editStaffName.trim()) {
+      setEditStaffError('Staff name is required.');
+      return;
+    }
+    if (!editStaffPhone.trim()) {
+      setEditStaffError('Phone number / login identifier is required.');
+      return;
+    }
+    if (editStaffNewPin.trim() && !/^\d{4,6}$/.test(editStaffNewPin.trim())) {
+      setEditStaffError('PIN must be 4 to 6 numeric digits.');
+      return;
+    }
+
+    setIsStaffSubmitting(true);
+    setEditStaffError(null);
     try {
-      const res = await pullBillingSettingsFromCloud();
+      const res = await updateSalesman(
+        editingStaff.id,
+        {
+          name: editStaffName.trim(),
+          phone: editStaffPhone.trim(),
+          defaultVehicle: editStaffVehicle.trim(),
+          active: editStaffActive,
+        },
+        editStaffNewPin.trim() ? editStaffNewPin.trim() : undefined
+      );
+
       if (res.success) {
-        setSaveSuccessMsg('Billing settings refreshed from Supabase cloud database!');
+        setToastMessage(`Staff details updated for ${editStaffName.trim()}.`);
+        setEditingStaff(null);
       } else {
-        setSaveSuccessMsg(`Could not pull from Supabase: ${res.message || 'No record found'}`);
+        setEditStaffError(res.error || 'Failed to update staff member.');
       }
     } catch (err: any) {
-      setSaveSuccessMsg(`Pull error: ${err?.message || 'Network error'}`);
+      setEditStaffError(err?.message || 'Error updating staff details.');
     } finally {
-      setPullingBilling(false);
-      setTimeout(() => setSaveSuccessMsg(null), 5000);
+      setIsStaffSubmitting(false);
+      setTimeout(() => setToastMessage(null), 3500);
     }
   };
 
+  // Open Dedicated Set PIN Modal
+  const handleOpenSetPin = (staff: Salesman) => {
+    setPinModalStaff(staff);
+    setTargetPin('');
+    setPinModalError(null);
+  };
+
+  // Save New Security PIN
+  const handleSavePin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pinModalStaff) return;
+    const cleanPin = targetPin.trim();
+    if (!/^\d{4,6}$/.test(cleanPin)) {
+      setPinModalError('PIN must be 4 to 6 numeric digits.');
+      return;
+    }
+
+    setIsPinSubmitting(true);
+    setPinModalError(null);
+    try {
+      const res = await updateSalesman(pinModalStaff.id, {}, cleanPin);
+      if (res.success) {
+        setToastMessage(`PIN updated successfully for ${pinModalStaff.name}.`);
+        setPinModalStaff(null);
+      } else {
+        setPinModalError(res.error || 'Could not update PIN.');
+      }
+    } catch (err: any) {
+      setPinModalError(err?.message || 'Error updating PIN.');
+    } finally {
+      setIsPinSubmitting(false);
+      setTimeout(() => setToastMessage(null), 3500);
+    }
+  };
+
+  // Confirm delete staff
+  const handleConfirmDeleteStaff = async () => {
+    if (!deletingStaff) return;
+    try {
+      await deleteSalesman(deletingStaff.id);
+      setToastMessage(`${deletingStaff.name} removed from staff.`);
+    } catch (err: any) {
+      setToastMessage(err?.message || 'Failed to remove staff.');
+    } finally {
+      setDeletingStaff(null);
+      setTimeout(() => setToastMessage(null), 3500);
+    }
+  };
+
+  // Restore backup file
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -239,1396 +491,1010 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ initialSection = 'or
       const content = event.target?.result as string;
       const res = importBackup(content);
       if (res.success) {
-        setImportStatus({ type: 'success', message: 'Backup restored successfully! All data updated.' });
-        // update local forms
-        setTimeout(() => window.location.reload(), 800);
+        setToastMessage('Backup restored successfully! Refreshing...');
+        setTimeout(() => window.location.reload(), 900);
       } else {
-        setImportStatus({ type: 'error', message: res.error || 'Failed to import backup file' });
+        setToastMessage(res.error || 'Failed to import backup file.');
       }
     };
     reader.readAsText(file);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleCleanDatabase = () => {
-    if (window.confirm('Are you sure you want to clean the entire database? All sample items, inward vouchers, batches, and transactions will be removed, leaving an entirely clean database.')) {
-      cleanDatabase();
-      setSaveSuccessMsg('Database cleaned. All unwanted records and sample data have been completely removed.');
-      setTimeout(() => setSaveSuccessMsg(null), 3000);
-    }
-  };
-
-  const handleResetDemo = () => {
-    if (window.confirm('Reset all ledger data back to factory defaults? Any custom invoices, trips, or changes will be restored.')) {
-      resetToDefault();
-      setSaveSuccessMsg('Ledger reset to standard defaults.');
-      setTimeout(() => setSaveSuccessMsg(null), 3000);
-    }
-  };
-
-  const handleClearTransactions = () => {
-    if (window.confirm('Are you sure you want to clear all bills, vehicle trips, and audits? Products catalog and company profile will be safely preserved.')) {
-      clearTransactions();
-      setSaveSuccessMsg('All transaction records cleared.');
-      setTimeout(() => setSaveSuccessMsg(null), 3000);
-    }
-  };
-
-  const handleLoadPreset = (presetId: DemoPresetId) => {
-    const preset = DEMO_PRESETS[presetId];
-    if (window.confirm(`Load preset "${preset.name}"? This will populate the ledger with sample data for this scenario.`)) {
-      loadDemoPreset(presetId);
-      setProfileForm(preset.orgProfile);
-      setSaveSuccessMsg(`Preset "${preset.name}" loaded successfully!`);
-      setTimeout(() => setSaveSuccessMsg(null), 3500);
-    }
-  };
-
-  const navButtons: {
-    id: SettingsSection;
-    label: string;
-    description: string;
-    icon: React.ComponentType<{ size?: number }>;
-    group: string;
-  }[] = [
-    { id: 'org', label: 'Organisation Profile', description: 'Firm details, GSTIN, address, WhatsApp message', icon: Building2, group: 'Business & Operations' },
-    { id: 'salesmen', label: 'Manage Salesmen', description: 'Field staff, assigned vans, PIN login & active status', icon: UserCheck, group: 'Business & Operations' },
-    { id: 'warehouses', label: 'Godowns & Warehouses', description: 'Multi-location depots, stock transfers & batches', icon: Building2, group: 'Business & Operations' },
-    { id: 'billing', label: 'Billing & Invoicing', description: 'GST mode, tax calculations, invoice number prefixes', icon: Receipt, group: 'Billing & Commercial' },
-    { id: 'promotions', label: 'Promotions & Schemes', description: 'BOGO schemes, % volume discounts & cash cutoffs', icon: Tag, group: 'Billing & Commercial' },
-    { id: 'display', label: 'Display & Accessibility', description: 'Font scale, high contrast, low vision zoom bar', icon: Eye, group: 'Preferences & System' },
-    { id: 'database', label: 'Database & Cloud', description: 'Supabase sync, connection latency, SQL migrations', icon: Cloud, group: 'Preferences & System' },
-    { id: 'demo', label: 'Data & Backups', description: 'JSON backup export, restore, demo datasets & reset', icon: Database, group: 'Preferences & System' },
-  ];
-
-  const currentNav = navButtons.find((b) => b.id === activeSection) || navButtons[0];
-  const CurrentIcon = currentNav.icon;
-
-  const filteredNavButtons = navButtons.filter(
-    (b) =>
-      !sectionSearch ||
-      b.label.toLowerCase().includes(sectionSearch.toLowerCase()) ||
-      b.description.toLowerCase().includes(sectionSearch.toLowerCase()) ||
-      b.group.toLowerCase().includes(sectionSearch.toLowerCase())
-  );
-
   return (
-    <div id="view-settings" className="p-4 sm:p-6 max-w-5xl">
-      {/* Header */}
-      <div className="mb-5">
-        <div className="flex items-center gap-2 mb-1">
-          <Sliders size={Math.round(24 * scale)} style={{ color: palette.amber }} aria-hidden="true" />
-          <h1 style={fz(26, { fontWeight: 700, color: palette.ink })}>System & Agency Settings</h1>
+    <div className="min-h-full w-full bg-[#F6F6F2] py-3 sm:py-8 px-2.5 sm:px-6 lg:px-8 text-neutral-900 font-sans">
+      <div className="max-w-none lg:max-w-3xl mx-auto space-y-3 sm:space-y-6">
+        {/* Page Header */}
+        <div className="mb-2">
+          <h1 className="text-xl sm:text-3xl font-bold tracking-tight text-neutral-900">Settings</h1>
+          <p className="hidden sm:block text-sm text-neutral-500 mt-1">Business, GST, billing rules, staff</p>
         </div>
-        <p style={fz(15, { color: palette.muted })}>
-          Manage your business identity, accessibility display scale, trade scheme rules, invoice formatting, and demo data presets.
-        </p>
-      </div>
 
-      {/* Success Notification */}
-      {saveSuccessMsg && (
-        <div
-          role="status"
-          className="mb-5 p-3.5 border-2 flex items-center gap-2.5 font-bold"
-          style={{
-            borderColor: palette.good,
-            backgroundColor: `${palette.good}15`,
-            color: palette.good,
-            ...fz(14),
-          }}
-        >
-          <Check size={Math.round(18 * scale)} aria-hidden="true" />
-          {saveSuccessMsg}
-        </div>
-      )}
-
-      {/* Smart Space-Saving Section Selector & Filter Bar */}
-      <div className="mb-6 space-y-2.5">
-        <div
-          className="flex flex-wrap items-center justify-between gap-3 p-2.5 sm:p-3 rounded-xl border-2 bg-white shadow-2xs"
-          style={{ borderColor: palette.line }}
-        >
-          {/* Active Section Info Chip */}
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="p-2 rounded-lg bg-blue-50 text-blue-900 border border-blue-200 shrink-0">
-              <CurrentIcon size={20} />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Settings Section:</span>
-                <span className="px-2 py-0.2 rounded text-[10px] font-black uppercase bg-slate-100 text-slate-700">
-                  {currentNav.group}
-                </span>
-              </div>
-              <h2 className="text-sm sm:text-base font-black truncate text-slate-900">
-                {currentNav.label}
-              </h2>
-            </div>
+        {/* Success Toast */}
+        {toastMessage && (
+          <div className="fixed top-6 right-6 z-50 bg-[#064E3B] text-white px-4 py-2.5 rounded-xl shadow-xl text-sm font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-200">
+            <Check className="w-4 h-4 text-emerald-300 shrink-0" />
+            <span>{toastMessage}</span>
           </div>
+        )}
 
-          {/* Smart Section Switcher / Filter Popover */}
-          <div className="relative" ref={sectionDropdownRef}>
+        {/* Segmented Filter Tabs */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs -mx-2.5 px-2.5 sm:mx-0 sm:px-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {[
+            { id: 'business' as const, label: 'Business & GST' },
+            { id: 'billing' as const, label: 'Billing Rules' },
+            { id: 'fleet' as const, label: 'Warehouses & Fleet' },
+            ...(currentUser?.role === 'admin' ? [{ id: 'beats' as const, label: 'Beats' }] : []),
+            { id: 'staff' as const, label: 'Staff & Roles' },
+            { id: 'display' as const, label: 'Display' },
+            { id: 'cloud' as const, label: 'Cloud DB' },
+            { id: 'backups' as const, label: 'Backups' },
+          ].map((tab) => (
             <button
+              key={tab.id}
               type="button"
-              id="btn-settings-section-toggle"
-              onClick={() => setShowSectionDropdown((prev) => !prev)}
-              className={`flex items-center gap-2 px-3.5 py-2 border-2 rounded text-xs sm:text-sm font-bold cursor-pointer transition-colors focus-ring ${
-                showSectionDropdown
-                  ? 'bg-blue-900 text-white border-blue-900'
-                  : 'bg-white hover:bg-slate-50 text-slate-800'
+              onClick={() => setActiveSection(tab.id)}
+              className={`px-3.5 py-1.5 rounded-xl font-medium transition-colors whitespace-nowrap cursor-pointer ${
+                activeSection === tab.id
+                  ? 'bg-neutral-900 text-white shadow-xs'
+                  : 'bg-white border border-neutral-200 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-50'
               }`}
-              style={{
-                borderColor: showSectionDropdown ? palette.navy : palette.line,
-              }}
             >
-              <Filter size={14} />
-              <span>Filter / Switch Section</span>
-              <ChevronDown
-                size={13}
-                className={`transition-transform duration-200 ${showSectionDropdown ? 'rotate-180' : ''}`}
-              />
+              {tab.label}
             </button>
-
-            {/* Smart Popover */}
-            {showSectionDropdown && (
-              <div
-                id="popover-settings-sections"
-                className="absolute right-0 top-full mt-2 w-80 sm:w-96 bg-white border-2 rounded-xl shadow-2xl z-50 p-3.5 space-y-3 animate-in fade-in duration-150"
-                style={{ borderColor: palette.navy }}
-              >
-                <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                  <div className="flex items-center gap-1.5">
-                    <SlidersHorizontal size={15} className="text-blue-900" />
-                    <span className="text-xs font-black uppercase tracking-wider text-slate-800">
-                      Settings Sections ({navButtons.length})
-                    </span>
-                  </div>
-                </div>
-
-                {/* Section Search Bar */}
-                <div className="relative">
-                  <Search
-                    size={14}
-                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
-                  />
-                  <input
-                    type="text"
-                    placeholder="Search settings section..."
-                    value={sectionSearch}
-                    onChange={(e) => setSectionSearch(e.target.value)}
-                    className="w-full pl-8 pr-7 py-1.5 border-2 rounded text-xs focus:outline-none focus:border-blue-900"
-                    style={{ borderColor: palette.line, color: palette.ink }}
-                  />
-                  {sectionSearch && (
-                    <button
-                      type="button"
-                      onClick={() => setSectionSearch('')}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer p-0.5"
-                    >
-                      <X size={12} />
-                    </button>
-                  )}
-                </div>
-
-                {/* Section Options List */}
-                <div className="max-h-64 overflow-y-auto space-y-1.5 pr-1">
-                  {filteredNavButtons.map(({ id, label, description, icon: Icon, group }) => {
-                    const active = activeSection === id;
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        id={`option-settings-${id}`}
-                        onClick={() => {
-                          setActiveSection(id);
-                          setShowSectionDropdown(false);
-                          setSectionSearch('');
-                        }}
-                        className={`w-full text-left p-2.5 rounded-lg border-2 flex items-start gap-2.5 cursor-pointer transition-all ${
-                          active
-                            ? 'bg-blue-900 text-white border-blue-900 shadow-xs'
-                            : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-800'
-                        }`}
-                      >
-                        <div
-                          className={`p-1.5 rounded-md shrink-0 mt-0.5 ${
-                            active ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-900'
-                          }`}
-                        >
-                          <Icon size={16} />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="text-xs font-bold truncate">{label}</span>
-                            <span
-                              className={`text-[9px] font-black uppercase px-1.5 py-0.2 rounded shrink-0 ${
-                                active ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
-                              }`}
-                            >
-                              {group}
-                            </span>
-                          </div>
-                          <p
-                            className={`text-[11px] line-clamp-1 mt-0.5 ${
-                              active ? 'text-blue-100' : 'text-slate-500'
-                            }`}
-                          >
-                            {description}
-                          </p>
-                        </div>
-                        {active && <Check size={14} className="shrink-0 mt-1 text-amber-300" />}
-                      </button>
-                    );
-                  })}
-                  {filteredNavButtons.length === 0 && (
-                    <div className="py-6 text-center text-xs text-slate-500">
-                      No settings section found matching "{sectionSearch}"
-                    </div>
-                  )}
-                </div>
-
-                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
-                  <span>Click any section to switch</span>
-                  <button
-                    type="button"
-                    onClick={() => setShowSectionDropdown(false)}
-                    className="font-bold text-blue-900 hover:underline cursor-pointer"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+          ))}
         </div>
 
-        {/* Compact Horizontal Quick-Pills for Fast Desktop Navigation */}
-        <div
-          role="tablist"
-          aria-label="Settings categories"
-          className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs"
-        >
-          {navButtons.map(({ id, label, icon: Icon }) => {
-            const active = activeSection === id;
-            return (
-              <button
-                key={id}
-                id={`tab-settings-${id}`}
-                role="tab"
-                aria-selected={active}
-                onClick={() => setActiveSection(id)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border-2 font-bold whitespace-nowrap cursor-pointer transition-colors text-xs ${
-                  active
-                    ? 'bg-blue-900 text-white border-blue-900 shadow-2xs'
-                    : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
-                }`}
-              >
-                <Icon size={14} />
-                <span>{label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* SECTION 1: ORGANISATION PROFILE */}
-      {activeSection === 'org' && (
-        <div id="section-org-profile" className="space-y-6">
-          <form onSubmit={handleSaveProfile} className="border-2 p-5 sm:p-6 shadow-sm" style={cardStyle}>
-            <div className="flex items-center justify-between pb-3 mb-4 border-b-2 flex-wrap gap-3" style={{ borderColor: palette.line }}>
-              <div>
-                <h2 style={fz(19, { fontWeight: 700, color: palette.ink })}>Business & Firm Profile</h2>
-                <p style={fz(13.5, { color: palette.muted })}>
-                  This information appears on customer tax invoices, receipt headers, WhatsApp share messages, and payment details.
-                </p>
-              </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  id="btn-pull-org-profile"
-                  onClick={handlePullProfile}
-                  disabled={pullingProfile || !supabaseStatus.isConnected}
-                  className="flex items-center gap-1.5 border-2 px-3 py-2 font-semibold focus-ring cursor-pointer transition-colors"
-                  style={{
-                    backgroundColor: palette.panel,
-                    borderColor: palette.line,
-                    color: palette.ink,
-                    ...fz(13),
-                  }}
-                  title="Pull latest profile saved in Supabase cloud"
-                >
-                  <RefreshCw
-                    size={Math.round(15 * scale)}
-                    className={pullingProfile ? 'animate-spin' : ''}
-                    aria-hidden="true"
-                  />
-                  {pullingProfile ? 'Pulling...' : 'Pull from Supabase'}
-                </button>
-
-                <button
-                  type="submit"
-                  id="btn-save-org-profile"
-                  disabled={savingProfile}
-                  className="flex items-center gap-2 border-2 px-4 py-2 font-bold focus-ring cursor-pointer"
-                  style={{
-                    backgroundColor: palette.navy,
-                    borderColor: palette.navy,
-                    color: '#FFFFFF',
-                    ...fz(14),
-                  }}
-                >
-                  {savingProfile ? (
-                    <RefreshCw size={Math.round(16 * scale)} className="animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Save size={Math.round(16 * scale)} aria-hidden="true" />
-                  )}
-                  {savingProfile ? 'Saving & Syncing...' : 'Save & Sync to Supabase'}
-                </button>
-              </div>
+        {/* ========================================================================= */}
+        {/* CARD 1: BUSINESS (ORGANISATION PROFILE)                                  */}
+        {/* ========================================================================= */}
+        {activeSection === 'business' && (
+          <div className="bg-white rounded-2xl border border-neutral-200/90 p-3.5 sm:p-6 shadow-xs">
+            <div className="flex items-center justify-between gap-3 mb-3 sm:mb-5">
+              <h2 className="text-base sm:text-lg font-bold text-neutral-900">Business</h2>
+              <span className="hidden sm:inline text-xs text-neutral-400">Organisation & Tax Profile</span>
             </div>
 
-            {/* Supabase Database Connection & Sync Status Banner */}
-            <div
-              className="p-3 mb-5 border rounded flex flex-wrap items-center justify-between gap-3 text-xs"
-              style={{
-                backgroundColor: supabaseStatus.isConnected ? `${palette.good}08` : `${palette.amber}08`,
-                borderColor: supabaseStatus.isConnected ? `${palette.good}40` : `${palette.amber}40`,
-              }}
-            >
-              <div className="flex items-center gap-2">
-                <Database size={16} className={supabaseStatus.isConnected ? 'text-emerald-600' : 'text-amber-600'} />
-                <span>
-                  <strong className="text-slate-800 dark:text-slate-200">Database Engine:</strong>{' '}
-                  <span className="font-mono text-emerald-700 dark:text-emerald-400 font-semibold">
-                    Supabase PostgreSQL
-                  </span>{' '}
-                  (Project: <code className="font-mono">{supabaseConfig.projectRef}</code>)
-                </span>
-                <span
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono font-bold uppercase"
-                  style={{
-                    backgroundColor: supabaseStatus.isConnected ? `${palette.good}20` : `${palette.amber}20`,
-                    color: supabaseStatus.isConnected ? palette.good : palette.amber,
-                  }}
-                >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      supabaseStatus.isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
-                    }`}
-                  />
-                  {supabaseStatus.isConnected ? 'Live Cloud Connected' : 'Local Storage Only'}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
-                <span>Auto-saves to browser storage & syncs to cloud on save.</span>
-                <button
-                  type="button"
-                  onClick={() => setActiveSection('database')}
-                  className="underline font-bold hover:text-indigo-600 cursor-pointer"
-                >
-                  Configure Cloud SQL →
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3 sm:gap-y-4">
+              {/* BUSINESS NAME */}
               <div>
-                <label htmlFor="org-name" style={labelStyle}>
-                  Firm / Agency Name *
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  BUSINESS NAME
                 </label>
                 <input
-                  id="org-name"
                   type="text"
-                  required
                   value={profileForm.name}
-                  onChange={(e) => handleProfileChange('name', e.target.value)}
-                  placeholder="e.g. MrWater Beverages & Distribution"
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
+                  onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
+                  placeholder="Shree Beverages Distributors"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
+              {/* GSTIN */}
               <div>
-                <label htmlFor="org-tagline" style={labelStyle}>
-                  Tagline / Subtitle
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  GSTIN
                 </label>
-                <input
-                  id="org-tagline"
-                  type="text"
-                  value={profileForm.tagline}
-                  onChange={(e) => handleProfileChange('tagline', e.target.value)}
-                  placeholder="e.g. Authorized Beverage Agency & C&F Depot"
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
-                />
-              </div>
-
-              <div>
-                <label htmlFor="org-owner" style={labelStyle}>
-                  Proprietor / Authorized Signatory
-                </label>
-                <input
-                  id="org-owner"
-                  type="text"
-                  value={profileForm.ownerName}
-                  onChange={(e) => handleProfileChange('ownerName', e.target.value)}
-                  placeholder="e.g. Rajesh Kumar"
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
-                />
-              </div>
-
-              <div>
-                <label htmlFor="org-phone" style={labelStyle}>
-                  Billing WhatsApp / Phone Number *
-                </label>
-                <input
-                  id="org-phone"
-                  type="text"
-                  required
-                  value={profileForm.phone}
-                  onChange={(e) => handleProfileChange('phone', e.target.value)}
-                  placeholder="10-digit mobile for bills"
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
-                />
-              </div>
-
-              <div className="md:col-span-2">
-                <label htmlFor="org-address" style={labelStyle}>
-                  Depot / Warehouse Address
-                </label>
-                <input
-                  id="org-address"
-                  type="text"
-                  value={profileForm.address}
-                  onChange={(e) => handleProfileChange('address', e.target.value)}
-                  placeholder="e.g. Shop No. 12, APMC Market Yard, Station Road"
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
-                />
-              </div>
-
-              <div>
-                <label htmlFor="org-city" style={labelStyle}>
-                  City, State & PIN Code
-                </label>
-                <input
-                  id="org-city"
-                  type="text"
-                  value={profileForm.city}
-                  onChange={(e) => handleProfileChange('city', e.target.value)}
-                  placeholder="e.g. Pune, Maharashtra - 411001"
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
-                />
-              </div>
-
-              <div>
-                <label htmlFor="org-email" style={labelStyle}>
-                  Official Email Address
-                </label>
-                <input
-                  id="org-email"
-                  type="email"
-                  value={profileForm.email}
-                  onChange={(e) => handleProfileChange('email', e.target.value)}
-                  placeholder="e.g. radhika.distribution@example.com"
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
-                />
-              </div>
-
-              {/* Statutory Info */}
-              <div className="md:col-span-2 pt-3 border-t-2 mt-2" style={{ borderColor: palette.line }}>
-                <h3 style={fz(16, { fontWeight: 700, color: palette.ink, marginBottom: '0.75rem' })}>
-                  Tax & Regulatory Registration
-                </h3>
-              </div>
-
-              <div>
-                <label htmlFor="org-gstin" style={labelStyle}>
-                  GSTIN (GST Identification Number)
-                </label>
-                <input
-                  id="org-gstin"
+                <input autoCapitalize="characters" autoComplete="off" autoCorrect="off" spellCheck={false}
                   type="text"
                   maxLength={15}
                   value={profileForm.gstin}
-                  onChange={(e) => handleProfileChange('gstin', e.target.value.toUpperCase())}
-                  placeholder="15-digit GSTIN (e.g. 27AABCR1234F1Z5)"
-                  className="w-full px-3 py-2 focus-ring uppercase"
-                  style={inputStyle}
+                  onChange={(e) => {
+                    const val = e.target.value.toUpperCase();
+                    setProfileForm({
+                      ...profileForm,
+                      gstin: val,
+                      pan: val.length >= 12 ? val.slice(2, 12) : profileForm.pan,
+                    });
+                  }}
+                  placeholder="27AAKCS1234F1Z5"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
                 />
-                <span style={fz(11.5, { color: palette.muted, marginTop: '2px', display: 'block' })}>
-                  Format: 2-digit state code + 10 PAN characters + 1 entity + Z + checksum
-                </span>
               </div>
 
+              {/* PAN */}
               <div>
-                <label htmlFor="org-fssai" style={labelStyle}>
-                  FSSAI License Number (Food Safety)
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  PAN
                 </label>
                 <input
-                  id="org-fssai"
+                  type="text"
+                  maxLength={10}
+                  value={profileForm.pan}
+                  onChange={(e) => setProfileForm({ ...profileForm, pan: e.target.value.toUpperCase() })}
+                  placeholder="AAKCS1234F"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                />
+              </div>
+
+              {/* FSSAI LICENCE */}
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  FSSAI LICENCE
+                </label>
+                <input
                   type="text"
                   maxLength={14}
                   value={profileForm.fssai}
-                  onChange={(e) => handleProfileChange('fssai', e.target.value)}
-                  placeholder="14-digit FSSAI (e.g. 11521000001234)"
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
+                  onChange={(e) => setProfileForm({ ...profileForm, fssai: e.target.value })}
+                  placeholder="11521034000123"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
-              {/* Bank & Settlement info */}
-              <div className="md:col-span-2 pt-3 border-t-2 mt-2" style={{ borderColor: palette.line }}>
-                <div className="flex items-center gap-2">
-                  <CreditCard size={Math.round(18 * scale)} style={{ color: palette.amber }} aria-hidden="true" />
-                  <h3 style={fz(16, { fontWeight: 700, color: palette.ink })}>
-                    Retailer Payment Collection & Bank Details
-                  </h3>
-                </div>
-                <p style={fz(12.5, { color: palette.muted, marginTop: '2px' })}>
-                  Printed on invoices and included in WhatsApp bills so retailers can pay you directly via UPI or NEFT.
-                </p>
-              </div>
-
+              {/* PHONE */}
               <div>
-                <label htmlFor="org-upi" style={labelStyle}>
-                  UPI ID (VPA for QR / Instant Pay)
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  PHONE
                 </label>
-                <input
-                  id="org-upi"
+                <input inputMode="tel" autoComplete="tel"
                   type="text"
-                  value={profileForm.upiId}
-                  onChange={(e) => handleProfileChange('upiId', e.target.value)}
-                  placeholder="e.g. radhikabev@sbi"
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
+                  value={profileForm.phone}
+                  onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
+                  placeholder="9822012345"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                />
+              </div>
+
+              {/* EMAIL */}
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  EMAIL
+                </label>
+                <input
+                  type="email"
+                  value={profileForm.email}
+                  onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
+                  placeholder="sales@shreebeverages.com"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                />
+              </div>
+
+              {/* STATE */}
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  STATE
+                </label>
+                <div className="relative">
+                  <select
+                    value={profileForm.state}
+                    onChange={(e) => setProfileForm({ ...profileForm, state: e.target.value })}
+                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs cursor-pointer"
+                  >
+                    {INDIAN_STATES.map((st) => (
+                      <option key={st} value={st}>
+                        {st}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              </div>
+
+              {/* ADDRESS */}
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  ADDRESS
+                </label>
+                <input
+                  type="text"
+                  value={profileForm.address}
+                  onChange={(e) => setProfileForm({ ...profileForm, address: e.target.value })}
+                  placeholder="Plot 14, MIDC Bhosari, Pune 411026"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                />
+              </div>
+
+              {/* CITY & PROPRIETOR (FULL CAPABILITY) */}
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  CITY & REGION
+                </label>
+                <input
+                  type="text"
+                  value={profileForm.city}
+                  onChange={(e) => setProfileForm({ ...profileForm, city: e.target.value })}
+                  placeholder="Pune, Maharashtra"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
               <div>
-                <label htmlFor="org-bank-name" style={labelStyle}>
-                  Bank Name
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  PROPRIETOR / AUTHORIZED SIGNATORY
                 </label>
                 <input
-                  id="org-bank-name"
+                  type="text"
+                  value={profileForm.ownerName}
+                  onChange={(e) => setProfileForm({ ...profileForm, ownerName: e.target.value })}
+                  placeholder="Proprietor / Signatory Name"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                />
+              </div>
+
+              {/* BANK */}
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  BANK
+                </label>
+                <input
                   type="text"
                   value={profileForm.bankName}
-                  onChange={(e) => handleProfileChange('bankName', e.target.value)}
-                  placeholder="e.g. State Bank of India"
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
+                  onChange={(e) => setProfileForm({ ...profileForm, bankName: e.target.value })}
+                  placeholder="HDFC Bank"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
+              {/* ACCOUNT NO. */}
               <div>
-                <label htmlFor="org-acc-no" style={labelStyle}>
-                  Bank Account Number
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  ACCOUNT NO.
                 </label>
                 <input
-                  id="org-acc-no"
                   type="text"
                   value={profileForm.accountNumber}
-                  onChange={(e) => handleProfileChange('accountNumber', e.target.value)}
-                  placeholder="e.g. 30894567123"
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
+                  onChange={(e) => setProfileForm({ ...profileForm, accountNumber: e.target.value })}
+                  placeholder="50200012345678"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
+              {/* IFSC */}
               <div>
-                <label htmlFor="org-ifsc" style={labelStyle}>
-                  IFSC Code
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  IFSC
                 </label>
                 <input
-                  id="org-ifsc"
                   type="text"
                   maxLength={11}
                   value={profileForm.ifsc}
-                  onChange={(e) => handleProfileChange('ifsc', e.target.value.toUpperCase())}
-                  placeholder="e.g. SBIN0001234"
-                  className="w-full px-3 py-2 focus-ring uppercase"
-                  style={inputStyle}
+                  onChange={(e) => setProfileForm({ ...profileForm, ifsc: e.target.value.toUpperCase() })}
+                  placeholder="HDFC0001234"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
-              <div className="md:col-span-2">
-                <label htmlFor="org-terms" style={labelStyle}>
-                  Invoice Terms & Conditions / Footer Remarks
+              {/* UPI ID */}
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  UPI ID
                 </label>
-                <textarea
-                  id="org-terms"
-                  rows={2}
-                  value={profileForm.invoiceTerms}
-                  onChange={(e) => handleProfileChange('invoiceTerms', e.target.value)}
-                  placeholder="e.g. Goods once sold will not be taken back. Payment due within 7 days."
-                  className="w-full px-3 py-2 focus-ring resize-y"
-                  style={inputStyle}
+                <input
+                  type="text"
+                  value={profileForm.upiId}
+                  onChange={(e) => setProfileForm({ ...profileForm, upiId: e.target.value })}
+                  placeholder="shreebev@upi"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
-            </div>
 
-            <div className="mt-5 flex justify-end">
-              <button
-                type="submit"
-                className="flex items-center gap-2 border-2 px-5 py-2.5 font-bold focus-ring cursor-pointer"
-                style={{
-                  backgroundColor: palette.navy,
-                  borderColor: palette.navy,
-                  color: '#FFFFFF',
-                  ...fz(14),
-                }}
-              >
-                <Save size={Math.round(16 * scale)} aria-hidden="true" />
-                Save Profile Changes
-              </button>
-            </div>
-          </form>
-
-          {/* Live Preview Card */}
-          <div className="border-2 p-5 shadow-sm" style={cardStyle}>
-            <div className="flex items-center gap-2 mb-3">
-              <Receipt size={Math.round(18 * scale)} style={{ color: palette.amber }} aria-hidden="true" />
-              <h3 style={fz(16, { fontWeight: 700, color: palette.ink })}>
-                Live Invoice Header & WhatsApp Preview
-              </h3>
-            </div>
-            <div
-              className="border-2 p-4 font-mono select-none"
-              style={{
-                backgroundColor: `${palette.navy}08`,
-                borderColor: palette.line,
-                ...fz(12.5),
-                color: palette.ink,
-              }}
-            >
-              <div className="font-bold text-base" style={{ color: palette.navy }}>
-                {profileForm.name || 'YOUR FIRM NAME'}
+              {/* INVOICE TERMS */}
+              <div className="md:col-span-2">
+                <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                  INVOICE TERMS
+                </label>
+                <input
+                  type="text"
+                  value={profileForm.invoiceTerms}
+                  onChange={(e) => setProfileForm({ ...profileForm, invoiceTerms: e.target.value })}
+                  placeholder="Goods once sold will not be taken back except expiry/damage. Interest @18% after due date."
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                />
               </div>
-              <div className="italic">{profileForm.tagline || 'Authorized Beverage Agency'}</div>
-              <div>{profileForm.address ? `${profileForm.address}, ${profileForm.city}` : 'Market Yard, Pune'}</div>
-              <div>Contact: {profileForm.phone || '9876543210'} | GSTIN: {profileForm.gstin || '27AABCR1234F1Z5'}</div>
-              {profileForm.fssai && <div>FSSAI Lic. No: {profileForm.fssai}</div>}
-              <div className="my-1 border-t border-dashed" style={{ borderColor: palette.line }}></div>
-              <div>*Tax Invoice #101 — Sample Retailer Store*</div>
-              <div>Date: 2026-09-15</div>
-              <div>CAMPA POWER UP x3 (1 free) @ ₹240.00 = ₹480.00</div>
-              <div>*Total: ₹480.00 (Paid: ₹480.00 | Balance: ₹0.00)*</div>
-              <div className="my-1 border-t border-dashed" style={{ borderColor: palette.line }}></div>
-              <div>Payment: UPI {profileForm.upiId || 'radhikabev@sbi'} | Bank: {profileForm.bankName || 'SBI'} (A/c: {profileForm.accountNumber || '••••••'})</div>
-              <div className="text-xs opacity-80 mt-1">{profileForm.invoiceTerms}</div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* SECTION: GODOWNS & WAREHOUSES */}
-      {activeSection === 'warehouses' && (
-        <div id="section-warehouses-settings" className="space-y-6">
-          <WarehousesView embedded initialSubTab="warehouses" />
-        </div>
-      )}
+        {/* ========================================================================= */}
+        {/* CARD 2: BILLING RULES & INVOICING PREFERENCES                            */}
+        {/* ========================================================================= */}
+        {activeSection === 'billing' && (
+          <div className="bg-white rounded-2xl border border-neutral-200/90 p-3.5 sm:p-6 shadow-xs">
+            <div className="flex items-center justify-between gap-3 mb-3 sm:mb-5">
+              <h2 className="text-base sm:text-lg font-bold text-neutral-900">Billing rules</h2>
+              <span className="hidden sm:inline text-xs text-neutral-400">Invoicing, Taxes & Limits</span>
+            </div>
 
-      {/* SECTION: MANAGE SALESMEN */}
-      {activeSection === 'salesmen' && (
-        <div id="section-salesmen-settings" className="space-y-6">
-          <SalesmenManagementSection />
-        </div>
-      )}
-
-      {/* SECTION 2: DISPLAY & ACCESSIBILITY */}
-      {activeSection === 'display' && (
-        <div id="section-display-settings" className="space-y-6">
-          <div className="border-2 p-5 sm:p-6 shadow-sm" style={cardStyle}>
-            <h2 style={fz(19, { fontWeight: 700, color: palette.ink, marginBottom: '0.25em' })}>
-              Text Size & Accessibility Scaling
-            </h2>
-            <p style={fz(14, { color: palette.muted, marginBottom: '1.25rem' })}>
-              Choose a typography scale engineered for high legibility, depot lighting conditions, and elder shopkeeper readability.
-            </p>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-              {[
-                {
-                  id: 'standard' as FontSize,
-                  glyph: 'A',
-                  badge: '1.00x',
-                  title: 'Standard',
-                  subtitle: 'Compact Desktop',
-                  desc: 'Dense layout suited for HD monitors & high information capacity.',
-                  sampleSize: 14,
-                },
-                {
-                  id: 'large' as FontSize,
-                  glyph: 'A+',
-                  badge: '1.25x',
-                  title: 'Large',
-                  subtitle: 'Depot Recommended',
-                  desc: '+25% font scale with generous touch targets and relaxed line heights.',
-                  sampleSize: 17,
-                },
-                {
-                  id: 'xlarge' as FontSize,
-                  glyph: 'A++',
-                  badge: '1.55x',
-                  title: 'Extra Large',
-                  subtitle: 'High Visibility',
-                  desc: '+55% maximum accessibility scale engineered for elder readability.',
-                  sampleSize: 21,
-                },
-              ].map((opt) => {
-                const isSelected = fontSize === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setFontSize(opt.id)}
-                    aria-pressed={isSelected}
-                    className="p-4 border-2 text-left focus-ring cursor-pointer transition-all flex flex-col justify-between h-full"
-                    style={{
-                      borderColor: isSelected ? palette.navy : palette.line,
-                      backgroundColor: isSelected ? `${palette.navy}10` : palette.panel,
-                      borderWidth: isSelected ? 3 : 2,
-                    }}
-                  >
-                    <div>
-                      {/* Top icon and scale pill */}
-                      <div className="flex items-center justify-between gap-2 mb-3">
-                        <div
-                          className="w-9 h-9 rounded inline-flex items-center justify-center font-black text-sm border-2 leading-none"
-                          style={{
-                            backgroundColor: isSelected ? palette.navy : `${palette.line}25`,
-                            color: isSelected ? '#FFFFFF' : palette.ink,
-                            borderColor: isSelected ? palette.navy : palette.line,
-                          }}
-                        >
-                          {opt.glyph}
-                        </div>
-                        <span
-                          className="px-2 py-0.5 font-mono font-bold rounded text-xs leading-none"
-                          style={{
-                            backgroundColor: isSelected ? palette.navy : `${palette.line}30`,
-                            color: isSelected ? '#FFFFFF' : palette.muted,
-                          }}
-                        >
-                          {opt.badge}
-                        </span>
-                      </div>
-
-                      {/* Title and subtitle */}
-                      <div className="mb-2">
-                        <div style={fz(16, { fontWeight: 700, color: palette.ink, lineHeight: 1.2 })}>
-                          {opt.title}
-                        </div>
-                        <div className="text-xs font-semibold opacity-75 mt-0.5" style={{ color: palette.muted }}>
-                          {opt.subtitle}
-                        </div>
-                      </div>
-
-                      <p style={fz(13, { color: palette.muted, lineHeight: 1.35 })}>{opt.desc}</p>
-                    </div>
-
-                    {/* Bottom specimen & active indicator */}
-                    <div
-                      className="mt-4 pt-3 border-t flex items-center justify-between"
-                      style={{ borderColor: `${palette.line}40` }}
+            <div className="space-y-4">
+              {/* ROW 1: PRINT LAYOUT & CREDIT LIMIT CROSSED */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3 sm:gap-y-4">
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                    PRINT LAYOUT
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={billingForm.printLayout}
+                      onChange={(e) => setBillingForm({ ...billingForm, printLayout: e.target.value })}
+                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs cursor-pointer"
                     >
-                      <span
-                        style={{
-                          fontSize: `${opt.sampleSize}px`,
-                          fontWeight: 700,
-                          color: palette.navy,
-                          lineHeight: 1,
-                        }}
-                      >
-                        Aa ₹240
-                      </span>
-                      {isSelected ? (
-                        <span className="flex items-center gap-1 text-xs font-bold" style={{ color: palette.good }}>
-                          <Check size={14} /> Active
-                        </span>
-                      ) : (
-                        <span className="text-xs opacity-60 font-semibold" style={{ color: palette.muted }}>
-                          Click to apply
+                      <option value="A4">A4</option>
+                      <option value="Thermal 3-inch (80mm)">Thermal 3-inch (80mm)</option>
+                      <option value="Half Page A5">Half Page A5</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                    CREDIT LIMIT CROSSED
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={billingForm.creditLimitCrossed}
+                      onChange={(e) => setBillingForm({ ...billingForm, creditLimitCrossed: e.target.value })}
+                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs cursor-pointer"
+                    >
+                      <option value="Warn">Warn</option>
+                      <option value="Block">Block billing</option>
+                      <option value="Allow">Allow without warning</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </div>
+              </div>
+
+              {/* ROW 2: EXPIRY ALERT (DAYS) & SELL EARLIEST EXPIRY FIRST */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3 sm:gap-y-4 items-center">
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                    EXPIRY ALERT (DAYS)
+                  </label>
+                  <input
+                    type="number" inputMode="decimal"
+                    value={billingForm.expiryAlertDays}
+                    onChange={(e) =>
+                      setBillingForm({ ...billingForm, expiryAlertDays: Number(e.target.value) || 0 })
+                    }
+                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  />
+                </div>
+
+                <div className="flex items-center gap-3 pt-4 md:pt-5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBillingForm({
+                        ...billingForm,
+                        sellEarliestExpiryFirst: !billingForm.sellEarliestExpiryFirst,
+                      })
+                    }
+                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                      billingForm.sellEarliestExpiryFirst ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                    }`}
+                  >
+                    <span
+                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
+                        billingForm.sellEarliestExpiryFirst ? 'left-6' : 'left-1'
+                      }`}
+                    />
+                  </button>
+                  <span className="text-sm font-medium text-neutral-800">Sell earliest expiry first</span>
+                </div>
+              </div>
+
+              {/* ROW 3: ALLOW SELLING WITHOUT STOCK & ROUND OFF BILL TOTAL */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3 sm:gap-y-4 items-center pt-2">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBillingForm({
+                        ...billingForm,
+                        allowSellingWithoutStock: !billingForm.allowSellingWithoutStock,
+                      })
+                    }
+                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                      billingForm.allowSellingWithoutStock ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                    }`}
+                  >
+                    <span
+                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
+                        billingForm.allowSellingWithoutStock ? 'left-6' : 'left-1'
+                      }`}
+                    />
+                  </button>
+                  <span className="text-sm font-medium text-neutral-800">Allow selling without stock</span>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBillingForm({
+                        ...billingForm,
+                        roundOffGrandTotal: !billingForm.roundOffGrandTotal,
+                      })
+                    }
+                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                      billingForm.roundOffGrandTotal ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                    }`}
+                  >
+                    <span
+                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
+                        billingForm.roundOffGrandTotal ? 'left-6' : 'left-1'
+                      }`}
+                    />
+                  </button>
+                  <span className="text-sm font-medium text-neutral-800">Round off bill total</span>
+                </div>
+              </div>
+
+              {/* ADDITIONAL INVOICING PARAMETERS FROM DATABASE */}
+              <div className="pt-4 border-t border-neutral-100 grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3 sm:gap-y-4">
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                    INVOICE PREFIX CODE
+                  </label>
+                  <input
+                    type="text"
+                    value={billingForm.invoicePrefix}
+                    onChange={(e) => setBillingForm({ ...billingForm, invoicePrefix: e.target.value.toUpperCase() })}
+                    placeholder="INV"
+                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                    DEFAULT SALE RATE TYPE
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={billingForm.defaultSaleType}
+                      onChange={(e) => setBillingForm({ ...billingForm, defaultSaleType: e.target.value as PriceType })}
+                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs cursor-pointer"
+                    >
+                      <option value="Retail">Retail (MRP / Direct Retail Rate)</option>
+                      <option value="Wholesale">Wholesale (Bulk Kirana Shop Rate)</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                    DEFAULT GST MODE
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={billingForm.defaultGstMode}
+                      onChange={(e) => setBillingForm({ ...billingForm, defaultGstMode: e.target.value as GstMode })}
+                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs cursor-pointer"
+                    >
+                      <option value="inclusive">GST Inclusive (Rate includes Tax)</option>
+                      <option value="off">GST Off / Non-Tax Bill</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                    MAX SALESMAN DISCOUNT CAP (%)
+                  </label>
+                  <input
+                    type="number" inputMode="numeric"
+                    min={0}
+                    max={100}
+                    value={billingForm.maxSalesmanDiscountPercent}
+                    onChange={(e) =>
+                      setBillingForm({
+                        ...billingForm,
+                        maxSalesmanDiscountPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
+                      })
+                    }
+                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs"
+                  />
+                </div>
+              </div>
+
+              {/* STATUTORY & SCHEME SWITCHES */}
+              <div className="pt-2 border-t border-neutral-100 space-y-3 text-sm">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBillingForm({
+                        ...billingForm,
+                        showBatchOnInvoice: !billingForm.showBatchOnInvoice,
+                      })
+                    }
+                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                      billingForm.showBatchOnInvoice ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                    }`}
+                  >
+                    <span
+                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
+                        billingForm.showBatchOnInvoice ? 'left-6' : 'left-1'
+                      }`}
+                    />
+                  </button>
+                  <span className="text-sm font-medium text-neutral-800">
+                    Print Lot / Batch numbers & expiry dates on invoices
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBillingForm({
+                        ...billingForm,
+                        gstOnFreeCases: !billingForm.gstOnFreeCases,
+                      })
+                    }
+                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                      billingForm.gstOnFreeCases ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                    }`}
+                  >
+                    <span
+                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
+                        billingForm.gstOnFreeCases ? 'left-6' : 'left-1'
+                      }`}
+                    />
+                  </button>
+                  <span className="text-sm font-medium text-neutral-800">
+                    Charge GST on free scheme cases too (supplier invoice method)
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBillingForm({
+                        ...billingForm,
+                        autoApplyPromotions: !billingForm.autoApplyPromotions,
+                      })
+                    }
+                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                      billingForm.autoApplyPromotions ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                    }`}
+                  >
+                    <span
+                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
+                        billingForm.autoApplyPromotions ? 'left-6' : 'left-1'
+                      }`}
+                    />
+                  </button>
+                  <span className="text-sm font-medium text-neutral-800">
+                    Auto-apply qualifying schemes by default in Billing
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* SAVE SETTINGS ACTION BUTTON (DEEP FOREST GREEN #064E3B)                  */}
+        {/* ========================================================================= */}
+        <div>
+          <button
+            type="button"
+            disabled={isSaving}
+            onClick={handleSaveAll}
+            className="w-full bg-[#064E3B] hover:bg-[#043d2e] text-white font-semibold py-3 px-6 rounded-xl transition-all cursor-pointer text-sm shadow-xs flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            {isSaving ? <span>Saving settings to database...</span> : <span>Save settings</span>}
+          </button>
+        </div>
+
+        {/* ========================================================================= */}
+        {/* CARD 3: WAREHOUSES & VEHICLES (DATABASE BACKED)                          */}
+        {/* ========================================================================= */}
+        {activeSection === 'fleet' && (
+          <div className="bg-white rounded-2xl border border-neutral-200/90 p-3.5 sm:p-6 shadow-xs">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base sm:text-lg font-bold text-neutral-900">Warehouses & vehicles</h2>
+              <span className="text-xs text-neutral-400 font-mono">
+                {warehouses.length} locations · {existingVehicles.length} vehicles
+              </span>
+            </div>
+
+            {/* Live List from Database */}
+            <div className="divide-y divide-neutral-200/60 mb-5">
+              {warehouses.map((wh) => {
+                const isVeh = wh.notes?.includes('Vehicle') || wh.location.includes('Van') || wh.name.toLowerCase().includes('van');
+                return (
+                  <div key={wh.id} className="py-3 flex items-center justify-between group">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-neutral-800">{wh.name}</span>
+                      {wh.isDefault && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] bg-neutral-100 text-neutral-600 font-semibold">
+                          Default
                         </span>
                       )}
                     </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* High Contrast Mode Toggle */}
-            <div className="pt-4 border-t-2" style={{ borderColor: palette.line }}>
-              <div className="flex flex-wrap items-center justify-between gap-4 p-4 border-2 rounded-xs" style={{ borderColor: palette.line, backgroundColor: highContrast ? '#0000000a' : `${palette.navy}08` }}>
-                <div className="max-w-xl">
-                  <div className="flex items-center gap-2 mb-1">
-                    <SunMoon size={Math.round(20 * Math.min(scale, 1.25))} style={{ color: palette.amber }} aria-hidden="true" />
-                    <h3 style={fz(16, { fontWeight: 700, color: palette.ink })}>High Contrast Mode (WCAG AAA)</h3>
-                  </div>
-                  <p style={fz(13.5, { color: palette.muted })}>
-                    Converts the entire distribution system to stark, high-contrast monochrome (pure black & white) with crisp high-definition borders. Optimal for strong outdoor sunlight, loading docks, and low-vision depot operators.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  id="btn-settings-high-contrast"
-                  onClick={() => setHighContrast((v) => !v)}
-                  aria-pressed={highContrast}
-                  className="inline-flex items-center justify-center gap-2.5 border-2 px-4 py-2.5 font-bold focus-ring cursor-pointer transition-all leading-none shadow-xs"
-                  style={{
-                    backgroundColor: highContrast ? '#000000' : palette.panel,
-                    color: highContrast ? '#FFFFFF' : palette.ink,
-                    borderColor: palette.ink,
-                    ...fz(14),
-                  }}
-                >
-                  <SunMoon size={Math.round(18 * Math.min(scale, 1.25))} aria-hidden="true" />
-                  <span>High Contrast</span>
-                  <span
-                    className="px-2 py-0.5 rounded text-xs font-mono font-black uppercase"
-                    style={{
-                      backgroundColor: highContrast ? '#FFFFFF' : palette.ink,
-                      color: highContrast ? '#000000' : '#FFFFFF',
-                    }}
-                  >
-                    {highContrast ? 'ON' : 'OFF'}
-                  </span>
-                </button>
-              </div>
-            </div>
-
-            {/* Low Vision Mode (Simplified Mobile Sales Layout) */}
-            <div className="pt-4 border-t-2" style={{ borderColor: palette.line }}>
-              <div
-                className="p-4 border-2 rounded-xs"
-                style={{
-                  borderColor: lowVisionMode ? palette.navy : palette.line,
-                  backgroundColor: lowVisionMode ? (highContrast ? '#00000010' : `${palette.navy}08`) : palette.panel,
-                }}
-              >
-                <div className="flex flex-wrap items-center justify-between gap-4 mb-3">
-                  <div className="max-w-xl">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Eye size={Math.round(20 * Math.min(scale, 1.25))} style={{ color: palette.amber }} aria-hidden="true" />
-                      <h3 style={fz(16, { fontWeight: 700, color: palette.ink })}>
-                        Low Vision Mode (Accessible Mobile Billing Layout)
-                      </h3>
-                    </div>
-                    <p style={fz(13.5, { color: palette.muted })}>
-                      Transforms the New Invoice form into a single-column, high-contrast touch interface with minimum 18px text, 56px+ tap targets, quick-select shop buttons, quantity steppers (no typing required), and instant audible/visual confirmations.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    id="btn-settings-low-vision"
-                    onClick={toggleLowVisionMode}
-                    aria-pressed={lowVisionMode}
-                    className="inline-flex items-center justify-center gap-2.5 border-2 px-4 py-2.5 font-bold focus-ring cursor-pointer transition-all leading-none shadow-xs"
-                    style={{
-                      backgroundColor: lowVisionMode ? (highContrast ? '#000000' : palette.navy) : palette.panel,
-                      color: lowVisionMode ? '#FFFFFF' : palette.ink,
-                      borderColor: palette.ink,
-                      ...fz(14),
-                    }}
-                  >
-                    <Eye size={Math.round(18 * Math.min(scale, 1.25))} aria-hidden="true" />
-                    <span>Low Vision Mode</span>
-                    <span
-                      className="px-2 py-0.5 rounded text-xs font-mono font-black uppercase"
-                      style={{
-                        backgroundColor: lowVisionMode ? '#FFFFFF' : palette.ink,
-                        color: lowVisionMode ? '#000000' : '#FFFFFF',
-                      }}
-                    >
-                      {lowVisionMode ? 'ON' : 'OFF'}
-                    </span>
-                  </button>
-                </div>
-
-                {/* Running Total Bar Placement Preference */}
-                <div className="pt-3 border-t mt-3 flex flex-wrap items-center justify-between gap-3" style={{ borderColor: `${palette.line}60` }}>
-                  <div>
-                    <span style={fz(13.5, { fontWeight: 700, color: palette.ink, display: 'block' })}>
-                      Sticky Running Total Bar Position
-                    </span>
-                    <span style={fz(12, { color: palette.muted })}>
-                      Choose where the persistent invoice running total bar sits in Low Vision Mode.
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      id="btn-sticky-bottom"
-                      onClick={() => setLowVisionStickyPosition('bottom')}
-                      aria-pressed={lowVisionStickyPosition === 'bottom'}
-                      className="px-3 py-1.5 border-2 rounded text-xs font-bold cursor-pointer transition-all"
-                      style={{
-                        borderColor: lowVisionStickyPosition === 'bottom' ? palette.navy : palette.line,
-                        backgroundColor: lowVisionStickyPosition === 'bottom' ? palette.navy : palette.panel,
-                        color: lowVisionStickyPosition === 'bottom' ? '#FFFFFF' : palette.ink,
-                      }}
-                    >
-                      Pinned to Bottom (Mobile Thumb-Zone)
-                    </button>
-                    <button
-                      type="button"
-                      id="btn-sticky-top"
-                      onClick={() => setLowVisionStickyPosition('top')}
-                      aria-pressed={lowVisionStickyPosition === 'top'}
-                      className="px-3 py-1.5 border-2 rounded text-xs font-bold cursor-pointer transition-all"
-                      style={{
-                        borderColor: lowVisionStickyPosition === 'top' ? palette.navy : palette.line,
-                        backgroundColor: lowVisionStickyPosition === 'top' ? palette.navy : palette.panel,
-                        color: lowVisionStickyPosition === 'top' ? '#FFFFFF' : palette.ink,
-                      }}
-                    >
-                      Pinned to Top
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Real-time Visual Specimen */}
-          <div className="border-2 p-5 shadow-sm" style={cardStyle}>
-            <h3 style={fz(16, { fontWeight: 700, color: palette.ink, marginBottom: '0.5rem' })}>
-              Live Typography & Contrast Specimen
-            </h3>
-            <div className="border-2 p-4" style={{ borderColor: palette.line, backgroundColor: palette.panel }}>
-              <div className="flex justify-between items-center mb-2">
-                <span style={fz(17, { fontWeight: 700, color: palette.navy })}>CAMPA POWER UP (150ml PET)</span>
-                <span style={fz(14, { fontWeight: 700, color: palette.good })}>Stock: 147 Cases Available</span>
-              </div>
-              <p style={fz(14, { color: palette.muted })}>
-                Campa Energy Category · HSN 22021090 · GST 20% · Retail Rate: ₹240.00 / Case
-              </p>
-              <div className="mt-3 flex gap-2">
-                <button
-                  type="button"
-                  className="border-2 px-3 py-1.5 font-bold"
-                  style={{ backgroundColor: palette.navy, color: '#FFFFFF', borderColor: palette.navy, ...fz(13) }}
-                >
-                  Sample Primary Action
-                </button>
-                <button
-                  type="button"
-                  className="border-2 px-3 py-1.5 font-bold"
-                  style={{ backgroundColor: palette.panel, color: palette.ink, borderColor: palette.line, ...fz(13) }}
-                >
-                  Sample Secondary
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* SECTION 3: PROMOTIONS & TRADE SCHEMES */}
-      {activeSection === 'promotions' && (
-        <div id="section-promotions-settings" className="space-y-6">
-          <div className="border-2 p-5 sm:p-6 shadow-sm" style={cardStyle}>
-            <div className="flex items-center justify-between pb-3 mb-4 border-b-2 flex-wrap gap-2" style={{ borderColor: palette.line }}>
-              <div>
-                <h2 style={fz(19, { fontWeight: 700, color: palette.ink })}>Trade Schemes & Promotions Rules</h2>
-                <p style={fz(13.5, { color: palette.muted })}>
-                  Control how beverage distributor offers (Buy-X-Get-Y-Free, case rebates, % discounts) apply across sales.
-                </p>
-              </div>
-              <button
-                type="button"
-                id="btn-goto-promotions"
-                onClick={() => setTab('promotions')}
-                className="flex items-center gap-2 border-2 px-4 py-2 font-bold focus-ring cursor-pointer"
-                style={{
-                  backgroundColor: palette.navy,
-                  borderColor: palette.navy,
-                  color: '#FFFFFF',
-                  ...fz(14),
-                }}
-              >
-                <Tag size={Math.round(16 * scale)} aria-hidden="true" />
-                Open Scheme Builder
-              </button>
-            </div>
-
-            {/* Automation toggle */}
-            <div className="p-4 border-2 mb-5" style={{ borderColor: palette.line, backgroundColor: `${palette.navy}06` }}>
-              <label className="flex items-start gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  id="setting-auto-apply-promo"
-                  checked={billingForm.autoApplyPromotions}
-                  onChange={(e) => {
-                    handleBillingChange('autoApplyPromotions', e.target.checked);
-                    updateBillingSettings({ autoApplyPromotions: e.target.checked });
-                  }}
-                  className="mt-1 w-5 h-5 focus-ring cursor-pointer"
-                />
-                <div>
-                  <span style={fz(15, { fontWeight: 700, color: palette.ink })}>
-                    Auto-apply qualifying schemes by default in Billing
-                  </span>
-                  <p style={fz(13, { color: palette.muted, marginTop: '2px' })}>
-                    When checked, adding cases of scheme-enabled beverages will automatically deduct free cases or apply cash discounts. You can always override per-line item during billing.
-                  </p>
-                </div>
-              </label>
-            </div>
-
-            {/* Active Schemes Listing */}
-            <div>
-              <h3 style={fz(16, { fontWeight: 700, color: palette.ink, marginBottom: '0.75rem' })}>
-                Currently Active Trade Promotions ({promotions.length})
-              </h3>
-              {promotions.length === 0 ? (
-                <div className="border-2 p-6 text-center" style={{ borderColor: palette.line }}>
-                  <p style={fz(14, { color: palette.muted })}>
-                    No active trade promotions configured. Click "Open Scheme Builder" to create a BOGO or discount scheme.
-                  </p>
-                </div>
-              ) : (
-                <div className="border-2 divide-y-2" style={{ borderColor: palette.line }}>
-                  {promotions.map((promo) => (
-                    <div key={promo.id} className="p-3.5 flex items-center justify-between flex-wrap gap-2">
-                      <div>
-                        <div style={fz(15, { fontWeight: 700, color: palette.ink })}>{promo.name}</div>
-                        <div style={fz(13, { color: palette.muted })}>
-                          Type: <span className="font-semibold uppercase">{promo.type}</span> · Applies to {promo.productIds.length} beverage item(s)
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span
-                          className="px-2.5 py-1 border-2 font-bold"
-                          style={{
-                            borderColor: palette.amber,
-                            color: palette.amber,
-                            backgroundColor: `${palette.amber}15`,
-                            ...fz(12.5),
-                          }}
-                        >
-                          Active
-                        </span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs text-neutral-400 font-mono">
+                        {isVeh ? `vehicle ${wh.code || ''}` : 'warehouse'}
+                      </span>
+                      {warehouses.length > 1 && !wh.isDefault && (
                         <button
                           type="button"
-                          onClick={() => setTab('promotions')}
-                          className="border-2 px-3 py-1 font-semibold focus-ring cursor-pointer"
-                          style={{
-                            borderColor: palette.line,
-                            backgroundColor: palette.panel,
-                            color: palette.ink,
-                            ...fz(12.5),
+                          onClick={() => {
+                            if (window.confirm(`Delete ${wh.name} from database?`)) {
+                              deleteWarehouse(wh.id);
+                              setToastMessage(`Removed ${wh.name}`);
+                              setTimeout(() => setToastMessage(null), 3000);
+                            }
                           }}
+                          className="opacity-0 group-hover:opacity-100 text-neutral-400 hover:text-rose-600 transition-opacity p-1 cursor-pointer"
+                          title="Remove from database"
                         >
-                          Edit Scheme
+                          <X className="w-3.5 h-3.5" />
                         </button>
-                      </div>
+                      )}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+                  </div>
+                );
+              })}
 
-      {/* SECTION 4: BILLING & INVOICING PREFERENCES */}
-      {activeSection === 'billing' && (
-        <div id="section-billing-settings" className="space-y-6">
-          <form onSubmit={handleSaveBilling} className="border-2 p-5 sm:p-6 shadow-sm" style={cardStyle}>
-            <div className="flex items-center justify-between pb-3 mb-5 border-b-2 flex-wrap gap-2" style={{ borderColor: palette.line }}>
-              <div>
-                <h2 style={fz(19, { fontWeight: 700, color: palette.ink })}>Invoicing & Stock Parameters</h2>
-                <p style={fz(13.5, { color: palette.muted })}>
-                  Set default tax calculations, invoice numbering prefixes, and warehouse inventory safety limits.
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  id="btn-pull-billing-settings"
-                  onClick={handlePullBilling}
-                  disabled={pullingBilling}
-                  className="flex items-center gap-1.5 border-2 px-3 py-2 font-bold focus-ring cursor-pointer"
-                  style={{
-                    backgroundColor: palette.panel,
-                    borderColor: palette.line,
-                    color: palette.ink,
-                    ...fz(13),
-                  }}
-                  title="Load saved billing settings from Supabase table"
-                >
-                  <RefreshCw
-                    size={Math.round(15 * scale)}
-                    className={pullingBilling ? 'animate-spin text-blue-600' : ''}
-                    aria-hidden="true"
-                  />
-                  {pullingBilling ? 'Pulling...' : 'Pull from Supabase'}
-                </button>
-
-                <button
-                  type="submit"
-                  id="btn-save-billing-settings"
-                  disabled={savingBilling}
-                  className="flex items-center gap-2 border-2 px-4 py-2 font-bold focus-ring cursor-pointer"
-                  style={{
-                    backgroundColor: palette.navy,
-                    borderColor: palette.navy,
-                    color: '#FFFFFF',
-                    ...fz(14),
-                  }}
-                >
-                  {savingBilling ? (
-                    <RefreshCw size={Math.round(16 * scale)} className="animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Save size={Math.round(16 * scale)} aria-hidden="true" />
-                  )}
-                  {savingBilling ? 'Saving & Syncing...' : 'Save & Sync to Supabase'}
-                </button>
-              </div>
+              {/* Display vehicles from trips if not covered in warehouses */}
+              {existingVehicles
+                .filter((v) => !warehouses.some((w) => w.name.includes(v)))
+                .map((vehName, idx) => (
+                  <div key={'veh-' + idx} className="py-3 flex items-center justify-between group">
+                    <span className="text-sm font-medium text-neutral-800">{vehName}</span>
+                    <span className="text-xs text-neutral-400 font-mono">vehicle</span>
+                  </div>
+                ))}
             </div>
 
-            {/* Supabase Database Connection & Sync Status Banner */}
-            <div
-              className="p-3 mb-5 border rounded flex flex-wrap items-center justify-between gap-3 text-xs"
-              style={{
-                backgroundColor: supabaseStatus.isConnected ? `${palette.good}08` : `${palette.amber}08`,
-                borderColor: supabaseStatus.isConnected ? `${palette.good}40` : `${palette.amber}40`,
-              }}
-            >
-              <div className="flex items-center gap-2">
-                <Database size={16} className={supabaseStatus.isConnected ? 'text-emerald-600' : 'text-amber-600'} />
-                <span>
-                  <strong className="text-slate-800 dark:text-slate-200">Database Engine:</strong>{' '}
-                  <span className="font-mono text-emerald-700 dark:text-emerald-400 font-semibold">
-                    Supabase PostgreSQL (billing_settings)
-                  </span>{' '}
-                  (Project: <code className="font-mono">{supabaseConfig.projectRef}</code>)
-                </span>
-                <span
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono font-bold uppercase"
-                  style={{
-                    backgroundColor: supabaseStatus.isConnected ? `${palette.good}20` : `${palette.amber}20`,
-                    color: supabaseStatus.isConnected ? palette.good : palette.amber,
-                  }}
-                >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      supabaseStatus.isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
-                    }`}
-                  />
-                  {supabaseStatus.isConnected ? 'Live Cloud Connected' : 'Local Storage Only'}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
-                <span>Auto-saves locally & syncs to Supabase billing_settings table on save.</span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label htmlFor="inv-prefix" style={labelStyle}>
-                  Invoice Prefix Code
-                </label>
+            {/* Add New Warehouse / Vehicle Form */}
+            <form onSubmit={handleAddWarehouseOrVehicle} className="pt-2 border-t border-neutral-100">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <input
-                  id="inv-prefix"
                   type="text"
-                  value={billingForm.invoicePrefix}
-                  onChange={(e) => handleBillingChange('invoicePrefix', e.target.value.toUpperCase())}
-                  placeholder="e.g. RBL, INV-2026-"
-                  className="w-full px-3 py-2 focus-ring uppercase"
-                  style={inputStyle}
+                  placeholder="Name"
+                  value={newWhName}
+                  onChange={(e) => setNewWhName(e.target.value)}
+                  className="bg-white border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs"
                 />
-                <span style={fz(11.5, { color: palette.muted, marginTop: '2px', display: 'block' })}>
-                  Appended to bill numbers on invoices (e.g. {billingForm.invoicePrefix}-101)
-                </span>
-              </div>
 
-              <div>
-                <label htmlFor="inv-default-price" style={labelStyle}>
-                  Default Sale Rate Type
-                </label>
-                <select
-                  id="inv-default-price"
-                  value={billingForm.defaultSaleType}
-                  onChange={(e) => handleBillingChange('defaultSaleType', e.target.value as PriceType)}
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
-                >
-                  <option value="Retail">Retail (MRP/Direct Retail Price)</option>
-                  <option value="Wholesale">Wholesale (Bulk Kirana Shop Price)</option>
-                </select>
-              </div>
+                <div className="relative">
+                  <select
+                    value={newWhType}
+                    onChange={(e) => setNewWhType(e.target.value as 'vehicle' | 'warehouse')}
+                    className="w-full bg-white border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-800 appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs cursor-pointer"
+                  >
+                    <option value="vehicle">Vehicle</option>
+                    <option value="warehouse">Warehouse</option>
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
 
-              <div>
-                <label htmlFor="inv-default-gst" style={labelStyle}>
-                  Default GST Mode
-                </label>
-                <select
-                  id="inv-default-gst"
-                  value={billingForm.defaultGstMode}
-                  onChange={(e) => handleBillingChange('defaultGstMode', e.target.value as GstMode)}
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
-                >
-                  <option value="inclusive">GST Inclusive (Rate includes CGST & SGST)</option>
-                  <option value="exclusive">GST Exclusive (Tax added on top of rate)</option>
-                  <option value="off">GST Off / Non-Tax Bill</option>
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="inv-low-stock" style={labelStyle}>
-                  Low Stock Warning Threshold (Cases)
-                </label>
                 <input
-                  id="inv-low-stock"
-                  type="number"
-                  min={1}
-                  max={100}
-                  value={billingForm.lowStockThreshold}
-                  onChange={(e) => handleBillingChange('lowStockThreshold', Number(e.target.value) || 5)}
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
+                  type="text"
+                  placeholder="Reg. no."
+                  value={newWhRegNo}
+                  onChange={(e) => setNewWhRegNo(e.target.value)}
+                  disabled={newWhType === 'warehouse'}
+                  className="bg-white border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs disabled:bg-neutral-100 disabled:opacity-60"
                 />
-                <span style={fz(11.5, { color: palette.muted, marginTop: '2px', display: 'block' })}>
-                  Products with fewer remaining cases will display amber warning badges.
-                </span>
               </div>
 
-              <div>
-                <label htmlFor="inv-max-salesman-discount" style={labelStyle}>
-                  Max Salesman Discount Cap (%)
-                </label>
-                <input
-                  id="inv-max-salesman-discount"
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={billingForm.maxSalesmanDiscountPercent ?? 10}
-                  onChange={(e) =>
-                    handleBillingChange(
-                      'maxSalesmanDiscountPercent',
-                      Math.max(0, Math.min(100, Number(e.target.value) || 0))
-                    )
-                  }
-                  className="w-full px-3 py-2 focus-ring"
-                  style={inputStyle}
-                />
-                <span style={fz(11.5, { color: palette.muted, marginTop: '2px', display: 'block' })}>
-                  Strict ceiling for field salesmen on route. Salesmen cannot apply discounts exceeding this limit.
-                </span>
-              </div>
-
-              <div className="md:col-span-2 pt-2">
-                <label className="flex items-center gap-3 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    id="setting-round-off"
-                    checked={billingForm.roundOffGrandTotal}
-                    onChange={(e) => handleBillingChange('roundOffGrandTotal', e.target.checked)}
-                    className="w-5 h-5 focus-ring cursor-pointer"
-                  />
-                  <span style={fz(14, { fontWeight: 600, color: palette.ink })}>
-                    Round off invoice total to nearest integer rupee
-                  </span>
-                </label>
-              </div>
-            </div>
-
-            <div className="mt-5 flex justify-end">
               <button
                 type="submit"
-                className="flex items-center gap-2 border-2 px-5 py-2.5 font-bold focus-ring cursor-pointer"
-                style={{
-                  backgroundColor: palette.navy,
-                  borderColor: palette.navy,
-                  color: '#FFFFFF',
-                  ...fz(14),
-                }}
+                disabled={!newWhName.trim()}
+                className="w-full mt-3 py-2 border border-neutral-300 rounded-xl text-sm font-medium text-neutral-700 bg-white hover:bg-neutral-50 transition-colors cursor-pointer shadow-xs disabled:opacity-40"
               >
-                <Save size={Math.round(16 * scale)} aria-hidden="true" />
-                Save Invoicing Settings
+                Add
               </button>
-            </div>
-          </form>
-        </div>
-      )}
+            </form>
+          </div>
+        )}
 
-      {/* SECTION 5: DATABASE & SUPABASE CLOUD SYNC */}
-      {activeSection === 'database' && (
-        <div id="section-database-settings" className="space-y-6">
-          <DatabaseSettingsView />
-        </div>
-      )}
+        {/* ========================================================================= */}
+        {/* CARD 4: STAFF & ROLES (DATABASE BACKED)                                  */}
+        {/* ========================================================================= */}
+        {activeSection === 'beats' && <BeatsSettings />}
 
-      {/* SECTION 6: DEMO & DATA MANAGEMENT */}
-      {activeSection === 'demo' && (
-        <div id="section-demo-settings" className="space-y-6">
-          {/* Import / Export Card */}
-          <div className="border-2 p-5 sm:p-6 shadow-sm" style={cardStyle}>
-            <div className="flex items-center gap-2 mb-2">
-              <Database size={Math.round(20 * scale)} style={{ color: palette.amber }} aria-hidden="true" />
-              <h2 style={fz(19, { fontWeight: 700, color: palette.ink })}>System Backup & Restore</h2>
-            </div>
-            <p style={fz(14, { color: palette.muted, marginBottom: '1.25rem' })}>
-              Download a complete JSON snapshot of your entire ledger (catalog, invoices, trips, audits, and profile) or restore a previous backup.
+        {activeSection === 'staff' && (
+          <div className="bg-white rounded-2xl border border-neutral-200/90 p-3.5 sm:p-6 shadow-xs">
+            <h2 className="text-lg font-bold text-neutral-900 mb-1">Staff & roles</h2>
+            <p className="hidden sm:block text-xs text-neutral-500 mb-4">
+              Staff sign up first, then give them a role here by email.
             </p>
 
-            {importStatus && (
-              <div
-                role="status"
-                className="mb-4 p-3 border-2 font-bold flex items-center gap-2"
-                style={{
-                  borderColor: importStatus.type === 'success' ? palette.good : palette.bad,
-                  backgroundColor: `${importStatus.type === 'success' ? palette.good : palette.bad}15`,
-                  color: importStatus.type === 'success' ? palette.good : palette.bad,
-                  ...fz(13.5),
-                }}
-              >
-                {importStatus.type === 'success' ? <Check size={16} /> : <AlertTriangle size={16} />}
-                {importStatus.message}
-              </div>
-            )}
+            {/* Verified Database Staff List */}
+            <div className="divide-y divide-neutral-100 mb-5">
+              {/* Authenticated Owner / Admin */}
+              <div className="py-2.5 flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-semibold text-neutral-900 block">
+                    {currentUser?.username || profileForm.ownerName || 'dibyaprakashkcd5'}
+                  </span>
+                  <span className="text-xs text-neutral-400 block">
+                    {currentUser && 'email' in currentUser ? currentUser.email : profileForm.email || 'dibyaprakashkcd5@gmail.com'}
+                  </span>
+                </div>
 
-            <div className="flex flex-wrap items-center gap-3">
+                <span className="bg-[#DCFCE7] text-[#166534] text-xs font-semibold px-2.5 py-1 rounded-md flex items-center gap-1">
+                  <span>owner</span>
+                </span>
+              </div>
+
+              {/* Database Salesmen & Staff */}
+              {salesmen.map((salesman) => (
+                <div key={salesman.id} className="py-2.5 flex items-center justify-between group">
+                  <div>
+                    <span className="text-sm font-semibold text-neutral-900 block">{salesman.name}</span>
+                    <span className="text-xs text-neutral-400 font-mono block">
+                      Phone / Login: {salesman.phone} {salesman.defaultVehicle ? `· ${salesman.defaultVehicle}` : ''}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => toggleSalesmanActive(salesman.id)}
+                      className={`text-xs font-medium px-2 py-1 rounded-lg cursor-pointer transition-colors ${
+                        salesman.active ? 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
+                      }`}
+                      title="Toggle active status"
+                    >
+                      {salesman.active ? 'active' : 'inactive'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEditStaff(salesman)}
+                      className="text-xs font-medium px-2.5 py-1 rounded-lg cursor-pointer bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition-colors flex items-center gap-1"
+                      title="Edit staff details"
+                    >
+                      <Pencil className="w-3 h-3 text-neutral-600" />
+                      <span>Edit</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleOpenSetPin(salesman)}
+                      className="text-xs font-medium px-2.5 py-1 rounded-lg cursor-pointer bg-emerald-50 text-emerald-800 hover:bg-emerald-100 transition-colors flex items-center gap-1"
+                      title="Set or reset this person's login PIN"
+                    >
+                      <Key className="w-3 h-3 text-emerald-600" />
+                      <span>Set PIN</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setDeletingStaff(salesman)}
+                      className="text-neutral-400 hover:text-rose-600 p-1.5 cursor-pointer rounded-lg hover:bg-rose-50 transition-colors"
+                      title="Remove staff member"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Add Staff Member Form */}
+            <form onSubmit={handleAddStaffMember} className="pt-2 border-t border-neutral-100 flex flex-col sm:flex-row gap-3">
+              <input
+                type="text"
+                placeholder="staff@email.com or phone"
+                value={newStaffIdentifier}
+                onChange={(e) => setNewStaffIdentifier(e.target.value)}
+                className="flex-1 bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs"
+              />
+
+              <input
+                type="password"
+                inputMode="numeric"
+                autoComplete="new-password"
+                maxLength={6}
+                placeholder="PIN (4-6 digits)"
+                value={newStaffPin}
+                onChange={(e) => setNewStaffPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="w-full sm:w-36 bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs"
+              />
+
+              <div className="relative w-full sm:w-36">
+                <select
+                  value={newStaffRole}
+                  onChange={(e) => setNewStaffRole(e.target.value as any)}
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs cursor-pointer capitalize"
+                >
+                  <option value="driver">driver</option>
+                  <option value="salesman">salesman</option>
+                  <option value="manager">manager</option>
+                  <option value="accountant">accountant</option>
+                  <option value="admin">admin</option>
+                </select>
+                <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </div>
+
+              <button
+                type="submit"
+                disabled={!newStaffIdentifier.trim() || newStaffPin.length < 4}
+                className="bg-[#064E3B] hover:bg-[#043d2e] text-white px-6 py-2.5 rounded-xl font-semibold text-sm transition-colors cursor-pointer shadow-xs disabled:opacity-40"
+              >
+                Give
+              </button>
+            </form>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* CARD 5: DISPLAY & ACCESSIBILITY                                          */}
+        {/* ========================================================================= */}
+        {activeSection === 'display' && (
+          <div className="bg-white rounded-2xl border border-neutral-200/90 p-3.5 sm:p-6 shadow-xs space-y-5">
+            <div>
+              <h2 className="text-base sm:text-lg font-bold text-neutral-900">Display & Accessibility</h2>
+              <p className="hidden sm:block text-xs text-neutral-500 mt-0.5">
+                Scale typography for bright depot lighting conditions and elder readability.
+              </p>
+            </div>
+
+            {/* Font Scale Buttons */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {[
+                { id: 'standard' as FontSize, title: 'Standard (1.00x)', desc: 'Dense HD layout' },
+                { id: 'large' as FontSize, title: 'Large (1.25x)', desc: 'Depot Recommended' },
+                { id: 'xlarge' as FontSize, title: 'Extra Large (1.55x)', desc: 'High Visibility' },
+              ].map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setFontSize(opt.id)}
+                  className={`p-3.5 border rounded-xl text-left transition-all cursor-pointer ${
+                    fontSize === opt.id
+                      ? 'border-[#064E3B] bg-emerald-50/50 text-[#064E3B] ring-1 ring-[#064E3B]'
+                      : 'border-neutral-200 hover:border-neutral-300 text-neutral-700 bg-white'
+                  }`}
+                >
+                  <div className="text-sm font-bold">{opt.title}</div>
+                  <div className="text-xs text-neutral-500 mt-0.5">{opt.desc}</div>
+                </button>
+              ))}
+            </div>
+
+            {/* Accessibility Switches */}
+            <div className="pt-2 border-t border-neutral-100 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-semibold text-neutral-800 block">High Contrast Mode (WCAG AAA)</span>
+                  <span className="text-xs text-neutral-500">Stark monochrome with deep contrast for outdoor sunlight.</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setHighContrast(!highContrast)}
+                  className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                    highContrast ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                  }`}
+                >
+                  <span
+                    className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
+                      highContrast ? 'left-6' : 'left-1'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-semibold text-neutral-800 block">Easy View (Accessible Mobile Touch Billing)</span>
+                  <span className="text-xs text-neutral-500">Large touch steppers with simplified single-column layout.</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={toggleLowVisionMode}
+                  className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                    lowVisionMode ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                  }`}
+                >
+                  <span
+                    className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
+                      lowVisionMode ? 'left-6' : 'left-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* CARD 6: DATABASE & SUPABASE CLOUD SYNC                                   */}
+        {/* ========================================================================= */}
+        {activeSection === 'cloud' && (
+          <div className="bg-white rounded-2xl border border-neutral-200/90 p-3.5 sm:p-6 shadow-xs space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base sm:text-lg font-bold text-neutral-900">Database & Cloud Sync</h2>
+                <p className="hidden sm:block text-xs text-neutral-500 mt-0.5">
+                  Real-time PostgreSQL replication, offline resilience, and ledger state.
+                </p>
+              </div>
+              <span
+                className={`px-2.5 py-1 rounded-md text-xs font-semibold ${
+                  supabaseStatus.isConnected ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-amber-50 text-amber-800 border border-amber-200'
+                }`}
+              >
+                {supabaseStatus.isConnected ? 'Cloud Connected' : 'Offline Mode'}
+              </span>
+            </div>
+
+            <div className="p-3.5 bg-neutral-50 rounded-xl border border-neutral-200 text-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-neutral-500">PostgreSQL Engine:</span>
+                <span className="font-mono font-semibold text-neutral-800">Supabase Managed Database</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-neutral-500">Project Reference:</span>
+                <span className="font-mono font-semibold text-neutral-800">{supabaseConfig.projectRef}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-neutral-500">Latency:</span>
+                <span className="font-mono font-semibold text-neutral-800">{supabaseStatus.latencyMs}ms</span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2.5 pt-1">
               <button
                 type="button"
-                id="btn-export-backup"
-                onClick={exportBackup}
-                className="flex items-center gap-2 border-2 px-4 py-2.5 font-bold focus-ring cursor-pointer"
-                style={{
-                  backgroundColor: palette.navy,
-                  borderColor: palette.navy,
-                  color: '#FFFFFF',
-                  ...fz(14),
+                onClick={async () => {
+                  setToastMessage('Triggering full cloud sync...');
+                  const res = await syncToCloud();
+                  setToastMessage(res.message);
+                  setTimeout(() => setToastMessage(null), 3500);
                 }}
+                className="px-4 py-2 bg-[#064E3B] hover:bg-[#043d2e] text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
               >
-                <Download size={Math.round(16 * scale)} aria-hidden="true" />
-                Export Ledger Backup (.JSON)
+                <Cloud className="w-3.5 h-3.5" />
+                <span>Sync All Data to Cloud</span>
               </button>
 
-              <label
-                htmlFor="input-restore-backup"
-                className="flex items-center gap-2 border-2 px-4 py-2.5 font-bold focus-ring cursor-pointer"
-                style={{
-                  backgroundColor: palette.panel,
-                  borderColor: palette.line,
-                  color: palette.ink,
-                  ...fz(14),
+              <button
+                type="button"
+                onClick={async () => {
+                  setToastMessage('Checking cloud connection...');
+                  await checkSupabaseConnection();
+                  setToastMessage('Connection test complete.');
+                  setTimeout(() => setToastMessage(null), 3000);
                 }}
+                className="px-4 py-2 border border-neutral-300 rounded-xl text-xs font-semibold text-neutral-700 bg-white hover:bg-neutral-50 transition-colors cursor-pointer shadow-xs"
               >
-                <Upload size={Math.round(16 * scale)} aria-hidden="true" />
-                Restore from Backup (.JSON)
+                Test Connection
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* CARD 7: DATA & BACKUPS (SAFETY & RECOVERY)                                */}
+        {/* ========================================================================= */}
+        {activeSection === 'backups' && (
+          <div className="bg-white rounded-2xl border border-neutral-200/90 p-3.5 sm:p-6 shadow-xs space-y-4">
+            <div>
+              <h2 className="text-base sm:text-lg font-bold text-neutral-900">Data & Backups</h2>
+              <p className="hidden sm:block text-xs text-neutral-500 mt-0.5">
+                Download snapshots of your business ledger or import a JSON backup.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={exportBackup}
+                className="px-4 py-2.5 border border-neutral-300 rounded-xl text-xs font-semibold text-neutral-700 bg-white hover:bg-neutral-50 transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs"
+              >
+                <Download className="w-3.5 h-3.5 text-neutral-500" />
+                <span>Export Ledger Backup (.JSON)</span>
+              </button>
+
+              <label className="px-4 py-2.5 border border-neutral-300 rounded-xl text-xs font-semibold text-neutral-700 bg-white hover:bg-neutral-50 transition-colors cursor-pointer flex items-center gap-1.5 shadow-xs">
+                <Upload className="w-3.5 h-3.5 text-neutral-500" />
+                <span>Restore from Backup (.JSON)</span>
                 <input
                   ref={fileInputRef}
-                  id="input-restore-backup"
                   type="file"
                   accept=".json,application/json"
                   onChange={handleFileUpload}
@@ -1636,112 +1502,278 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ initialSection = 'or
                 />
               </label>
             </div>
-          </div>
 
-          {/* Quick Demo Presets */}
-          <div className="border-2 p-5 sm:p-6 shadow-sm" style={cardStyle}>
-            <div className="flex items-center gap-2 mb-2">
-              <Sparkles size={Math.round(20 * scale)} style={{ color: palette.amber }} aria-hidden="true" />
-              <h2 style={fz(19, { fontWeight: 700, color: palette.ink })}>Demo Data Presets</h2>
-            </div>
-            <p style={fz(14, { color: palette.muted, marginBottom: '1.25rem' })}>
-              Instantly switch between realistic distribution business scenarios to demonstrate features, test trip reconciliations, or start fresh.
-            </p>
+            {/* Danger Operations */}
+            <div className="pt-4 border-t border-neutral-100">
+              <h3 className="text-xs font-bold text-rose-700 uppercase tracking-wider mb-2">Danger Operations</h3>
+              <div className="flex flex-wrap gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm('Clear all bills and vehicle trips? Products catalog and company settings will be kept safely.')) {
+                      clearTransactions();
+                      setToastMessage('Transaction records cleared.');
+                      setTimeout(() => setToastMessage(null), 3000);
+                    }
+                  }}
+                  className="px-3.5 py-2 border border-amber-300 rounded-xl text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 transition-colors cursor-pointer"
+                >
+                  Clear Bills & Trips
+                </button>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {(Object.keys(DEMO_PRESETS) as DemoPresetId[]).map((presetKey) => {
-                const preset = DEMO_PRESETS[presetKey];
-                return (
-                  <div
-                    key={presetKey}
-                    className="border-2 p-4 flex flex-col justify-between"
-                    style={{ borderColor: palette.line, backgroundColor: palette.panel }}
-                  >
-                    <div>
-                      <div style={fz(16, { fontWeight: 700, color: palette.ink, marginBottom: '0.25rem' })}>
-                        {preset.name}
-                      </div>
-                      <p style={fz(13, { color: palette.muted, marginBottom: '1rem' })}>
-                        {preset.description}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      id={`btn-load-preset-${presetKey}`}
-                      onClick={() => handleLoadPreset(presetKey)}
-                      className="w-full border-2 px-3 py-2 font-bold focus-ring cursor-pointer transition-colors"
-                      style={{
-                        backgroundColor: `${palette.navy}10`,
-                        borderColor: palette.navy,
-                        color: palette.navy,
-                        ...fz(13),
-                      }}
-                    >
-                      Load This Preset
-                    </button>
-                  </div>
-                );
-              })}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm('Reset all ledger data back to factory defaults?')) {
+                      resetToDefault();
+                      setToastMessage('Ledger reset to defaults.');
+                      setTimeout(() => setToastMessage(null), 3000);
+                    }
+                  }}
+                  className="px-3.5 py-2 border border-rose-300 rounded-xl text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 transition-colors cursor-pointer"
+                >
+                  Factory Reset
+                </button>
+              </div>
             </div>
           </div>
+        )}
+      </div>
 
-          {/* Danger Zone: Reset & Clear */}
-          <div className="border-2 p-5 sm:p-6 shadow-sm" style={{ ...cardStyle, borderColor: palette.bad }}>
-            <div className="flex items-center gap-2 mb-2">
-              <AlertTriangle size={Math.round(20 * scale)} style={{ color: palette.bad }} aria-hidden="true" />
-              <h2 style={fz(19, { fontWeight: 700, color: palette.bad })}>Danger Zone</h2>
+      {/* ========================================================================= */}
+      {/* IN-APP MODAL: EDIT STAFF DETAILS                                          */}
+      {/* ========================================================================= */}
+      {editingStaff && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className="w-full max-w-md bg-white rounded-2xl border border-neutral-200 p-6 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
+              <div>
+                <h3 className="text-base font-bold text-neutral-900">Edit Staff Details</h3>
+                <p className="text-xs text-neutral-500 mt-0.5">Update staff profile, phone number, and permissions</p>
+              </div>
+              <button aria-label="Close"
+                type="button"
+                onClick={() => setEditingStaff(null)}
+                className="p-1 text-neutral-400 hover:text-neutral-700 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <p style={fz(14, { color: palette.muted, marginBottom: '1.25rem' })}>
-              Permanent operations to reset demo state or purge transactional records.
-            </p>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <button
+            {editStaffError && (
+              <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-700 font-medium">
+                {editStaffError}
+              </div>
+            )}
+
+            <form onSubmit={handleSaveEditStaff} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                  Full Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editStaffName}
+                  onChange={(e) => setEditStaffName(e.target.value)}
+                  placeholder="e.g. Rajesh Kumar"
+                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-[#064E3B]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                  Phone / Login Identifier *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editStaffPhone}
+                  onChange={(e) => setEditStaffPhone(e.target.value)}
+                  placeholder="10-digit mobile number or login"
+                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 font-mono focus:outline-none focus:ring-2 focus:ring-[#064E3B]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                  Default Assigned Vehicle / Warehouse
+                </label>
+                <input
+                  type="text"
+                  value={editStaffVehicle}
+                  onChange={(e) => setEditStaffVehicle(e.target.value)}
+                  placeholder="e.g. Van 1, Mobile Delivery Unit, Depot A"
+                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-[#064E3B]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                  New Security PIN (Optional)
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={editStaffNewPin}
+                  onChange={(e) => setEditStaffNewPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="Leave blank to keep existing PIN"
+                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 font-mono focus:outline-none focus:ring-2 focus:ring-[#064E3B]"
+                />
+                <p className="text-[11px] text-neutral-500 mt-1">
+                  Enter 4 to 6 digits only if resetting their login password/PIN.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="staffActiveToggle"
+                  checked={editStaffActive}
+                  onChange={(e) => setEditStaffActive(e.target.checked)}
+                  className="rounded border-neutral-300 text-[#064E3B] focus:ring-0 cursor-pointer"
+                />
+                <label htmlFor="staffActiveToggle" className="text-xs font-medium text-neutral-700 cursor-pointer">
+                  Account is Active (can log in and create sales orders)
+                </label>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-neutral-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingStaff(null)}
+                  className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:text-neutral-900 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isStaffSubmitting}
+                  className="px-5 py-2 text-xs font-semibold text-white bg-[#064E3B] hover:bg-[#043d2e] rounded-xl shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isStaffSubmitting ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* IN-APP MODAL: DEDICATED SET PIN MODAL                                     */}
+      {/* ========================================================================= */}
+      {pinModalStaff && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className="w-full max-w-sm bg-white rounded-2xl border border-neutral-200 p-6 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0">
+                  <Key className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-neutral-900">Set Security PIN</h3>
+                  <p className="text-xs text-neutral-500 font-medium truncate max-w-[200px]">{pinModalStaff.name}</p>
+                </div>
+              </div>
+              <button aria-label="Close"
                 type="button"
-                id="btn-clean-database"
-                onClick={handleCleanDatabase}
-                className="flex items-center gap-2 border-2 px-4 py-2 font-bold focus-ring cursor-pointer"
-                style={{
-                  backgroundColor: palette.panel,
-                  borderColor: palette.bad,
-                  color: palette.bad,
-                  ...fz(13.5),
-                }}
+                onClick={() => setPinModalStaff(null)}
+                className="p-1 text-neutral-400 hover:text-neutral-700 rounded-lg cursor-pointer"
               >
-                <Trash2 size={Math.round(16 * scale)} aria-hidden="true" />
-                Clean Database (Purge All Unwanted / Sample Data)
+                <X className="w-4 h-4" />
               </button>
+            </div>
 
+            {pinModalError && (
+              <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-700 font-medium">
+                {pinModalError}
+              </div>
+            )}
+
+            <form onSubmit={handleSavePin} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-neutral-700 mb-1">
+                  Enter New PIN (4 to 6 digits) *
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  autoFocus
+                  maxLength={6}
+                  required
+                  value={targetPin}
+                  onChange={(e) => setTargetPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="e.g. 1234 or 987654"
+                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2.5 text-base text-center text-neutral-900 font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-[#064E3B]"
+                />
+                <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
+                  {pinModalStaff.name} will sign in using phone <strong>{pinModalStaff.phone}</strong> and this PIN.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-neutral-100">
+                <button
+                  type="button"
+                  onClick={() => setPinModalStaff(null)}
+                  className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:text-neutral-900 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isPinSubmitting || targetPin.length < 4}
+                  className="px-5 py-2 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-xl shadow-xs transition-colors cursor-pointer disabled:opacity-40"
+                >
+                  {isPinSubmitting ? 'Updating...' : 'Save PIN'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* IN-APP MODAL: CONFIRM DELETE STAFF                                        */}
+      {/* ========================================================================= */}
+      {deletingStaff && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className="w-full max-w-sm bg-white rounded-2xl border border-neutral-200 p-6 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                <Trash2 className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-neutral-900">Remove Staff Member?</h3>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  Are you sure you want to remove <strong>{deletingStaff.name}</strong> from staff? Their historical trip and sales records will be preserved.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-neutral-100">
               <button
                 type="button"
-                id="btn-clear-transactions"
-                onClick={handleClearTransactions}
-                className="flex items-center gap-2 border-2 px-4 py-2 font-bold focus-ring cursor-pointer"
-                style={{
-                  backgroundColor: palette.panel,
-                  borderColor: palette.warn,
-                  color: palette.warn,
-                  ...fz(13.5),
-                }}
+                onClick={() => setDeletingStaff(null)}
+                className="px-4 py-2 text-xs font-semibold text-neutral-600 hover:text-neutral-900 rounded-xl transition-colors cursor-pointer"
               >
-                <Trash2 size={Math.round(16 * scale)} aria-hidden="true" />
-                Clear Bills & Trips (Keep Catalog)
+                Cancel
               </button>
-
               <button
                 type="button"
-                id="btn-factory-reset"
-                onClick={handleResetDemo}
-                className="flex items-center gap-2 border-2 px-4 py-2 font-bold focus-ring cursor-pointer"
-                style={{
-                  backgroundColor: palette.bad,
-                  borderColor: palette.bad,
-                  color: '#FFFFFF',
-                  ...fz(13.5),
-                }}
+                onClick={handleConfirmDeleteStaff}
+                className="px-5 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-xs transition-colors cursor-pointer"
               >
-                <RotateCcw size={Math.round(16 * scale)} aria-hidden="true" />
-                Factory Reset All Data to Defaults
+                Confirm Delete
               </button>
             </div>
           </div>

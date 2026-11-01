@@ -11,15 +11,18 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { Bill, Product, Trip } from '../../types';
-import { money } from '../../utils/billing';
+import { money, attachableBillsForTrip } from '../../utils/billing';
+import { billBalance } from '../../utils/salesReturns';
 
 interface AssignBillsModalProps {
   trip: Trip | null;
   isOpen: boolean;
   onClose: () => void;
   bills: Bill[];
+  /** All trips, to show which bills already sit on another trip. */
+  allTrips?: Trip[];
   products: Product[];
-  onToggleBill: (tripId: number, billId: number) => void;
+  onToggleBill: (tripId: number, billId: number) => string | null | void;
   onAutoAssignDate: (tripId: number) => void;
   palette: any;
   fz: (size: number, extra?: React.CSSProperties) => React.CSSProperties;
@@ -31,6 +34,7 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
   isOpen,
   onClose,
   bills,
+  allTrips = [],
   products,
   onToggleBill,
   onAutoAssignDate,
@@ -58,17 +62,32 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
         return b.date === trip.date;
       }
       if (filterMode === 'unassigned') {
-        return !trip.billIds.includes(b.id);
+        // Not on this trip AND not on any other trip either.
+        if (trip.billIds.includes(b.id)) return false;
+        if (b.tripId != null && Number(b.tripId) > 0 && Number(b.tripId) !== Number(trip.id)) return false;
+        return !allTrips.some(
+          (x) => Number(x.id) !== Number(trip.id) && (x.billIds || []).map(Number).includes(Number(b.id)),
+        );
       }
       return true;
     });
-  }, [bills, trip, searchTerm, filterMode]);
+  }, [bills, trip, allTrips, searchTerm, filterMode]);
 
-  // Bills matching trip date that are not yet assigned
+  // Trip (other than this one) that already holds a bill, if any.
+  const otherTripOf = (b: Bill): number | null => {
+    if (!trip) return null;
+    if (b.tripId != null && Number(b.tripId) > 0 && Number(b.tripId) !== Number(trip.id)) return Number(b.tripId);
+    const t = allTrips.find(
+      (x) => Number(x.id) !== Number(trip.id) && (x.billIds || []).map(Number).includes(Number(b.id)),
+    );
+    return t ? Number(t.id) : null;
+  };
+
+  // Bills that auto-assign would pick up: same date, same salesman / van, not on another trip.
   const unassignedDateBillsCount = useMemo(() => {
     if (!trip) return 0;
-    return bills.filter((b) => b.date === trip.date && !trip.billIds.includes(b.id)).length;
-  }, [bills, trip]);
+    return attachableBillsForTrip(trip, bills, allTrips).filter((b) => !trip.billIds.includes(b.id)).length;
+  }, [bills, trip, allTrips]);
 
   // Calculate summary of assigned bills
   const assignedBills = useMemo(() => {
@@ -145,7 +164,7 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
             <button
               type="button"
               onClick={() => onAutoAssignDate(trip.id)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white rounded cursor-pointer transition-all shadow-xs"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white rounded cursor-pointer transition-all shadow-sm"
               style={{ backgroundColor: palette.navy }}
             >
               <Zap size={13} aria-hidden="true" />
@@ -201,7 +220,7 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
                 className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
                 aria-hidden="true"
               />
-              <input
+              <input enterKeyHint="search"
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -210,7 +229,7 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
                 style={inputStyle}
               />
               {searchTerm && (
-                <button
+                <button aria-label="Close"
                   type="button"
                   onClick={() => setSearchTerm('')}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
@@ -237,6 +256,7 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
           ) : (
             filteredBills.map((bill) => {
               const isAssigned = trip.billIds.includes(bill.id);
+              const ownerTrip = isAssigned ? null : otherTripOf(bill);
               const totalCases = bill.items.reduce((sum, it) => sum + it.qty, 0);
 
               // Beverage items summary string
@@ -250,8 +270,13 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
               return (
                 <div
                   key={bill.id}
-                  onClick={() => onToggleBill(trip.id, bill.id)}
-                  className="p-3 border-2 rounded flex items-center justify-between gap-3 cursor-pointer transition-all hover:shadow-xs"
+                  onClick={() => {
+                    if (ownerTrip != null) return;
+                    onToggleBill(trip.id, bill.id);
+                  }}
+                  className={`p-3 border-2 rounded flex items-center justify-between gap-3 transition-all ${
+                    ownerTrip != null ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer hover:shadow-sm'
+                  }`}
                   style={{
                     borderColor: isAssigned ? palette.navy : palette.line,
                     backgroundColor: isAssigned ? `${palette.navy}08` : palette.panel,
@@ -275,6 +300,11 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
                         <span className="font-bold text-slate-900 text-sm">{bill.retailer}</span>
                         <span className="text-xs text-slate-500 font-semibold">Bill #{bill.id}</span>
                         <span className="text-xs text-slate-400">· {bill.date}</span>
+                        {ownerTrip != null && (
+                          <span className="text-[11px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
+                            On Trip #{ownerTrip}
+                          </span>
+                        )}
                         {bill.phone && (
                           <span className="text-xs text-slate-500">· Ph: {bill.phone}</span>
                         )}
@@ -290,10 +320,10 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
                     <div className="font-bold text-slate-900 text-sm">₹{money(bill.total)}</div>
                     <div className="text-xs text-slate-500 font-semibold">{totalCases} cases</div>
                     <div className="text-[11px] font-bold mt-0.5">
-                      {bill.amountPaid >= bill.total ? (
+                      {billBalance(bill) <= 0 ? (
                         <span className="text-emerald-700">PAID</span>
                       ) : bill.amountPaid > 0 ? (
-                        <span className="text-amber-700">₹{money(bill.total - bill.amountPaid)} DUE</span>
+                        <span className="text-amber-700">₹{money(billBalance(bill))} DUE</span>
                       ) : (
                         <span className="text-red-700">UNPAID</span>
                       )}
@@ -317,7 +347,7 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="border-2 px-5 py-2 font-bold text-xs text-white rounded cursor-pointer transition-all shadow-xs"
+            className="border-2 px-5 py-2 font-bold text-xs text-white rounded cursor-pointer transition-all shadow-sm"
             style={{
               backgroundColor: palette.navy,
               borderColor: palette.navy,

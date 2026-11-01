@@ -16,33 +16,43 @@ import {
   User,
   Users,
   Check,
+  LayoutList,
+  X,
 } from 'lucide-react';
 import { Bill, ExistingCustomer } from '../../types';
 import { money, statusOf } from '../../utils/billing';
 import { StatusBadge } from '../common/StatusBadge';
 import { WhatsAppButton } from '../common/WhatsAppButton';
+import { RecordPaymentModal } from '../common/RecordPaymentModal';
 import { useLedger } from '../../context/LedgerContext';
+import { billBalance, billNetTotal, billRefundDue, billReturnCredit } from '../../utils/salesReturns';
+import { todayISO } from '../../utils/dateLocal';
 
 interface BillingHistoryViewProps {
-  onViewInvoice: (bill: Bill) => void;
+  onViewInvoice: (bill: Bill, defaultFormat?: 'gst' | 'non_gst') => void;
   onEditBill: (bill: Bill) => void;
   onDeleteBill: (bill: Bill) => void;
+  onCancelBill: (bill: Bill) => void;
   onNewInvoiceClick?: () => void;
 }
 
-type HistoryGrouping = 'date' | 'customer';
+type HistoryGrouping = 'table' | 'date' | 'customer';
 type PaymentFilter = 'all' | 'pending' | 'paid';
 
 export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
   onViewInvoice,
   onEditBill,
   onDeleteBill,
+  onCancelBill,
   onNewInvoiceClick,
 }) => {
   const {
     bills,
+    cancelledBills,
     salesmen,
     recordPayment,
+    recordCustomerPayment,
+    payments,
     syncBillsToCloud,
     palette,
     fz,
@@ -50,12 +60,13 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
     billingSettings,
   } = useLedger();
 
-  const [grouping, setGrouping] = useState<HistoryGrouping>('date');
+  const [grouping, setGrouping] = useState<HistoryGrouping>('table');
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('all');
   const [salesmanFilter, setSalesmanFilter] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
   const [paymentDraft, setPaymentDraft] = useState<Record<number, string>>({});
+  const [paymentModalBill, setPaymentModalBill] = useState<Bill | null>(null);
   const [isSyncingBills, setIsSyncingBills] = useState(false);
   const [syncBillsMsg, setSyncBillsMsg] = useState<string | null>(null);
 
@@ -73,7 +84,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
         b.date.includes(q) ||
         b.items.some((i) => i.productName.toLowerCase().includes(q));
 
-      const due = Math.max(0, b.total - b.amountPaid);
+      const due = billBalance(b);
       let matchesPayment = true;
       if (paymentFilter === 'pending') matchesPayment = due > 0;
       if (paymentFilter === 'paid') matchesPayment = due === 0;
@@ -96,10 +107,48 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
     const totalBilled = bills.reduce((sum, b) => sum + b.total, 0);
     const totalPaid = bills.reduce((sum, b) => sum + b.amountPaid, 0);
     const totalDue = Math.max(0, totalBilled - totalPaid);
-    const pendingCount = bills.filter((b) => b.total - b.amountPaid > 0).length;
-    const paidCount = bills.filter((b) => b.total - b.amountPaid <= 0).length;
+    const pendingCount = bills.filter((b) => billBalance(b) > 0).length;
+    const paidCount = bills.filter((b) => billBalance(b) <= 0).length;
     return { totalCount, totalBilled, totalPaid, totalDue, pendingCount, paidCount };
   }, [bills]);
+
+  // Status breakdown counts (respecting search and salesman filters)
+  const statusCounts = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const base = bills.filter((b) => {
+      const matchesSearch =
+        !q ||
+        b.retailer.toLowerCase().includes(q) ||
+        (b.phone && b.phone.includes(q)) ||
+        String(b.id).includes(q) ||
+        b.date.includes(q) ||
+        b.items.some((i) => i.productName.toLowerCase().includes(q));
+
+      let matchesSalesman = true;
+      if (salesmanFilter) {
+        matchesSalesman =
+          b.salesmanId === salesmanFilter ||
+          b.salesman === salesmanFilter ||
+          salesmen.find((s) => s.id === salesmanFilter)?.name === b.salesman;
+      }
+      return matchesSearch && matchesSalesman;
+    });
+
+    const all = base.length;
+    const pending = base.filter((b) => billBalance(b) > 0).length;
+    const paid = base.filter((b) => billBalance(b) <= 0).length;
+    return { all, pending, paid };
+  }, [bills, salesmen, searchQuery, salesmanFilter]);
+
+  // Unique customer list for payment modal
+  // One source of truth for customer balances: the ledger's own list (opening balance, every
+  // receipt, advances and returns included). A private list built from bills alone showed
+  // "0 due / settled" for a customer who had paid in advance.
+  const { existingCustomers: ledgerCustomers } = useLedger();
+  const existingCustomers: ExistingCustomer[] = useMemo(
+    () => ledgerCustomers,
+    [ledgerCustomers],
+  );
 
   // Group by Date (Latest date on top)
   const dateGroups = useMemo(() => {
@@ -216,12 +265,21 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
   const handleRecordPayment = (billId: number) => {
     const amount = Number(paymentDraft[billId]);
     if (!amount || amount <= 0) return;
-    recordPayment(billId, amount);
+    const bill = bills.find((b) => b.id === billId);
+    // recordPayment only applies what is still due on this invoice, so anything typed above that
+    // used to vanish with no trace. Send a larger amount through the receipt flow instead: this
+    // invoice is paid first, the rest goes to the customer's oldest unpaid invoices, and whatever
+    // is left is kept as an advance on account.
+    if (bill && amount > billBalance(bill) + 0.004) {
+      recordCustomerPayment(bill.retailer, amount, todayISO(), 'cash', undefined, billId);
+    } else {
+      recordPayment(billId, amount);
+    }
     setPaymentDraft((pd) => ({ ...pd, [billId]: '' }));
   };
 
   const handleFullClear = (bill: Bill) => {
-    const due = Math.max(0, bill.total - bill.amountPaid);
+    const due = billBalance(bill);
     if (due > 0) {
       recordPayment(bill.id, due);
     }
@@ -234,184 +292,374 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
 
   return (
     <div id="view-billing-history" className="space-y-4">
-      {/* Top Bar: Grouping, Filters, and Actions */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-2 p-3 sm:p-4 rounded shadow-xs" style={cardStyle}>
-        {/* Left: View Mode (Date-wise vs Customer) */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs font-bold uppercase tracking-wider text-slate-500">View By:</span>
-          <div className="flex rounded border-2 overflow-hidden bg-slate-100 p-0.5" style={{ borderColor: palette.line }}>
+      {/* =========================================================================
+          MODERN SMART CONTROL BAR (Search + View Modes + Payment Status Filters)
+          ========================================================================= */}
+      {/* =========================================================================
+          SMART MODERN CONTROL BAR (Interactive Metric Cards + Sleek View Mode Tabs)
+          ========================================================================= */}
+      {/* 1. Interactive KPI Summary Cards (Double as Fast Payment Status Filters) */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
+        {/* All Bills Card */}
+        <button
+          type="button"
+          id="filter-all-bills"
+          onClick={() => setPaymentFilter('all')}
+          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden group select-none ${
+            paymentFilter === 'all'
+              ? 'bg-white border-[#0d4a3a] shadow-md ring-2 ring-[#0d4a3a]/15'
+              : 'bg-white/80 border-slate-200 hover:border-slate-300 hover:bg-white shadow-2xs'
+          }`}
+        >
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 group-hover:text-slate-700">
+              All Invoices
+            </span>
+            <span
+              className={`text-xs font-bold px-2 py-0.5 rounded-full font-mono transition-colors ${
+                paymentFilter === 'all' ? 'bg-[#0d4a3a] text-white' : 'bg-slate-100 text-slate-600'
+              }`}
+            >
+              {statusCounts.all}
+            </span>
+          </div>
+          <div className="font-mono text-base sm:text-lg font-black text-slate-900">
+            ₹{money(stats.totalBilled)}
+          </div>
+          <div className="text-[11px] text-slate-400 mt-0.5">
+            Total sales value ({bills.length} total bills)
+          </div>
+        </button>
+
+        {/* Pending Due Card */}
+        <button
+          type="button"
+          id="filter-pending-bills"
+          onClick={() => setPaymentFilter('pending')}
+          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden group select-none ${
+            paymentFilter === 'pending'
+              ? 'bg-amber-50/70 border-amber-600 shadow-md ring-2 ring-amber-600/20'
+              : 'bg-white/80 border-slate-200 hover:border-amber-300 hover:bg-amber-50/30 shadow-2xs'
+          }`}
+        >
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
+              Pending Due
+            </span>
+            <span
+              className={`text-xs font-bold px-2 py-0.5 rounded-full font-mono transition-colors ${
+                paymentFilter === 'pending'
+                  ? 'bg-amber-600 text-white'
+                  : 'bg-amber-100 text-amber-800'
+              }`}
+            >
+              {statusCounts.pending}
+            </span>
+          </div>
+          <div className="font-mono text-base sm:text-lg font-black text-amber-950">
+            ₹{money(stats.totalDue)}
+          </div>
+          <div className="text-[11px] text-amber-700/80 mt-0.5">
+            Outstanding balance to collect
+          </div>
+        </button>
+
+        {/* Paid / Cleared Card */}
+        <button
+          type="button"
+          id="filter-paid-bills"
+          onClick={() => setPaymentFilter('paid')}
+          className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden group select-none ${
+            paymentFilter === 'paid'
+              ? 'bg-emerald-50/70 border-emerald-700 shadow-md ring-2 ring-emerald-700/20'
+              : 'bg-white/80 border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/30 shadow-2xs'
+          }`}
+        >
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800">
+              Paid in Full
+            </span>
+            <span
+              className={`text-xs font-bold px-2 py-0.5 rounded-full font-mono transition-colors ${
+                paymentFilter === 'paid'
+                  ? 'bg-emerald-700 text-white'
+                  : 'bg-emerald-100 text-emerald-800'
+              }`}
+            >
+              {statusCounts.paid}
+            </span>
+          </div>
+          <div className="font-mono text-base sm:text-lg font-black text-emerald-950">
+            ₹{money(stats.totalPaid)}
+          </div>
+          <div className="text-[11px] text-emerald-700/80 mt-0.5">
+            Settled collections
+          </div>
+        </button>
+      </div>
+
+      {/* 2. Unified Modern Smart Toolbar (View Mode Tabs + Search + Secondary Actions) */}
+      <div className="bg-white rounded-2xl border border-slate-200/90 p-3 sm:p-3.5 shadow-xs space-y-3">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          {/* Main View Mode Segmented Tabs: Table (default) | Date-wise | By Customer */}
+          <div className="inline-flex p-1 bg-slate-100/90 rounded-xl border border-slate-200/80 shrink-0 self-stretch sm:self-auto shadow-2xs">
             <button
               type="button"
-              id="history-group-date"
-              onClick={() => setGrouping('date')}
-              className={`px-3 py-1.5 text-xs font-bold flex items-center gap-1.5 cursor-pointer rounded transition-colors ${
-                grouping === 'date' ? 'bg-blue-900 text-white shadow-xs' : 'text-slate-700 hover:text-slate-900'
+              id="tab-view-table"
+              onClick={() => setGrouping('table')}
+              className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none ${
+                grouping === 'table'
+                  ? 'bg-[#0d4a3a] text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
               }`}
-              style={grouping === 'date' ? { backgroundColor: palette.navy, color: '#FFFFFF' } : {}}
             >
-              <Calendar size={13} />
-              Date-wise
+              <LayoutList size={14} />
+              <span>Table</span>
             </button>
+
             <button
               type="button"
-              id="history-group-customer"
-              onClick={() => setGrouping('customer')}
-              className={`px-3 py-1.5 text-xs font-bold flex items-center gap-1.5 cursor-pointer rounded transition-colors ${
-                grouping === 'customer' ? 'bg-blue-900 text-white shadow-xs' : 'text-slate-700 hover:text-slate-900'
+              id="tab-view-date"
+              onClick={() => setGrouping('date')}
+              className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none ${
+                grouping === 'date'
+                  ? 'bg-[#0d4a3a] text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
               }`}
-              style={grouping === 'customer' ? { backgroundColor: palette.navy, color: '#FFFFFF' } : {}}
             >
-              <Users size={13} />
-              By Customer
+              <Calendar size={14} />
+              <span>Date-wise</span>
+            </button>
+
+            <button
+              type="button"
+              id="tab-view-customer"
+              onClick={() => setGrouping('customer')}
+              className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none ${
+                grouping === 'customer'
+                  ? 'bg-[#0d4a3a] text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+              }`}
+            >
+              <Users size={14} />
+              <span>By Customer</span>
             </button>
           </div>
 
-          <div className="flex items-center gap-1 ml-2">
-            <button
-              type="button"
-              onClick={handleExpandAll}
-              className="text-xs font-bold px-2 py-1 border rounded hover:bg-slate-50 cursor-pointer"
-              style={{ borderColor: palette.line, color: palette.navy }}
-              title="Expand all sections"
-            >
-              Expand All
-            </button>
-            <button
-              type="button"
-              onClick={handleCollapseAll}
-              className="text-xs font-bold px-2 py-1 border rounded hover:bg-slate-50 cursor-pointer"
-              style={{ borderColor: palette.line, color: palette.muted }}
-              title="Collapse all sections"
-            >
-              Collapse All
-            </button>
+          {/* Search Bar + Controls */}
+          <div className="flex items-center gap-2 flex-1 max-w-xl">
+            <div className="relative flex-1 min-w-[180px]">
+              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <input enterKeyHint="search"
+                id="history-search-input"
+                type="text"
+                placeholder="Search bills, customer, phone, item..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-9 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/20 focus:border-[#0d4a3a] focus:bg-white transition-all shadow-2xs"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                  aria-label="Clear search"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            {/* Accordion Expand/Collapse buttons when in grouped mode (Date-wise or Customer) */}
+            {grouping !== 'table' && (
+              <div className="inline-flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleExpandAll}
+                  className="text-[11px] font-semibold px-2.5 py-1.5 rounded-md bg-white hover:bg-slate-50 text-slate-700 shadow-2xs transition-colors cursor-pointer"
+                >
+                  Expand
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCollapseAll}
+                  className="text-[11px] font-semibold px-2.5 py-1.5 rounded-md hover:bg-white/80 text-slate-600 transition-colors cursor-pointer"
+                >
+                  Collapse
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Right: Metrics & Sync */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="px-2.5 py-1 border font-bold text-xs rounded" style={{ borderColor: palette.line, backgroundColor: palette.panel }}>
-            {bills.length} Bills
-          </span>
-          <span className="px-2.5 py-1 border font-bold text-xs rounded text-blue-900 bg-blue-50 border-blue-200">
-            ₹{money(stats.totalBilled)}
-          </span>
-          {stats.totalDue > 0 && (
-            <span className="px-2.5 py-1 border font-bold text-xs rounded text-rose-700 bg-rose-50 border-rose-200">
-              Due: ₹{money(stats.totalDue)}
+        {/* Live Filter Feedback Strip */}
+        <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500 font-medium flex-wrap gap-2">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="font-semibold text-slate-800">
+              Showing {filteredBills.length}
             </span>
-          )}
-          <button
-            type="button"
-            id="btn-sync-history-cloud"
-            disabled={isSyncingBills}
-            onClick={async () => {
-              setIsSyncingBills(true);
-              setSyncBillsMsg(null);
-              try {
-                const res = await syncBillsToCloud();
-                if (res.success) {
-                  setSyncBillsMsg(`Synced ${res.count} bills to cloud!`);
-                } else {
-                  setSyncBillsMsg(`Sync note: ${res.error || 'Check connection'}`);
-                }
-              } catch (e: any) {
-                setSyncBillsMsg(`Sync failed: ${e?.message || 'Error'}`);
-              } finally {
-                setIsSyncingBills(false);
-                setTimeout(() => setSyncBillsMsg(null), 4000);
-              }
-            }}
-            className="flex items-center gap-1 border px-2.5 py-1 text-xs font-bold rounded cursor-pointer hover:bg-slate-50"
-            style={{ borderColor: palette.line }}
-            title="Sync with cloud database"
-          >
-            <RefreshCw size={12} className={isSyncingBills ? 'animate-spin text-blue-600' : ''} />
-            {isSyncingBills ? 'Syncing...' : 'Sync'}
-          </button>
+            <span className="text-slate-400">of</span>
+            <span className="text-slate-600">{bills.length} total bills</span>
+            {paymentFilter !== 'all' && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-slate-100 text-slate-700">
+                Filter: {paymentFilter.toUpperCase()}
+                <button
+                  type="button"
+                  onClick={() => setPaymentFilter('all')}
+                  className="text-slate-400 hover:text-slate-700 cursor-pointer ml-0.5"
+                >
+                  ✕
+                </button>
+              </span>
+            )}
+          </div>
+
+          <div className="text-right">
+            <span>Filtered Total: </span>
+            <span className="font-mono font-bold text-slate-900">
+              ₹{money(filteredBills.reduce((s, b) => s + b.total, 0))}
+            </span>
+          </div>
         </div>
       </div>
 
       {syncBillsMsg && (
-        <div className="p-2.5 border rounded flex items-center gap-2 text-xs font-bold bg-emerald-50 text-emerald-800 border-emerald-300">
+        <div className="p-2.5 border rounded-xl flex items-center gap-2 text-xs font-bold bg-emerald-50 text-emerald-800 border-emerald-300">
           <Check size={14} />
           {syncBillsMsg}
         </div>
       )}
 
-      {/* Search and Status Filters */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-2 p-3 rounded shadow-xs" style={cardStyle}>
-        <div className="relative flex-1 min-w-[220px]">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            id="history-search-input"
-            type="text"
-            placeholder="Search party, bill #, phone, beverage..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-1.5 text-xs font-medium border-2 rounded focus-ring"
-            style={{ borderColor: palette.line, backgroundColor: palette.panel }}
-          />
+      {/* PRIMARY VIEW MODE: Clean Table directly compliant with Image 1 */}
+      {grouping === 'table' && (
+        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+          {/* Desktop Table View (visible on md screens and up) */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-100 bg-slate-50/70">
+                  <th className="py-3.5 px-6 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    ITEM
+                  </th>
+                  <th className="py-3.5 px-6 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    DETAILS
+                  </th>
+                  <th className="py-3.5 px-6 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    VALUE
+                  </th>
+                  <th className="py-3.5 px-6 text-xs font-semibold uppercase tracking-wider text-slate-500 text-right">
+                    STATUS
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredBills.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="py-12 text-center text-slate-400 text-sm">
+                      No billing records found.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredBills.map((b) => {
+                    const due = billBalance(b);
+                    const isPaid = due <= 0.01;
+                    const invPrefix = billingSettings?.invoicePrefix || (b.isGstInvoice ? 'INV' : 'INV');
+                    const itemLabel = `${invPrefix}-${b.id}`;
+
+                    return (
+                      <tr
+                        key={b.id}
+                        onClick={() => onViewInvoice(b)}
+                        className="hover:bg-slate-50/80 cursor-pointer transition-colors group select-none"
+                        title="Click to view full sale details"
+                      >
+                        <td className="py-4 px-6 text-sm font-semibold text-slate-900 group-hover:text-emerald-800">
+                          {itemLabel}
+                        </td>
+                        <td className="py-4 px-6 text-sm text-slate-600 font-normal">
+                          {b.retailer || 'Cash customer'}
+                        </td>
+                        <td className="py-4 px-6 text-sm font-semibold text-slate-900 font-mono tabular-nums">
+                          ₹{money(b.total)}
+                        </td>
+                        <td className="py-4 px-6 text-sm text-right">
+                          <span className={`font-semibold text-xs ${isPaid ? 'text-teal-600' : 'text-amber-600'}`}>
+                            {isPaid ? 'Paid' : 'Pending'}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile & Tablet Responsive View — strictly matching Image 1 */}
+          <div className="md:hidden">
+            <div className="border-b border-slate-100 bg-slate-50/70 px-4 py-3 flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">ITEM</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">STATUS</span>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {filteredBills.length === 0 ? (
+                <div className="py-12 text-center text-slate-400 text-sm">
+                  No billing records found.
+                </div>
+              ) : (
+                filteredBills.map((b) => {
+                  const due = billBalance(b);
+                  const isPaid = due <= 0.01;
+                  const invPrefix = billingSettings?.invoicePrefix || (b.isGstInvoice ? 'INV' : 'INV');
+                  const itemLabel = `${invPrefix}-${b.id}`;
+
+                  return (
+                    <div
+                      key={b.id}
+                      onClick={() => onViewInvoice(b)}
+                      className="px-4 py-3.5 flex items-center justify-between hover:bg-slate-50/80 active:bg-slate-100 cursor-pointer transition-colors select-none"
+                      title="Click to view full sale details"
+                    >
+                      <div className="min-w-0 pr-3">
+                        <div className="text-sm font-bold text-slate-900 leading-tight">
+                          {itemLabel}
+                        </div>
+                        <div className="text-xs text-slate-500 mt-1 truncate">
+                          {b.retailer || 'Cash customer'} · ₹{money(b.total)}
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right space-y-1.5">
+                        <span className={`block font-semibold text-xs ${isPaid ? 'text-teal-600' : 'text-amber-600'}`}>
+                          {isPaid ? 'Paid' : 'Pending'}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
         </div>
+      )}
 
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <select
-            id="filter-by-salesman"
-            aria-label="Filter by Salesman"
-            value={salesmanFilter}
-            onChange={(e) => setSalesmanFilter(e.target.value)}
-            className="border-2 rounded px-2.5 py-1 text-xs font-semibold focus-ring bg-white"
-            style={{ borderColor: palette.line }}
-          >
-            <option value="">All Salesmen ({salesmen.length})</option>
-            {salesmen.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
+      {/* SECONDARY VIEW MODES: Date-wise or By Customer */}
+      {grouping !== 'table' && (
+        <>
 
-          {(
-            [
-              { id: 'all', label: 'All', count: stats.totalCount },
-              { id: 'pending', label: 'Pending Due', count: stats.pendingCount },
-              { id: 'paid', label: 'Paid', count: stats.paidCount },
-            ] as const
-          ).map((flt) => {
-            const active = paymentFilter === flt.id;
-            return (
-              <button
-                key={flt.id}
-                type="button"
-                onClick={() => setPaymentFilter(flt.id)}
-                className={`px-3 py-1.5 text-xs font-bold rounded border transition-colors cursor-pointer flex items-center gap-1.5 ${
-                  active ? 'bg-blue-900 text-white border-blue-900' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                }`}
-                style={active ? { backgroundColor: palette.navy, borderColor: palette.navy, color: '#FFFFFF' } : {}}
-              >
-                <span>{flt.label}</span>
-                <span className={`px-1 py-0.2 rounded text-[10px] ${active ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
-                  {flt.count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Main Listing: Empty State */}
+      {/* Empty state — Crate-style */}
       {filteredBills.length === 0 && (
-        <div className="border-2 p-8 text-center rounded shadow-xs" style={cardStyle}>
-          <FileText size={32} className="mx-auto text-slate-400 mb-2" />
-          <p className="font-bold text-slate-700 text-sm">No bills match your criteria.</p>
+        <div className="bg-white rounded-2xl border border-black/5 shadow-sm px-6 py-12 text-center">
+          <h3 className="text-base font-bold text-slate-900">No bills yet</h3>
+          <p className="text-sm text-slate-500 mt-1.5">
+            Create your first sale to see it here.
+          </p>
           {onNewInvoiceClick && (
             <button
               type="button"
               onClick={onNewInvoiceClick}
-              className="mt-3 px-4 py-2 text-xs font-bold text-white rounded cursor-pointer"
-              style={{ backgroundColor: palette.good }}
+              className="mt-5 inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-[#0d4a3a] text-white text-sm font-semibold shadow-sm cursor-pointer active:scale-[0.99]"
             >
-              Create New Invoice
+              New sale
             </button>
           )}
         </div>
@@ -422,7 +670,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
         dateGroups.map((group, idx) => {
           const expanded = isExpanded(group.key, idx === 0);
           return (
-            <div key={group.key} className="border-2 rounded overflow-hidden shadow-xs" style={cardStyle}>
+            <div key={group.key} className="border-2 rounded overflow-hidden shadow-sm" style={cardStyle}>
               {/* Accordion Header */}
               <button
                 type="button"
@@ -465,10 +713,12 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                       onViewInvoice={onViewInvoice}
                       onEditBill={onEditBill}
                       onDeleteBill={onDeleteBill}
+                      onCancelBill={onCancelBill}
                       paymentDraft={paymentDraft[bill.id] || ''}
                       onPaymentDraftChange={(val) => setPaymentDraft((prev) => ({ ...prev, [bill.id]: val }))}
                       onRecordPayment={() => handleRecordPayment(bill.id)}
                       onFullClear={() => handleFullClear(bill)}
+                      onOpenPaymentModal={() => setPaymentModalBill(bill)}
                     />
                   ))}
                 </div>
@@ -482,7 +732,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
         customerGroups.map((group, idx) => {
           const expanded = isExpanded(group.key, idx === 0);
           return (
-            <div key={group.key} className="border-2 rounded overflow-hidden shadow-xs" style={cardStyle}>
+            <div key={group.key} className="border-2 rounded overflow-hidden shadow-sm" style={cardStyle}>
               {/* Accordion Header */}
               <button
                 type="button"
@@ -527,10 +777,12 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                       onViewInvoice={onViewInvoice}
                       onEditBill={onEditBill}
                       onDeleteBill={onDeleteBill}
+                      onCancelBill={onCancelBill}
                       paymentDraft={paymentDraft[bill.id] || ''}
                       onPaymentDraftChange={(val) => setPaymentDraft((prev) => ({ ...prev, [bill.id]: val }))}
                       onRecordPayment={() => handleRecordPayment(bill.id)}
                       onFullClear={() => handleFullClear(bill)}
+                      onOpenPaymentModal={() => setPaymentModalBill(bill)}
                     />
                   ))}
                 </div>
@@ -538,6 +790,33 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
             </div>
           );
         })}
+        </>
+      )}
+
+      {/* Record Payment Modal with date maintenance */}
+      {paymentModalBill && (
+        <RecordPaymentModal
+          isOpen={Boolean(paymentModalBill)}
+          onClose={() => setPaymentModalBill(null)}
+          initialCustomerName={paymentModalBill.retailer}
+          initialBillId={paymentModalBill.id}
+          initialAmount={billBalance(paymentModalBill)}
+          existingCustomers={existingCustomers}
+          bills={bills}
+          palette={palette}
+          onSavePayment={({ customerName, amount, paymentDate, mode, referenceNote, billId }) => {
+            recordCustomerPayment(
+              customerName,
+              amount,
+              paymentDate,
+              mode,
+              referenceNote,
+              billId || paymentModalBill.id
+            );
+            setPaymentModalBill(null);
+          }}
+        />
+      )}
     </div>
   );
 };
@@ -549,10 +828,12 @@ interface BillItemCardProps {
   onViewInvoice: (b: Bill) => void;
   onEditBill: (b: Bill) => void;
   onDeleteBill: (b: Bill) => void;
+  onCancelBill: (b: Bill) => void;
   paymentDraft: string;
   onPaymentDraftChange: (val: string) => void;
   onRecordPayment: () => void;
   onFullClear: () => void;
+  onOpenPaymentModal: () => void;
 }
 
 const BillItemCard: React.FC<BillItemCardProps> = ({
@@ -562,33 +843,57 @@ const BillItemCard: React.FC<BillItemCardProps> = ({
   onViewInvoice,
   onEditBill,
   onDeleteBill,
+  onCancelBill,
   paymentDraft,
   onPaymentDraftChange,
   onRecordPayment,
   onFullClear,
+  onOpenPaymentModal,
 }) => {
-  const balance = Math.max(0, bill.total - bill.amountPaid);
-  const st = statusOf(bill.total, bill.amountPaid);
+  const balance = billBalance(bill);
+  const st = statusOf(billNetTotal(bill), bill.amountPaid);
   const totalCases = bill.items.reduce((s, i) => s + i.qty, 0);
   const freeCases = bill.items.reduce((s, i) => s + (i.freeQty || 0), 0);
+  const returnCredit = billReturnCredit(bill);
+  const refundDue = billRefundDue(bill);
 
   return (
-    <div className="border rounded-md p-3 bg-white hover:border-slate-400 transition-colors shadow-2xs space-y-2.5">
+    <div className="border rounded-md p-3 bg-white hover:border-slate-400 transition-colors shadow-sm space-y-2.5">
+      {returnCredit > 0 && (
+        <div className="text-[11px] font-semibold rounded bg-sky-50 border border-sky-200 text-sky-700 px-2 py-1">
+          Returns credited: ₹{money(returnCredit)} ({(bill.returns || []).map((r) => r.creditNoteNo).join(', ')})
+          {refundDue > 0 && <span className="text-amber-800"> · Refund due to customer: ₹{money(refundDue)}</span>}
+        </div>
+      )}
       {/* Top Line: Invoice #, Date, Customer & Status */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
             onClick={() => onViewInvoice(bill)}
-            className="font-bold font-mono text-xs px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-blue-900 border border-slate-300 cursor-pointer"
-            title="Click to view tax invoice"
+            className="font-bold font-mono text-xs px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-sky-700 border border-slate-300 cursor-pointer"
+            title="Click to view invoice"
           >
             #{prefix}{bill.id}
           </button>
+          <span
+            className={`text-[10px] font-black px-2 py-0.5 rounded border uppercase tracking-wider ${
+              bill.invoiceType === 'tax_invoice' || bill.isGstInvoice
+                ? 'bg-amber-50 text-amber-900 border-amber-300'
+                : 'bg-emerald-50 text-emerald-900 border-emerald-300'
+            }`}
+            title={
+              bill.invoiceType === 'tax_invoice' || bill.isGstInvoice
+                ? 'GST Tax Invoice (with HSN code & tax breakdown)'
+                : 'Non-GST Retail Bill (B2C Cash Memo)'
+            }
+          >
+            {bill.invoiceType === 'tax_invoice' || bill.isGstInvoice ? '🏢 GST' : '🛒 Non-GST'}
+          </span>
           <span className="text-xs text-slate-500 font-medium">{bill.date}</span>
           <span className="font-bold text-xs text-slate-900">{bill.retailer}</span>
           {bill.salesman && (
-            <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-blue-50 text-blue-900 border border-blue-200 flex items-center gap-1">
+            <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200 flex items-center gap-1">
               <User size={10} />
               <span>{bill.salesman}</span>
             </span>
@@ -644,7 +949,7 @@ const BillItemCard: React.FC<BillItemCardProps> = ({
           {balance > 0 && (
             <div className="flex items-center gap-1 mr-1">
               <input
-                type="number"
+                type="number" inputMode="decimal"
                 step="0.01"
                 placeholder={`₹${balance}`}
                 value={paymentDraft}
@@ -669,6 +974,15 @@ const BillItemCard: React.FC<BillItemCardProps> = ({
               >
                 Clear
               </button>
+              <button
+                type="button"
+                onClick={onOpenPaymentModal}
+                className="px-2 py-1 text-[11px] font-bold rounded border border-blue-300 bg-sky-50 hover:bg-sky-100 text-sky-700 flex items-center gap-1 cursor-pointer"
+                title="Record payment with exact collection date, mode, and reference notes"
+              >
+                <Calendar size={11} />
+                <span>Date Pay</span>
+              </button>
             </div>
           )}
 
@@ -677,23 +991,37 @@ const BillItemCard: React.FC<BillItemCardProps> = ({
             onClick={() => onViewInvoice(bill)}
             className="flex items-center gap-1 px-2 py-1 text-xs font-bold rounded border hover:bg-slate-100 cursor-pointer"
             style={{ borderColor: palette.line, color: palette.navy }}
-            title="View Tax Invoice"
+            title={
+              bill.invoiceType === 'tax_invoice' || bill.isGstInvoice
+                ? 'View GST Tax Invoice'
+                : 'View Non-GST Retail Bill'
+            }
           >
             <Eye size={12} />
-            <span>View</span>
+            <span>View {bill.invoiceType === 'tax_invoice' || bill.isGstInvoice ? 'GST' : 'Bill'}</span>
           </button>
 
           <button
             type="button"
             onClick={() => onEditBill(bill)}
-            className="flex items-center gap-1 px-2 py-1 text-xs font-bold rounded border hover:bg-amber-50 text-amber-800 border-amber-300 cursor-pointer"
-            title="Edit this invoice"
+            disabled={(bill.returns || []).length > 0}
+            className="flex items-center gap-1 px-2 py-1 text-xs font-bold rounded border hover:bg-amber-50 text-amber-800 border-amber-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            title={(bill.returns || []).length > 0 ? 'Customer returns exist against this invoice. Cancel or correct the return first (Live stock → Returns), then edit the invoice.' : 'Edit this invoice'}
           >
             <Pencil size={12} />
             <span>Edit</span>
           </button>
 
           <WhatsAppButton bill={bill} id={`wa-btn-hist-${bill.id}`} />
+
+          <button
+            type="button"
+            onClick={() => onCancelBill(bill)}
+            className="px-2 py-1 text-xs font-bold rounded text-rose-700 hover:bg-rose-50 border border-rose-300 cursor-pointer"
+            title="Cancel this invoice with a credit note (keeps the invoice number for GST records)"
+          >
+            Cancel
+          </button>
 
           <button
             type="button"

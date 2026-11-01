@@ -1,123 +1,46 @@
-# MrWater Distribution Ledger — Production PWA & Android Ready
+# Hydrate Hub / MrWater Distribution Ledger
 
-A high-performance, accessible wholesale beverage distribution ledger and field salesman billing application with full offline-first capabilities, Supabase cloud sync, vehicle trip reconciliation, and automated GitHub CI/CD build pipelines.
+Beverage distribution ledger: billing, inventory & GRNs, trips, customers, payments, reports. React + Vite PWA, Express
+server (`server.ts`), Supabase cloud storage.
 
----
-
-## ⚡ Automated CI/CD (GitHub Actions)
-
-This repository includes a pre-configured GitHub Actions workflow in `.github/workflows/build.yml`.
-When you push this repository to GitHub (`main` or `master` branch):
-
-1. **Automatic PWA Build**:
-   - Checks out the repository.
-   - Installs dependencies and runs `npm run lint`.
-   - Executes `npm run build` to compile the Vite PWA frontend and Node Express server bundle (`dist/server.cjs`).
-   - Automatically uploads the ready-to-deploy PWA package as a downloadable artifact in the GitHub Actions **Artifacts** tab.
-
-2. **Automated Android APK Preparation**:
-   - Sets up Java 17 and Android build toolchains.
-   - Uses the included `twa-manifest.json` and Bubblewrap CLI to prepare the Android Trusted Web Activity package.
-   - Ready for one-click release generation or direct download of the APK.
-
----
-
-## ☁️ GitHub Pages + Supabase persistence
-
-GitHub Pages is static hosting and does not run the Express `server.ts` API. For GitHub Pages deployments, the browser storage layer therefore detects the `*.github.io` host and persists application collections directly to Supabase (`public.app_collections`) instead of repeatedly calling unavailable `/api/*` routes.
-
-This keeps the existing local/offline cache while preventing false `HTTP 404` sync failures on GitHub Pages. The app also shows the latest cloud error when a real Supabase operation fails.
-
-**Important:** the Supabase project must have the `app_collections` table and its policies from `supabase-schema.sql`. The included schema creates an open application-data policy intended for this app's current anonymous/publishable-key architecture.
-
-## 🚀 Quick Start for Git & Production Deployment
-
-Clone this repository and launch the app in two simple steps:
-
+## Run
 ```bash
-# 1. Install dependencies
 npm install
-
-# 2. Build for production (Vite + Node Server)
-npm run build
-
-# 3. Start the production server
-npm start
+npm run dev                  # development (server + Vite)
+npm run build && npm start   # production
+npm run lint                 # type-check
 ```
+Copy `.env.example` to `.env` and fill in your keys.
 
-For local development with live hot-reloading:
-```bash
-npm run dev
-```
+## Before deploying this version
+1. In the Supabase SQL editor run `migrations/010` to `013` (all are `IF NOT EXISTS`, safe to repeat). A brand-new project
+   runs `supabase-schema.sql` first, then `migrations/003` to `013` in order.
+2. Make sure you can sign in as admin (Supabase admin user, or `ADMIN_PASSWORD` + `APP_SESSION_SECRET` on the server).
+3. Rotate the Gemini API key that used to be in `.env.example`.
+4. **Do not copy a `data/` folder from an old install.** `data/collections.json` is the server's own cache of your live
+   data; it is created automatically and must never be shipped (a stale copy overrides the database).
+5. If you still have test rows in Supabase, review and run `cleanup-test-data.sql` once (one block at a time), restart
+   the server, then clear site data on each device. Delete that file afterwards.
 
----
+## How saving works (so edits and deletes stick)
+- Every bill / GRN / trip save is "newest wins": a stale tab or device can never overwrite a newer edit.
+- Deleting a bill, GRN or trip records its id in `deleted_bill_ids` / `deleted_grn_ids` / `deleted_trip_ids`. Every server
+  route and every cloud pull honours those lists, and a deleted bill number is never issued again.
+- Payments and customers are merged (never replaced); the deletion log (`deleted_records`) removes deleted ones everywhere.
+- Saving a bill on purpose clears an old delete mark for that number.
+- The cloud pull never re-uploads this device's bills/trips when the cloud looks empty. Use "Sync to cloud" deliberately.
 
-## 📱 Progressive Web App (PWA) Features
+## Tests
+`npm test` runs the unit and API tests in `tests/`. They set `MRWATER_TEST=1`, so the server cannot reach Supabase and
+neither reads nor writes `data/collections.json`; the browser client also refuses to connect to the live database under
+jsdom. Always keep that variable set if you run your own scripts against the server.
 
-The application is built with `@vite-plugin-pwa` and configured for full offline durability:
+## Security roll-out
+`security/RUNBOOK.md` (server sign-in, `API_AUTH_REQUIRED`, `lock-down-rls.sql`). Open items: salesman PINs are 4-6
+digits (use 6); direct browser database calls remain until the lock-down step; e-way/e-invoice files are for bulk
+upload only (no IRN/QR); confirm with your CA the ITC treatment of free cases.
 
-- **Web App Manifest (`public/manifest.json` & `/dist/manifest.webmanifest`)**:
-  - `theme_color`: `#16324F` (Depot Navy)
-  - `background_color`: `#FBF8F2` (Warm Canvas)
-  - `display`: `standalone` (Full-screen native experience without browser address bar)
-  - `orientation`: `portrait-primary`
-  - High-resolution standard icons (`192x192`, `512x512`) and adaptive `maskable` icon for Android launchers.
-- **Service Worker & Workbox Pre-Caching**:
-  - Automatically caches core application bundles, stylesheets, fonts, and icons for offline operation.
-  - Runtime cache strategy (`CacheFirst`) for web fonts.
-  - Automatic updates (`registerType: 'autoUpdate'`) so field devices receive changes seamlessly.
-- **In-App Install Prompt**:
-  - **Android / Chrome / Edge / Desktop**: Native 1-tap install button in the top bar and user session modal.
-  - **iOS (iPhone & iPad)**: Guided 3-step modal explaining "Share → Add to Home Screen".
-- **Offline Indicator**:
-  - Real-time network monitor providing unobtrusive feedback when disconnected and confirming synchronization upon reconnecting.
-
----
-
-## 🤖 Turning into an Android APK / Google Play App
-
-Because the app adheres strictly to PWA standards and manifest specifications, you can package it into a native Android application using either of the following standard tools:
-
-### Option A: PWABuilder (Fastest, No Android Studio Required)
-1. Deploy this web app to your domain with HTTPS (or Cloud Run / Vercel / Netlify).
-2. Visit [pwabuilder.com](https://www.pwabuilder.com/).
-3. Enter your live URL. PWABuilder reads `manifest.json` and verifies service worker compliance.
-4. Click **Package for Android** to generate a signed APK or Google Play Store AAB bundle.
-
-### Option B: Google Bubblewrap CLI (Official Trusted Web Activity - TWA)
-```bash
-# Install Bubblewrap globally
-npm install -g @bubblewrap/cli
-
-# Initialize Android project from your live PWA URL
-bubblewrap init --manifest https://YOUR-DOMAIN.com/manifest.json
-
-# Build the Android APK / App Bundle
-bubblewrap build
-```
-
----
-
-## 📦 GitHub Actions outputs
-
-Every push to `main`/`master` (or a manual workflow run) now produces:
-
-- **GitHub Pages deployment** from the Vite/PWA `dist/` directory.
-- **`pwa-web-dist`** downloadable web/PWA artifact.
-- **`mrwater-distribution-ledger-apk`** downloadable Android **debug APK**.
-
-The Android project is generated in CI with Capacitor, so the repository does not need to commit the generated `android/` directory.
-
-After a workflow completes, open the run in **GitHub → Actions** and download the APK from **Artifacts**. The APK is an installable debug build; a production Play Store release should use a managed signing key/keystore rather than committing credentials to the repository.
-
-## 📦 Project Structure
-
-- `server.ts` — Production Express server serving API endpoints and static Vite assets on port 3000.
-- `src/`
-  - `components/views/SalesmanView.tsx` — Field billing, vehicle stock runs, bill history, customer payment lookup.
-  - `components/common/AccessibilityBar.tsx` — Top bar with contrast toggles, font scaling, user profile, and PWA install button.
-  - `components/common/PWAInstallButton.tsx` — Smart cross-platform install button (Android/iOS).
-  - `components/common/OfflineIndicator.tsx` — Visual network status indicator.
-  - `context/LedgerContext.tsx` — Central application state with local persistence and Supabase sync.
-- `public/` — Vector icons, PWA PNG icons (`pwa-192x192.png`, `pwa-512x512.png`, `pwa-maskable-512x512.png`), `apple-touch-icon.png`, and `manifest.json`.
-
+## Layout
+`server.ts` Express API + static files · `invoiceAi.ts` Gemini invoice reader · `server-auth.ts` sessions ·
+`src/context/LedgerContext.tsx` app state & sync · `src/lib/supabase.ts` cloud access · `src/utils/storage.ts` server
+calls · `src/components/views` screens · `migrations/` + `supabase-schema.sql` database · `public/` PWA icons.

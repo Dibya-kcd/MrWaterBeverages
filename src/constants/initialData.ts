@@ -19,19 +19,21 @@ export const CATS: Record<CategoryKey, CategoryInfo> = {
 };
 
 export const DEFAULT_ORG_PROFILE: OrganizationProfile = {
-  name: "MrWater",
+  name: "Hydrate Hub",
   tagline: "Beverage Distribution Ledger & GRN Inventory Depot",
-  ownerName: "Depot Administrator",
-  phone: "9437000000",
-  email: "support@mrwater.internal",
-  address: "Main Godown Yard, Market Road",
-  city: "Sambalpur",
-  gstin: "21ABCDE1234F1Z5",
-  fssai: "12024999000123",
-  bankName: "State Bank of India",
-  accountNumber: "38920192019",
-  ifsc: "SBIN0001234",
-  upiId: "mrwater@sbi",
+  ownerName: "",
+  phone: "",
+  email: "",
+  address: "",
+  city: "",
+  state: "Odisha",
+  stateCode: "21",
+  gstin: "",
+  fssai: "",
+  bankName: "",
+  accountNumber: "",
+  ifsc: "",
+  upiId: "",
   invoiceTerms: "Goods once sold will not be taken back. Payment due within 7 days. Breakage/leakage must be reported upon delivery.",
 };
 
@@ -43,21 +45,14 @@ export const DEFAULT_BILLING_SETTINGS: BillingSettings = {
   autoApplyPromotions: true,
   roundOffGrandTotal: true,
   maxSalesmanDiscountPercent: 10,
+  /** Master scheme feature switch (enabled by default) */
+  schemesEnabled: true,
+  disableManualDiscountWhenSchemeApplied: false,
+  allowSchemeOverride: true,
+  showBatchOnInvoice: false,
 };
 
-export const INIT_WAREHOUSES: Warehouse[] = [
-  {
-    id: "wh-kuchinda",
-    name: "Kuchinda Central Godown",
-    code: "KCH-01",
-    location: "Main Market Yard, Kuchinda, Sambalpur",
-    manager: "Depot Incharge",
-    phone: "9437000000",
-    isDefault: true,
-    capacityCases: 2500,
-    notes: "Central godown receiving manufacturer inward consignments",
-  },
-];
+export const INIT_WAREHOUSES: Warehouse[] = [];
 
 export const INIT_PRODUCTS: Product[] = [];
 
@@ -65,17 +60,17 @@ export const INIT_PROMOTIONS: Promotion[] = [];
 
 export const PALETTES: Record<'standard' | 'highContrast', PaletteTokens> = {
   standard: {
-    ink: "#1B1F23",
-    navy: "#16324F",
-    amber: "#784919", // passes 7:1 AAA on cream/white
-    cream: "#FBF8F2",
+    ink: "#0F172A",
+    navy: "#0F172A",  // slate-900 — matches MrWater Beverages header
+    amber: "#B45309",
+    cream: "#F8FAFC",
     panel: "#FFFFFF",
-    muted: "#42494F",
-    line: "#8A8378",
-    good: "#245A40",
-    bad: "#8A2E20",
-    warn: "#5E4A18",
-    focus: "#16324F",
+    muted: "#64748B",
+    line: "#E2E8F0",
+    good: "#059669",  // emerald-600
+    bad: "#DC2626",
+    warn: "#D97706",
+    focus: "#0284C7",
   },
   highContrast: {
     ink: "#000000",

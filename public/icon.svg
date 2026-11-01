@@ -1,34 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
     <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1E3A5F" />
-      <stop offset="100%" stop-color="#0F2137" />
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#0f172a" />
     </linearGradient>
-    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#FDE68A" />
-      <stop offset="50%" stop-color="#F59E0B" />
-      <stop offset="100%" stop-color="#D97706" />
+    <linearGradient id="dropGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="100%" stop-color="#0284c7" />
     </linearGradient>
-    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
-      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.35" />
-    </filter>
   </defs>
   
-  <!-- Outer Rounded Container -->
-  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bgGrad)" />
+  <!-- Background with rounded corners -->
+  <rect width="512" height="512" rx="104" fill="url(#bgGrad)" />
   
-  <!-- Inner Ring Accent -->
-  <circle cx="256" cy="256" r="180" fill="none" stroke="url(#goldGrad)" stroke-width="8" opacity="0.8" />
+  <!-- Subtle inner border -->
+  <rect x="8" y="8" width="496" height="496" rx="96" fill="none" stroke="#38bdf8" stroke-width="4" stroke-opacity="0.25" />
   
-  <!-- Centered "R" Distribution Motif -->
-  <g filter="url(#shadow)" fill="url(#goldGrad)">
-    <!-- Main stem -->
-    <rect x="165" y="135" width="42" height="242" rx="12" />
-    <!-- Loop -->
-    <path d="M 190 135 L 290 135 C 345 135 375 165 375 210 C 375 255 345 285 290 285 L 190 285 Z M 207 172 L 207 248 L 285 248 C 318 248 335 235 335 210 C 335 185 318 172 285 172 Z" fill-rule="evenodd" />
-    <!-- Leg -->
-    <path d="M 270 270 L 360 377 L 310 377 L 230 282 Z" />
-    <!-- Beverage / Bottle Sparkle -->
-    <polygon points="360,140 368,160 388,168 368,176 360,196 352,176 332,168 352,160" fill="#FDE68A" />
+  <!-- Stylized Water Droplet -->
+  <g transform="translate(256, 250)">
+    <path d="M 0 -130 C 50 -60, 110 10, 110 80 C 110 145, 60 190, 0 190 C -60 190, -110 145, -110 80 C -110 10, -50 -60, 0 -130 Z" fill="url(#dropGrad)" />
+    <path d="M -85 70 Q -40 105, 0 85 T 85 95 C 75 145, 45 175, 0 175 C -45 175, -75 145, -85 70 Z" fill="#0f172a" opacity="0.3" />
+    <ellipse cx="-35" cy="20" rx="18" ry="40" transform="rotate(-25 -35 20)" fill="#ffffff" opacity="0.45" />
   </g>
 </svg>

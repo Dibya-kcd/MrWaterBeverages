@@ -1,4 +1,8 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { makeSalesmanMatcher } from "../../utils/salesmanMatch";
+import { SalesmanTripScreens, SalesmanTripScreenMode } from "./trips/SalesmanTripScreens";
+import { SizeChip } from "../common/SizeChip";
+import { sizeTheme } from "../../utils/sizeColor";
 import {
   AlertTriangle,
   ArrowRight,
@@ -35,6 +39,7 @@ import {
   Truck,
   User,
   UserCheck,
+  UserPlus,
   Volume2,
   X,
   Zap,
@@ -46,16 +51,22 @@ import {
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { Bill, BillItem, ExistingCustomer, PriceType, Product, Trip } from '../../types';
-import { billTotals, buildBillText, computeLine, money, whatsappLink } from '../../utils/billing';
+import { billTotals, buildBillText, computeLine, normalizeGstFraction, money, schemeLabel, whatsappLink, resolveProductGstRate, resolveProductHsn, formatProductVolPack, volumeFromName } from '../../utils/billing';
 import { downloadInvoicePdf } from '../../utils/invoicePdf';
 import { isSpeechRecognitionSupported, speakAssistiveText, startSpeechRecognition } from '../../utils/speechRecognition';
 import { CustomerSelector } from '../common/CustomerSelector';
+import { AddCustomerModal } from '../common/AddCustomerModal';
 import { TaxInvoiceModal } from '../common/TaxInvoiceModal';
 import { SalesmanCartModal } from '../common/SalesmanCartModal';
 import { SalesmanSaleWorkflow } from './SalesmanSaleWorkflow';
 import { SalesmanCustomerDueLookup } from './SalesmanCustomerDueLookup';
+import { billBalance } from '../../utils/salesReturns';
+import { formatBeatStops, beatLabel } from '../../constants/beats';
+import { useBeats } from '../../hooks/useBeats';
+import { todayISO } from "../../utils/dateLocal";
 
 export const SalesmanView: React.FC = () => {
+  const { activeBeats } = useBeats();
   const {
     trips,
     bills,
@@ -69,8 +80,8 @@ export const SalesmanView: React.FC = () => {
     cart,
     setCart,
     palette,
-    highContrast,
-    setHighContrast,
+    lowVisionMode,
+    setLowVisionMode,
     lowVisionStickyPosition,
     fz,
     scale,
@@ -82,71 +93,106 @@ export const SalesmanView: React.FC = () => {
     activeSalesman,
     logout,
     recordPayment,
+    activePromoFor,
+    payments,
+    salesmen,
   } = useLedger();
 
-  // Mode: 'normal' vs 'lowVision' (vision-impaired)
-  const [salesmanMode, setSalesmanMode] = useState<'normal' | 'lowVision'>(() => {
-    try {
-      const saved = localStorage.getItem('salesman_view_mode');
-      if (saved === 'lowVision' || saved === 'normal') return saved;
-    } catch {
-      // ignore
-    }
-    return 'normal';
-  });
+  // Mode: 'normal' vs 'lowVision' (Easy View). Single source of truth is the
+  // shared ledger flag, so Settings and this screen always agree.
+  const salesmanMode: 'normal' | 'lowVision' = lowVisionMode ? 'lowVision' : 'normal';
 
   const handleSetMode = (mode: 'normal' | 'lowVision') => {
-    setSalesmanMode(mode);
+    setLowVisionMode(mode === 'lowVision');
     try {
-      localStorage.setItem('salesman_view_mode', mode);
+      speakAssistiveText(
+        mode === 'lowVision'
+          ? 'Easy View on. Larger text, high contrast, voice friendly.'
+          : 'Normal mode on.'
+      );
     } catch {
       // ignore
-    }
-    if (mode === 'lowVision' && !highContrast) {
-      setHighContrast(true);
     }
   };
 
   // Today's date string YYYY-MM-DD
-  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const todayStr = useMemo(() => todayISO(), []);
 
   // Filter trips: Salesman only sees their assigned trips; Admin sees all trips
   const userSalesmanId = currentUser?.role === 'salesman' ? currentUser.id : undefined;
   const userSalesmanName = currentUser?.role === 'salesman' ? currentUser.name : undefined;
 
+  // One tolerant matcher for trips, bills and payments (id, same phone, name ignoring case/spaces/dots)
+  const matchesMe = useMemo(
+    () =>
+      makeSalesmanMatcher(
+        {
+          id: userSalesmanId,
+          name: userSalesmanName,
+          phone: currentUser?.role === 'salesman' ? currentUser.phone : undefined,
+        },
+        salesmen,
+      ),
+    [userSalesmanId, userSalesmanName, currentUser, salesmen],
+  );
+
   const relevantTrips = useMemo(() => {
+    let list = trips;
     if (currentUser?.role === 'salesman') {
-      return trips.filter((t) => {
-        if (userSalesmanId && t.salesmanId === userSalesmanId) return true;
-        if (userSalesmanName && t.salesman && t.salesman.toLowerCase().trim() === userSalesmanName.toLowerCase().trim()) return true;
-        return false;
-      });
+      list = trips.filter((t) => matchesMe(t));
     }
-    return trips;
-  }, [trips, currentUser, userSalesmanId, userSalesmanName]);
+    // Always sort newest trips first (by date descending, then id descending)
+    return [...list].sort((a, b) => {
+      const da = a.date || '';
+      const db = b.date || '';
+      if (db !== da) return db.localeCompare(da);
+      return Number(b.id) - Number(a.id);
+    });
+  }, [trips, currentUser, matchesMe]);
 
   // Default to showing only trips with status: 'out' from today's date
   const todayOutTrips = useMemo(() => {
     return relevantTrips.filter((t) => t.status === 'out' && (!t.date || t.date === todayStr));
   }, [relevantTrips, todayStr]);
 
-  // Older / closed trips moved behind "Trip History" link
+  // Any currently open/out trip regardless of date
+  const anyOutTrips = useMemo(() => {
+    return relevantTrips.filter((t) => t.status === 'out');
+  }, [relevantTrips]);
+
+  // Older / closed trips
   const olderOrClosedTrips = useMemo(() => {
-    return relevantTrips.filter((t) => !(t.status === 'out' && (!t.date || t.date === todayStr)));
-  }, [relevantTrips, todayStr]);
+    return relevantTrips.filter((t) => t.status === 'closed');
+  }, [relevantTrips]);
 
   // Trip history visibility toggle
   const [showTripHistory, setShowTripHistory] = useState<boolean>(false);
 
-  // Trips displayed in the tappable selector card list
+  // Trips displayed in the selector list: ONLY show active out trips! Never show closed trips by default!
   const displayedTrips = useMemo(() => {
     if (showTripHistory) return relevantTrips;
-    return todayOutTrips;
-  }, [showTripHistory, relevantTrips, todayOutTrips]);
+    return anyOutTrips;
+  }, [showTripHistory, relevantTrips, anyOutTrips]);
 
-  // Selected vehicle/trip selection
+  // Trip history: search + "show more" so every past run can be reached, not just the latest few
+  const [tripSearch, setTripSearch] = useState('');
+  const [tripLimit, setTripLimit] = useState(30);
+  const matchedTrips = useMemo(() => {
+    const q = tripSearch.trim().toLowerCase();
+    if (!showTripHistory || !q) return displayedTrips;
+    return displayedTrips.filter(
+      (t) =>
+        (t.vehicle || '').toLowerCase().includes(q) ||
+        (t.route || '').toLowerCase().includes(q) ||
+        (t.date || '').includes(q) ||
+        String(t.id).includes(q),
+    );
+  }, [displayedTrips, tripSearch, showTripHistory]);
+  const shownTrips = showTripHistory ? matchedTrips.slice(0, tripLimit) : matchedTrips;
+
+  // Selected vehicle/trip selection: ONLY default to an 'out' trip! Never a closed trip!
   const [selectedTripId, setSelectedTripId] = useState<number | null>(() => {
-    return todayOutTrips[0]?.id || relevantTrips.find((t) => t.status === 'out')?.id || relevantTrips[0]?.id || null;
+    return todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? null;
   });
 
   // Keep selectedTripId valid if trips change
@@ -154,27 +200,45 @@ export const SalesmanView: React.FC = () => {
     if (selectedTripId !== null) {
       const exists = relevantTrips.some((t) => t.id === selectedTripId);
       if (!exists) {
-        setSelectedTripId(todayOutTrips[0]?.id || relevantTrips.find((t) => t.status === 'out')?.id || relevantTrips[0]?.id || null);
+        const nextId = todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? null;
+        setSelectedTripId(nextId);
       }
-    } else if (relevantTrips.length > 0) {
-      setSelectedTripId(todayOutTrips[0]?.id || relevantTrips.find((t) => t.status === 'out')?.id || relevantTrips[0]?.id || null);
+    } else if (todayOutTrips.length > 0 || anyOutTrips.length > 0) {
+      const nextId = todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? null;
+      if (nextId !== null) {
+        setSelectedTripId(nextId);
+      }
     }
-  }, [relevantTrips, selectedTripId, todayOutTrips]);
+  }, [relevantTrips, selectedTripId, todayOutTrips, anyOutTrips]);
 
+  // CRITICAL: activeTrip MUST strictly be an open trip (status === 'out'). A closed trip is NEVER active.
   const activeTrip: Trip | null = useMemo(() => {
-    return trips.find((t) => t.id === selectedTripId) || null;
+    if (selectedTripId === null) return null;
+    const found = trips.find((t) => t.id === selectedTripId);
+    return found && found.status === 'out' ? found : null;
   }, [trips, selectedTripId]);
 
   // Quick Trip / Van Load Creator State
   const [showNewVanModal, setShowNewVanModal] = useState(false);
   const [newVehicleName, setNewVehicleName] = useState('Tata Ace - MH-14-GH-1234');
-  const [newSalesmanName, setNewSalesmanName] = useState('Ramesh Kumar');
-  const [newRouteName, setNewRouteName] = useState('Route 1 - City Retailers');
+  const [newSalesmanName, setNewSalesmanName] = useState('');
+  const [newRouteName, setNewRouteName] = useState(activeBeats[0]?.name || '');
   const [loadQuantities, setLoadQuantities] = useState<Record<number, number>>({});
   const [loadQuantityWarnings, setLoadQuantityWarnings] = useState<Record<number, string>>({});
+  const [selectedLoadWarehouseId, setSelectedLoadWarehouseId] = useState<string>(
+    () => defaultWarehouse?.id || warehouses[0]?.id || ''
+  );
 
-  // View state: 'sell' vs 'vanStock' vs 'bills' vs 'customerDue' vs 'trips'
-  const [salesmanTab, setSalesmanTab] = useState<'sell' | 'vanStock' | 'bills' | 'customerDue' | 'trips'>('sell');
+  useEffect(() => {
+    if (!selectedLoadWarehouseId && (defaultWarehouse?.id || warehouses[0]?.id)) {
+      setSelectedLoadWarehouseId(defaultWarehouse?.id || warehouses[0]?.id || '');
+    }
+  }, [defaultWarehouse, warehouses, selectedLoadWarehouseId]);
+
+  // View state: 'home' vs 'sell' vs 'vanStock' vs 'bills' vs 'customerDue' vs 'trips'
+  const [salesmanTab, setSalesmanTab] = useState<'home' | 'sell' | 'vanStock' | 'bills' | 'customerDue' | 'trips'>('home');
+  // Edit load / record returned stock & close trip screens (same ones the owner uses)
+  const [tripScreen, setTripScreen] = useState<{ mode: SalesmanTripScreenMode; trip: Trip } | null>(null);
 
   // Sales form state
   const [selectedRetailer, setSelectedRetailer] = useState('');
@@ -209,24 +273,71 @@ export const SalesmanView: React.FC = () => {
   const [isVoiceSearching, setIsVoiceSearching] = useState<boolean>(false);
   const [activeAlphaFilter, setActiveAlphaFilter] = useState<string>('ALL');
   const [showCustomerSelectorModal, setShowCustomerSelectorModal] = useState<boolean>(false);
-
-  // Synchronize salesman mode when clicked from Nav or MobileNav
-  useEffect(() => {
-    const handleModeChange = (e: Event) => {
-      const customEvent = e as CustomEvent<'normal' | 'lowVision'>;
-      if (customEvent.detail === 'normal' || customEvent.detail === 'lowVision') {
-        setSalesmanMode(customEvent.detail);
-      }
-    };
-    window.addEventListener('salesman_mode_changed', handleModeChange);
-    return () => window.removeEventListener('salesman_mode_changed', handleModeChange);
-  }, []);
+  const [showHomeAddCustomerModal, setShowHomeAddCustomerModal] = useState<boolean>(false);
 
   // Invoice view modal
   const [invoiceModalBill, setInvoiceModalBill] = useState<Bill | null>(null);
 
   // Dedicated screen confirmed bill state (shows separate screen after cart confirmation)
   const [confirmedBill, setConfirmedBill] = useState<Bill | null>(null);
+
+  // Sale date state (default to today's date, simple & selectable)
+  const [saleDate, setSaleDate] = useState<string>(() => todayISO());
+
+  // Two-finger pinch-to-zoom (0.75x - 3x) for Salesman Mode
+  const [zoomScale, setZoomScale] = useState<number>(1.0);
+  const [isPinching, setIsPinching] = useState<boolean>(false);
+  const pinchContainerRef = useRef<HTMLDivElement>(null);
+  const initialPinchDistRef = useRef<number | null>(null);
+  const initialZoomRef = useRef<number>(1.0);
+
+  useEffect(() => {
+    const container = pinchContainerRef.current;
+    if (!container) return;
+
+    const getDistance = (touches: TouchList) => {
+      return Math.hypot(
+        touches[0].clientX - touches[1].clientX,
+        touches[0].clientY - touches[1].clientY
+      );
+    };
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        initialPinchDistRef.current = getDistance(e.touches);
+        initialZoomRef.current = zoomScale;
+        setIsPinching(true);
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      // Only intercept when two fingers are actively pinching
+      if (e.touches.length === 2 && initialPinchDistRef.current !== null) {
+        e.preventDefault(); // Prevent full-page native viewport zoom
+        const currentDist = getDistance(e.touches);
+        const ratio = currentDist / initialPinchDistRef.current;
+        const targetZoom = Math.min(3.0, Math.max(0.75, Number((initialZoomRef.current * ratio).toFixed(2))));
+        setZoomScale(targetZoom);
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        initialPinchDistRef.current = null;
+        setIsPinching(false);
+      }
+    };
+
+    container.addEventListener('touchstart', handleTouchStart, { passive: true });
+    container.addEventListener('touchmove', handleTouchMove, { passive: false });
+    container.addEventListener('touchend', handleTouchEnd, { passive: true });
+
+    return () => {
+      container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
+      container.removeEventListener('touchend', handleTouchEnd);
+    };
+  }, [zoomScale]);
 
   // Show feedback with timer
   const triggerFeedback = (text: string, type: 'success' | 'warn' = 'success') => {
@@ -241,11 +352,12 @@ export const SalesmanView: React.FC = () => {
     setSelectedRetailer('');
     setRetailerPhone('');
     setSelectedProductId(null);
+    setSaleDate(todayISO());
     setCart({
       retailer: '',
       phone: '',
       items: [],
-      date: new Date().toISOString().slice(0, 10),
+      date: todayISO(),
     });
     setAmountPaidDraft('0');
     setInvoiceDiscountDraft('');
@@ -273,75 +385,18 @@ export const SalesmanView: React.FC = () => {
       .slice(0, 6)
       .map(([name, data]) => ({ name, phone: data.phone }));
 
-    if (sorted.length === 0) {
-      return [
-        { name: 'Kisan Cold Drinks & General Store', phone: '9861012345' },
-        { name: 'Maa Tarini Daily Market Store', phone: '9437198765' },
-        { name: 'Gupta Sweets & Fast Food Center', phone: '9861254321' },
-        { name: 'Highway Oasis Restaurant', phone: '9438011223' },
-      ];
-    }
     return sorted;
   }, [bills]);
 
   // Compile unique existing customers with purchase history
-  const existingCustomers: ExistingCustomer[] = useMemo(() => {
-    const map = new Map<string, ExistingCustomer>();
-
-    for (const b of bills) {
-      const norm = (b.retailer || '').trim();
-      if (!norm) continue;
-      const key = norm.toLowerCase();
-
-      const total = Number(b.total) || 0;
-      const paid = Number(b.amountPaid) || 0;
-      const due = Math.max(0, total - paid);
-
-      const existing = map.get(key);
-      if (!existing) {
-        map.set(key, {
-          name: norm,
-          phone: b.phone || '',
-          totalBills: 1,
-          totalBilled: total,
-          totalPaid: paid,
-          balanceDue: due,
-          lastBillDate: b.date || '',
-        });
-      } else {
-        existing.totalBills += 1;
-        existing.totalBilled += total;
-        existing.totalPaid += paid;
-        existing.balanceDue += due;
-        if (!existing.phone && b.phone) existing.phone = b.phone;
-        if (b.date && (!existing.lastBillDate || b.date > existing.lastBillDate)) {
-          existing.lastBillDate = b.date;
-        }
-      }
-    }
-
-    // Include reliable default shops so list is always populated
-    const defaultShops: ExistingCustomer[] = [
-      { name: 'Kisan Cold Drinks & General Store', phone: '9861012345', totalBills: 0, totalBilled: 0, totalPaid: 0, balanceDue: 0, lastBillDate: '' },
-      { name: 'Maa Tarini Daily Market Store', phone: '9437198765', totalBills: 0, totalBilled: 0, totalPaid: 0, balanceDue: 0, lastBillDate: '' },
-      { name: 'Gupta Sweets & Fast Food Center', phone: '9861254321', totalBills: 0, totalBilled: 0, totalPaid: 0, balanceDue: 0, lastBillDate: '' },
-      { name: 'Highway Oasis Restaurant', phone: '9438011223', totalBills: 0, totalBilled: 0, totalPaid: 0, balanceDue: 0, lastBillDate: '' },
-      { name: 'Shiv Shakti Kirana', phone: '9822012345', totalBills: 0, totalBilled: 0, totalPaid: 0, balanceDue: 0, lastBillDate: '' },
-      { name: 'Mahalaxmi Super Market', phone: '9822023456', totalBills: 0, totalBilled: 0, totalPaid: 0, balanceDue: 0, lastBillDate: '' },
-      { name: 'Sai General Store', phone: '9822034567', totalBills: 0, totalBilled: 0, totalPaid: 0, balanceDue: 0, lastBillDate: '' },
-      { name: 'Ganesh Daily Needs', phone: '9822045678', totalBills: 0, totalBilled: 0, totalPaid: 0, balanceDue: 0, lastBillDate: '' },
-      { name: 'Krishna Cold Drinks', phone: '9822056789', totalBills: 0, totalBilled: 0, totalPaid: 0, balanceDue: 0, lastBillDate: '' },
-      { name: 'Radha Trading Co', phone: '9822067890', totalBills: 0, totalBilled: 0, totalPaid: 0, balanceDue: 0, lastBillDate: '' },
-    ];
-    for (const d of defaultShops) {
-      const k = d.name.toLowerCase();
-      if (!map.has(k)) {
-        map.set(k, d);
-      }
-    }
-
-    return Array.from(map.values()).sort((a, b) => b.totalBills - a.totalBills);
-  }, [bills]);
+  // One source of truth for customer balances: the ledger's own list (opening balance, every
+  // receipt, advances and returns included). A private list built from bills alone showed
+  // "0 due / settled" for a customer who had paid in advance.
+  const { existingCustomers: ledgerCustomers } = useLedger();
+  const existingCustomers: ExistingCustomer[] = useMemo(
+    () => [...ledgerCustomers].sort((a, b) => b.totalBills - a.totalBills),
+    [ledgerCustomers],
+  );
 
   // Calculate vehicle stock status for all products
   const vehicleProducts = useMemo(() => {
@@ -357,9 +412,14 @@ export const SalesmanView: React.FC = () => {
     });
   }, [products, activeTrip, getVehicleStock]);
 
-  // Filtered vehicle products for Van Stock Reconciliation
+  // Filtered vehicle products for Van Stock: strictly only loaded or available products!
   const filteredVehicleProducts = useMemo(() => {
     return vehicleProducts.filter((p) => {
+      // ONLY products that are loaded or available on this vehicle run!
+      if (p.vanLoaded <= 0 && p.vanAvailable <= 0) {
+        return false;
+      }
+
       // Search query filter (name or SKU)
       if (vanStockSearch.trim()) {
         const q = vanStockSearch.toLowerCase();
@@ -368,25 +428,17 @@ export const SalesmanView: React.FC = () => {
         if (!matchName && !matchSku) return false;
       }
 
-      if (vanStockFilter === 'available') {
-        return p.vanAvailable > 0;
-      }
-      if (vanStockFilter === 'loaded') {
-        return p.vanLoaded > 0;
-      }
-      if (vanStockFilter === 'empty') {
-        return p.vanLoaded > 0 && p.vanAvailable <= 0;
-      }
       return true;
     });
-  }, [vehicleProducts, vanStockSearch, vanStockFilter]);
+  }, [vehicleProducts, vanStockSearch]);
 
-  // Vehicle Stock counts for quick filter tabs
+  // Vehicle Stock counts
   const vanStockCounts = useMemo(() => {
-    const total = vehicleProducts.length;
-    const loaded = vehicleProducts.filter((p) => p.vanLoaded > 0).length;
-    const available = vehicleProducts.filter((p) => p.vanAvailable > 0).length;
-    const empty = vehicleProducts.filter((p) => p.vanLoaded > 0 && p.vanAvailable <= 0).length;
+    const loadedProds = vehicleProducts.filter((p) => p.vanLoaded > 0 || p.vanAvailable > 0);
+    const total = loadedProds.length;
+    const loaded = loadedProds.filter((p) => p.vanLoaded > 0).length;
+    const available = loadedProds.filter((p) => p.vanAvailable > 0).length;
+    const empty = loadedProds.filter((p) => p.vanLoaded > 0 && p.vanAvailable <= 0).length;
     const totalLoadedCases = vehicleProducts.reduce((sum, p) => sum + p.vanLoaded, 0);
     const totalSoldCases = vehicleProducts.reduce((sum, p) => sum + p.vanSold, 0);
     const totalAvailableCases = vehicleProducts.reduce((sum, p) => sum + p.vanAvailable, 0);
@@ -401,16 +453,16 @@ export const SalesmanView: React.FC = () => {
 
   // Ensure selected product is valid and within stock
   useEffect(() => {
-    if (selectedProduct) {
-      if (selectedProduct.vanAvailable <= 0) {
-        setQuantity(0);
-      } else if (quantity > selectedProduct.vanAvailable) {
-        setQuantity(selectedProduct.vanAvailable);
-      } else if (quantity === 0 && selectedProduct.vanAvailable > 0) {
-        setQuantity(1);
-      }
+    if (!selectedProduct) return;
+    const max = selectedProduct.vanAvailable;
+    if (max <= 0) {
+      setQuantity((prev) => (prev !== 0 ? 0 : prev));
+    } else if (quantity > max) {
+      setQuantity((prev) => (prev !== max ? max : prev));
+    } else if (quantity === 0 && max > 0) {
+      setQuantity((prev) => (prev !== 1 ? 1 : prev));
     }
-  }, [selectedProduct, quantity]);
+  }, [selectedProduct?.id, selectedProduct?.vanAvailable, quantity]);
 
   // Calculate bill totals for items currently in cart.
   // Uses the same shared billTotals() helper as the admin Billing screen
@@ -446,19 +498,17 @@ export const SalesmanView: React.FC = () => {
       const myTripIds = new Set(relevantTrips.map((t) => t.id));
       return bills.filter((b) => {
         if (b.tripId && myTripIds.has(b.tripId)) return true;
-        if (userSalesmanId && b.salesmanId === userSalesmanId) return true;
-        if (userSalesmanName && b.salesman && b.salesman.toLowerCase().trim() === userSalesmanName.toLowerCase().trim()) return true;
-        return false;
+        return matchesMe(b);
       });
     }
     return bills;
-  }, [bills, currentUser, relevantTrips, userSalesmanId, userSalesmanName]);
+  }, [bills, currentUser, relevantTrips, matchesMe]);
 
   const [myBillsScope, setMyBillsScope] = useState<'currentTrip' | 'allMyBills'>('currentTrip');
   const [myBillsSearch, setMyBillsSearch] = useState<string>('');
 
   const displayedMyBills = useMemo(() => {
-    const base = myBillsScope === 'currentTrip' ? tripBills : myBills;
+    const base = (myBillsScope === 'currentTrip' && activeTrip) ? tripBills : myBills;
     const q = myBillsSearch.toLowerCase().trim();
     if (!q) return base;
     return base.filter((b) => {
@@ -477,13 +527,81 @@ export const SalesmanView: React.FC = () => {
     return myBills.reduce((sum, b) => sum + (Number(b.amountPaid) || 0), 0);
   }, [myBills]);
 
+  // Today's bills scoped strictly to this salesman
+  const todayBills = useMemo(() => {
+    return myBills.filter((b) => {
+      const d = (b.date || (b as any).createdAt || '').slice(0, 10);
+      return d === todayStr;
+    });
+  }, [myBills, todayStr]);
+
+  // Today's total sales billed
+  const todaySales = useMemo(() => {
+    return todayBills.reduce((sum, b) => sum + (Number(b.total) || 0), 0);
+  }, [todayBills]);
+
+  // Today's crates delivered
+  const todayDeliveredCrates = useMemo(() => {
+    return todayBills.reduce((sum, b) => {
+      return sum + (b.items || []).reduce((itemSum, item) => itemSum + (Number(item.qty) || 0), 0);
+    }, 0);
+  }, [todayBills]);
+
+  // Total items currently loaded on the active van
+  const totalLoadedItems = useMemo(() => {
+    if (!activeTrip || !activeTrip.loaded) return 0;
+    return Object.values(activeTrip.loaded).reduce((sum, qty) => sum + (Number(qty) || 0), 0);
+  }, [activeTrip]);
+
+  // My payments recorded today
+  const myPayments = useMemo(() => {
+    if (currentUser?.role === 'salesman') {
+      return (payments || []).filter((p) => {
+        if (matchesMe({ salesmanId: p.salesmanId, salesman: p.recordedBy })) return true;
+        if (p.billId && myBills.some((b) => b.id === p.billId)) return true;
+        return false;
+      });
+    }
+    return payments || [];
+  }, [payments, currentUser, userSalesmanId, userSalesmanName, myBills]);
+
+  const todayPayments = useMemo(() => {
+    return myPayments.filter((p) => (p.paymentDate || p.createdAt || '').slice(0, 10) === todayStr);
+  }, [myPayments, todayStr]);
+
+  // Accurate breakdown of Cash vs UPI collected today (without double counting)
+  const { todayCash, todayUpi } = useMemo(() => {
+    let cash = 0;
+    let upi = 0;
+    const coveredBillIds = new Set<number>();
+
+    todayPayments.forEach((p) => {
+      if (p.billId) coveredBillIds.add(p.billId);
+      const amt = Number(p.amount) || 0;
+      if (p.mode === 'cash') cash += amt;
+      else if (p.mode === 'upi') upi += amt;
+      else cash += amt;
+    });
+
+    todayBills.forEach((b) => {
+      if (b.amountPaid > 0 && !coveredBillIds.has(b.id)) {
+        const mode = b.paymentMode || 'cash';
+        const amt = Number(b.amountPaid) || 0;
+        if (mode === 'upi') upi += amt;
+        else cash += amt;
+      }
+    });
+
+    return { todayCash: Math.max(0, cash), todayUpi: Math.max(0, upi) };
+  }, [todayPayments, todayBills]);
+
   // Handle Quick Load of a Van Trip
   const handleCreateVanTrip = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const vehicle = newVehicleName.trim() || 'Van MH-14-1234';
     const salesman = newSalesmanName.trim() || 'Salesman';
-    const date = new Date().toISOString().slice(0, 10);
-    const whId = defaultWarehouse?.id || warehouses[0]?.id || 'wh-kuchinda';
+    const date = todayISO();
+    const whId = selectedLoadWarehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
 
     // Only load items where qty > 0, capped to warehouse stock
     const finalLoad: Record<number, number> = {};
@@ -507,7 +625,8 @@ export const SalesmanView: React.FC = () => {
     setShowNewVanModal(false);
     setLoadQuantities({});
     setLoadQuantityWarnings({});
-    triggerFeedback(`Vehicle ${vehicle} loaded with ${totalLoaded} cases for ${salesman}!`, 'success');
+    const whName = warehouses.find((w) => w.id === whId)?.name || 'warehouse';
+    triggerFeedback(`Vehicle ${vehicle} loaded with ${totalLoaded} cases from ${whName}!`, 'success');
   };
 
   // Add line item to cart
@@ -549,7 +668,7 @@ export const SalesmanView: React.FC = () => {
       productId: selectedProduct.id,
       productName: selectedProduct.name,
       category: selectedProduct.category,
-      gst: selectedProduct.gstRate || 0.18,
+      gst: resolveProductGstRate(selectedProduct),
       priceType,
       qty: quantity,
       rate,
@@ -559,7 +678,7 @@ export const SalesmanView: React.FC = () => {
       discount: computed.discount,
       amount: computed.amount,
       batchNumber: selectedProduct.batchNumber,
-      hsn: selectedProduct.hsn,
+      hsn: resolveProductHsn(selectedProduct),
     };
 
     setCart((prev) => {
@@ -612,10 +731,13 @@ export const SalesmanView: React.FC = () => {
         if (safeQty !== newQty) {
           triggerFeedback(`Limited to ${available} cases remaining on vehicle!`, 'warn');
         }
-        const computed = computeLine(prod, it.priceType, safeQty, null, it.rate);
+        const promo = it.appliedPromo !== undefined ? it.appliedPromo : (activePromoFor(prod.id) || null);
+        const computed = computeLine(prod, it.priceType, safeQty, promo, it.rate, it.discount);
         return {
           ...it,
           qty: safeQty,
+          appliedPromo: promo,
+          promoLabel: it.promoLabel || (promo ? schemeLabel(promo) : null),
           gross: computed.gross,
           freeQty: computed.freeQty,
           chargeableQty: computed.chargeableQty,
@@ -725,13 +847,14 @@ export const SalesmanView: React.FC = () => {
       if (isLowVision) speakAssistiveText(`${prod.name} updated to ${targetQty} cases.`);
     } else {
       const rate = priceType === 'Retail' ? prod.retail : prod.wholesale;
-      const computed = computeLine(prod, priceType, targetQty, null, rate);
+      const promo = activePromoFor(prod.id) || null;
+      const computed = computeLine(prod, priceType, targetQty, promo, rate);
       const newItem: BillItem = {
         key: `${prod.id}_${Date.now()}`,
         productId: prod.id,
         productName: prod.name,
         category: prod.category,
-        gst: prod.gstRate || 0.18,
+        gst: resolveProductGstRate(prod),
         priceType,
         qty: targetQty,
         rate,
@@ -740,8 +863,10 @@ export const SalesmanView: React.FC = () => {
         chargeableQty: computed.chargeableQty,
         discount: computed.discount,
         amount: computed.amount,
+        appliedPromo: promo,
+        promoLabel: promo ? schemeLabel(promo) : null,
         batchNumber: prod.batchNumber,
-        hsn: prod.hsn,
+        hsn: resolveProductHsn(prod),
       };
       setCart((prev) => ({ ...prev, items: [...prev.items, newItem] }));
       if (isLowVision) speakAssistiveText(`Added 1 case of ${prod.name} to invoice. Total ${targetQty} cases.`);
@@ -767,12 +892,16 @@ export const SalesmanView: React.FC = () => {
         const currentQty = existingIdx >= 0 ? updatedItems[existingIdx].qty : 0;
         const safeQty = Math.min(currentQty + qty, available);
 
+        const promo = activePromoFor(prod.id) || null;
         if (existingIdx >= 0) {
           const prevItem = updatedItems[existingIdx];
-          const computed = computeLine(prod, prevItem.priceType, safeQty, null, prevItem.rate, prevItem.discount);
+          const itemPromo = prevItem.appliedPromo !== undefined ? prevItem.appliedPromo : promo;
+          const computed = computeLine(prod, prevItem.priceType, safeQty, itemPromo, prevItem.rate, prevItem.discount);
           updatedItems[existingIdx] = {
             ...prevItem,
             qty: safeQty,
+            appliedPromo: itemPromo,
+            promoLabel: prevItem.promoLabel || (itemPromo ? schemeLabel(itemPromo) : null),
             gross: computed.gross,
             freeQty: computed.freeQty,
             chargeableQty: computed.chargeableQty,
@@ -781,13 +910,13 @@ export const SalesmanView: React.FC = () => {
           };
         } else {
           const rate = priceType === 'Retail' ? prod.retail : prod.wholesale;
-          const computed = computeLine(prod, priceType, safeQty, null, rate);
+          const computed = computeLine(prod, priceType, safeQty, promo, rate);
           updatedItems.push({
             key: `${prod.id}_${Date.now()}_${Math.random()}`,
             productId: prod.id,
             productName: prod.name,
             category: prod.category,
-            gst: prod.gstRate || 0.18,
+            gst: resolveProductGstRate(prod),
             priceType,
             qty: safeQty,
             rate,
@@ -796,8 +925,10 @@ export const SalesmanView: React.FC = () => {
             chargeableQty: computed.chargeableQty,
             discount: computed.discount,
             amount: computed.amount,
+            appliedPromo: promo,
+            promoLabel: promo ? schemeLabel(promo) : null,
             batchNumber: prod.batchNumber,
-            hsn: prod.hsn,
+            hsn: resolveProductHsn(prod),
           });
         }
         addedCount++;
@@ -877,7 +1008,7 @@ export const SalesmanView: React.FC = () => {
         );
         if (matched) {
           setSelectedRetailer(matched.name);
-          if (matched.phone) setRetailerPhone(matched.phone);
+          setRetailerPhone(matched.phone || '');
           speakAssistiveText(`Selected shop ${matched.name}`);
           triggerFeedback(`Voice matched: ${matched.name}`);
         } else {
@@ -914,13 +1045,14 @@ export const SalesmanView: React.FC = () => {
 
     // Default is credit (0 paid) unless entered
     const paid = amountPaidDraft !== '' ? Math.max(0, Number(amountPaidDraft) || 0) : 0;
+    const activeDate = saleDate || todayISO();
 
     // Update cart party info before finalizing
     setCart((prev) => ({
       ...prev,
       retailer: selectedRetailer.trim(),
       phone: retailerPhone.trim(),
-      date: new Date().toISOString().slice(0, 10),
+      date: activeDate,
       warehouseId: activeTrip.warehouseId || '',
       tripId: activeTrip.id,
       vehicle: activeTrip.vehicle,
@@ -928,7 +1060,16 @@ export const SalesmanView: React.FC = () => {
       additionalDiscount: appliedDiscount,
     }));
 
-    const billId = finalizeBill(paid, activeTrip.id, appliedDiscount);
+    const billId = finalizeBill(paid, activeTrip.id, appliedDiscount, undefined, undefined, undefined, activeDate, {
+      // pass the chosen shop explicitly: the setCart() above has not been applied yet
+      party: {
+        retailer: selectedRetailer.trim(),
+        phone: retailerPhone.trim(),
+        salesman: activeTrip.salesman,
+        vehicle: activeTrip.vehicle,
+        warehouseId: activeTrip.warehouseId || '',
+      },
+    });
     if (billId !== null) {
       triggerFeedback(`✓ Sale Completed! Bill #${billId} saved. On-board vehicle stock updated.`, 'success');
       if (isLowVision) speakAssistiveText(`Sale finalized. Total rupees ${finalCartTotal}. Vehicle stock updated.`);
@@ -942,7 +1083,7 @@ export const SalesmanView: React.FC = () => {
           id: billId,
           retailer: selectedRetailer.trim(),
           phone: phoneToUse,
-          date: new Date().toISOString().slice(0, 10),
+          date: activeDate,
           items: cart.items,
           amountPaid: paid,
           warehouseId: activeTrip.warehouseId || '',
@@ -970,7 +1111,7 @@ export const SalesmanView: React.FC = () => {
         id: billId,
         retailer: selectedRetailer.trim(),
         phone: phoneToUse,
-        date: new Date().toISOString().slice(0, 10),
+        date: activeDate,
         items: [...cart.items],
         amountPaid: paid,
         warehouseId: activeTrip.warehouseId || '',
@@ -991,15 +1132,21 @@ export const SalesmanView: React.FC = () => {
     }
   };
 
+  if (tripScreen) {
+    return (
+      <div id="view-salesman-trip-screen" className="mw-workspace space-y-4 p-2 sm:p-3">
+        <SalesmanTripScreens
+          mode={tripScreen.mode}
+          trip={tripScreen.trip}
+          onSwitchMode={(mode) => setTripScreen((cur) => (cur ? { ...cur, mode } : cur))}
+          onClose={() => setTripScreen(null)}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div
-      id="salesman-app-root"
-      className="min-h-screen pb-28 md:pb-12"
-      style={{
-        backgroundColor: palette.cream,
-        color: palette.ink,
-      }}
-    >
+    <div id="view-salesman" className="mw-workspace space-y-4">
       {/* Top Banner: Mode & Active Vehicle Switcher */}
       <header
         id="salesman-header"
@@ -1009,385 +1156,106 @@ export const SalesmanView: React.FC = () => {
           borderColor: palette.line,
         }}
       >
-        <div className="max-w-6xl mx-auto space-y-3">
-          {/* ================================================================= */}
-          {/* ROW 1: FULL-WIDTH MODE SWITCHER (#btn-mode-normal / #btn-mode-visionless) */}
-          {/* Minimum button height 44px, font size 16px+, icon size 20px+ */}
-          {/* ================================================================= */}
-          <div
-            className="w-full"
-            role="radiogroup"
-            aria-label="Salesman View Mode"
-          >
-            <div className="grid grid-cols-2 gap-2.5 w-full">
-              <button
-                type="button"
-                id="btn-mode-normal"
-                onClick={() => handleSetMode('normal')}
-                aria-checked={salesmanMode === 'normal'}
-                role="radio"
-                className={`w-full min-h-[44px] py-2 px-3 sm:px-4 rounded-xl border-2 flex items-center justify-center gap-2.5 cursor-pointer font-black transition-all ${
-                  salesmanMode === 'normal'
-                    ? 'shadow-md ring-2 ring-blue-900/30'
-                    : 'opacity-70 hover:opacity-100 hover:bg-slate-100'
-                }`}
-                style={{
-                  fontSize: '16px',
-                  borderColor: salesmanMode === 'normal' ? palette.navy : palette.line,
-                  backgroundColor: salesmanMode === 'normal' ? palette.navy : palette.panel,
-                  color: salesmanMode === 'normal' ? '#FFFFFF' : palette.ink,
-                }}
-              >
-                <User size={22} className="shrink-0" />
-                <span className="truncate">Normal Mode</span>
-              </button>
-
-              <button
-                type="button"
-                id="btn-mode-visionless"
-                onClick={() => handleSetMode('lowVision')}
-                aria-checked={salesmanMode === 'lowVision'}
-                role="radio"
-                className={`w-full min-h-[44px] py-2 px-3 sm:px-4 rounded-xl border-2 flex items-center justify-center gap-2.5 cursor-pointer font-black transition-all ${
-                  salesmanMode === 'lowVision'
-                    ? 'shadow-md ring-2 ring-amber-500/40'
-                    : 'opacity-70 hover:opacity-100 hover:bg-slate-100'
-                }`}
-                style={{
-                  fontSize: '16px',
-                  borderColor: salesmanMode === 'lowVision' ? (isLowVision ? '#000000' : palette.bad) : palette.line,
-                  backgroundColor: salesmanMode === 'lowVision' ? (isLowVision ? '#FACC15' : palette.bad) : palette.panel,
-                  color: salesmanMode === 'lowVision' ? (isLowVision ? '#000000' : '#FFFFFF') : palette.ink,
-                }}
-              >
-                <Eye size={22} className="shrink-0" />
-                <span className="truncate">Visionless Mode</span>
-              </button>
-            </div>
-          </div>
-
-          {/* ================================================================= */}
-          {/* ROW 2: APP TITLE & ACTIVE VEHICLE STATUS                          */}
-          {/* ================================================================= */}
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div
-                className="w-9 h-9 rounded-xl flex items-center justify-center font-black shrink-0 shadow-2xs"
-                style={{
-                  backgroundColor: palette.navy,
-                  color: '#FFFFFF',
-                }}
-              >
-                <Truck size={20} />
-              </div>
-
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span
-                    className="truncate text-lg sm:text-xl font-black tracking-tight"
-                    style={{
-                      lineHeight: 1.1,
-                      color: palette.ink,
-                    }}
-                  >
-                    Van Sales & Routes
-                  </span>
-                  <span
-                    className="px-2.5 py-0.5 text-xs font-black rounded-full uppercase shrink-0"
-                    style={{
-                      backgroundColor: activeTrip ? palette.good : palette.bad,
-                      color: '#FFFFFF',
-                    }}
-                  >
-                    {activeTrip ? 'ACTIVE TRIP' : 'NO VEHICLE'}
-                  </span>
+        <div className="max-w-none lg:max-w-6xl mx-auto space-y-3">
+          {salesmanTab === 'home' ? (
+            /* ================================================================= */
+            /* HOME SCREEN TOP HEADER: EXACT FIELD ROUTE DASHBOARD               */
+            /* ================================================================= */
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-11 h-11 rounded-2xl bg-amber-500 text-slate-950 flex items-center justify-center font-black shrink-0 shadow-sm">
+                  <User size={24} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[11px] font-black uppercase tracking-wider text-amber-500">
+                    FIELD ROUTE DASHBOARD
+                  </div>
+                  <h1 className="text-xl sm:text-2xl font-black text-slate-900 truncate leading-tight">
+                    {currentUser?.name || userSalesmanName || activeSalesman?.name || 'Sales Staff'}
+                  </h1>
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 mt-0.5 truncate">
+                    <Truck size={14} className="text-slate-400 shrink-0" />
+                    <span className="truncate">
+                      {activeTrip?.vehicle
+                        ? `${activeTrip.vehicle}${activeTrip.route ? ' • ' + activeTrip.route : ''}`
+                        : 'No active vehicle run'}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            {/* Load Van Run Action Button & Log Out Button */}
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                id="salesman-btn-load-van"
-                onClick={() => setShowNewVanModal(true)}
-                className="min-h-[44px] px-3 sm:px-3.5 py-2 text-xs sm:text-sm font-black rounded-xl border-2 flex items-center gap-1.5 cursor-pointer shadow-xs shrink-0 whitespace-nowrap"
-                style={{
-                  backgroundColor: palette.amber,
-                  color: '#FFFFFF',
-                  borderColor: palette.amber,
-                }}
-              >
-                <Plus size={16} />
-                <span>Load Vehicle Run</span>
-              </button>
-            </div>
-          </div>
-
-          {/* ================================================================= */}
-          {/* ROW 3: VEHICLE / TRIP SELECTOR (Tappable Card/List, 16px+, 44px+) */}
-          {/* ================================================================= */}
-          <div className="space-y-1.5 pt-0.5">
-            <div className="flex items-center justify-between gap-2 flex-wrap text-xs">
-              <div className="font-black text-slate-500 uppercase tracking-wide flex items-center gap-1">
-                <span>{showTripHistory ? 'All Dispatches / History' : "Today's Active Vehicle Runs"}</span>
-                <span className="font-bold text-slate-400">
-                  ({showTripHistory ? relevantTrips.length : todayOutTrips.length})
-                </span>
-              </div>
-
-              {olderOrClosedTrips.length > 0 && (
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  id="btn-toggle-trip-history"
-                  onClick={() => setShowTripHistory(!showTripHistory)}
-                  className="font-black text-blue-900 hover:text-blue-950 underline cursor-pointer flex items-center gap-1 min-h-[32px]"
+                  id="salesman-home-btn-logout"
+                  onClick={() => logout()}
+                  className="size-11 rounded-2xl border-2 border-rose-200 text-rose-600 hover:bg-rose-50 hover:border-rose-300 flex items-center justify-center cursor-pointer transition-colors shadow-xs"
+                  title="Sign Out"
+                  aria-label="Sign Out"
                 >
-                  <HistoryIcon size={14} />
-                  <span>{showTripHistory ? "Show Today's Only" : `Trip History (${olderOrClosedTrips.length} past runs)`}</span>
+                  <LogOut size={20} />
                 </button>
-              )}
+              </div>
             </div>
+          ) : (
+            /* ================================================================= */
+            /* NON-HOME VIEW HEADER: Contextual clean navigation                 */
+            /* ================================================================= */
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setSalesmanTab('home')}
+                  className="p-2 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 cursor-pointer flex items-center gap-1.5 text-xs font-black shrink-0"
+                  title="Back to Dashboard Home"
+                >
+                  <LayoutGrid size={16} className="text-amber-500" />
+                  <span>Home</span>
+                </button>
 
-            {/* Tappable Card List replacing native <select> */}
-            <div
-              id="salesman-select-vehicle"
-              role="listbox"
-              aria-label="Select active vehicle trip"
-              className="grid grid-cols-1 sm:grid-cols-2 gap-2"
-            >
-              {displayedTrips.length > 0 ? (
-                displayedTrips.map((t) => {
-                  const isSelected = selectedTripId === t.id;
-                  const isOut = t.status === 'out';
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      role="option"
-                      aria-selected={isSelected}
-                      onClick={() => {
-                        setSelectedTripId(t.id);
-                        if (isLowVision) speakAssistiveText(`Selected vehicle ${t.vehicle}`);
-                      }}
-                      className={`w-full min-h-[48px] p-3 rounded-xl border-2 flex items-center justify-between gap-3 text-left transition-all cursor-pointer shadow-2xs ${
-                        isSelected
-                          ? 'border-blue-900 bg-blue-50/90 ring-2 ring-blue-900/30'
-                          : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
-                      }`}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className="truncate text-base sm:text-lg font-black tracking-tight"
+                      style={{ color: palette.ink }}
                     >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-base font-black text-slate-900 truncate">
-                            {t.vehicle}
-                          </span>
-                          <span
-                            className={`text-xs font-black px-2 py-0.5 rounded-full uppercase shrink-0 ${
-                              isOut ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-700'
-                            }`}
-                          >
-                            {isOut ? 'OUT' : t.status.toUpperCase()}
-                          </span>
-                        </div>
-                        <div className="text-xs font-semibold text-slate-500 truncate mt-0.5 flex items-center gap-1.5">
-                          {t.salesman && (
-                            <span>
-                              Salesman: <strong className="text-slate-700">{t.salesman}</strong>
-                            </span>
-                          )}
-                          {t.route && <span>• {t.route}</span>}
-                          {t.date && <span>• {t.date}</span>}
-                        </div>
-                      </div>
-
-                      {isSelected && (
-                        <div className="w-6 h-6 rounded-full bg-blue-900 text-white flex items-center justify-center shrink-0">
-                          <CheckCircle2 size={16} />
-                        </div>
-                      )}
-                    </button>
-                  );
-                })
-              ) : (
-                <div className="col-span-full p-4 rounded-xl border-2 border-dashed border-slate-300 text-center space-y-2 bg-slate-50">
-                  <div className="text-sm font-bold text-slate-600">
-                    No vehicles currently out on route for today ({todayStr}).
+                      {salesmanTab === 'sell' && 'New Sale / Customer Billing'}
+                      {salesmanTab === 'vanStock' && 'Van Stock'}
+                      {salesmanTab === 'bills' && 'My Bills & Invoices'}
+                      {salesmanTab === 'customerDue' && 'Customer Payment Due Lookup'}
+                      {salesmanTab === 'trips' && 'Vehicle Dispatches & Trips'}
+                    </span>
+                    {activeTrip && (
+                      <span className="px-2.5 py-0.5 text-[11px] font-black rounded-full bg-emerald-600 text-white shrink-0 flex items-center gap-1">
+                        <Truck size={12} />
+                        <span>{activeTrip.vehicle}</span>
+                      </span>
+                    )}
                   </div>
-                  {olderOrClosedTrips.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setShowTripHistory(true)}
-                      className="text-xs font-black text-blue-900 hover:underline cursor-pointer"
-                    >
-                      Click here to view Trip History ({olderOrClosedTrips.length} past runs)
-                    </button>
-                  )}
                 </div>
-              )}
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  id="salesman-header-btn-logout"
+                  onClick={() => logout()}
+                  className="size-9 rounded-xl border-2 border-rose-200 text-rose-600 hover:bg-rose-50 hover:border-rose-300 flex items-center justify-center cursor-pointer transition-colors shadow-xs"
+                  title="Sign Out"
+                  aria-label="Sign Out"
+                >
+                  <LogOut size={17} />
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
-        {/* Navigation Cards: Exactly the 5 requested salesman capabilities */}
-        <div className="max-w-6xl mx-auto grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mt-2 pt-2 border-t" style={{ borderColor: palette.line }}>
-          {/* Capability 1: Sell */}
-          <button
-            type="button"
-            id="nav-card-sale"
-            onClick={() => {
-              setSalesmanTab('sell');
-              if (isLowVision) speakAssistiveText('Customer Billing workflow active.');
-            }}
-            className={`p-2 sm:p-2.5 rounded-xl border-2 text-left transition-all cursor-pointer ${
-              salesmanTab === 'sell'
-                ? isLowVision
-                  ? 'border-black bg-yellow-300 text-black shadow-md ring-2 ring-black'
-                  : 'border-blue-900 bg-blue-50/90 text-blue-950 shadow-sm ring-2 ring-blue-900/30'
-                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-800'
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 font-black text-xs sm:text-sm">
-                <ShoppingCart size={15} className={salesmanTab === 'sell' ? 'text-blue-900' : 'text-slate-500'} />
-                <span>1. Sell</span>
-              </div>
-              {selectedRetailer ? (
-                <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 truncate max-w-[65px]">
-                  Draft
-                </span>
-              ) : (
-                <span className="text-[10px] font-bold text-slate-400">POS</span>
-              )}
-            </div>
-            <div className="text-[11px] font-semibold text-slate-500 mt-0.5 truncate">
-              {selectedRetailer ? selectedRetailer : 'Billing Workflow'}
-            </div>
-          </button>
 
-          {/* Capability 2: Van Stock */}
-          <button
-            type="button"
-            id="nav-card-stock"
-            onClick={() => {
-              setSalesmanTab('vanStock');
-              if (isLowVision) speakAssistiveText('Van Stock & Reconciliation active.');
-            }}
-            className={`p-2 sm:p-2.5 rounded-xl border-2 text-left transition-all cursor-pointer ${
-              salesmanTab === 'vanStock'
-                ? isLowVision
-                  ? 'border-black bg-yellow-300 text-black shadow-md ring-2 ring-black'
-                  : 'border-blue-900 bg-blue-50/90 text-blue-950 shadow-sm ring-2 ring-blue-900/30'
-                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-800'
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 font-black text-xs sm:text-sm">
-                <Package size={15} className={salesmanTab === 'vanStock' ? 'text-blue-900' : 'text-slate-500'} />
-                <span>2. Van Stock</span>
-              </div>
-              <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
-                {vehicleProducts.length} Loaded
-              </span>
-            </div>
-            <div className="text-[11px] font-semibold text-slate-500 mt-0.5 truncate">
-              Loaded vs Sold vs Rec
-            </div>
-          </button>
-
-          {/* Capability 3: My Bills */}
-          <button
-            type="button"
-            id="nav-card-bills"
-            onClick={() => {
-              setSalesmanTab('bills');
-              if (isLowVision) speakAssistiveText(`My Bills history active. ${myBills.length} invoices.`);
-            }}
-            className={`p-2 sm:p-2.5 rounded-xl border-2 text-left transition-all cursor-pointer ${
-              salesmanTab === 'bills'
-                ? isLowVision
-                  ? 'border-black bg-yellow-300 text-black shadow-md ring-2 ring-black'
-                  : 'border-blue-900 bg-blue-50/90 text-blue-950 shadow-sm ring-2 ring-blue-900/30'
-                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-800'
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 font-black text-xs sm:text-sm">
-                <FileText size={15} className={salesmanTab === 'bills' ? 'text-blue-900' : 'text-slate-500'} />
-                <span>3. My Bills</span>
-              </div>
-              <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">
-                {myBills.length} Bills
-              </span>
-            </div>
-            <div className="text-[11px] font-semibold text-slate-500 mt-0.5 truncate">
-              Own Dispatches Only
-            </div>
-          </button>
-
-          {/* Capability 4: Customer Payment Due Lookup */}
-          <button
-            type="button"
-            id="nav-card-customer-due"
-            onClick={() => {
-              setSalesmanTab('customerDue');
-              if (isLowVision) speakAssistiveText('Customer Payment Due Lookup active.');
-            }}
-            className={`p-2 sm:p-2.5 rounded-xl border-2 text-left transition-all cursor-pointer ${
-              salesmanTab === 'customerDue'
-                ? isLowVision
-                  ? 'border-black bg-yellow-300 text-black shadow-md ring-2 ring-black'
-                  : 'border-blue-900 bg-blue-50/90 text-blue-950 shadow-sm ring-2 ring-blue-900/30'
-                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-800'
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 font-black text-xs sm:text-sm">
-                <IndianRupee size={15} className={salesmanTab === 'customerDue' ? 'text-blue-900' : 'text-slate-500'} />
-                <span>4. Payment Due</span>
-              </div>
-              <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-rose-100 text-rose-800">
-                Lookup
-              </span>
-            </div>
-            <div className="text-[11px] font-semibold text-slate-500 mt-0.5 truncate">
-              Outstanding & Record
-            </div>
-          </button>
-
-          {/* Capability 5: Trips (their own runs only) */}
-          <button
-            type="button"
-            id="nav-card-trips"
-            onClick={() => {
-              setSalesmanTab('trips');
-              if (isLowVision) speakAssistiveText(`Trips active. ${relevantTrips.length} assigned runs.`);
-            }}
-            className={`p-2 sm:p-2.5 rounded-xl border-2 text-left transition-all cursor-pointer ${
-              salesmanTab === 'trips'
-                ? isLowVision
-                  ? 'border-black bg-yellow-300 text-black shadow-md ring-2 ring-black'
-                  : 'border-blue-900 bg-blue-50/90 text-blue-950 shadow-sm ring-2 ring-blue-900/30'
-                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-800'
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5 font-black text-xs sm:text-sm">
-                <Truck size={15} className={salesmanTab === 'trips' ? 'text-blue-900' : 'text-slate-500'} />
-                <span>5. Trips</span>
-              </div>
-              <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
-                {relevantTrips.length} Runs
-              </span>
-            </div>
-            <div className="text-[11px] font-semibold text-slate-500 mt-0.5 truncate">
-              Own Dispatches Only
-            </div>
-          </button>
-        </div>
 
         {/* Quick Review Cart Bar when items exist */}
         {cart.items.length > 0 && (
-          <div className="max-w-6xl mx-auto mt-2">
+          <div className="max-w-none lg:max-w-6xl mx-auto mt-2">
             <button
               type="button"
               id="btn-quick-review-cart-bar"
@@ -1395,7 +1263,7 @@ export const SalesmanView: React.FC = () => {
                 setIsCartOpen(true);
                 if (isLowVision) speakAssistiveText(`Reviewing invoice cart. ${cart.items.length} items.`);
               }}
-              className="w-full py-2.5 px-4 rounded-xl border-2 border-amber-500 bg-amber-50 hover:bg-amber-100 text-amber-950 font-black text-xs sm:text-sm flex items-center justify-between cursor-pointer shadow-xs transition-colors"
+              className="w-full py-2.5 px-4 rounded-xl border-2 border-amber-500 bg-amber-50 hover:bg-amber-100 text-amber-950 font-black text-xs sm:text-sm flex items-center justify-between cursor-pointer shadow-sm transition-colors"
             >
               <div className="flex items-center gap-2">
                 <ShoppingBag size={16} className="text-amber-700" />
@@ -1424,7 +1292,7 @@ export const SalesmanView: React.FC = () => {
         <div
           role="alert"
           aria-live="assertive"
-          className="max-w-6xl mx-auto mt-3 px-4 py-2.5 rounded-md font-black text-sm flex items-center justify-between border-2 shadow-sm transition-all"
+          className="max-w-none lg:max-w-6xl mx-auto mt-3 px-4 py-2.5 rounded-md font-black text-sm flex items-center justify-between border-2 shadow-sm transition-all"
           style={{
             backgroundColor: feedbackMsg.type === 'success' ? '#ECFDF5' : '#FFFBEB',
             borderColor: feedbackMsg.type === 'success' ? '#059669' : '#D97706',
@@ -1446,8 +1314,412 @@ export const SalesmanView: React.FC = () => {
         </div>
       )}
 
-      {/* Main Content Area */}
-      <main className="max-w-6xl mx-auto px-4 py-4">
+      {/* Main Content Area with Smooth Two-Finger Pinch-to-Zoom (0.75x - 3x) */}
+      <div
+        ref={pinchContainerRef}
+        className="w-full"
+        style={{
+          transform: zoomScale !== 1.0 ? `scale(${zoomScale})` : undefined,
+          transformOrigin: 'top center',
+          transition: isPinching ? 'none' : 'transform 0.12s ease-out',
+          width: zoomScale > 1 ? `${(100 / zoomScale).toFixed(1)}%` : '100%',
+          margin: zoomScale > 1 ? '0 auto' : undefined,
+        }}
+      >
+        <main className="max-w-none lg:max-w-6xl mx-auto px-4 py-4">
+        {/* VIEW 0: FIELD ROUTE DASHBOARD (HOME SCREEN) */}
+        {salesmanTab === 'home' && (
+          <section id="salesman-home-dashboard" className="space-y-6">
+            {/* 4 Summary KPI Cards (2x2 Grid) */}
+            <div className="grid grid-cols-2 gap-3 sm:gap-4">
+              {/* Card 1: Cash in Hand */}
+              <div
+                onClick={() => setSalesmanTab('customerDue')}
+                className="p-3.5 sm:p-4 rounded-2xl border-2 shadow-sm transition-transform hover:scale-[1.01] cursor-pointer"
+                style={{
+                  backgroundColor: '#ECFDF5',
+                  borderColor: '#A7F3D0',
+                }}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold text-emerald-800">
+                    Cash in Hand
+                  </span>
+                  <div className="w-8 h-8 rounded-xl bg-emerald-200/60 text-emerald-800 flex items-center justify-center">
+                    <IndianRupee size={18} />
+                  </div>
+                </div>
+                <div className="text-xl sm:text-2xl font-black font-mono text-emerald-950">
+                  ₹{money(todayCash)}
+                </div>
+                <div className="text-[11px] font-semibold text-emerald-700 mt-1">
+                  Collected today
+                </div>
+              </div>
+
+              {/* Card 2: UPI / Online */}
+              <div
+                onClick={() => setSalesmanTab('customerDue')}
+                className="p-3.5 sm:p-4 rounded-2xl border-2 shadow-sm transition-transform hover:scale-[1.01] cursor-pointer"
+                style={{
+                  backgroundColor: '#ECFEFF',
+                  borderColor: '#A5F3FC',
+                }}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold text-cyan-800">
+                    UPI / Online
+                  </span>
+                  <div className="w-8 h-8 rounded-xl bg-cyan-200/60 text-cyan-800 flex items-center justify-center">
+                    <Zap size={18} />
+                  </div>
+                </div>
+                <div className="text-xl sm:text-2xl font-black font-mono text-cyan-950">
+                  ₹{money(todayUpi)}
+                </div>
+                <div className="text-[11px] font-semibold text-cyan-700 mt-1">
+                  Direct transfers
+                </div>
+              </div>
+
+              {/* Card 3: Total Sales */}
+              <div
+                onClick={() => setSalesmanTab('bills')}
+                className="p-3.5 sm:p-4 rounded-2xl border-2 shadow-sm transition-transform hover:scale-[1.01] cursor-pointer"
+                style={{
+                  backgroundColor: '#FFFBEB',
+                  borderColor: '#FDE68A',
+                }}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold text-amber-800">
+                    Total Sales
+                  </span>
+                  <div className="w-8 h-8 rounded-xl bg-amber-200/60 text-amber-800 flex items-center justify-center">
+                    <Receipt size={18} />
+                  </div>
+                </div>
+                <div className="text-xl sm:text-2xl font-black font-mono text-amber-950">
+                  ₹{money(todaySales)}
+                </div>
+                <div className="text-[11px] font-semibold text-amber-700 mt-1">
+                  {todayBills.length} invoice{todayBills.length === 1 ? '' : 's'} cut
+                </div>
+              </div>
+
+              {/* Card 4: Crates Delivered */}
+              <div
+                onClick={() => setSalesmanTab('vanStock')}
+                className="p-3.5 sm:p-4 rounded-2xl border-2 shadow-sm transition-transform hover:scale-[1.01] cursor-pointer"
+                style={{
+                  backgroundColor: '#FAF5FF',
+                  borderColor: '#E9D5FF',
+                }}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold text-purple-800">
+                    Crates Delivered
+                  </span>
+                  <div className="w-8 h-8 rounded-xl bg-purple-200/60 text-purple-800 flex items-center justify-center">
+                    <Package size={18} />
+                  </div>
+                </div>
+                <div className="text-xl sm:text-2xl font-black font-mono text-purple-950">
+                  {todayDeliveredCrates}
+                </div>
+                <div className="text-[11px] font-semibold text-purple-700 mt-1">
+                  {totalLoadedItems} items loaded
+                </div>
+              </div>
+            </div>
+
+            {/* QUICK ACTIONS SECTION (2x2 Grid) */}
+            <div className="space-y-2.5">
+              <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-slate-500">
+                <Sparkles size={14} className="text-amber-500" />
+                <span>Quick Actions</span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Action 1: New Bill / Sale */}
+                <button
+                  type="button"
+                  id="home-action-sale"
+                  onClick={() => setSalesmanTab('sell')}
+                  className="group p-4 rounded-2xl border-2 flex items-center justify-between gap-3 text-left transition-all hover:shadow-md cursor-pointer"
+                  style={{
+                    backgroundColor: palette.panel,
+                    borderColor: palette.line,
+                  }}
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-12 h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
+                      <ShoppingCart size={22} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-amber-600 transition-colors">
+                        1. New Bill / Sale
+                      </div>
+                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                        Select retailer or add new customer
+                      </div>
+                    </div>
+                  </div>
+                  <ArrowRight size={20} className="text-slate-400 group-hover:translate-x-1 group-hover:text-slate-700 transition-all shrink-0" />
+                </button>
+
+                {/* Action 2: Record Payment */}
+                <button
+                  type="button"
+                  id="home-action-payment"
+                  onClick={() => setSalesmanTab('customerDue')}
+                  className="group p-4 rounded-2xl border-2 flex items-center justify-between gap-3 text-left transition-all hover:shadow-md cursor-pointer"
+                  style={{
+                    backgroundColor: palette.panel,
+                    borderColor: palette.line,
+                  }}
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
+                      <IndianRupee size={22} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-emerald-600 transition-colors">
+                        2. Record Payment
+                      </div>
+                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                        Look up retailer dues & collect cash/UPI
+                      </div>
+                    </div>
+                  </div>
+                  <ArrowRight size={20} className="text-slate-400 group-hover:translate-x-1 group-hover:text-slate-700 transition-all shrink-0" />
+                </button>
+
+                {/* Action 3: Record Trip */}
+                <button
+                  type="button"
+                  id="home-action-trip"
+                  onClick={() => setSalesmanTab('trips')}
+                  className="group p-4 rounded-2xl border-2 flex items-center justify-between gap-3 text-left transition-all hover:shadow-md cursor-pointer"
+                  style={{
+                    backgroundColor: palette.panel,
+                    borderColor: palette.line,
+                  }}
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
+                      <Truck size={22} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-amber-600 transition-colors">
+                        3. Record Trip
+                      </div>
+                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                        Load vehicle run, manage route runs
+                      </div>
+                    </div>
+                  </div>
+                  <ArrowRight size={20} className="text-slate-400 group-hover:translate-x-1 group-hover:text-slate-700 transition-all shrink-0" />
+                </button>
+
+                {/* Action 4: Van Stock */}
+                <button
+                  type="button"
+                  id="home-action-stock"
+                  onClick={() => setSalesmanTab('vanStock')}
+                  className="group p-4 rounded-2xl border-2 flex items-center justify-between gap-3 text-left transition-all hover:shadow-md cursor-pointer"
+                  style={{
+                    backgroundColor: palette.panel,
+                    borderColor: palette.line,
+                  }}
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-12 h-12 rounded-2xl bg-purple-600 text-white flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
+                      <Package size={22} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-purple-600 transition-colors">
+                        4. Van Stock
+                      </div>
+                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                        Check remaining stock & empty crates
+                      </div>
+                    </div>
+                  </div>
+                  <ArrowRight size={20} className="text-slate-400 group-hover:translate-x-1 group-hover:text-slate-700 transition-all shrink-0" />
+                </button>
+
+                {/* Action 5: Add New Customer */}
+                <button
+                  type="button"
+                  id="home-action-add-customer"
+                  onClick={() => setShowHomeAddCustomerModal(true)}
+                  className="group p-4 rounded-2xl border-2 flex items-center justify-between gap-3 text-left transition-all hover:shadow-md cursor-pointer sm:col-span-2"
+                  style={{
+                    backgroundColor: palette.panel,
+                    borderColor: palette.line,
+                  }}
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
+                      <UserPlus size={22} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-emerald-700 transition-colors flex items-center gap-2">
+                        <span>5. Add New Customer</span>
+                        <span className="text-[10px] uppercase font-black px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                          Route Master
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                        Register new shop / retailer on this route & start billing immediately
+                      </div>
+                    </div>
+                  </div>
+                  <ArrowRight size={20} className="text-slate-400 group-hover:translate-x-1 group-hover:text-slate-700 transition-all shrink-0" />
+                </button>
+              </div>
+            </div>
+
+            {/* TODAY'S INVOICES SECTION */}
+            <div
+              className="p-4 sm:p-5 rounded-2xl border-2 shadow-sm space-y-4"
+              style={{
+                backgroundColor: palette.panel,
+                borderColor: palette.line,
+              }}
+            >
+              <div className="flex items-center justify-between gap-3 pb-3 border-b-2" style={{ borderColor: palette.line }}>
+                <div className="flex items-center gap-2">
+                  <Receipt size={20} className="text-emerald-700 shrink-0" />
+                  <h2 className="font-black text-base sm:text-lg text-slate-900">
+                    Today's Invoices ({todayBills.length})
+                  </h2>
+                </div>
+                {todayBills.length > 0 && (
+                  <span className="font-mono font-black text-xs px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200">
+                    Total: ₹{money(todaySales)}
+                  </span>
+                )}
+              </div>
+
+              {todayBills.length === 0 ? (
+                <div className="text-center py-10 px-4 rounded-xl border-2 border-dashed border-slate-200 space-y-3 bg-slate-50/50">
+                  <div className="w-14 h-14 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto text-slate-400">
+                    <ShoppingCart size={28} />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-bold text-slate-700">
+                      No invoices generated yet today.
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      Tap '1. New Bill / Sale' to start billing a retailer.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSalesmanTab('sell')}
+                    className="mt-2 px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs cursor-pointer shadow-sm transition-colors"
+                  >
+                    + Create First Bill Today
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {todayBills.map((bill) => {
+                    const total = Number(bill.total) || 0;
+                    const paid = Number(bill.amountPaid) || 0;
+                    const due = billBalance(bill);
+                    const isFullyPaid = due <= 0;
+                    const isPartial = paid > 0 && due > 0;
+                    const itemCount = (bill.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
+
+                    return (
+                      <div
+                        key={bill.id}
+                        className="p-3.5 rounded-xl border-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 transition-colors bg-white hover:bg-slate-50"
+                        style={{ borderColor: palette.line }}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-black text-sm text-slate-900">
+                              {bill.retailer}
+                            </span>
+                            <span className="font-mono text-xs font-bold text-slate-500">
+                              #{bill.id}
+                            </span>
+                            <span
+                              className={`text-[10px] font-black px-2 py-0.5 rounded-full uppercase ${
+                                isFullyPaid
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : isPartial
+                                  ? 'bg-amber-100 text-amber-800'
+                                  : 'bg-rose-100 text-rose-800'
+                              }`}
+                            >
+                              {isFullyPaid ? 'PAID' : isPartial ? 'PARTIAL' : 'UNPAID'}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-500 font-semibold mt-1 flex items-center gap-2 flex-wrap">
+                            <span>{itemCount} crate{itemCount === 1 ? '' : 's'}</span>
+                            <span>•</span>
+                            <span>{bill.date || todayStr}</span>
+                            {bill.vehicle && (
+                              <>
+                                <span>•</span>
+                                <span>{bill.vehicle}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between sm:justify-end gap-3 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
+                          <div className="text-left sm:text-right">
+                            <div className="font-mono font-black text-sm text-slate-900">
+                              ₹{money(total)}
+                            </div>
+                            {due > 0 ? (
+                              <div className="text-[11px] font-bold text-rose-600">
+                                Due: ₹{money(due)}
+                              </div>
+                            ) : (
+                              <div className="text-[11px] font-bold text-emerald-600">
+                                Fully Paid
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => setInvoiceModalBill(bill)}
+                              className="px-2.5 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100 text-xs font-bold text-slate-700 cursor-pointer"
+                              title="View Invoice Details"
+                            >
+                              View
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const text = `Invoice #${bill.id} from ${orgProfile?.name || 'MrWater Distribution'}: ₹${bill.total} for ${bill.retailer}. Thank you!`;
+                                window.open(`https://wa.me/${bill.phone ? '91' + bill.phone.replace(/\D/g, '') : ''}?text=${encodeURIComponent(text)}`, '_blank');
+                              }}
+                              className="p-1.5 rounded-lg border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer"
+                              title="Share via WhatsApp"
+                            >
+                              <Share2 size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
         {/* VIEW 1: VAN STOCK SUMMARY & RECONCILIATION */}
         {salesmanTab === 'vanStock' && (
           <section id="salesman-van-stock-view" className="space-y-4">
@@ -1460,38 +1732,44 @@ export const SalesmanView: React.FC = () => {
             >
               {/* Header with Title & Live Van Run Metrics */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 border-b-2" style={{ borderColor: palette.line }}>
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Truck size={20} className="text-blue-900 shrink-0" />
-                    <h2 style={fz(18, { fontWeight: 900 })}>
-                      Vehicle Stock Reconciliation: {activeTrip?.vehicle || 'No Van Assigned'}
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl bg-sky-100 text-sky-800 flex items-center justify-center shrink-0">
+                    <Truck size={20} />
+                  </div>
+                  <div>
+                    <h2 style={fz(18, { fontWeight: 900 })} className="text-slate-900">
+                      {activeTrip ? `Van On-Board Stock · ${activeTrip.vehicle}` : 'Van On-Board Stock'}
                     </h2>
-                  </div>
-                  <p className="text-xs font-semibold text-slate-500 mt-0.5">
-                    Strict on-board stock accounting. Only loaded cases can be sold by this vehicle on route.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <div className="px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-300 text-xs font-bold text-emerald-800">
-                    Total Invoiced: {money(tripTotalBilled)}
-                  </div>
-                  <div className="px-2.5 py-1 rounded-md bg-blue-50 border border-blue-300 text-xs font-bold text-blue-800">
-                    Collected: {money(tripTotalCollected)}
+                    <p className="text-xs font-semibold text-slate-500 mt-0.5">
+                      {activeTrip
+                        ? `Route: ${activeTrip.route || 'Delivery Route'} · Godown: ${warehouses.find((w) => w.id === activeTrip.warehouseId)?.name || 'Main Godown'}`
+                        : 'No vehicle currently assigned to an active route.'}
+                    </p>
                   </div>
                 </div>
+                {activeTrip && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-300 text-xs font-bold text-emerald-800">
+                      Invoiced: ₹{money(tripTotalBilled)}
+                    </div>
+                    <div className="px-2.5 py-1 rounded-md bg-sky-50 border border-blue-300 text-xs font-bold text-sky-800">
+                      Collected: ₹{money(tripTotalCollected)}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* High-Level On-Board Cases Summary Bar */}
               <div className="grid grid-cols-3 gap-2 sm:gap-3 mb-4">
                 <div className="bg-slate-50 border-2 rounded-lg p-2.5 sm:p-3 text-center" style={{ borderColor: palette.line }}>
-                  <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Total Loaded</div>
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Total Loaded</div>
                   <div className="text-lg sm:text-2xl font-black text-slate-900 mt-0.5">{vanStockCounts.totalLoadedCases} cs</div>
-                  <div className="text-[10.5px] text-slate-500 font-medium hidden sm:block">Stock departed on van</div>
+                  <div className="text-[10.5px] text-slate-500 font-medium hidden sm:block">Departed on van</div>
                 </div>
-                <div className="bg-blue-50/60 border-2 border-blue-200 rounded-lg p-2.5 sm:p-3 text-center">
-                  <div className="text-[11px] font-bold text-blue-700 uppercase tracking-wider">Total Sold</div>
-                  <div className="text-lg sm:text-2xl font-black text-blue-900 mt-0.5">{vanStockCounts.totalSoldCases} cs</div>
-                  <div className="text-[10.5px] text-blue-600 font-medium hidden sm:block">Delivered on route</div>
+                <div className="bg-sky-50/60 border-2 border-sky-200 rounded-lg p-2.5 sm:p-3 text-center">
+                  <div className="text-[11px] font-bold text-sky-700 uppercase tracking-wider">Total Sold</div>
+                  <div className="text-lg sm:text-2xl font-black text-sky-700 mt-0.5">{vanStockCounts.totalSoldCases} cs</div>
+                  <div className="text-[10.5px] text-sky-600 font-medium hidden sm:block">Delivered on route</div>
                 </div>
                 <div className="bg-emerald-50/60 border-2 border-emerald-200 rounded-lg p-2.5 sm:p-3 text-center">
                   <div className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider">Remaining</div>
@@ -1500,133 +1778,67 @@ export const SalesmanView: React.FC = () => {
                 </div>
               </div>
 
-              {/* Controls Toolbar: Search, Filters, and Cards/Table Toggle */}
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 mb-4">
-                {/* Search Bar */}
-                <div className="relative flex-1">
-                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              {/* Controls Toolbar: Search Only (No crossed-out filter chips or table toggle) */}
+              <div className="mb-4">
+                <div className="relative">
+                  <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                   <input
                     type="text"
                     value={vanStockSearch}
                     onChange={(e) => setVanStockSearch(e.target.value)}
-                    placeholder="Search van beverage by name or SKU..."
-                    className="w-full pl-9 pr-8 py-2 text-xs sm:text-sm font-semibold border-2 rounded-lg focus-ring bg-white"
+                    placeholder="Search loaded beverage by name or SKU..."
+                    className="w-full pl-9 pr-8 py-2.5 text-xs sm:text-sm font-semibold border-2 rounded-xl focus-ring bg-white"
                     style={{ borderColor: palette.line }}
                   />
                   {vanStockSearch && (
-                    <button
+                    <button aria-label="Close"
                       type="button"
                       onClick={() => setVanStockSearch('')}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
                     >
-                      <X size={14} />
+                      <X size={15} />
                     </button>
                   )}
-                </div>
-
-                {/* Filter Pills & View Mode Switcher */}
-                <div className="flex items-center justify-between sm:justify-end gap-2 flex-wrap">
-                  {/* Filter chips */}
-                  <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setVanStockFilter('all')}
-                      className={`px-2.5 py-1 text-xs font-bold rounded-md border transition-colors cursor-pointer whitespace-nowrap ${
-                        vanStockFilter === 'all'
-                          ? 'bg-blue-900 text-white border-blue-900'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      All ({vanStockCounts.total})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setVanStockFilter('available')}
-                      className={`px-2.5 py-1 text-xs font-bold rounded-md border transition-colors cursor-pointer whitespace-nowrap ${
-                        vanStockFilter === 'available'
-                          ? 'bg-emerald-700 text-white border-emerald-700'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      Available ({vanStockCounts.available})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setVanStockFilter('loaded')}
-                      className={`px-2.5 py-1 text-xs font-bold rounded-md border transition-colors cursor-pointer whitespace-nowrap ${
-                        vanStockFilter === 'loaded'
-                          ? 'bg-blue-900 text-white border-blue-900'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      Loaded ({vanStockCounts.loaded})
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setVanStockFilter('empty')}
-                      className={`px-2.5 py-1 text-xs font-bold rounded-md border transition-colors cursor-pointer whitespace-nowrap ${
-                        vanStockFilter === 'empty'
-                          ? 'bg-rose-700 text-white border-rose-700'
-                          : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                      }`}
-                    >
-                      Empty ({vanStockCounts.empty})
-                    </button>
-                  </div>
-
-                  {/* Cards vs Table View Mode Switcher */}
-                  <div className="inline-flex border-2 rounded-lg p-0.5 bg-slate-100" style={{ borderColor: palette.line }}>
-                    <button
-                      type="button"
-                      onClick={() => setVanStockViewMode('cards')}
-                      className={`px-2.5 py-1 text-xs font-bold rounded-md cursor-pointer flex items-center gap-1 transition-all ${
-                        vanStockViewMode === 'cards'
-                          ? 'bg-white text-slate-900 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                      title="Cards view (recommended for mobile/tablet)"
-                    >
-                      <LayoutGrid size={13} />
-                      <span className="hidden sm:inline">Cards</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setVanStockViewMode('table')}
-                      className={`px-2.5 py-1 text-xs font-bold rounded-md cursor-pointer flex items-center gap-1 transition-all ${
-                        vanStockViewMode === 'table'
-                          ? 'bg-white text-slate-900 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                      title="Compact Table view"
-                    >
-                      <List size={13} />
-                      <span className="hidden sm:inline">Table</span>
-                    </button>
-                  </div>
                 </div>
               </div>
 
               {/* EMPTY SEARCH / FILTER RESULTS */}
               {filteredVehicleProducts.length === 0 ? (
-                <div className="text-center py-10 border-2 rounded-xl bg-slate-50 text-slate-500" style={{ borderColor: palette.line }}>
-                  <Package size={36} className="mx-auto mb-2 opacity-40" />
-                  <p className="font-bold text-sm text-slate-700">No beverage items match this filter.</p>
-                  <p className="text-xs mt-1">Try clearing your search term or selecting "All Items".</p>
-                  {vanStockSearch && (
+                <div className="text-center py-10 px-4 border-2 border-dashed rounded-2xl bg-slate-50 text-slate-500 space-y-3" style={{ borderColor: palette.line }}>
+                  <Package size={40} className="mx-auto text-slate-400" />
+                  <div>
+                    <p className="font-extrabold text-sm sm:text-base text-slate-800">
+                      {vanStockSearch
+                        ? 'No loaded beverage items match your search.'
+                        : 'No beverages currently loaded on this vehicle run.'}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+                      {vanStockSearch
+                        ? 'Try clearing your search term to see all loaded van products.'
+                        : 'Load beverage stock onto your vehicle in the Trips menu before heading out on route.'}
+                    </p>
+                  </div>
+                  {vanStockSearch ? (
                     <button
                       type="button"
-                      onClick={() => {
-                        setVanStockSearch('');
-                        setVanStockFilter('all');
-                      }}
-                      className="mt-3 px-3 py-1.5 text-xs font-bold bg-blue-900 text-white rounded-md cursor-pointer hover:bg-blue-800"
+                      onClick={() => setVanStockSearch('')}
+                      className="px-4 py-2 text-xs font-bold bg-sky-600 text-white rounded-xl cursor-pointer hover:bg-sky-500 shadow-sm"
                     >
-                      Reset Filters
+                      Clear Search
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setSalesmanTab('trips')}
+                      className="px-4 py-2.5 text-xs font-black bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-xl cursor-pointer shadow-sm inline-flex items-center gap-1.5"
+                    >
+                      <Truck size={15} />
+                      <span>Go to Trips to Load Stock</span>
                     </button>
                   )}
                 </div>
-              ) : vanStockViewMode === 'cards' ? (
-                /* CARD-BASED RECONCILIATION LAYOUT (MOBILE & TABLET OPTIMIZED) */
+              ) : (
+                /* CARD-BASED LAYOUT ONLY (ALL SHOULD BE CARD OPTION) */
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   {filteredVehicleProducts.map((p) => {
                     const isOutOfStock = p.vanAvailable <= 0;
@@ -1636,14 +1848,14 @@ export const SalesmanView: React.FC = () => {
                     return (
                       <div
                         key={p.id}
-                        className="border-2 rounded-xl p-3.5 bg-white shadow-2xs hover:shadow-xs transition-shadow flex flex-col justify-between"
-                        style={{ borderColor: isOutOfStock && isLoaded ? `${palette.bad}80` : palette.line }}
+                        className="border-2 rounded-xl p-3.5 bg-white shadow-sm hover:shadow-sm transition-shadow flex flex-col justify-between"
+                        style={{ borderColor: isOutOfStock ? `${palette.bad}80` : palette.line, borderLeftWidth: 6, borderLeftColor: sizeTheme(p.volume, p.name).hex }}
                       >
                         <div>
                           {/* Card Header: Name, SKU, and Status Badge */}
                           <div className="flex items-start justify-between gap-2 mb-1.5">
                             <div className="min-w-0 flex-1">
-                              <h3 className="font-extrabold text-sm text-slate-900 truncate" title={p.name}>
+                              <h3 className="font-extrabold text-sm text-slate-900 break-words leading-snug" title={p.name}>
                                 {p.name}
                               </h3>
                               <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
@@ -1652,18 +1864,12 @@ export const SalesmanView: React.FC = () => {
                                     {p.sku}
                                   </span>
                                 )}
-                                <span className="text-[11px] font-semibold text-slate-500">
-                                  {p.volume}ml {p.pack}
-                                </span>
+                                <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
                               </div>
                             </div>
 
-                            {/* Van Status Badge */}
-                            {!isLoaded ? (
-                              <span className="px-2 py-0.5 rounded text-[10.5px] font-extrabold bg-slate-100 text-slate-600 border border-slate-200 shrink-0">
-                                NOT LOADED
-                              </span>
-                            ) : isOutOfStock ? (
+                            {/* Van Status Badge: Loaded items are either AVAILABLE or VAN EMPTY */}
+                            {isOutOfStock ? (
                               <span className="px-2 py-0.5 rounded text-[10.5px] font-extrabold bg-rose-100 text-rose-800 border border-rose-200 shrink-0">
                                 VAN EMPTY
                               </span>
@@ -1681,8 +1887,8 @@ export const SalesmanView: React.FC = () => {
                               <div className="text-sm font-extrabold text-slate-800">{p.vanLoaded} cs</div>
                             </div>
                             <div className="border-x border-slate-200">
-                              <div className="text-[10px] font-bold text-blue-600 uppercase">Sold</div>
-                              <div className="text-sm font-extrabold text-blue-800">{p.vanSold} cs</div>
+                              <div className="text-[10px] font-bold text-sky-600 uppercase">Sold</div>
+                              <div className="text-sm font-extrabold text-sky-800">{p.vanSold} cs</div>
                             </div>
                             <div>
                               <div className="text-[10px] font-bold text-slate-500 uppercase">Remaining</div>
@@ -1728,7 +1934,7 @@ export const SalesmanView: React.FC = () => {
                                 handleQuickProductCartChange(p.id, 1);
                                 triggerFeedback(`Added 1 case of ${p.name} to sale cart!`);
                               }}
-                              className="px-3 py-1.5 text-xs font-bold bg-blue-900 text-white rounded-md hover:bg-blue-800 transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                              className="px-3 py-1.5 text-xs font-bold bg-sky-600 text-white rounded-md hover:bg-sky-500 transition-colors flex items-center gap-1 cursor-pointer shadow-sm"
                               title="Add 1 case of this product to current sale"
                             >
                               <Plus size={13} />
@@ -1736,91 +1942,13 @@ export const SalesmanView: React.FC = () => {
                             </button>
                           ) : (
                             <span className="text-xs font-bold text-rose-600 bg-rose-50 px-2 py-1 rounded border border-rose-200">
-                              {isLoaded ? 'Sold Out' : 'Unavailable'}
+                              Sold Out
                             </span>
                           )}
                         </div>
                       </div>
                     );
                   })}
-                </div>
-              ) : (
-                /* TABLE VIEW (HIGH-DENSITY FOR DESKTOP / LARGE SCREENS) */
-                <div className="overflow-x-auto border-2 rounded-xl" style={{ borderColor: palette.line }}>
-                  <table className="w-full text-left text-sm border-collapse">
-                    <thead>
-                      <tr className="border-b-2 bg-slate-50" style={{ borderColor: palette.line }}>
-                        <th className="p-3 font-extrabold text-slate-900">Beverage Product</th>
-                        <th className="p-3 font-extrabold text-center text-slate-900">Pack</th>
-                        <th className="p-3 font-extrabold text-right text-slate-900">Loaded on Van</th>
-                        <th className="p-3 font-extrabold text-right text-slate-900">Sold on Route</th>
-                        <th className="p-3 font-extrabold text-right text-slate-900">Remaining</th>
-                        <th className="p-3 font-extrabold text-center text-slate-900">Van Status</th>
-                        <th className="p-3 font-extrabold text-right text-slate-900">Quick Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y" style={{ borderColor: palette.line }}>
-                      {filteredVehicleProducts.map((p) => {
-                        const isOutOfStock = p.vanAvailable <= 0;
-                        const isLoaded = p.vanLoaded > 0;
-                        return (
-                          <tr
-                            key={p.id}
-                            className="hover:bg-slate-50/60 transition-colors"
-                          >
-                            <td className="p-3 font-bold text-slate-900">
-                              <div className="flex items-center gap-2">
-                                <span>{p.name}</span>
-                                {p.sku && (
-                                  <span className="text-xs px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 border border-slate-200 font-semibold">
-                                    {p.sku}
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-                            <td className="p-3 text-center text-xs font-semibold text-slate-600">{p.volume}ml {p.pack}</td>
-                            <td className="p-3 text-right font-bold text-slate-800">{p.vanLoaded} cs</td>
-                            <td className="p-3 text-right font-bold text-blue-700">{p.vanSold} cs</td>
-                            <td className="p-3 text-right font-black text-base" style={{ color: isOutOfStock ? palette.bad : palette.good }}>
-                              {p.vanAvailable} cs
-                            </td>
-                            <td className="p-3 text-center">
-                              {!isLoaded ? (
-                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                                  NOT LOADED
-                                </span>
-                              ) : isOutOfStock ? (
-                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-rose-100 text-rose-800 border border-rose-200">
-                                  VAN EMPTY
-                                </span>
-                              ) : (
-                                <span className="px-2 py-0.5 rounded text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                  AVAILABLE
-                                </span>
-                              )}
-                            </td>
-                            <td className="p-3 text-right">
-                              {p.vanAvailable > 0 ? (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    handleQuickProductCartChange(p.id, 1);
-                                    triggerFeedback(`Added 1 case of ${p.name} to sale cart!`);
-                                  }}
-                                  className="px-2.5 py-1 text-xs font-bold bg-blue-900 text-white rounded hover:bg-blue-800 transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                >
-                                  <Plus size={12} />
-                                  <span>Add</span>
-                                </button>
-                              ) : (
-                                <span className="text-xs font-semibold text-slate-400">—</span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
                 </div>
               )}
             </div>
@@ -1831,7 +1959,7 @@ export const SalesmanView: React.FC = () => {
         {salesmanTab === 'bills' && (
           <section id="salesman-bills-view" className="space-y-4">
             <div
-              className="p-4 sm:p-5 rounded-2xl border-2 shadow-xs space-y-4"
+              className="p-4 sm:p-5 rounded-2xl border-2 shadow-sm space-y-4"
               style={{
                 backgroundColor: palette.panel,
                 borderColor: palette.line,
@@ -1841,7 +1969,7 @@ export const SalesmanView: React.FC = () => {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b-2" style={{ borderColor: palette.line }}>
                 <div>
                   <h2 style={fz(18, { fontWeight: 900 })} className="text-slate-900 flex items-center gap-2">
-                    <FileText size={20} className="text-blue-900" />
+                    <FileText size={20} className="text-sky-700" />
                     <span>My Invoices & Delivery Bills</span>
                   </h2>
                   <p className="text-xs font-semibold text-slate-500 mt-0.5">
@@ -1850,7 +1978,7 @@ export const SalesmanView: React.FC = () => {
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap text-xs">
-                  <span className="px-2.5 py-1 rounded-lg font-mono font-black bg-blue-50 text-blue-900 border border-blue-200">
+                  <span className="px-2.5 py-1 rounded-lg font-mono font-black bg-sky-50 text-sky-700 border border-sky-200">
                     Billed: ₹{money(myBillsTotalBilled)}
                   </span>
                   <span className="px-2.5 py-1 rounded-lg font-mono font-black bg-emerald-50 text-emerald-800 border border-emerald-200">
@@ -1867,7 +1995,7 @@ export const SalesmanView: React.FC = () => {
                     onClick={() => setMyBillsScope('currentTrip')}
                     className={`min-h-[36px] px-3 rounded-lg text-xs font-black transition-colors cursor-pointer ${
                       myBillsScope === 'currentTrip'
-                        ? 'bg-white text-blue-950 shadow-xs'
+                        ? 'bg-white text-blue-950 shadow-sm'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
@@ -1878,7 +2006,7 @@ export const SalesmanView: React.FC = () => {
                     onClick={() => setMyBillsScope('allMyBills')}
                     className={`min-h-[36px] px-3 rounded-lg text-xs font-black transition-colors cursor-pointer ${
                       myBillsScope === 'allMyBills'
-                        ? 'bg-white text-blue-950 shadow-xs'
+                        ? 'bg-white text-blue-950 shadow-sm'
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
@@ -1893,7 +2021,7 @@ export const SalesmanView: React.FC = () => {
                     value={myBillsSearch}
                     onChange={(e) => setMyBillsSearch(e.target.value)}
                     placeholder="Search invoice # or retailer..."
-                    className="w-full pl-9 pr-3 py-1.5 rounded-xl border border-slate-300 text-xs font-bold text-slate-900 bg-white focus:outline-none focus:border-blue-900"
+                    className="w-full pl-9 pr-3 py-1.5 rounded-xl border border-slate-300 text-xs font-bold text-slate-900 bg-white focus:outline-none focus:border-sky-600"
                   />
                 </div>
               </div>
@@ -1914,7 +2042,7 @@ export const SalesmanView: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setMyBillsScope('allMyBills')}
-                      className="mt-2 text-xs font-black text-blue-900 underline cursor-pointer"
+                      className="mt-2 text-xs font-black text-sky-700 underline cursor-pointer"
                     >
                       View All {myBills.length} Past Invoices
                     </button>
@@ -1925,7 +2053,7 @@ export const SalesmanView: React.FC = () => {
                   {displayedMyBills.map((bill) => {
                     const total = Number(bill.total) || 0;
                     const paid = Number(bill.amountPaid) || 0;
-                    const due = Math.max(0, total - paid);
+                    const due = billBalance(bill);
 
                     return (
                       <div
@@ -1942,7 +2070,7 @@ export const SalesmanView: React.FC = () => {
                             <span className="font-black text-sm sm:text-base text-slate-900">
                               Invoice #{bill.id}
                             </span>
-                            <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-900 font-mono">
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-blue-100 text-sky-700 font-mono">
                               {bill.date}
                             </span>
                             {due > 0 ? (
@@ -2006,40 +2134,17 @@ export const SalesmanView: React.FC = () => {
         {/* VIEW 3: MAKE SALE (MAIN BILLING WORKFLOW) */}
         {salesmanTab === 'sell' && (
           <div>
-            {/* NO ACTIVE TRIP ALERT BANNER */}
-            {!activeTrip && (
-              <div
-                className="mb-6 p-4 rounded-lg border-2 flex flex-col sm:flex-row items-center justify-between gap-4"
-                style={{
-                  backgroundColor: '#FEF2F2',
-                  borderColor: '#DC2626',
-                  color: '#991B1B',
-                }}
-              >
-                <div className="flex items-center gap-3">
-                  <AlertTriangle size={28} className="shrink-0" />
-                  <div>
-                    <h3 className="font-black text-base">Vehicle Not Dispatched</h3>
-                    <p className="text-xs font-bold">
-                      A salesman cannot sell without loaded vehicle stock. Please start a van run or select an existing vehicle.
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowNewVanModal(true)}
-                  className="px-4 py-2 rounded bg-rose-700 text-white font-black text-sm cursor-pointer shadow-md hover:bg-rose-800 transition-colors"
-                >
-                  Start / Load Van Run Now
-                </button>
-              </div>
-            )}
-
             <SalesmanSaleWorkflow
               confirmedBill={confirmedBill}
               setConfirmedBill={setConfirmedBill}
               cart={cart}
               activeTrip={activeTrip}
+              availableTrips={anyOutTrips}
+              onSelectTripId={(id) => {
+                setSelectedTripId(id);
+                if (isLowVision) speakAssistiveText(`Switched to vehicle ${(trips.find(t => t.id === id))?.vehicle || 'van'}.`);
+              }}
+              onOpenNewVanModal={() => setShowNewVanModal(true)}
               products={products}
               customers={existingCustomers}
               selectedRetailer={selectedRetailer}
@@ -2064,6 +2169,8 @@ export const SalesmanView: React.FC = () => {
               onSetSalesmanTab={setSalesmanTab}
               orgProfile={orgProfile}
               billingSettings={billingSettings}
+              saleDate={saleDate}
+              setSaleDate={setSaleDate}
             />
           </div>
         )}
@@ -2089,7 +2196,7 @@ export const SalesmanView: React.FC = () => {
         {salesmanTab === 'trips' && (
           <section id="salesman-trips-view" className="space-y-4">
             <div
-              className="p-4 sm:p-5 rounded-2xl border-2 shadow-xs space-y-4"
+              className="p-4 sm:p-5 rounded-2xl border-2 shadow-sm space-y-4"
               style={{
                 backgroundColor: palette.panel,
                 borderColor: palette.line,
@@ -2099,7 +2206,7 @@ export const SalesmanView: React.FC = () => {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b-2" style={{ borderColor: palette.line }}>
                 <div>
                   <h2 style={fz(18, { fontWeight: 900 })} className="text-slate-900 flex items-center gap-2">
-                    <Truck size={20} className="text-blue-900" />
+                    <Truck size={20} className="text-sky-700" />
                     <span>My Vehicle Dispatches & Delivery Runs</span>
                   </h2>
                   <p className="text-xs font-semibold text-slate-500 mt-0.5">
@@ -2111,7 +2218,7 @@ export const SalesmanView: React.FC = () => {
                   type="button"
                   id="btn-load-new-van-run"
                   onClick={() => setShowNewVanModal(true)}
-                  className="min-h-[40px] px-4 py-2 rounded-xl border-2 border-blue-900 bg-blue-900 hover:bg-blue-950 text-white font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-xs transition-colors shrink-0"
+                  className="min-h-[40px] px-4 py-2 rounded-xl border-2 border-sky-600 bg-sky-600 hover:bg-sky-700 text-white font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors shrink-0"
                 >
                   <Plus size={15} />
                   <span>Load Vehicle Run</span>
@@ -2119,9 +2226,9 @@ export const SalesmanView: React.FC = () => {
               </div>
 
               {/* Active Trip Banner */}
-              {activeTrip && (
+              {activeTrip ? (
                 <div
-                  className="p-4 rounded-xl border-2 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  className="p-4 rounded-xl border-2 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                   style={{
                     backgroundColor: '#EFF6FF',
                     borderColor: '#3B82F6',
@@ -2132,7 +2239,7 @@ export const SalesmanView: React.FC = () => {
                       <span className="px-2 py-0.5 rounded bg-blue-600 text-white text-[10px] font-black uppercase tracking-wider">
                         Active Vehicle Run
                       </span>
-                      <span className="font-mono text-xs font-bold text-blue-900">
+                      <span className="font-mono text-xs font-bold text-sky-700">
                         Date: {activeTrip.date}
                       </span>
                     </div>
@@ -2140,7 +2247,7 @@ export const SalesmanView: React.FC = () => {
                       {activeTrip.vehicle}
                     </div>
                     <div className="text-xs font-bold text-slate-600 mt-0.5">
-                      Route: {activeTrip.route || 'Standard City Route'} • Driver/Sales: {activeTrip.salesman}
+                      Route: {activeTrip.route || 'Standard City Route'} • Driver/Sales: {activeTrip.salesman} • Godown: <strong>{warehouses.find((w) => w.id === activeTrip.warehouseId)?.name || 'Main Godown'}</strong>
                     </div>
                   </div>
 
@@ -2157,23 +2264,94 @@ export const SalesmanView: React.FC = () => {
 
                     <button
                       type="button"
+                      id="btn-salesman-end-trip"
+                      onClick={() => setTripScreen({ mode: 'settle', trip: activeTrip })}
+                      className="min-h-[40px] px-3.5 py-2 rounded-xl border-2 border-amber-500 bg-amber-100 text-amber-900 font-black text-xs flex items-center gap-1 hover:bg-amber-200 cursor-pointer"
+                    >
+                      <span>End Trip &amp; Return Stock</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setSalesmanTab('sell')}
-                      className="min-h-[40px] px-3.5 py-2 rounded-xl bg-blue-900 text-white font-black text-xs flex items-center gap-1 hover:bg-blue-950 cursor-pointer shadow-xs"
+                      className="min-h-[40px] px-3.5 py-2 rounded-xl bg-sky-600 text-white font-black text-xs flex items-center gap-1 hover:bg-sky-700 cursor-pointer shadow-sm"
                     >
                       <ShoppingCart size={14} />
                       <span>Start Selling</span>
                     </button>
                   </div>
                 </div>
+              ) : (
+                <div
+                  className="p-4 rounded-xl border-2 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  style={{
+                    backgroundColor: '#F8FAFC',
+                    borderColor: '#CBD5E1',
+                  }}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-500 shrink-0">
+                      <Truck size={20} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-black uppercase tracking-wider">
+                          No Active Run for Today
+                        </span>
+                        <span className="font-mono text-xs font-bold text-slate-500">
+                          {todayStr}
+                        </span>
+                      </div>
+                      <div className="text-xs font-semibold text-slate-600 mt-1">
+                        No delivery vehicle is currently dispatched. Load a vehicle run to start selling on route.
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowNewVanModal(true)}
+                    className="min-h-[40px] px-3.5 py-2 rounded-xl bg-sky-600 text-white font-black text-xs flex items-center gap-1.5 hover:bg-sky-700 cursor-pointer shadow-sm shrink-0"
+                  >
+                    <Plus size={14} />
+                    <span>Load Vehicle Run</span>
+                  </button>
+                </div>
               )}
 
               {/* All Assigned Trips List */}
               <div className="space-y-2.5">
-                <div className="text-xs font-black uppercase tracking-wider text-slate-500">
-                  Assigned Dispatches ({relevantTrips.length})
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="text-xs font-black uppercase tracking-wider text-slate-500">
+                    {showTripHistory ? 'All Dispatches & History' : 'Active Dispatches'} ({displayedTrips.length})
+                  </div>
+                  {olderOrClosedTrips.length > 0 && (
+                    <button
+                      type="button"
+                      id="btn-trips-view-toggle-history"
+                      onClick={() => setShowTripHistory(!showTripHistory)}
+                      className="text-xs font-black text-sky-700 hover:text-blue-900 underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <HistoryIcon size={14} />
+                      <span>{showTripHistory ? "Show Active Only" : `Trip History (${olderOrClosedTrips.length} past runs)`}</span>
+                    </button>
+                  )}
                 </div>
 
-                {relevantTrips.length === 0 ? (
+                {showTripHistory && (
+                  <input
+                    type="search"
+                    value={tripSearch}
+                    onChange={(e) => {
+                      setTripSearch(e.target.value);
+                      setTripLimit(30);
+                    }}
+                    enterKeyHint="search"
+                    placeholder="Search vehicle, route, date or trip no."
+                    className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border-2 text-sm font-semibold focus:outline-none focus:border-sky-600"
+                    style={{ borderColor: palette.line }}
+                  />
+                )}
+                {displayedTrips.length === 0 ? (
                   <div
                     className="p-8 text-center rounded-xl border-2 border-dashed space-y-2 text-slate-500"
                     style={{ borderColor: palette.line }}
@@ -2185,8 +2363,8 @@ export const SalesmanView: React.FC = () => {
                     </div>
                   </div>
                 ) : (
-                  relevantTrips.map((trip) => {
-                    const isActive = activeTrip?.id === trip.id;
+                  shownTrips.map((trip) => {
+                    const isActive = Boolean(activeTrip && activeTrip.id === trip.id);
                     const isOut = trip.status === 'out';
                     const tripLoadTotal = Object.values(trip.loaded || {}).reduce((sum, q) => sum + (Number(q) || 0), 0);
                     const billsForTrip = bills.filter((b) => b.tripId === trip.id || trip.billIds.includes(b.id));
@@ -2198,7 +2376,7 @@ export const SalesmanView: React.FC = () => {
                         id={`salesman-trip-item-${trip.id}`}
                         className={`p-3.5 sm:p-4 rounded-xl border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
                           isActive
-                            ? 'bg-blue-50/70 border-blue-600 shadow-xs'
+                            ? 'bg-sky-50/70 border-blue-600 shadow-sm'
                             : 'bg-white border-slate-200 hover:border-slate-300'
                         }`}
                       >
@@ -2217,16 +2395,39 @@ export const SalesmanView: React.FC = () => {
                             <span className="text-xs font-bold text-slate-500 font-mono">
                               {trip.date}
                             </span>
+                            <span className="text-[11px] font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-200">
+                              {warehouses.find((w) => w.id === trip.warehouseId)?.name || 'Main Godown'}
+                            </span>
                           </div>
 
                           <div className="text-xs font-semibold text-slate-600 mt-1">
-                            Route: {trip.route || 'Delivery Route'} • Loaded: {tripLoadTotal} cases • Bills: {billsForTrip.length} (₹{money(totalTripBilled)})
+                            Route: {trip.route || 'Delivery Route'} • Godown: {warehouses.find((w) => w.id === trip.warehouseId)?.name || 'Main Godown'} • Loaded: {tripLoadTotal} cases • Bills: {billsForTrip.length} (₹{money(totalTripBilled)})
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2 self-end sm:self-center">
+                        <div className="flex items-center gap-2 self-end sm:self-center flex-wrap justify-end">
+                          {isOut && (
+                            <>
+                              <button
+                                type="button"
+                                id={`btn-salesman-edit-trip-${trip.id}`}
+                                onClick={() => setTripScreen({ mode: 'edit', trip })}
+                                className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-slate-300 bg-white hover:bg-slate-50 text-slate-800 font-black text-xs cursor-pointer"
+                              >
+                                Edit Load
+                              </button>
+                              <button
+                                type="button"
+                                id={`btn-salesman-settle-trip-${trip.id}`}
+                                onClick={() => setTripScreen({ mode: 'settle', trip })}
+                                className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-amber-500 bg-amber-100 hover:bg-amber-200 text-amber-900 font-black text-xs cursor-pointer"
+                              >
+                                Return &amp; Settle
+                              </button>
+                            </>
+                          )}
                           {isActive ? (
-                            <span className="px-3 py-1.5 rounded-xl bg-blue-900 text-white font-black text-xs flex items-center gap-1 shadow-xs">
+                            <span className="px-3 py-1.5 rounded-xl bg-sky-600 text-white font-black text-xs flex items-center gap-1 shadow-sm">
                               <CheckCircle2 size={14} />
                               <span>Current Active Run</span>
                             </span>
@@ -2252,11 +2453,21 @@ export const SalesmanView: React.FC = () => {
                     );
                   })
                 )}
+                {showTripHistory && matchedTrips.length > shownTrips.length && (
+                  <button
+                    type="button"
+                    onClick={() => setTripLimit((n) => n + 30)}
+                    className="w-full min-h-[44px] rounded-xl border-2 border-slate-300 bg-white text-sm font-black text-slate-700 cursor-pointer hover:bg-slate-50"
+                  >
+                    Show more ({matchedTrips.length - shownTrips.length} older)
+                  </button>
+                )}
               </div>
             </div>
           </section>
         )}
       </main>
+      </div>
 
       {/* QUICK MODAL: LOAD VAN TRIP */}
       {showNewVanModal && (
@@ -2275,7 +2486,7 @@ export const SalesmanView: React.FC = () => {
           >
             <div className="flex items-center justify-between pb-3 border-b-2 shrink-0" style={{ borderColor: palette.line }}>
               <div className="flex items-center gap-2">
-                <Truck size={22} className="text-blue-900" />
+                <Truck size={22} className="text-sky-700" />
                 <h3 className="font-black text-lg">Load Vehicle Run & Assign Salesman</h3>
               </div>
               <button
@@ -2297,7 +2508,7 @@ export const SalesmanView: React.FC = () => {
                   value={newVehicleName}
                   onChange={(e) => setNewVehicleName(e.target.value)}
                   placeholder="e.g. Tata Ace - MH-14-GH-1234"
-                  className="w-full min-h-[44px] p-2.5 text-sm font-bold border-2 rounded-xl focus:border-blue-900 focus:outline-none"
+                  className="w-full min-h-[44px] p-2.5 text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
                   style={{ borderColor: palette.line }}
                 />
               </div>
@@ -2311,46 +2522,116 @@ export const SalesmanView: React.FC = () => {
                     value={newSalesmanName}
                     onChange={(e) => setNewSalesmanName(e.target.value)}
                     placeholder="e.g. Ramesh Kumar"
-                    className="w-full min-h-[44px] p-2.5 text-sm font-bold border-2 rounded-xl focus:border-blue-900 focus:outline-none"
+                    className="w-full min-h-[44px] p-2.5 text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
                     style={{ borderColor: palette.line }}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold mb-1">Route / Area</label>
-                  <input
-                    type="text"
-                    value={newRouteName}
-                    onChange={(e) => setNewRouteName(e.target.value)}
-                    placeholder="e.g. Route A - Market"
-                    className="w-full min-h-[44px] p-2.5 text-sm font-bold border-2 rounded-xl focus:border-blue-900 focus:outline-none"
+                  <label className="block text-xs font-bold mb-1">Source Warehouse / Godown *</label>
+                  <select
+                    value={selectedLoadWarehouseId}
+                    onChange={(e) => setSelectedLoadWarehouseId(e.target.value)}
+                    className="w-full min-h-[44px] p-2.5 text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
                     style={{ borderColor: palette.line }}
-                  />
+                  >
+                    {warehouses.length === 0 ? (
+                      <option value="">Main Godown</option>
+                    ) : (
+                      warehouses.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name} {w.code ? `(${w.code})` : ''}
+                        </option>
+                      ))
+                    )}
+                  </select>
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-bold mb-1.5">
-                  Initial Load (Cases loaded into vehicle):
-                </label>
+                <label className="block text-xs font-bold mb-1">Beat route</label>
+                <select
+                  value={activeBeats.some((b) => b.name === newRouteName) ? newRouteName : '__custom__'}
+                  onChange={(e) => {
+                    if (e.target.value === '__custom__') return;
+                    setNewRouteName(e.target.value);
+                  }}
+                  className="w-full min-h-[44px] p-2.5 text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none bg-white mb-1.5"
+                  style={{ borderColor: palette.line }}
+                >
+                  {activeBeats.map((b) => (
+                    <option key={b.id} value={b.name}>
+                      {beatLabel(b)}
+                    </option>
+                  ))}
+                  <option value="__custom__">Custom route…</option>
+                </select>
+                <input
+                  type="text"
+                  value={newRouteName}
+                  onChange={(e) => setNewRouteName(e.target.value)}
+                  placeholder="Or type a custom route name"
+                  className="w-full min-h-[40px] p-2 text-xs font-semibold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
+                  style={{ borderColor: palette.line }}
+                />
+                {(() => {
+                  const sel = activeBeats.find((b) => b.name === newRouteName);
+                  return sel ? (
+                    <p className="mt-1.5 text-[11px] font-semibold text-slate-500 leading-snug">
+                      Hub: <strong>{sel.hub || '—'}</strong> · Beat: {formatBeatStops(sel)}
+                    </p>
+                  ) : null;
+                })()}
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+                  <label className="text-xs font-bold">
+                    Initial Load (Cases loaded into vehicle):
+                  </label>
+                  <span className="text-[11px] font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-200">
+                    From: {warehouses.find((w) => w.id === selectedLoadWarehouseId)?.name || 'Main Godown'}
+                  </span>
+                </div>
                 <div className="max-h-56 overflow-y-auto space-y-2 border-2 p-3 rounded-xl bg-slate-50 divide-y divide-slate-200">
-                  {products.map((p) => {
-                    const whId = defaultWarehouse?.id || warehouses[0]?.id || 'wh-kuchinda';
+                  {products.filter((p) => {
+                    const whId = selectedLoadWarehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
                     const availableInWh = typeof warehouseStock === 'function' ? warehouseStock(whId, p.id) : (p.opening || 0);
-                    const qtyVal = loadQuantities[p.id] ?? 0;
-                    const warning = loadQuantityWarnings[p.id];
+                    return availableInWh > 0;
+                  }).length === 0 ? (
+                    <div className="py-6 text-center text-xs font-semibold text-slate-500">
+                      No beverage products currently in stock in this warehouse.
+                    </div>
+                  ) : (
+                    products
+                      .filter((p) => {
+                        const whId = selectedLoadWarehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
+                        const availableInWh = typeof warehouseStock === 'function' ? warehouseStock(whId, p.id) : (p.opening || 0);
+                        return availableInWh > 0;
+                      })
+                      .map((p) => {
+                        const whId = selectedLoadWarehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
+                        const whName = warehouses.find((w) => w.id === whId)?.name || 'warehouse';
+                        const availableInWh = typeof warehouseStock === 'function' ? warehouseStock(whId, p.id) : (p.opening || 0);
+                        const qtyVal = loadQuantities[p.id] ?? 0;
+                        const warning = loadQuantityWarnings[p.id];
 
                     return (
                       <div key={p.id} className="pt-2 first:pt-0 space-y-1">
                         <div className="flex items-center justify-between gap-3 text-xs">
                           <div className="min-w-0 flex-1">
-                            <span className="font-bold text-slate-900 truncate block text-sm">{p.name} ({p.volume}ml)</span>
-                            <span className="text-xs font-semibold text-blue-900 block">
-                              {availableInWh} cs available in warehouse
+                            <span className="font-bold text-slate-900 break-words leading-snug block text-sm">
+                              {p.name}{(() => {
+                                const v = (Number(p.volume) > 0 ? Number(p.volume) : volumeFromName(p.name)) || 0;
+                                return v > 0 ? ` (${v >= 1000 && v % 1000 === 0 ? `${v / 1000}L` : `${v}ml`})` : '';
+                              })()}
+                            </span>
+                            <span className="text-xs font-semibold text-sky-700 block">
+                              {availableInWh} cs available in {whName}
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
                             <input
-                              type="number"
+                              type="number" inputMode="numeric"
                               min={0}
                               max={availableInWh}
                               value={qtyVal}
@@ -2371,7 +2652,7 @@ export const SalesmanView: React.FC = () => {
                                   });
                                 }
                               }}
-                              className="w-20 min-h-[44px] p-1 text-center font-black border-2 rounded-lg bg-white focus:border-blue-900 focus:outline-none text-base"
+                              className="w-20 min-h-[44px] p-1 text-center font-black border-2 rounded-lg bg-white focus:border-sky-600 focus:outline-none text-base"
                             />
                             <span className="font-bold text-gray-500">cs</span>
                           </div>
@@ -2384,7 +2665,8 @@ export const SalesmanView: React.FC = () => {
                         )}
                       </div>
                     );
-                  })}
+                  })
+                )}
                 </div>
               </div>
 
@@ -2398,7 +2680,7 @@ export const SalesmanView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="min-h-[44px] px-6 py-2 text-sm font-black rounded-xl text-white bg-blue-900 hover:bg-blue-950 cursor-pointer shadow-sm"
+                  className="min-h-[44px] px-6 py-2 text-sm font-black rounded-xl text-white bg-sky-600 hover:bg-sky-700 cursor-pointer shadow-sm"
                 >
                   Start Trip & Enable Selling
                 </button>
@@ -2425,7 +2707,7 @@ export const SalesmanView: React.FC = () => {
           >
             <div className="flex items-center justify-between pb-3 border-b-2" style={{ borderColor: palette.line }}>
               <h3 className="font-black text-base">Select or Add Retailer Shop</h3>
-              <button
+              <button aria-label="Close"
                 type="button"
                 onClick={() => setShowAllRetailersModal(false)}
                 className="p-1 rounded hover:bg-black/10 cursor-pointer"
@@ -2499,7 +2781,7 @@ export const SalesmanView: React.FC = () => {
           scale={scale}
           onSelect={(c) => {
             setSelectedRetailer(c.name);
-            if (c.phone) setRetailerPhone(c.phone);
+            setRetailerPhone(c.phone || '');
             setShowCustomerSelectorModal(false);
             if (isLowVision) speakAssistiveText(`Selected customer ${c.name}`);
           }}
@@ -2547,29 +2829,21 @@ export const SalesmanView: React.FC = () => {
         priceType={priceType}
       />
 
-      {/* Floating Action Button for Cart (always accessible, positioned above mobile bottom nav) */}
-      {cart.items.length > 0 && (
-        <div className="fixed bottom-20 md:bottom-6 right-4 z-40">
+      {/* Floating cart — low-vision mode only; normal mode uses cart icon beside customer name */}
+      {isLowVision && cart.items.length > 0 && (
+        <div className="fixed bottom-20 right-4 z-40">
           <button
             type="button"
             id="btn-floating-cart"
             onClick={() => {
               setIsCartOpen(true);
-              if (isLowVision) speakAssistiveText(`Cart opened. ${cart.items.length} items.`);
+              speakAssistiveText(`Cart opened. ${cart.items.length} items.`);
             }}
-            className={`px-4 py-3 rounded-full border-3 shadow-2xl flex items-center gap-2.5 cursor-pointer font-black transition-transform hover:scale-105 active:scale-95 ${
-              isLowVision
-                ? 'bg-yellow-400 text-black border-black text-base ring-4 ring-yellow-300/60'
-                : 'bg-blue-900 text-white border-blue-950 text-sm ring-2 ring-blue-400/30'
-            }`}
+            className="px-4 py-3 rounded-full border-3 shadow-2xl flex items-center gap-2.5 cursor-pointer font-black transition-transform hover:scale-105 active:scale-95 bg-yellow-400 text-black border-black text-base ring-4 ring-yellow-300/60"
           >
             <div className="relative">
-              <ShoppingCart size={isLowVision ? 22 : 18} />
-              <span
-                className={`absolute -top-2.5 -right-2.5 px-1.5 py-0.2 rounded-full font-black text-xs ${
-                  isLowVision ? 'bg-black text-yellow-300' : 'bg-amber-400 text-slate-900'
-                }`}
-              >
+              <ShoppingCart size={22} />
+              <span className="absolute -top-2.5 -right-2.5 px-1.5 py-0.2 rounded-full font-black text-xs bg-black text-yellow-300">
                 {cart.items.length}
               </span>
             </div>
@@ -2577,6 +2851,79 @@ export const SalesmanView: React.FC = () => {
           </button>
         </div>
       )}
+
+      {/* Mobile-Friendly Fixed Bottom Navigation Bar for Salesman Mode */}
+      <nav
+        id="salesman-bottom-nav"
+        aria-label="Salesman navigation"
+        className="fixed bottom-0 inset-x-0 z-40 w-full max-w-[100vw] bg-slate-900 border-t-2 border-slate-800 shadow-2xl select-none"
+        style={{
+          paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+          backgroundColor: '#0F172A',
+        }}
+      >
+        <div className="w-full grid grid-cols-6 items-stretch px-0.5">
+        {[
+          { id: 'home', label: 'Home', icon: LayoutGrid },
+          { id: 'sell', label: 'Sale', icon: ShoppingCart },
+          { id: 'customerDue', label: 'Payment', icon: IndianRupee },
+          { id: 'trips', label: 'Trips', icon: Truck },
+          { id: 'vanStock', label: 'Stock', icon: Package },
+          { id: 'bills', label: 'My Bills', icon: FileText },
+        ].map(({ id, label, icon: Icon }) => {
+          const active = salesmanTab === id;
+          return (
+            <button
+              key={id}
+              id={`salesman-nav-${id}`}
+              type="button"
+              onClick={() => {
+                setSalesmanTab(id as any);
+                if (isLowVision) speakAssistiveText(`${label} screen active.`);
+              }}
+              aria-current={active ? 'page' : undefined}
+              className={`min-h-[56px] w-full py-1.5 px-0.5 flex flex-col items-center justify-center gap-0.5 cursor-pointer transition-colors ${
+                active ? 'text-amber-400 font-black' : 'text-slate-400 hover:text-white font-semibold'
+              }`}
+            >
+              <div className={`p-1 rounded-lg ${active ? 'bg-amber-400/20 text-amber-400' : ''}`}>
+                <Icon size={19} />
+              </div>
+              <span className="text-[10px] sm:text-[11px] leading-none text-center whitespace-nowrap">{label}</span>
+            </button>
+          );
+        })}
+        </div>
+      </nav>
+
+      {/* Subtle pinch-to-zoom reset indicator (only visible when zoomed, no permanent banner) */}
+      {zoomScale !== 1.0 && (
+        <button
+          type="button"
+          id="btn-reset-zoom"
+          onClick={() => setZoomScale(1.0)}
+          className="fixed top-16 right-4 z-40 px-3 py-1.5 rounded-full bg-slate-900/90 text-white text-xs font-black shadow-lg border border-slate-700 flex items-center gap-1.5 backdrop-blur-sm cursor-pointer hover:bg-black"
+          title="Reset zoom to 1.0x"
+        >
+          <span>{zoomScale.toFixed(2)}x</span>
+          <span className="text-amber-400 ml-1">Reset</span>
+        </button>
+      )}
+
+      {/* Add New Customer Modal for Salesman */}
+      <AddCustomerModal
+        isOpen={showHomeAddCustomerModal}
+        onClose={() => setShowHomeAddCustomerModal(false)}
+        defaultRoute={activeTrip?.route || ''}
+        isLowVision={salesmanMode === 'lowVision'}
+        onCustomerCreated={(newCust) => {
+          setSelectedRetailer(newCust.name);
+          setRetailerPhone(newCust.phone || '');
+          setSalesmanTab('sell');
+          triggerFeedback(`New customer "${newCust.name}" added to route. Ready for billing!`, 'success');
+          speakAssistiveText(`Customer ${newCust.name} added. Ready for sale.`);
+        }}
+      />
     </div>
   );
 };

@@ -41,12 +41,14 @@ import {
 import * as XLSX from 'xlsx';
 import { CATS } from '../../constants/initialData';
 import { useLedger } from '../../context/LedgerContext';
-import { CategoryKey, GrnLineItem, GrnSchemeMode, GrnSchemeType, Product } from '../../types';
+import { CategoryKey, GrnImportWarning, GrnLineItem, GrnSchemeMode, GrnSchemeType, Product } from '../../types';
 import {
   calculateLandedCostBreakdown,
   generateAutoSku,
   generateBatchNumber,
   money,
+  normalizeTo8DigitHsn,
+  inferUnitsPerCase,
 } from '../../utils/billing';
 import {
   ParsedInvoiceData,
@@ -55,12 +57,19 @@ import {
   recognizeInvoiceWithAi,
   matchProductCatalog,
   detectCategory,
+  detectPack,
+  volumeFromName,
+  detectPackAndVolume,
 } from '../../utils/invoiceParser';
 import {
   downloadImportTemplate,
   downloadImportTemplateXlsx,
 } from '../../utils/importExport';
+import { downloadBulkInwardRowsCsv } from '../../utils/grnCsvExport';
 import { InwardProductCard } from '../inward/InwardProductCard';
+import { UploadStep } from '../inward/UploadStep';
+import { InwardStepIndicator } from '../inward/InwardStepIndicator';
+import { todayISO } from "../../utils/dateLocal";
 
 interface BulkInwardModalProps {
   isOpen: boolean;
@@ -82,6 +91,10 @@ interface EditableInwardRow {
   freeQty: number;
   paidQty?: number;
   unitPrice: number;
+  listPrice?: number;
+  isGstIncluded?: boolean;
+  calculatedGstAmount?: number;
+  priceInclGst?: number;
 
   // Scheme & Discount
   schemeType: GrnSchemeType;
@@ -92,6 +105,12 @@ interface EditableInwardRow {
   discountFlat: number;
   discountAmount: number;
   schemeText: string;
+
+  // Supplier Scheme (additive layer — separate from schemeType/freeQty above)
+  supplierSchemeId?: string;
+  supplierSchemeFreeQty?: number;
+  pendingCreditSchemeId?: string;
+  pendingCreditExpectedAmount?: number;
 
   // Taxes
   cgstPercent: number;
@@ -116,38 +135,60 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   onClose,
   onSuccess,
 }) => {
-  const { products, warehouses, defaultWarehouse, postGrn, palette, fz, scale } = useLedger();
+  const {
+    products,
+    warehouses,
+    remainingStock,
+    postGrn,
+    palette,
+    fz,
+    scale,
+    supplierSchemes,
+    addSupplierSchemeApplication,
+    addSupplierCreditNote,
+    currentUser,
+  } = useLedger();
 
   // Wizard Step: 'upload' | 'review'
   const [step, setStep] = useState<'upload' | 'review'>('upload');
 
   // Invoice Header Information
-  const [supplierName, setSupplierName] = useState('RADHIKA ENTERPRISES');
-  const [supplierGstin, setSupplierGstin] = useState('21FSDPR8480R1ZU');
-  const [supplierAddress, setSupplierAddress] = useState('Main Road, Near Bus Stand, Kuchinda, Sambalpur, Odisha - 768222');
-  const [supplierPhone, setSupplierPhone] = useState('+91 94370 84801');
-  const [supplierEmail, setSupplierEmail] = useState('radhika.beverages@gmail.com');
+  const [supplierName, setSupplierName] = useState('');
+  const [supplierGstin, setSupplierGstin] = useState('');
+  const [supplierAddress, setSupplierAddress] = useState('');
+  const [supplierPhone, setSupplierPhone] = useState('');
+  const [supplierEmail, setSupplierEmail] = useState('');
   const [invoiceNo, setInvoiceNo] = useState(`INV-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`);
-  const [inwardDate, setInwardDate] = useState(new Date().toISOString().slice(0, 10));
-  const [vehicleNo, setVehicleNo] = useState('OD15AF7869');
-  const [placeOfSupply, setPlaceOfSupply] = useState('Odisha (21)');
-  const [billedTo, setBilledTo] = useState('NEW BIJAYA PUSTAK BHANDRA');
-  const [shippedTo, setShippedTo] = useState('SAHAJBAHAL GODOWN / KUCHINDA DEPOT');
+  const [inwardDate, setInwardDate] = useState(todayISO());
+  const [vehicleNo, setVehicleNo] = useState('');
+  const [placeOfSupply, setPlaceOfSupply] = useState('');
+  const [billedTo, setBilledTo] = useState('');
+  const [shippedTo, setShippedTo] = useState('');
   const [showProviderDetails, setShowProviderDetails] = useState(false);
-  const [targetWarehouseId, setTargetWarehouseId] = useState(
-    defaultWarehouse?.id || warehouses[0]?.id || 'wh-kuchinda'
-  );
+  // FIX: no default warehouse. Every inward MUST have the warehouse chosen manually —
+  // an empty string forces the "Select warehouse..." placeholder below and blocks
+  // Confirm & Post until the user actively picks one (see targetWarehouseId checks in
+  // hasCasesMismatch/handleConfirmAndPostGrn and the disabled state on the submit
+  // button further down).
+  const [targetWarehouseId, setTargetWarehouseId] = useState('');
   const [overallDiscount, setOverallDiscount] = useState<number>(0);
   const [originalInvoiceTotal, setOriginalInvoiceTotal] = useState<number | null>(null);
   const [printedTotalCases, setPrintedTotalCases] = useState<number | null>(null);
+  const [showAmountMismatchDetail, setShowAmountMismatchDetail] = useState(false);
+  const [catalogPickerRowId, setCatalogPickerRowId] = useState<string | null>(null);
+  const [catalogPickerSearch, setCatalogPickerSearch] = useState<string>('');
+  const [volumePickerRowId, setVolumePickerRowId] = useState<string | null>(null);
+  // "Import with warning" acknowledgement (in-app dialog; window.confirm can be blocked in PWA/iframes)
+  const [showWarningDialog, setShowWarningDialog] = useState(false);
+  const [warningNote, setWarningNote] = useState('');
 
   // Inward-to-Godown Direct Costs (Transport, Freight, Labour, Other)
-  const [transportCost, setTransportCost] = useState<number>(1200);
+  const [transportCost, setTransportCost] = useState<number>(0);
   const [freightCost, setFreightCost] = useState<number>(0);
-  const [loadingLabourCost, setLoadingLabourCost] = useState<number>(300);
-  const [unloadingLabourCost, setUnloadingLabourCost] = useState<number>(300);
+  const [loadingLabourCost, setLoadingLabourCost] = useState<number>(0);
+  const [unloadingLabourCost, setUnloadingLabourCost] = useState<number>(0);
   const [otherInwardCost, setOtherInwardCost] = useState<number>(0);
-  const [showInwardCostDetails, setShowInwardCostDetails] = useState<boolean>(true);
+  const [showInwardCostDetails, setShowInwardCostDetails] = useState<boolean>(false);
 
   // Parsing & File State
   const [isDragging, setIsDragging] = useState(false);
@@ -202,28 +243,33 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   const [bulkSchemeValue, setBulkSchemeValue] = useState<number>(5);
   const [bulkSchemeName, setBulkSchemeName] = useState<string>('Dealer Scheme');
 
-  const [bulkExpiryDate, setBulkExpiryDate] = useState<string>('2027-03-31');
+  const [bulkExpiryDate, setBulkExpiryDate] = useState<string>('');
 
   // Filter in review table
   const [searchQuery, setSearchQuery] = useState('');
   const [filterNewOnly, setFilterNewOnly] = useState(false);
   const [filterSchemeOnly, setFilterSchemeOnly] = useState(false);
+  const [filterAttentionOnly, setFilterAttentionOnly] = useState(false);
+  const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
+  const [showMismatchDetail, setShowMismatchDetail] = useState(false);
+  // Notes from the AI cross-checks (row arithmetic, totals, GSTIN ...) shown above the table
+  const [aiWarnings, setAiWarnings] = useState<string[]>([]);
 
   if (!isOpen) return null;
 
   // Convert ParsedInvoiceData into editable rows
   const loadInvoiceDataIntoReview = (data: ParsedInvoiceData, sourceName: string) => {
-    setSupplierName(data.supplierName || 'RADHIKA ENTERPRISES');
-    setSupplierGstin(data.supplierGstin || '21FSDPR8480R1ZU');
-    setSupplierAddress(data.supplierAddress || 'Main Road, Near Bus Stand, Kuchinda, Sambalpur, Odisha - 768222');
-    setSupplierPhone(data.supplierPhone || '+91 94370 84801');
-    setSupplierEmail(data.supplierEmail || 'radhika.beverages@gmail.com');
+    setSupplierName(data.supplierName || '');
+    setSupplierGstin(data.supplierGstin || '');
+    setSupplierAddress(data.supplierAddress || '');
+    setSupplierPhone(data.supplierPhone || '');
+    setSupplierEmail(data.supplierEmail || '');
     setInvoiceNo(data.invoiceNo || `INV-${new Date().getFullYear()}-001`);
-    setInwardDate(data.invoiceDate || new Date().toISOString().slice(0, 10));
-    setVehicleNo(data.vehicleNo || 'OD15AF7869');
-    setPlaceOfSupply(data.placeOfSupply || 'Odisha (21)');
-    setBilledTo(data.billedTo || 'NEW BIJAYA PUSTAK BHANDRA');
-    setShippedTo(data.shippedTo || 'SAHAJBAHAL GODOWN / KUCHINDA DEPOT');
+    setInwardDate(data.invoiceDate || todayISO());
+    setVehicleNo(data.vehicleNo || '');
+    setPlaceOfSupply(data.placeOfSupply || '');
+    setBilledTo(data.billedTo || '');
+    setShippedTo(data.shippedTo || '');
     setOverallDiscount(data.overallDiscount || 0);
     setOriginalInvoiceTotal(data.grandTotal || null);
     setPrintedTotalCases(
@@ -232,17 +278,24 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         : data.items.reduce((s, it) => s + (Number(it.qty) || 0), 0)
     );
     setDetectedSource(data.detectedSource);
+    setAiWarnings(Array.isArray(data.warnings) ? data.warnings : []);
     setFileName(sourceName);
 
     const mappedRows: EditableInwardRow[] = data.items.map((item, idx) => {
-      // Re-verify against live catalog to be 100% accurate
-      const { isNewProduct, matchedProduct } = matchProductCatalog(item.rawName, products);
+      // Re-verify against live catalog to be 100% accurate (checking rawName first, then productName fallback)
+      let matchRes = matchProductCatalog(item.rawName || '', products);
+      if (!matchRes.matchedProduct && item.productName && item.productName.trim() !== (item.rawName || '').trim()) {
+        const alt = matchProductCatalog(item.productName, products);
+        if (alt.matchedProduct) matchRes = alt;
+      }
+      const { isNewProduct, matchedProduct } = matchRes;
 
       const qty = Math.max(1, item.qty || 1);
-      const unitPrice = Math.max(0, item.unitPrice || 158.57);
+      // never invent a price: 0 is flagged in the review table so the user types the real one
+      const unitPrice = Math.max(0, item.unitPrice || 0);
       const volume = matchedProduct?.volume || item.volume || 150;
       const pack = matchedProduct?.pack || item.pack || 'PET';
-      const unitsPerCrate = item.unitsPerCrate || (volume <= 200 ? 30 : 24);
+      const unitsPerCrate = item.unitsPerCrate || inferUnitsPerCase(`${item.rawName || ''} ${item.pack || ''}`, volume);
       const packSize = item.packSize || `${volume}ml ${pack}`;
 
       let schemeType: GrnSchemeType = item.schemeType || 'none';
@@ -283,13 +336,13 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
       return {
         id: `row_${Date.now()}_${idx}`,
         rawName: item.rawName,
-        productName: matchedProduct ? matchedProduct.name : item.productName || item.rawName,
+        productName: (matchedProduct ? matchedProduct.name : item.productName || item.rawName).trim().toUpperCase(),
         category: matchedProduct?.category || item.category || detectCategory(item.rawName),
         pack,
         volume,
         packSize,
         unitsPerCrate,
-        hsn: matchedProduct?.hsn || item.hsn || '22021090',
+        hsn: normalizeTo8DigitHsn(matchedProduct?.hsn || item.hsn, matchedProduct?.category || item.category, item.rawName),
         qty,
         freeQty: breakdown.freeQty,
         paidQty: breakdown.paidQty,
@@ -308,13 +361,23 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         sgstPercent: item.sgstPercent ?? 20,
         wholesaleRate: matchedProduct?.wholesale || Math.round(breakdown.effectiveCostPerCrateInclGst * 1.15) || Math.round(unitPrice * 1.15),
         retailRate: matchedProduct?.retail || Math.round(breakdown.effectiveCostPerCrateInclGst * 1.25) || Math.round(unitPrice * 1.25),
-        batchNumber: matchedProduct?.batchNumber || item.batchNumber || generateBatchNumber(item.rawName),
-        expiry: matchedProduct?.expiry || item.expiryDate || '2027-03-31',
-        mfgDate: item.mfgDate || new Date().toISOString().slice(0, 10),
+        listPrice: item.listPrice !== undefined ? item.listPrice : item.unitPrice,
+        isGstIncluded: item.isGstIncluded ?? false,
+        calculatedGstAmount: item.calculatedGstAmount !== undefined ? item.calculatedGstAmount : (item.unitPrice * ((item.cgstPercent ?? 20) + (item.sgstPercent ?? 20)) / 100),
+        priceInclGst: item.priceInclGst !== undefined ? item.priceInclGst : (item.unitPrice * (1 + ((item.cgstPercent ?? 20) + (item.sgstPercent ?? 20)) / 100)),
+        batchNumber: (() => {
+          const existingBatches = products.map((p) => p.batchNumber).filter(Boolean) as string[];
+          const isOldBatch = item.batchNumber ? existingBatches.includes(item.batchNumber) : false;
+          return (!item.batchNumber || isOldBatch)
+            ? generateBatchNumber(matchedProduct ? matchedProduct.name : item.productName || item.rawName, undefined, existingBatches, idx, data.invoiceDate || inwardDate)
+            : item.batchNumber;
+        })(),
+        expiry: item.expiryDate || '',
+        mfgDate: item.mfgDate || todayISO(),
         isNewProduct,
         matchedProductId: matchedProduct?.id,
         matchedProductName: matchedProduct?.name,
-        existingStock: matchedProduct?.opening,
+        existingStock: matchedProduct ? remainingStock(matchedProduct.id) : undefined,
       };
     });
 
@@ -325,6 +388,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   // Process uploaded files (Excel, CSV, PDF, Image)
   const processUploadedFile = async (file: File) => {
     setParseError(null);
+    setAiWarnings([]);
     setIsErrorTemporary(false);
     setLastUploadedFile(file);
     setIsParsing(true);
@@ -354,7 +418,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
           setIsErrorTemporary(isTemp);
           throw new Error(
             isTemp
-              ? 'Google Gemini is currently experiencing temporary high traffic across AI models (503). You can click "Retry AI Vision", or proceed directly into the review table to adjust line quantities manually.'
+              ? `${aiErr.message || 'Google Gemini is temporarily unavailable.'} You can click "Retry AI Vision", or open the review table and enter the lines manually.`
               : `AI Vision recognition error: ${aiErr.message || 'Unable to recognize document'}. Please upload using our updated Excel/CSV template or proceed with manual entry.`
           );
         }
@@ -378,7 +442,9 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
 
         // Auto-recalculate line financial values
         const qty = Math.max(1, Number(field === 'qty' ? val : updated.qty) || 1);
-        const unitPrice = Math.max(0, Number(field === 'unitPrice' ? val : updated.unitPrice) || 0);
+        let unitPrice = Math.max(0, Number(field === 'unitPrice' ? val : updated.unitPrice) || 0);
+        let listPrice = updated.listPrice !== undefined ? Number(updated.listPrice) : Number(updated.unitPrice) || 0;
+        let isGstIncluded = updated.isGstIncluded !== undefined ? Boolean(updated.isGstIncluded) : false;
         const cgstPercent = Number(field === 'cgstPercent' ? val : updated.cgstPercent) || 0;
         const sgstPercent = Number(field === 'sgstPercent' ? val : updated.sgstPercent) || 0;
         const schemeType = (field === 'schemeType' ? val : updated.schemeType) as GrnSchemeType;
@@ -409,6 +475,75 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
           }
         }
 
+        if (field === 'volume') {
+          const vol = Math.max(50, Number(val) || 250);
+          updated.volume = vol;
+          updated.packSize = `${vol}ml ${updated.pack || 'PET'}`;
+          updated.unitsPerCrate = inferUnitsPerCase(`${updated.productName} ${updated.pack || ''}`, vol);
+        } else if (field === 'pack') {
+          const pk = String(val);
+          updated.pack = pk;
+          updated.packSize = `${updated.volume || 250}ml ${pk}`;
+          updated.unitsPerCrate = inferUnitsPerCase(`${updated.productName} ${pk}`, updated.volume);
+        } else if (field === 'productName') {
+          const newName = String(val).toUpperCase();
+          updated.productName = newName;
+          const matchRes = matchProductCatalog(newName, products);
+          if (matchRes.matchedProduct) {
+            const mp = matchRes.matchedProduct;
+            updated.matchedProductId = mp.id;
+            updated.matchedProductName = mp.name;
+            updated.isNewProduct = false;
+            updated.volume = mp.volume || updated.volume;
+            updated.pack = mp.pack || updated.pack;
+            updated.category = mp.category || updated.category;
+            updated.hsn = mp.hsn || updated.hsn;
+            updated.unitsPerCrate = mp.unitsPerCrate || inferUnitsPerCase(mp.name, mp.volume);
+            updated.packSize = mp.packSize || `${mp.volume}ml ${mp.pack}`;
+            updated.existingStock = remainingStock(mp.id);
+            if (mp.wholesale) updated.wholesaleRate = mp.wholesale;
+            if (mp.retail) updated.retailRate = mp.retail;
+          } else {
+            const detectedPackVol = detectPackAndVolume(newName);
+            if (detectedPackVol.volume) {
+              updated.volume = detectedPackVol.volume;
+              updated.pack = detectedPackVol.pack;
+              updated.packSize = `${detectedPackVol.volume}ml ${detectedPackVol.pack}`;
+              updated.unitsPerCrate = inferUnitsPerCase(newName, detectedPackVol.volume);
+            }
+          }
+        }
+
+        if (field === 'listPrice') {
+          listPrice = Math.max(0, Number(val) || 0);
+          updated.listPrice = listPrice;
+        } else if (field === 'isGstIncluded') {
+          isGstIncluded = Boolean(val);
+          updated.isGstIncluded = isGstIncluded;
+        }
+
+        const totalTaxRate = (cgstPercent + sgstPercent) / 100;
+        let calculatedGst = 0;
+        let priceInclGst = listPrice;
+
+        if (!isGstIncluded) {
+          // List price excludes GST -> calculate GST and add
+          calculatedGst = listPrice * totalTaxRate;
+          priceInclGst = listPrice + calculatedGst;
+          unitPrice = listPrice;
+        } else {
+          // List price includes GST -> extract base taxable rate
+          unitPrice = totalTaxRate > 0 ? listPrice / (1 + totalTaxRate) : listPrice;
+          calculatedGst = listPrice - unitPrice;
+          priceInclGst = listPrice;
+        }
+
+        updated.listPrice = listPrice;
+        updated.isGstIncluded = isGstIncluded;
+        updated.calculatedGstAmount = calculatedGst;
+        updated.priceInclGst = priceInclGst;
+        updated.unitPrice = unitPrice;
+
         const b = calculateLandedCostBreakdown({
           qty,
           unitPrice,
@@ -430,7 +565,6 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         });
 
         updated.qty = qty;
-        updated.unitPrice = unitPrice;
         updated.schemeType = schemeType;
         updated.schemeMode = schemeMode;
         updated.freeQty = b.freeQty;
@@ -443,6 +577,8 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         // Auto suggest selling rates if not manually overridden
         if (
           field === 'unitPrice' ||
+          field === 'listPrice' ||
+          field === 'isGstIncluded' ||
           field === 'qty' ||
           field === 'freeQty' ||
           field === 'discountPercent' ||
@@ -485,14 +621,17 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         if (matched) {
           return {
             ...r,
+            productName: matched.name.toUpperCase(),
             isNewProduct: false,
             matchedProductId: matched.id,
-            matchedProductName: matched.name,
-            existingStock: matched.opening,
+            matchedProductName: matched.name.toUpperCase(),
+            existingStock: remainingStock(matched.id),
             category: matched.category,
             pack: matched.pack,
             volume: matched.volume,
-            hsn: matched.hsn || r.hsn,
+            packSize: matched.packSize || `${matched.volume}ml ${matched.pack}`,
+            unitsPerCrate: matched.unitsPerCrate || inferUnitsPerCase(matched.name, matched.volume),
+            hsn: normalizeTo8DigitHsn(matched.hsn || r.hsn, matched.category, matched.name),
             wholesaleRate: matched.wholesale || r.wholesaleRate,
             retailRate: matched.retail || r.retailRate,
           };
@@ -507,14 +646,18 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
     setRows((prev) => prev.filter((r) => r.id !== rowId));
   };
 
-  // Duplicate an existing row
+  // Duplicate an existing row with auto-generated fresh unique batch
   const handleDuplicateRow = (rowId: string) => {
     const target = rows.find((r) => r.id === rowId);
     if (!target) return;
+    const existingBatches = [
+      ...products.map((p) => p.batchNumber).filter(Boolean),
+      ...rows.map((r) => r.batchNumber).filter(Boolean),
+    ] as string[];
     const duplicated: EditableInwardRow = {
       ...target,
       id: `row_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      batchNumber: generateBatchNumber(target.productName),
+      batchNumber: generateBatchNumber(target.productName, undefined, existingBatches, undefined, inwardDate),
     };
     const targetIndex = rows.findIndex((r) => r.id === rowId);
     const updated = [...rows];
@@ -522,12 +665,18 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
     setRows(updated);
   };
 
-  // Start with manual blank consignment
+  // Start with manual blank consignment (with fresh batch)
   const handleStartBlankConsignment = () => {
+    setAiWarnings([]);
     setFileName('Manual Inward Entry');
     setDetectedSource('manual');
+    const existingBatches = products.map((p) => p.batchNumber).filter(Boolean) as string[];
     const firstProd = products[0];
     const unitPrice = 158.57;
+    const cgstPercent = 20;
+    const sgstPercent = 20;
+    const totalTaxRate = (cgstPercent + sgstPercent) / 100;
+    const calculatedGst = unitPrice * totalTaxRate;
 
     setRows([
       {
@@ -537,34 +686,48 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         category: firstProd?.category || 'energy',
         pack: firstProd?.pack || 'PET',
         volume: firstProd?.volume || 150,
-        hsn: firstProd?.hsn || '22021090',
+        hsn: normalizeTo8DigitHsn(firstProd?.hsn, firstProd?.category, firstProd?.name),
         qty: 50,
         freeQty: 0,
         unitPrice,
+        listPrice: unitPrice,
+        isGstIncluded: false,
+        calculatedGstAmount: calculatedGst,
+        priceInclGst: unitPrice + calculatedGst,
         schemeType: 'none',
         discountPercent: 0,
         discountFlat: 0,
         discountAmount: 0,
         schemeText: '',
-        cgstPercent: 20,
-        sgstPercent: 20,
+        cgstPercent,
+        sgstPercent,
         wholesaleRate: firstProd?.wholesale || 180,
         retailRate: firstProd?.retail || 200,
-        batchNumber: generateBatchNumber('LOT'),
-        expiry: '2027-03-31',
-        mfgDate: new Date().toISOString().slice(0, 10),
+        batchNumber: generateBatchNumber(firstProd ? firstProd.name : 'CAMPA', undefined, existingBatches, 0, inwardDate),
+        expiry: '',
+        mfgDate: todayISO(),
         isNewProduct: !firstProd,
         matchedProductId: firstProd?.id,
         matchedProductName: firstProd?.name,
-        existingStock: firstProd?.opening,
+        existingStock: firstProd ? remainingStock(firstProd.id) : undefined,
       },
     ]);
     setStep('review');
   };
 
-  // Add new empty row
+  // Add new empty row with fresh auto-generated batch
   const handleAddNewRow = () => {
+    const existingBatches = [
+      ...products.map((p) => p.batchNumber).filter(Boolean),
+      ...rows.map((r) => r.batchNumber).filter(Boolean),
+    ] as string[];
     const newId = `manual_row_${Date.now()}`;
+    const unitPrice = 158.57;
+    const cgstPercent = 20;
+    const sgstPercent = 20;
+    const totalTaxRate = (cgstPercent + sgstPercent) / 100;
+    const calculatedGst = unitPrice * totalTaxRate;
+
     const newRow: EditableInwardRow = {
       id: newId,
       rawName: 'NEW BEVERAGE 150ML PET',
@@ -575,22 +738,102 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
       hsn: '22021090',
       qty: 50,
       freeQty: 0,
-      unitPrice: 158.57,
+      unitPrice,
+      listPrice: unitPrice,
+      isGstIncluded: false,
+      calculatedGstAmount: calculatedGst,
+      priceInclGst: unitPrice + calculatedGst,
       schemeType: 'none',
       discountPercent: 0,
       discountFlat: 0,
       discountAmount: 0,
       schemeText: '',
-      cgstPercent: 20,
-      sgstPercent: 20,
+      cgstPercent,
+      sgstPercent,
       wholesaleRate: 180,
       retailRate: 200,
-      batchNumber: generateBatchNumber('NEW'),
-      expiry: '2027-03-31',
-      mfgDate: new Date().toISOString().slice(0, 10),
+      batchNumber: generateBatchNumber('NEW BEVERAGE', undefined, existingBatches, rows.length, inwardDate),
+      expiry: '',
+      mfgDate: todayISO(),
       isNewProduct: true,
     };
     setRows((prev) => [...prev, newRow]);
+  };
+
+  // Auto-generate fresh unique batch/tag numbers for all products inwards (never use old one)
+  const handleAutoGenerateAllBatches = () => {
+    const existingBatches = products.map((p) => p.batchNumber).filter(Boolean) as string[];
+    const usedInConsignment: string[] = [];
+    setRows((prev) =>
+      prev.map((r, i) => {
+        const fresh = generateBatchNumber(
+          r.productName || r.rawName,
+          undefined,
+          [...existingBatches, ...usedInConsignment],
+          i,
+          inwardDate
+        );
+        usedInConsignment.push(fresh);
+        return { ...r, batchNumber: fresh };
+      })
+    );
+  };
+
+  // Bulk toggle list price GST inclusion and recalculate
+  const handleBulkSetListPriceGst = (isIncluded: boolean) => {
+    setRows((prev) =>
+      prev.map((r) => {
+        const listP = r.listPrice !== undefined ? r.listPrice : r.unitPrice;
+        const totalGstRate = (r.cgstPercent + r.sgstPercent) / 100;
+        let unitPrice = listP;
+        let calculatedGst = 0;
+        let priceInclGst = listP;
+
+        if (!isIncluded) {
+          calculatedGst = listP * totalGstRate;
+          priceInclGst = listP + calculatedGst;
+          unitPrice = listP;
+        } else {
+          unitPrice = totalGstRate > 0 ? listP / (1 + totalGstRate) : listP;
+          calculatedGst = listP - unitPrice;
+          priceInclGst = listP;
+        }
+
+        const b = calculateLandedCostBreakdown({
+          qty: r.qty,
+          unitPrice,
+          unitsPerCrate: r.unitsPerCrate || 24,
+          pack: r.pack,
+          volume: r.volume,
+          packSize: r.packSize,
+          cgstPercent: r.cgstPercent,
+          sgstPercent: r.sgstPercent,
+          schemeType: r.schemeType,
+          schemeMode: r.schemeMode || 'inclusive',
+          schemeBuyQty: r.schemeBuyQty,
+          schemeFreeQty: r.schemeFreeQty,
+          freeQty: r.freeQty,
+          paidQty: r.paidQty,
+          discountPercent: r.discountPercent,
+          discountFlat: r.discountFlat,
+          discountAmount: r.discountAmount,
+          inwardCostPerCrate,
+        });
+
+        return {
+          ...r,
+          listPrice: listP,
+          isGstIncluded: isIncluded,
+          calculatedGstAmount: calculatedGst,
+          priceInclGst,
+          unitPrice,
+          freeQty: b.freeQty,
+          paidQty: b.paidQty,
+          discountAmount: b.discountAmount,
+          schemeText: b.schemeLabel,
+        };
+      })
+    );
   };
 
   // Apply Bulk Scheme to All Rows
@@ -642,18 +885,39 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   // Live Summary Calculations
   const totalBilledQty = rows.reduce((s, r) => s + (Number(r.qty) || 0), 0);
   const totalFreeQty = rows.reduce((s, r) => s + (Number(r.freeQty) || 0), 0);
-  // Hard-locked: In FMCG beverage distribution, the invoiced crate count is strictly
-  // the total physical crates received (inclusive of free scheme crates).
-  const totalReceivedQty = rows.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+  // Hard-locked: In FMCG beverage distribution, the invoiced crate count (r.qty) is
+  // strictly the total physical crates received for that line (inclusive of free
+  // scheme crates already printed on the invoice) — schemeMode is locked to
+  // 'inclusive' throughout this modal, so r.qty is never added to r.freeQty.
+  //
+  // FIX: this previously summed ONLY r.qty, silently dropping any named "Supplier
+  // Scheme" bonus crates (r.supplierSchemeFreeQty — a genuinely separate, off-invoice
+  // bonus, unlike r.freeQty which is already inside r.qty). That under-count then fed
+  // straight into the posted GRN's header totalReceivedQty AND the inward-cost-per-
+  // crate allocation, so both silently diverged from the real quantity actually added
+  // to inventory (see item.totalReceivedQty + supplierSchemeFreeQty in postGrn). Kept
+  // as two figures: the invoice-equivalent total (what should match the printed
+  // invoice, for the mismatch check) and the true received total (what's actually
+  // posted to stock, cost-allocated, and shown as the working total below).
+  const totalInvoicePrintedQty = totalBilledQty;
+  const totalSupplierSchemeBonusQty = rows.reduce(
+    (s, r) => s + (r.supplierSchemeId ? Number(r.supplierSchemeFreeQty) || 0 : 0),
+    0
+  );
+  const totalReceivedQty = totalInvoicePrintedQty + totalSupplierSchemeBonusQty;
   const totalPaidQty = rows.reduce(
     (s, r) => s + Math.max(0, (Number(r.qty) || 0) - (Number(r.freeQty) || 0)),
     0
   );
 
-  // Total Cases Mismatch Detection: Working table vs Invoice printed cases
+  // Total Cases Mismatch Detection: Working table (as printed on the invoice, i.e.
+  // EXCLUDING any off-invoice Supplier Scheme bonus) vs Invoice printed cases. A
+  // Supplier Scheme bonus is expected to sit outside the printed count, so it must
+  // never be included on this side of the comparison or every bonus-scheme GRN would
+  // wrongly show a "mismatch".
   const hasCasesMismatch =
-    printedTotalCases !== null && printedTotalCases > 0 && totalReceivedQty !== printedTotalCases;
-  const casesDiff = printedTotalCases !== null ? totalReceivedQty - printedTotalCases : 0;
+    printedTotalCases !== null && printedTotalCases > 0 && totalInvoicePrintedQty !== printedTotalCases;
+  const casesDiff = printedTotalCases !== null ? totalInvoicePrintedQty - printedTotalCases : 0;
 
   // Inward Direct Costs Calculation
   const totalInwardCost =
@@ -689,31 +953,54 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   const existingProductsCount = rows.filter((r) => !r.isNewProduct).length;
 
   // Confirm and commit inward consignment
+  // Step 1: button click. Warnings never block the import; they ask for an acknowledgement
+  // (with an optional note) and are then stored on the GRN for future tracking.
   const handleConfirmAndPostGrn = () => {
     if (rows.length === 0) {
       setParseError('Please ensure there is at least 1 product line to inward.');
       return;
     }
-
-    // Confirmation prompt before posting if a total cases mismatch exists
-    if (hasCasesMismatch) {
-      const proceed = window.confirm(
-        `⚠️ TOTAL CASES MISMATCH WARNING!\n\n` +
-        `• Working Table Total: ${totalReceivedQty.toLocaleString()} crates\n` +
-        `• Invoice Printed Total: ${printedTotalCases?.toLocaleString()} crates\n` +
-        `• Discrepancy: ${casesDiff > 0 ? `+${casesDiff}` : casesDiff} crates\n\n` +
-        `In FMCG distribution, invoice printed cases is always the physical total received (inclusive of free scheme crates).\n\n` +
-        `Posting this will save ${totalReceivedQty.toLocaleString()} crates to godown inventory.\n\n` +
-        `Are you sure you want to proceed and save this consignment?`
-      );
-      if (!proceed) {
-        return;
-      }
+    // FIX: warehouse selection is mandatory and manual, no default. This is the
+    // primary guard; postGrn() itself also hard-validates this (and batch/expiry per
+    // line) as a second line of defense so an invalid inward can never slip through
+    // even from a future caller.
+    if (!targetWarehouseId) {
+      setParseError('Select the warehouse this invoice is being received into before confirming — there is no default.');
+      return;
     }
+    if (hasCasesMismatch) {
+      setShowWarningDialog(true);
+      return;
+    }
+    postConsignment([]);
+  };
 
+  // Step 2: user chose "Import with warning"
+  const handleImportWithWarning = () => {
+    const warnings: GrnImportWarning[] = [];
+    if (hasCasesMismatch) {
+      warnings.push({
+        id: 'iw_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5),
+        type: 'cases_mismatch',
+        message: `Total cases mismatch: invoice printed ${printedTotalCases} cs vs imported ${totalReceivedQty} cs (${casesDiff > 0 ? `+${casesDiff}` : casesDiff} cs)`,
+        expected: printedTotalCases ?? undefined,
+        actual: totalReceivedQty,
+        difference: casesDiff,
+        note: warningNote.trim() || undefined,
+        acknowledgedAt: new Date().toISOString(),
+        acknowledgedBy: currentUser?.name || 'Admin',
+        resolved: false,
+      });
+    }
+    setShowWarningDialog(false);
+    setWarningNote('');
+    postConsignment(warnings);
+  };
+
+  const postConsignment = (importWarnings: GrnImportWarning[]) => {
     // Convert rows to GrnLineItem format using the unified landed cost engine
     const items: GrnLineItem[] = rows.map((r, idx) => {
-      const unitsPerCrate = r.unitsPerCrate || (r.volume <= 200 ? 30 : 24);
+      const unitsPerCrate = r.unitsPerCrate || inferUnitsPerCase(`${r.productName || ''} ${r.rawName || ''} ${r.pack || ''}`, r.volume);
       const breakdown = calculateLandedCostBreakdown({
         qty: r.qty,
         unitPrice: r.unitPrice,
@@ -739,10 +1026,10 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         id: `grn_item_${Date.now()}_${idx}`,
         isNewProduct: r.isNewProduct,
         productId: r.isNewProduct ? undefined : r.matchedProductId,
-        productName: r.productName,
+        productName: r.productName.trim().toUpperCase(),
         category: r.category,
         sku: generateAutoSku(r.productName, r.category, idx + 100),
-        hsn: r.hsn,
+        hsn: normalizeTo8DigitHsn(r.hsn, r.category, r.productName),
         pack: r.pack,
         volume: r.volume,
         packSize: r.packSize || `${r.volume}ml ${r.pack}`,
@@ -781,11 +1068,10 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         effectiveCostPerCrateInclGst: breakdown.effectiveCostPerCrateInclGst,
         effectiveUnitRateExGst: breakdown.effectiveUnitRateExGst,
         effectiveUnitRateInclGst: breakdown.effectiveUnitRateInclGst,
-        // Landed Cost Per Unit (Crate & Bottle) includes invoice line total + proportional inward godown cost
         landedCostPerCrate: breakdown.landedCostPerCrate,
         landedCostPerCrateExGst: breakdown.landedCostPerCrateExGst,
         landedCostPerUnit: breakdown.landedCostPerUnit,
-        effectiveCostPerUnit: breakdown.effectiveUnitRateExGst,
+        effectiveCostPerUnit: breakdown.effectiveCostPerCrateExGst,
         inwardCostPerCrate: breakdown.inwardCostPerCrate,
         finalLandedCostPerUnit: breakdown.landedCostPerUnit,
         expiry: r.expiry,
@@ -794,12 +1080,19 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         wholesaleRate: r.wholesaleRate,
         retailRate: r.retailRate,
         notes: r.isNewProduct ? 'Auto-created new product line from inward bill' : undefined,
+        supplierSchemeId: r.supplierSchemeId,
+        supplierSchemeFreeQty: r.supplierSchemeId ? r.supplierSchemeFreeQty || 0 : undefined,
+        pendingCreditSchemeId: r.pendingCreditSchemeId,
+        pendingCreditEligibleQty: r.pendingCreditSchemeId ? breakdown.paidQty : undefined,
+        pendingCreditExpectedAmount: r.pendingCreditSchemeId ? r.pendingCreditExpectedAmount || 0 : undefined,
       };
     });
 
     const targetWhObj = warehouses.find((w) => w.id === targetWarehouseId);
 
-    const createdGrn = postGrn({
+    let createdGrn;
+    try {
+      createdGrn = postGrn({
       supplierName,
       supplierGstin,
       supplierAddress,
@@ -814,6 +1107,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
       warehouseId: targetWarehouseId,
       warehouseName: targetWhObj?.name || 'Main Godown',
       items,
+      importWarnings: importWarnings.length > 0 ? importWarnings : undefined,
       totalBilledQty,
       totalFreeQty,
       totalPaidQty,
@@ -823,6 +1117,9 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
       totalSgst,
       totalTax,
       grandTotal: calculatedGrandTotal,
+      overallDiscount: overallDiscount || 0,
+      totalLineDiscount: totalItemDiscounts || 0,
+      subtotalBeforeDiscount: totalGross + totalTax,
       inwardCosts: {
         transport: Number(transportCost) || 0,
         freight: Number(freightCost) || 0,
@@ -835,6 +1132,64 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
       totalInwardCost,
       inwardCostPerCrate,
       notes: `Inward parsed from ${fileName || 'Invoice'}. Provider: ${supplierName} (GSTIN: ${supplierGstin}). Vehicle: ${vehicleNo}. Overall Discount: ₹${money(overallDiscount)}. Direct Inward Godown Cost: ₹${money(totalInwardCost)} (+₹${money(inwardCostPerCrate)}/crate).`,
+      });
+    } catch (err: any) {
+      // GrnValidationError from postGrn (missing/invalid warehouse, missing batch
+      // number or expiry on a line, duplicate invoice number, etc.) — surface every
+      // issue to the user instead of silently failing or letting bad stock through.
+      const issues = err?.issues as { message: string }[] | undefined;
+      setParseError(
+        issues && issues.length > 0
+          ? `Could not post this invoice:\n${issues.map((i) => `• ${i.message}`).join('\n')}`
+          : err?.message || 'Failed to post GRN.'
+      );
+      return;
+    }
+
+    // Supplier Scheme traceability: one application record per GRN line that was
+    // attached to a Type A (free_goods) or Type B (pending_credit) scheme, plus an
+    // auto-created "Pending Credit Note" for Type B, so it shows up immediately in the
+    // Supplier Schemes view. The original GRN/invoice above is never touched by this.
+    createdGrn.items.forEach((item) => {
+      if (item.supplierSchemeId && item.supplierSchemeFreeQty && item.supplierSchemeFreeQty > 0) {
+        addSupplierSchemeApplication({
+          schemeId: item.supplierSchemeId,
+          schemeType: 'free_goods',
+          grnId: createdGrn.id,
+          grnLineId: item.id,
+          productId: item.productId || 0,
+          supplierName: createdGrn.supplierName,
+          supplierInvoiceNo: createdGrn.invoiceNo,
+          eligibleQuantity: item.paidQty,
+          freeQuantity: item.supplierSchemeFreeQty,
+          expectedBenefit: 0,
+          warehouseId: createdGrn.warehouseId,
+        });
+      }
+      if (item.pendingCreditSchemeId && item.pendingCreditExpectedAmount && item.pendingCreditExpectedAmount > 0) {
+        addSupplierSchemeApplication({
+          schemeId: item.pendingCreditSchemeId,
+          schemeType: 'pending_credit',
+          grnId: createdGrn.id,
+          grnLineId: item.id,
+          productId: item.productId || 0,
+          supplierName: createdGrn.supplierName,
+          supplierInvoiceNo: createdGrn.invoiceNo,
+          eligibleQuantity: item.pendingCreditEligibleQty || 0,
+          freeQuantity: 0,
+          expectedBenefit: item.pendingCreditExpectedAmount,
+          warehouseId: createdGrn.warehouseId,
+        });
+        addSupplierCreditNote({
+          supplierName: createdGrn.supplierName,
+          schemeId: item.pendingCreditSchemeId,
+          grnId: createdGrn.id,
+          productId: item.productId,
+          expectedAmount: item.pendingCreditExpectedAmount,
+          actualAmount: 0,
+          notes: `Auto-created from GRN ${createdGrn.grnNumber} · ${item.productName}`,
+        });
+      }
     });
 
     if (onSuccess) {
@@ -846,10 +1201,26 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
     (r) => r.schemeType !== 'none' || r.freeQty > 0 || r.discountAmount > 0
   ).length;
 
+  // Review helpers: lines that still need a human look (no expiry date / zero rate)
+  const needsAttention = (r: EditableInwardRow) =>
+    !r.expiry || !(r.batchNumber || '').trim() || !(Number(r.unitPrice) > 0);
+  const attentionCount = rows.filter(needsAttention).length;
+  const missingExpiryCount = rows.filter((r) => !r.expiry).length;
+  const missingBatchCount = rows.filter((r) => !(r.batchNumber || '').trim()).length;
+  // Informational only — never blocks posting (the cases mismatch is the only warning flow)
+  const amountDiff = originalInvoiceTotal !== null ? calculatedGrandTotal - originalInvoiceTotal : 0;
+  const hasAmountMismatch = originalInvoiceTotal !== null && Math.abs(amountDiff) >= 1;
+  // Fill ONLY the empty expiry cells with the chosen date (never overwrites typed values)
+  const handleFillEmptyExpiry = () => {
+    if (!bulkExpiryDate) return;
+    setRows((prev) => prev.map((r) => (r.expiry ? r : { ...r, expiry: bulkExpiryDate })));
+  };
+
   // Filtered rows for review table
   const filteredRows = rows.filter((r) => {
     if (filterNewOnly && !r.isNewProduct) return false;
     if (filterSchemeOnly && r.schemeType === 'none' && r.freeQty === 0 && r.discountAmount === 0) return false;
+    if (filterAttentionOnly && !needsAttention(r)) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       return (
@@ -878,41 +1249,40 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
       id="modal-bulk-inward"
       className={
         isMaximized
-          ? 'fixed inset-0 z-50 flex flex-col bg-white overflow-hidden'
-          : 'fixed inset-0 z-50 flex items-center justify-center p-1 sm:p-2.5 bg-slate-900/60 backdrop-blur-xs overflow-hidden'
+          ? 'fixed inset-0 z-50 flex flex-col bg-[#faf8f5] overflow-hidden'
+          : 'fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-3 bg-slate-900/40 overflow-hidden'
       }
     >
       <div
         className={
           isMaximized
-            ? 'w-full h-full flex flex-col overflow-hidden bg-white'
-            : 'bg-white w-full max-w-[99vw] xl:max-w-[98vw] 2xl:max-w-[1850px] h-full sm:h-[98vh] max-h-[98vh] rounded-xl shadow-2xl border flex flex-col overflow-hidden'
+            ? 'w-full h-full flex flex-col overflow-hidden bg-[#faf8f5]'
+            : 'bg-[#faf8f5] w-full max-w-[99vw] xl:max-w-[98vw] 2xl:max-w-[1850px] h-[96vh] sm:h-[96vh] max-h-[96vh] rounded-t-3xl sm:rounded-3xl shadow-2xl border border-black/5 flex flex-col overflow-hidden'
         }
-        style={{ borderColor: palette.line }}
       >
-        {/* MODAL HEADER */}
+        {/* MODAL HEADER — Crate style */}
         <div
-          className={`flex items-center justify-between px-3 sm:px-6 border-b bg-slate-50 shrink-0 ${
-            step === 'review' ? 'py-2 sm:py-2.5' : 'py-2.5 sm:py-3'
+          className={`flex items-center justify-between px-3 sm:px-5 border-b border-black/5 bg-[#faf8f5] shrink-0 ${
+            step === 'review' ? 'py-2.5 sm:py-3' : 'py-3'
           }`}
-          style={{ borderColor: palette.line }}
         >
           <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
-            <div className="p-1 sm:p-1.5 bg-indigo-100 text-indigo-700 rounded-lg shrink-0">
+            <div className="p-1.5 bg-[#ebe8e1] text-[#0d4a3a] rounded-xl shrink-0">
               <Boxes size={18} className="sm:w-5 sm:h-5" />
             </div>
             <div className="min-w-0">
+              <InwardStepIndicator step={step} />
               <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-xs sm:text-sm font-bold text-slate-900 truncate">
-                  {step === 'upload' ? 'Smart Inward Invoice Reader' : 'Review Inward Consignment'}
+                <h2 className="text-sm sm:text-base font-bold text-slate-900 truncate">
+                  {step === 'upload' ? 'Bulk purchase import' : 'Review purchase'}
                 </h2>
                 {step === 'upload' ? (
-                  <span className="hidden sm:inline-block px-2 py-0.5 text-xs font-semibold rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
-                    Excel • CSV • PDF • Image OCR
+                  <span className="hidden sm:inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full bg-white border border-black/8 text-slate-600">
+                    Excel · CSV · PDF · Image
                   </span>
                 ) : (
-                  <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0">
-                    {rows.length} {rows.length === 1 ? 'Product' : 'Products'} ({totalReceivedQty} Crates)
+                  <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-[#ebe8e1] text-[#0d4a3a] shrink-0">
+                    {rows.length} {rows.length === 1 ? 'product' : 'products'} · {totalReceivedQty} cs
                   </span>
                 )}
                 {step === 'review' && fileName && (
@@ -923,7 +1293,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
               </div>
               {step === 'upload' && (
                 <p className="text-[11px] sm:text-xs text-slate-500 truncate mt-0.5">
-                  Upload supplier invoice or quotation in any format. Extracts products, quantities, schemes & taxes.
+                  Upload supplier invoice — products, qty, schemes & taxes extracted
                 </p>
               )}
             </div>
@@ -984,7 +1354,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
 
         {/* ERROR NOTIFICATION */}
         {parseError && (
-          <div className="mx-3 sm:mx-6 mt-3 sm:mt-4 p-3.5 sm:p-4 bg-rose-50 border border-rose-200 text-rose-900 rounded-lg flex items-start gap-3 text-xs shadow-xs">
+          <div className="mx-3 sm:mx-6 mt-3 sm:mt-4 p-3.5 sm:p-4 bg-rose-50 border border-rose-200 text-rose-900 rounded-lg flex items-start gap-3 text-xs shadow-sm">
             <AlertCircle size={18} className="text-rose-600 mt-0.5 shrink-0" />
             <div className="flex-1 min-w-0">
               <span className="font-semibold block text-xs sm:text-sm text-rose-900">{parseError}</span>
@@ -993,7 +1363,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                   <button
                     onClick={() => processUploadedFile(lastUploadedFile)}
                     disabled={isParsing}
-                    className="px-2.5 sm:px-3 py-1 sm:py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-md text-xs flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors disabled:opacity-50"
+                    className="px-2.5 sm:px-3 py-1 sm:py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-md text-xs flex items-center gap-1.5 cursor-pointer shadow-sm transition-colors disabled:opacity-50"
                   >
                     <RefreshCw size={13} className={isParsing ? "animate-spin" : ""} />
                     Retry AI Vision ({lastUploadedFile.name})
@@ -1001,7 +1371,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                 )}
                 <button
                   onClick={handleStartBlankConsignment}
-                  className="px-2.5 sm:px-3 py-1 sm:py-1.5 bg-white hover:bg-slate-100 text-slate-800 font-semibold rounded-md text-xs flex items-center gap-1.5 cursor-pointer border border-slate-300 shadow-xs transition-colors"
+                  className="px-2.5 sm:px-3 py-1 sm:py-1.5 bg-white hover:bg-slate-100 text-slate-800 font-semibold rounded-md text-xs flex items-center gap-1.5 cursor-pointer border border-slate-300 shadow-sm transition-colors"
                 >
                   <ArrowRight size={13} />
                   Open Review (Manual Entry)
@@ -1029,158 +1399,17 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         {/* STEP 1: UPLOAD / DRAG & DROP / TEMPLATE DOWNLOAD         */}
         {/* ======================================================== */}
         {step === 'upload' && (
-          <div className="p-6 overflow-y-auto flex flex-col gap-6 flex-1">
-            {/* DRAG & DROP DROPZONE */}
-            <div
-              onDragOver={(e) => {
-                e.preventDefault();
-                setIsDragging(true);
-              }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setIsDragging(false);
-                if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                  processUploadedFile(e.dataTransfer.files[0]);
-                }
-              }}
-              className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center justify-center text-center transition-all cursor-pointer ${
-                isDragging
-                  ? 'border-indigo-600 bg-indigo-50/70 scale-[0.99]'
-                  : 'border-slate-300 hover:border-indigo-400 bg-slate-50/50 hover:bg-indigo-50/30'
-              }`}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".xlsx,.xls,.csv,.pdf,.jpg,.jpeg,.png,.webp"
-                className="hidden"
-                onChange={(e) => {
-                  if (e.target.files && e.target.files[0]) {
-                    processUploadedFile(e.target.files[0]);
-                  }
-                }}
-              />
-
-              {isParsing ? (
-                <div className="flex flex-col items-center gap-3 py-8">
-                  <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-                  <p className="text-base font-bold text-indigo-900">{parsingStatus || 'Analyzing document...'}</p>
-                  <p className="text-xs text-slate-500 max-w-md">
-                    Extracting header metadata, matching beverage catalog, calculating taxes & scheme incentives.
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="p-3.5 bg-emerald-100 text-emerald-700 rounded-full shadow-xs">
-                      <FileSpreadsheet size={28} />
-                    </div>
-                    <div className="p-3.5 bg-blue-100 text-blue-700 rounded-full shadow-xs">
-                      <FileText size={28} />
-                    </div>
-                    <div className="p-3.5 bg-indigo-100 text-indigo-700 rounded-full shadow-xs">
-                      <ImageIcon size={28} />
-                    </div>
-                  </div>
-
-                  <h3 className="text-lg font-bold text-slate-800 mb-1">
-                    Drag & Drop your Supplier Invoice here, or <span className="text-indigo-600 underline">Browse File</span>
-                  </h3>
-                  <p className="text-xs text-slate-500 max-w-lg mb-5">
-                    Supports <strong>Excel (.xlsx, .xls)</strong>, <strong>CSV (.csv)</strong>, <strong>PDF invoices</strong>, and <strong>Photo / Scanned bills (.jpg, .png)</strong>.
-                  </p>
-
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-slate-600 max-w-2xl w-full">
-                    <div className="p-2 bg-white border border-slate-200 rounded-lg shadow-xs font-medium text-center">
-                      ✓ Billed vs Free cases
-                    </div>
-                    <div className="p-2 bg-white border border-slate-200 rounded-lg shadow-xs font-medium text-center">
-                      ✓ New vs Existing products
-                    </div>
-                    <div className="p-2 bg-white border border-slate-200 rounded-lg shadow-xs font-medium text-center">
-                      ✓ Auto GST Calculation
-                    </div>
-                    <div className="p-2 bg-white border border-slate-200 rounded-lg shadow-xs font-medium text-center">
-                      ✓ Landed Cost Computation
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* ACTION OPTIONS: TEMPLATE DOWNLOAD & MANUAL ENTRY */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Option 1: Download Sample Excel / CSV Templates with Provider Details */}
-              <div className="p-5 rounded-xl border border-slate-200 bg-white shadow-xs hover:border-indigo-300 transition-all flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center gap-2 mb-2 text-emerald-700">
-                    <FileSpreadsheet size={20} />
-                    <h4 className="font-bold text-sm text-slate-900">
-                      Download Updated Inward Templates (Excel / CSV)
-                    </h4>
-                  </div>
-                  <p className="text-xs text-slate-600 leading-relaxed mb-2.5">
-                    Updated to capture <strong>complete Invoice Provider Details</strong>: Supplier / Distributor Name, GSTIN, Registered Address, Phone, Email, Invoice No, Invoice Date, Vehicle No, Place of Supply (POS), Billed To, and Shipped To.
-                  </p>
-                  <div className="flex flex-wrap gap-1.5 text-[11px] text-emerald-800">
-                    <span className="px-2 py-0.5 bg-emerald-50 border border-emerald-200 rounded font-medium">✓ Provider Details Sheet</span>
-                    <span className="px-2 py-0.5 bg-emerald-50 border border-emerald-200 rounded font-medium">✓ Beverage Item Columns</span>
-                    <span className="px-2 py-0.5 bg-emerald-50 border border-emerald-200 rounded font-medium">✓ GST Slabs Reference</span>
-                  </div>
-                </div>
-
-                <div className="mt-4 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-[11px] text-slate-500 font-medium">Includes sample data ready for instant import</span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={handleDownloadCsvSample}
-                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors border border-slate-300"
-                      title="Download flat CSV template with provider and item columns"
-                    >
-                      <Download size={13} />
-                      CSV Template
-                    </button>
-                    <button
-                      onClick={handleDownloadSample}
-                      className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
-                      title="Download multi-sheet Excel workbook with Provider Details, Items, and Tax Guides"
-                    >
-                      <Download size={13} />
-                      Excel Template (.xlsx)
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Option 2: Start Manual Consignment */}
-              <div className="p-5 rounded-xl border border-slate-200 bg-white shadow-xs hover:border-indigo-300 transition-all flex flex-col justify-between">
-                <div>
-                  <div className="flex items-center gap-2 mb-2 text-indigo-700">
-                    <Plus size={20} />
-                    <h4 className="font-bold text-sm text-slate-900">
-                      Direct Manual Inward Entry
-                    </h4>
-                  </div>
-                  <p className="text-xs text-slate-500 leading-relaxed">
-                    Skip uploading a file and start directly with an empty consignment in the review screen. Add beverage products, specify schemes, enter supplier details, and post stock straight to your godown.
-                  </p>
-                </div>
-
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                  <span className="text-[11px] text-slate-500">Fast entry for physical paper receipts</span>
-                  <button
-                    onClick={handleStartBlankConsignment}
-                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
-                  >
-                    <ArrowRight size={13} />
-                    Start Manual Entry
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <UploadStep
+            isDragging={isDragging}
+            setIsDragging={setIsDragging}
+            fileInputRef={fileInputRef}
+            processUploadedFile={processUploadedFile}
+            isParsing={isParsing}
+            parsingStatus={parsingStatus}
+            handleDownloadCsvSample={handleDownloadCsvSample}
+            handleDownloadSample={handleDownloadSample}
+            handleStartBlankConsignment={handleStartBlankConsignment}
+          />
         )}
 
         {/* ======================================================== */}
@@ -1192,74 +1421,315 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
             {/* UPPER DETAILS: CONTRACTED STRIP VS EXPANDED CONTROLS     */}
             {/* ======================================================== */}
 
-            {/* 1. CONTRACTED VIEW (DEFAULT - GIVES MAXIMUM SPACE TO PRODUCTS) */}
-            {!isUpperDetailsExpanded && (
-              <div
-                className="bg-slate-900 text-white px-3 sm:px-6 py-2 border-b flex items-center justify-between gap-2 text-xs shrink-0 shadow-2xs"
-                style={{ borderColor: palette.line }}
+            {/* ======================================================== */}
+            {/* REVIEW STATUS BAR — identity + live discrepancy checks   */}
+            {/* One compact row that is ALWAYS visible; replaces the big  */}
+            {/* red banner, the KPI strip and the amber costs banner.    */}
+            {/* ======================================================== */}
+            <div
+              className="bg-slate-900 text-white px-3 sm:px-4 py-1.5 border-b flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs shrink-0"
+              style={{ borderColor: palette.line }}
+            >
+              {/* Identity (click to open bill details) */}
+              <button
+                type="button"
+                onClick={() => setIsUpperDetailsExpanded((prev) => !prev)}
+                className="flex items-center gap-2 min-w-0 text-left cursor-pointer hover:text-indigo-200 transition-colors"
+                title="Click to edit supplier, invoice, vehicle, taxes & godown"
               >
-                <div className="flex items-center gap-2 sm:gap-3 flex-wrap min-w-0">
-                  <div className="flex items-center gap-1.5 font-bold text-white min-w-0">
-                    <Building2 size={14} className="text-indigo-400 shrink-0" />
-                    <span className="truncate max-w-[130px] sm:max-w-[200px] text-xs" title={supplierName}>
-                      {supplierName || 'Supplier'}
+                <Building2 size={14} className="text-indigo-400 shrink-0" />
+                <span className="font-bold truncate max-w-[140px] sm:max-w-[220px]" title={supplierName}>
+                  {supplierName || 'Supplier'}
+                </span>
+                <span className="font-mono text-indigo-300 text-[11px] font-semibold shrink-0">#{invoiceNo || 'N/A'}</span>
+                <span className="hidden md:inline text-slate-400 text-[11px] shrink-0">{inwardDate}</span>
+                {isUpperDetailsExpanded ? (
+                  <ChevronUp size={12} className="text-slate-400 shrink-0" />
+                ) : (
+                  <ChevronDown size={12} className="text-slate-400 shrink-0" />
+                )}
+              </button>
+
+              <span
+                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold border shrink-0 ${
+                  targetWarehouseId
+                    ? 'bg-slate-800 text-indigo-200 border-slate-700'
+                    : 'bg-rose-600 text-white border-rose-400 animate-pulse'
+                }`}
+              >
+                {targetWarehouseId
+                  ? warehouses.find((w) => w.id === targetWarehouseId)?.name || 'Godown'
+                  : 'Pick godown ▸ open bill details'}
+              </span>
+
+              <span className="hidden sm:block h-5 w-px bg-slate-700" />
+
+              {/* Live discrepancy checks */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {/* Cases check */}
+                <button
+                  type="button"
+                  onClick={() => hasCasesMismatch && setShowMismatchDetail((v) => !v)}
+                  className={`px-2 py-0.5 rounded border font-semibold flex items-center gap-1 text-[11px] ${
+                    hasCasesMismatch
+                      ? 'bg-red-600 border-red-300 text-white cursor-pointer hover:bg-red-500'
+                      : 'bg-emerald-900/50 border-emerald-700 text-emerald-200 cursor-default'
+                  }`}
+                  title={
+                    hasCasesMismatch
+                      ? 'Click for details'
+                      : printedTotalCases !== null
+                      ? 'Table total matches the printed invoice case count'
+                      : 'No printed case count was detected on the invoice'
+                  }
+                >
+                  {hasCasesMismatch ? <AlertTriangle size={12} className="text-amber-200" /> : <Check size={12} />}
+                  <span>
+                    Cases <strong className="font-mono">{totalInvoicePrintedQty.toLocaleString()}</strong>
+                    {printedTotalCases !== null && (
+                      <>
+                        {' '}
+                        {hasCasesMismatch ? 'vs printed' : '= printed'}{' '}
+                        <strong className="font-mono">{printedTotalCases.toLocaleString()}</strong>
+                      </>
+                    )}
+                  </span>
+                  {hasCasesMismatch && (
+                    <span className="font-mono font-black bg-red-950 px-1 rounded">
+                      {casesDiff > 0 ? `+${casesDiff}` : casesDiff}
                     </span>
-                  </div>
-                  <span className="text-slate-600 hidden sm:inline">•</span>
-                  <div className="flex items-center gap-1 font-mono text-indigo-300 font-semibold text-[11px] shrink-0">
-                    <span className="text-slate-400 hidden sm:inline">Inv:</span>
-                    <span className="text-white font-bold">#{invoiceNo || 'N/A'}</span>
-                  </div>
-                  <span className="text-slate-600 hidden sm:inline">•</span>
-                  <div className="hidden sm:flex items-center gap-1 text-slate-300 text-[11px] shrink-0">
-                    <span className="text-slate-400">Date:</span>
-                    <span>{inwardDate}</span>
-                  </div>
-                  <span className="text-slate-600 hidden md:inline">•</span>
-                  <div className="hidden md:flex items-center gap-1 text-slate-300 text-[11px] shrink-0">
-                    <span className="text-slate-400">To:</span>
-                    <span className="px-1.5 py-0.5 bg-slate-800 text-indigo-200 rounded font-semibold text-[10px] border border-slate-700">
-                      {warehouses.find((w) => w.id === targetWarehouseId)?.name || 'Godown'}
-                    </span>
-                  </div>
-                  {vehicleNo && (
-                    <>
-                      <span className="text-slate-600 hidden lg:inline">•</span>
-                      <span className="hidden lg:inline font-mono text-slate-400 text-[10px]">Veh: {vehicleNo}</span>
-                    </>
                   )}
-                </div>
+                  {totalSupplierSchemeBonusQty > 0 && (
+                    <span className="text-[10px] font-normal opacity-80">(+{totalSupplierSchemeBonusQty} bonus)</span>
+                  )}
+                </button>
 
-                <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                  {/* Live metrics indicator */}
-                  <div className="flex items-center gap-2 font-mono text-xs">
-                    <span className="hidden md:inline text-slate-300 text-[11px]">
-                      <strong className="text-white">{rows.length}</strong> items • <strong className="text-emerald-300">{totalReceivedQty.toLocaleString()}</strong> cs
-                    </span>
-                    <div className="bg-indigo-950 px-2.5 py-0.5 rounded border border-indigo-700/60 flex items-center gap-1">
-                      <span className="text-indigo-300 text-[10px] uppercase font-bold">Total:</span>
-                      <span className="font-extrabold text-amber-300 text-xs sm:text-sm">₹{money(calculatedGrandTotal)}</span>
-                    </div>
-                  </div>
-
-                  {/* Expand Upper Details Button */}
+                {/* Amount check (informational only with interactive resolution helper) */}
+                {originalInvoiceTotal !== null && (
                   <button
                     type="button"
-                    onClick={() => setIsUpperDetailsExpanded(true)}
-                    className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded text-xs flex items-center gap-1 cursor-pointer transition-colors shadow-2xs shrink-0"
-                    title="Expand supplier info, vehicle, taxes & godown settings"
+                    onClick={() => setShowAmountMismatchDetail((v) => !v)}
+                    className={`px-2 py-0.5 rounded border font-semibold flex items-center gap-1 text-[11px] cursor-pointer transition-colors ${
+                      hasAmountMismatch
+                        ? 'bg-amber-500/20 border-amber-400 text-amber-200 hover:bg-amber-500/30'
+                        : 'bg-emerald-900/50 border-emerald-700 text-emerald-200'
+                    }`}
+                    title={`Calculated ₹${money(calculatedGrandTotal)} vs party invoice ₹${money(originalInvoiceTotal)}. Click for breakdown & 1-click fix.`}
                   >
-                    <ChevronDown size={13} />
-                    <span className="hidden sm:inline">Edit Bill Details</span>
-                    <span className="sm:hidden">Edit Info</span>
+                    {hasAmountMismatch ? <AlertTriangle size={12} /> : <Check size={12} />}
+                    <span>
+                      Amount{' '}
+                      {hasAmountMismatch ? (
+                        <>
+                          <strong className="font-mono">{amountDiff > 0 ? '+' : '−'}₹{money(Math.abs(amountDiff))}</strong> vs party
+                        </>
+                      ) : (
+                        'matches party'
+                      )}
+                    </span>
+                  </button>
+                )}
+
+                {/* Needs attention (missing batch / missing expiry / zero rate) */}
+                {attentionCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilterAttentionOnly((v) => !v);
+                      setFilterNewOnly(false);
+                      setFilterSchemeOnly(false);
+                    }}
+                    className={`px-2 py-0.5 rounded border font-semibold flex items-center gap-1 text-[11px] cursor-pointer ${
+                      filterAttentionOnly
+                        ? 'bg-amber-400 border-amber-200 text-slate-900'
+                        : 'bg-amber-500/20 border-amber-400 text-amber-200 hover:bg-amber-500/30'
+                    }`}
+                    title="Lines with a missing batch number, missing expiry date or a zero rate — click to show only these"
+                  >
+                    <AlertCircle size={12} />
+                    <span>
+                      {attentionCount} need{attentionCount === 1 ? 's' : ''} attention
+                      {missingExpiryCount > 0 && ` (${missingExpiryCount} no expiry)`}
+                      {missingBatchCount > 0 && ` (${missingBatchCount} no batch)`}
+                    </span>
+                  </button>
+                )}
+              </div>
+
+              {/* Right side: totals + costs toggle */}
+              <div className="flex items-center gap-2 sm:gap-3 ml-auto shrink-0">
+                <span className="hidden md:inline text-slate-300 text-[11px] font-mono">
+                  <strong className="text-white">{rows.length}</strong> items •{' '}
+                  <strong className="text-emerald-300">{totalReceivedQty.toLocaleString()}</strong> cs
+                </span>
+
+                <button
+                  type="button"
+                  onClick={() => setShowInwardCostDetails((v) => !v)}
+                  className={`px-2 py-0.5 rounded border text-[11px] font-semibold flex items-center gap-1 cursor-pointer ${
+                    showInwardCostDetails
+                      ? 'bg-amber-400 border-amber-200 text-slate-900'
+                      : 'bg-slate-800 border-slate-600 text-amber-200 hover:bg-slate-700'
+                  }`}
+                  title="Transport, freight & labour costs allocated to landed cost"
+                >
+                  <Truck size={12} />
+                  <span className="font-mono">
+                    {totalInwardCost > 0 ? `₹${money(totalInwardCost)}` : 'Inward costs'}
+                  </span>
+                  {showInwardCostDetails ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                </button>
+
+                <div className="bg-indigo-950 px-2.5 py-0.5 rounded border border-indigo-700/60 flex items-center gap-1">
+                  <span className="text-indigo-300 text-[10px] uppercase font-bold">Total</span>
+                  <span className="font-extrabold text-amber-300 text-xs sm:text-sm font-mono">
+                    ₹{money(calculatedGrandTotal)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* AI cross-check notes (row arithmetic, totals, GSTIN ...) */}
+            {aiWarnings.length > 0 && (
+              <details className="bg-amber-50 border-b border-amber-300 px-3 sm:px-4 py-1.5 text-[11px] text-amber-900 shrink-0 group">
+                <summary className="flex items-center gap-2 cursor-pointer select-none font-semibold list-none">
+                  <AlertTriangle size={14} className="text-amber-600 shrink-0" />
+                  <span>
+                    AI read this invoice but {aiWarnings.length} point{aiWarnings.length === 1 ? '' : 's'} need
+                    {aiWarnings.length === 1 ? 's' : ''} a quick check
+                  </span>
+                  <span className="ml-auto text-amber-700 font-normal group-open:hidden">show</span>
+                  <span className="ml-auto text-amber-700 font-normal hidden group-open:inline">hide</span>
+                </summary>
+                <ul className="mt-1.5 mb-0.5 ml-6 list-disc space-y-0.5 leading-snug max-h-32 overflow-y-auto pr-2">
+                  {aiWarnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+
+            {/* Cases mismatch detail (only when the red chip is clicked) */}
+            {hasCasesMismatch && showMismatchDetail && (
+              <div className="bg-red-50 border-b-2 border-red-400 px-3 sm:px-4 py-1.5 text-[11px] text-red-900 flex items-start gap-2 shrink-0">
+                <AlertTriangle size={14} className="text-red-600 shrink-0 mt-0.5" />
+                <p className="flex-1 leading-snug">
+                  <strong>Cases mismatch ({casesDiff > 0 ? `+${casesDiff}` : casesDiff}):</strong> the table's
+                  invoice-equivalent total is <strong>{totalInvoicePrintedQty.toLocaleString()} cs</strong> but the
+                  supplier invoice printed <strong>{printedTotalCases?.toLocaleString()} cs</strong>. The printed count
+                  is the total crates physically received, including free scheme crates already billed — verify line
+                  quantities and scheme free counts.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowMismatchDetail(false)}
+                  className="text-red-500 hover:text-red-800 font-bold px-1 cursor-pointer"
+                  title="Hide details"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* Amount mismatch detail & 1-click resolution */}
+            {hasAmountMismatch && showAmountMismatchDetail && originalInvoiceTotal !== null && (
+              <div className="bg-amber-50 border-b-2 border-amber-400 px-3 sm:px-4 py-2 text-xs text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shrink-0">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle size={15} className="text-amber-600 shrink-0 mt-0.5" />
+                  <div className="leading-snug">
+                    <p className="font-bold">
+                      Amount Mismatch: Rows add up to ₹{money(calculatedGrandTotal)} but party invoice total is ₹{money(originalInvoiceTotal)} (difference ₹{money(Math.abs(amountDiff))}).
+                    </p>
+                    <p className="text-[11px] text-amber-800 mt-0.5">
+                      {Math.abs(amountDiff - totalTax) < 2 ? (
+                        <span>
+                          💡 <strong>Notice:</strong> The difference of <strong>₹{money(Math.abs(amountDiff))}</strong> matches <strong>Total GST (₹{money(totalTax)})</strong>. Party total ₹{money(originalInvoiceTotal)} was recorded as Taxable Base (before GST), whereas line totals include GST.
+                        </span>
+                      ) : (
+                        <span>
+                          Check quantities, unit rates, discounts and whether list prices include or exclude GST.
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOriginalInvoiceTotal(calculatedGrandTotal);
+                      setShowAmountMismatchDetail(false);
+                    }}
+                    className="px-2 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] cursor-pointer shadow-xs transition-colors"
+                    title="Set Party Invoice Total to calculated grand total with GST"
+                  >
+                    Sync Party Total to ₹{money(calculatedGrandTotal)}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleBulkSetListPriceGst(true);
+                      setShowAmountMismatchDetail(false);
+                    }}
+                    className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] cursor-pointer shadow-xs transition-colors"
+                    title="Mark all line items as GST-Inclusive rates"
+                  >
+                    Switch to GST Incl
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAmountMismatchDetail(false)}
+                    className="text-slate-400 hover:text-slate-600 font-bold px-1.5 py-0.5 cursor-pointer"
+                    title="Dismiss"
+                  >
+                    ✕
                   </button>
                 </div>
               </div>
             )}
 
+            {/* Inward costs — single compact row, only when opened */}
+            {showInwardCostDetails && (
+              <div className="bg-amber-50 border-b border-amber-200 px-3 sm:px-4 py-1.5 flex flex-wrap items-center gap-2 text-xs shrink-0">
+                <span className="font-bold text-amber-950 flex items-center gap-1">
+                  <Truck size={13} /> Inward costs
+                </span>
+                {(
+                  [
+                    ['Transport', transportCost, setTransportCost, 50],
+                    ['Freight', freightCost, setFreightCost, 50],
+                    ['Loading', loadingLabourCost, setLoadingLabourCost, 25],
+                    ['Unloading', unloadingLabourCost, setUnloadingLabourCost, 25],
+                    ['Other', otherInwardCost, setOtherInwardCost, 25],
+                  ] as [string, number, (n: number) => void, number][]
+                ).map(([label, val, setter, step]) => (
+                  <label
+                    key={label}
+                    className="flex items-center gap-1 bg-white border border-amber-300 rounded px-1.5 py-0.5"
+                  >
+                    <span className="text-[11px] text-slate-500">{label}</span>
+                    <span className="font-mono text-slate-700">₹</span>
+                    <input
+                      type="number" inputMode="decimal"
+                      min="0"
+                      step={step}
+                      value={val}
+                      onChange={(e) => setter(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="w-14 font-mono text-xs font-bold text-slate-900 text-right bg-transparent focus:outline-hidden"
+                      placeholder="0"
+                    />
+                  </label>
+                ))}
+                <span className="ml-auto text-[11px] text-amber-900 font-semibold font-mono">
+                  Total ₹{money(totalInwardCost)} • +₹{money(inwardCostPerCrate)}/crate over {totalReceivedQty} crates
+                </span>
+              </div>
+            )}
+
             {/* 2. EXPANDED VIEW (FULL INVOICE & TAX CONTROLS WITH QUICK COLLAPSE) */}
             {isUpperDetailsExpanded && (
-              <div className="bg-slate-50 border-b shrink-0 transition-all shadow-inner" style={{ borderColor: palette.line }}>
+              <div className="bg-slate-50 border-b shrink-0 transition-all shadow-inner max-h-[45vh] overflow-y-auto" style={{ borderColor: palette.line }}>
                 {/* Header Banner with Close/Contract action */}
                 <div className="bg-indigo-950 text-white px-3 sm:px-6 py-1.5 flex items-center justify-between text-xs border-b border-indigo-800">
                   <div className="flex items-center gap-2 min-w-0">
@@ -1275,7 +1745,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setIsUpperDetailsExpanded(false)}
-                    className="px-2.5 py-0.5 bg-indigo-700 hover:bg-indigo-600 text-white font-bold rounded text-xs flex items-center gap-1 cursor-pointer shadow-xs shrink-0"
+                    className="px-2.5 py-0.5 bg-indigo-700 hover:bg-indigo-600 text-white font-bold rounded text-xs flex items-center gap-1 cursor-pointer shadow-sm shrink-0"
                     title="Contract upper details to maximize product review workspace"
                   >
                     <ChevronUp size={13} />
@@ -1297,7 +1767,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
 
                   <div>
                     <label className="text-[10px] text-slate-500 font-semibold block mb-0.5">Supplier GSTIN</label>
-                    <input
+                    <input autoCapitalize="characters" autoComplete="off" autoCorrect="off" spellCheck={false}
                       type="text"
                       value={supplierGstin}
                       onChange={(e) => setSupplierGstin(e.target.value)}
@@ -1336,30 +1806,55 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-[10px] text-slate-500 font-semibold block mb-0.5">Inward To Godown</label>
+                    <label className="text-[10px] text-slate-500 font-semibold block mb-0.5">
+                      Inward To Godown <span className="text-rose-600">*</span>
+                    </label>
                     <select
                       value={targetWarehouseId}
                       onChange={(e) => setTargetWarehouseId(e.target.value)}
-                      className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs font-semibold text-slate-800 focus:border-indigo-500"
+                      required
+                      className={`w-full bg-white border rounded px-2 py-1 text-xs font-semibold focus:border-indigo-500 ${
+                        !targetWarehouseId ? 'border-rose-400 bg-rose-50 text-rose-700' : 'border-slate-300 text-slate-800'
+                      }`}
                     >
+                      <option value="">Select warehouse... (mandatory)</option>
                       {warehouses.map((w) => (
                         <option key={w.id} value={w.id}>
                           {w.name} ({w.code})
                         </option>
                       ))}
                     </select>
+                    {!targetWarehouseId && (
+                      <p className="text-[10px] text-rose-600 font-semibold mt-0.5">
+                        Required — no default warehouse. Pick where this invoice is being received.
+                      </p>
+                    )}
                   </div>
 
                   <div>
                     <label className="text-[10px] text-slate-500 font-semibold block mb-0.5">Bill Discount (₹)</label>
                     <input
-                      type="number"
+                      type="number" inputMode="decimal"
                       min="0"
                       step="0.01"
                       value={overallDiscount}
                       onChange={(e) => setOverallDiscount(Math.max(0, parseFloat(e.target.value) || 0))}
                       placeholder="0.00"
                       className="w-full font-mono font-bold text-rose-600 bg-white border border-slate-300 rounded px-2 py-1 text-xs focus:border-rose-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-500 font-semibold block mb-0.5">Party Invoice Total (₹)</label>
+                    <input
+                      type="number" inputMode="decimal"
+                      min="0"
+                      step="0.01"
+                      value={originalInvoiceTotal ?? ''}
+                      onChange={(e) => setOriginalInvoiceTotal(e.target.value === '' ? null : Math.max(0, parseFloat(e.target.value) || 0))}
+                      placeholder="e.g. 283340"
+                      className="w-full font-mono font-bold text-indigo-700 bg-white border border-slate-300 rounded px-2 py-1 text-xs focus:border-indigo-500"
+                      title="Printed Grand Total from supplier tax invoice"
                     />
                   </div>
                 </div>
@@ -1370,7 +1865,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                     <button
                       type="button"
                       onClick={() => setShowProviderDetails((prev) => !prev)}
-                      className="px-2 py-0.5 text-xs font-semibold text-indigo-700 bg-white hover:bg-indigo-50 rounded border border-indigo-200 flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                      className="px-2 py-0.5 text-xs font-semibold text-indigo-700 bg-white hover:bg-indigo-50 rounded border border-indigo-200 flex items-center gap-1.5 cursor-pointer shadow-sm"
                     >
                       <Building2 size={12} />
                       <span>{showProviderDetails ? 'Hide Provider Details' : 'Full Provider Address & Consignee'}</span>
@@ -1406,7 +1901,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                           value={supplierAddress}
                           onChange={(e) => setSupplierAddress(e.target.value)}
                           placeholder="e.g. Main Road, Kuchinda - 768222"
-                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-2xs"
+                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-sm"
                         />
                       </div>
 
@@ -1414,12 +1909,12 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                         <label className="text-[10px] font-semibold text-slate-700 block mb-0.5">
                           Supplier Phone / Mobile
                         </label>
-                        <input
+                        <input inputMode="tel" autoComplete="tel"
                           type="text"
                           value={supplierPhone}
                           onChange={(e) => setSupplierPhone(e.target.value)}
                           placeholder="e.g. +91 94370 84801"
-                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-2xs"
+                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-sm"
                         />
                       </div>
 
@@ -1432,7 +1927,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                           value={supplierEmail}
                           onChange={(e) => setSupplierEmail(e.target.value)}
                           placeholder="e.g. supplier@gmail.com"
-                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-2xs"
+                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-sm"
                         />
                       </div>
 
@@ -1445,7 +1940,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                           value={placeOfSupply}
                           onChange={(e) => setPlaceOfSupply(e.target.value)}
                           placeholder="e.g. Odisha (21)"
-                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-2xs"
+                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-sm"
                         />
                       </div>
 
@@ -1458,7 +1953,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                           value={billedTo}
                           onChange={(e) => setBilledTo(e.target.value)}
                           placeholder="e.g. Store Name"
-                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-2xs"
+                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-sm"
                         />
                       </div>
                     </div>
@@ -1576,141 +2071,155 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
               </div>
             )}
 
-            {/* RED MISMATCH WARNING BANNER */}
-            {hasCasesMismatch && (
-              <div className="mx-3 sm:mx-6 my-2.5 p-3 sm:p-4 bg-red-50 border-2 border-red-500 rounded-lg shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-red-950">
-                <div className="flex items-start gap-3">
-                  <div className="p-2 bg-red-100 border border-red-300 rounded-full text-red-700 shrink-0 mt-0.5">
-                    <AlertTriangle size={22} className="text-red-600" />
-                  </div>
-                  <div>
-                    <div className="font-black text-xs sm:text-sm text-red-900 flex items-center gap-2">
-                      <span>⚠️ Total Cases Mismatch Detected!</span>
-                      <span className="px-2 py-0.5 bg-red-200 text-red-950 rounded font-mono text-[11px] font-black border border-red-300">
-                        {casesDiff > 0 ? `+${casesDiff}` : casesDiff} Cases Difference
-                      </span>
-                    </div>
-                    <p className="text-xs text-red-800 mt-1 leading-snug">
-                      The working table total received is <strong>{totalReceivedQty.toLocaleString()} crates</strong>, but the supplier invoice printed case count is <strong>{printedTotalCases?.toLocaleString()} crates</strong>. In FMCG beverage distribution, the printed invoice case count is strictly the total crates physically received (inclusive of free scheme crates). Please verify line quantities and scheme free counts.
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                  <span className="text-[11px] font-bold text-red-800 bg-white px-3 py-1.5 rounded border border-red-300 shadow-2xs font-mono">
-                    Printed: {printedTotalCases} cs vs Table: {totalReceivedQty} cs
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* REVIEW TOOLBAR */}
-            <div className="px-3 sm:px-6 py-2 border-b bg-white flex flex-wrap items-center justify-between gap-2.5 text-xs shrink-0" style={{ borderColor: palette.line }}>
-              <div className="flex items-center gap-2 flex-1 min-w-[200px] max-w-xl">
-                <div className="relative flex-1">
-                  <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
-                  <input
-                    type="text"
-                    placeholder="Search recognized products, HSN, category, scheme..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-8 pr-7 py-1.5 border border-slate-300 rounded text-xs focus:border-indigo-500 focus:outline-hidden"
-                  />
-                  {searchQuery && (
-                    <button
-                      onClick={() => setSearchQuery('')}
-                      className="absolute right-2 top-2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-
-                {/* Filter Pills */}
-                <div className="hidden sm:flex items-center gap-1">
+            {/* REVIEW TOOLBAR — one row: search • filters • bulk expiry • view • actions */}
+            <div
+              className="px-3 sm:px-4 py-1.5 border-b bg-white flex flex-wrap items-center gap-2 text-xs shrink-0"
+              style={{ borderColor: palette.line }}
+            >
+              <div className="relative w-full sm:w-52 lg:w-60">
+                <Search size={14} className="absolute left-2.5 top-2 text-slate-400" />
+                <input enterKeyHint="search"
+                  type="text"
+                  placeholder="Search product, HSN, category, scheme..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-8 pr-7 py-1 border border-slate-300 rounded text-xs focus:border-indigo-500 focus:outline-hidden"
+                />
+                {searchQuery && (
                   <button
-                    onClick={() => {
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2 top-1.5 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              {/* Filter pills */}
+              <div className="flex items-center gap-1 flex-wrap">
+                <button
+                  onClick={() => {
+                    setFilterNewOnly(false);
+                    setFilterSchemeOnly(false);
+                    setFilterAttentionOnly(false);
+                  }}
+                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors cursor-pointer ${
+                    !filterNewOnly && !filterSchemeOnly && !filterAttentionOnly
+                      ? 'bg-slate-900 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  All ({rows.length})
+                </button>
+                <button
+                  onClick={() => {
+                    setFilterNewOnly(!filterNewOnly);
+                    if (!filterNewOnly) {
+                      setFilterSchemeOnly(false);
+                      setFilterAttentionOnly(false);
+                    }
+                  }}
+                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 ${
+                    filterNewOnly
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-sky-50 text-sky-700 hover:bg-sky-100 border border-sky-200'
+                  }`}
+                >
+                  <Sparkles size={11} />
+                  New ({newProductsCount})
+                </button>
+                <button
+                  onClick={() => {
+                    setFilterSchemeOnly(!filterSchemeOnly);
+                    if (!filterSchemeOnly) {
+                      setFilterNewOnly(false);
+                      setFilterAttentionOnly(false);
+                    }
+                  }}
+                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 ${
+                    filterSchemeOnly
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200'
+                  }`}
+                >
+                  <Tag size={11} />
+                  Schemes ({itemsWithSchemeCount})
+                </button>
+                <button
+                  onClick={() => {
+                    setFilterAttentionOnly(!filterAttentionOnly);
+                    if (!filterAttentionOnly) {
                       setFilterNewOnly(false);
                       setFilterSchemeOnly(false);
-                    }}
-                    className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-colors cursor-pointer ${
-                      !filterNewOnly && !filterSchemeOnly
-                        ? 'bg-slate-900 text-white'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    All ({rows.length})
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setFilterNewOnly(!filterNewOnly);
-                      if (!filterNewOnly) setFilterSchemeOnly(false);
-                    }}
-                    className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 ${
-                      filterNewOnly
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200'
-                    }`}
-                  >
-                    <Sparkles size={11} />
-                    New ({newProductsCount})
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setFilterSchemeOnly(!filterSchemeOnly);
-                      if (!filterSchemeOnly) setFilterNewOnly(false);
-                    }}
-                    className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 ${
-                      filterSchemeOnly
-                        ? 'bg-purple-600 text-white'
-                        : 'bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200'
-                    }`}
-                  >
-                    <Tag size={11} />
-                    Schemes ({itemsWithSchemeCount})
-                  </button>
-                </div>
+                    }
+                  }}
+                  className={`px-2 py-0.5 rounded text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 ${
+                    filterAttentionOnly
+                      ? 'bg-amber-500 text-white'
+                      : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200'
+                  }`}
+                  title="Missing expiry date or zero rate"
+                >
+                  <AlertCircle size={11} />
+                  Attention ({attentionCount})
+                </button>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 ml-auto flex-wrap">
+                {/* Bulk expiry: fill only the EMPTY expiry cells (never overwrites what you typed) */}
+                <div
+                  className="hidden lg:flex items-center gap-1 border border-slate-300 rounded px-1.5 py-0.5 bg-slate-50"
+                  title="Set one expiry date for every line that has none yet"
+                >
+                  <span className="text-[11px] text-slate-500 font-medium">Expiry</span>
+                  <input
+                    type="date"
+                    value={bulkExpiryDate}
+                    onChange={(e) => setBulkExpiryDate(e.target.value)}
+                    className="text-[11px] bg-white border border-slate-300 rounded px-1 py-0.5 text-slate-800"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleFillEmptyExpiry}
+                    disabled={missingExpiryCount === 0 || !bulkExpiryDate}
+                    className="px-1.5 py-0.5 rounded text-[11px] font-bold bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-slate-300 disabled:text-slate-500 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    Fill empty ({missingExpiryCount})
+                  </button>
+                </div>
+
                 {/* View Mode Toggle: Cards vs Table */}
                 <div className="flex items-center border border-slate-300 rounded-md p-0.5 bg-slate-100 text-xs shrink-0">
                   <button
                     type="button"
                     onClick={() => setViewMode('cards')}
-                    className={`px-2 py-1 rounded flex items-center gap-1 font-semibold transition-colors cursor-pointer ${
-                      viewMode === 'cards'
-                        ? 'bg-white text-indigo-700 shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
+                    className={`px-2 py-0.5 rounded flex items-center gap-1 font-semibold transition-colors cursor-pointer ${
+                      viewMode === 'cards' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'
                     }`}
-                    title="Card View (Optimized for all screen sizes & mobile readability)"
+                    title="Card View"
                   >
                     <LayoutGrid size={13} />
-                    <span className="text-[11px]">Cards</span>
+                    <span className="text-[11px] hidden sm:inline">Cards</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setViewMode('table')}
-                    className={`px-2 py-1 rounded flex items-center gap-1 font-semibold transition-colors cursor-pointer ${
-                      viewMode === 'table'
-                        ? 'bg-white text-indigo-700 shadow-2xs'
-                        : 'text-slate-600 hover:text-slate-900'
+                    className={`px-2 py-0.5 rounded flex items-center gap-1 font-semibold transition-colors cursor-pointer ${
+                      viewMode === 'table' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-600 hover:text-slate-900'
                     }`}
-                    title="Table View (Desktop Spreadsheet Layout)"
+                    title="Table View"
                   >
                     <Table size={13} />
-                    <span className="text-[11px]">Table</span>
+                    <span className="text-[11px] hidden sm:inline">Table</span>
                   </button>
                 </div>
 
-                {/* Density Toggle - only when in table view */}
                 {viewMode === 'table' && (
                   <div className="hidden lg:flex items-center border border-slate-300 rounded p-0.5 bg-slate-50 text-[11px]">
                     <button
                       onClick={() => setDensity('comfortable')}
                       className={`px-2 py-0.5 rounded font-semibold transition-colors cursor-pointer ${
-                        density === 'comfortable' ? 'bg-white shadow-xs text-indigo-700 font-bold' : 'text-slate-600 hover:text-slate-900'
+                        density === 'comfortable' ? 'bg-white shadow-sm text-indigo-700 font-bold' : 'text-slate-600 hover:text-slate-900'
                       }`}
                       title="Comfortable row height"
                     >
@@ -1719,7 +2228,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                     <button
                       onClick={() => setDensity('compact')}
                       className={`px-2 py-0.5 rounded font-semibold transition-colors cursor-pointer ${
-                        density === 'compact' ? 'bg-white shadow-xs text-indigo-700 font-bold' : 'text-slate-600 hover:text-slate-900'
+                        density === 'compact' ? 'bg-white shadow-sm text-indigo-700 font-bold' : 'text-slate-600 hover:text-slate-900'
                       }`}
                       title="Compact row height"
                     >
@@ -1728,29 +2237,53 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                   </div>
                 )}
 
-                {/* Header Expand/Contract Button in Toolbar */}
+                {/* List Price GST Global Check & Toggle */}
+                <div className="flex items-center gap-1 border border-indigo-200 rounded p-0.5 bg-indigo-50/70 text-xs shrink-0">
+                  <span className="text-[10px] font-bold text-indigo-900 px-1 flex items-center gap-1" title="Check if list prices include GST. If not, GST is calculated and added.">
+                    <Percent size={11} className="text-indigo-600" />
+                    List Price GST:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleBulkSetListPriceGst(false)}
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors cursor-pointer ${
+                      rows.length > 0 && rows.every((r) => !r.isGstIncluded)
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'text-indigo-800 hover:bg-indigo-100'
+                    }`}
+                    title="List prices exclude GST: calculate & add GST to all lines"
+                  >
+                    +Calc GST
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleBulkSetListPriceGst(true)}
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition-colors cursor-pointer ${
+                      rows.length > 0 && rows.every((r) => r.isGstIncluded)
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'text-indigo-800 hover:bg-indigo-100'
+                    }`}
+                    title="List prices include GST: extract base taxable value"
+                  >
+                    GST Incl
+                  </button>
+                </div>
+
+                {/* Auto Batch / Tag All button */}
                 <button
                   type="button"
-                  onClick={() => setIsUpperDetailsExpanded((prev) => !prev)}
-                  className={`px-2.5 py-1.5 rounded font-semibold flex items-center gap-1.5 cursor-pointer text-xs transition-colors border ${
-                    isUpperDetailsExpanded
-                      ? 'bg-indigo-100 text-indigo-800 border-indigo-300'
-                      : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300 shadow-2xs'
-                  }`}
-                  title={
-                    isUpperDetailsExpanded
-                      ? 'Contract upper details to maximize product review workspace'
-                      : 'Expand upper details to edit supplier info, vehicle, taxes & godown'
-                  }
+                  onClick={handleAutoGenerateAllBatches}
+                  className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold rounded cursor-pointer flex items-center gap-1 transition-colors text-xs shrink-0"
+                  title="Auto-generate fresh unique batch/tag numbers for all products inwards (never use old catalog batches)"
                 >
-                  {isUpperDetailsExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                  <span className="hidden sm:inline">{isUpperDetailsExpanded ? 'Contract Header' : 'Bill Header'}</span>
-                  <span className="sm:hidden">{isUpperDetailsExpanded ? 'Contract' : 'Bill'}</span>
+                  <Sparkles size={12} className="text-amber-600" />
+                  <span className="hidden sm:inline">Auto Batch/Tag</span>
+                  <span className="sm:hidden">Batches</span>
                 </button>
 
                 <button
                   onClick={() => setShowBulkSchemeModal(true)}
-                  className="px-2.5 sm:px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-300 font-bold rounded cursor-pointer flex items-center gap-1.5 transition-colors text-xs"
+                  className="px-2.5 py-1 bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-300 font-bold rounded cursor-pointer flex items-center gap-1.5 transition-colors text-xs"
                 >
                   <Tag size={13} />
                   <span className="hidden sm:inline">Scheme to All</span>
@@ -1759,169 +2292,39 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
 
                 <button
                   onClick={handleAddNewRow}
-                  className="px-2.5 sm:px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded cursor-pointer flex items-center gap-1.5 shadow-xs transition-colors text-xs"
+                  className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded cursor-pointer flex items-center gap-1.5 shadow-sm transition-colors text-xs"
                 >
                   <Plus size={13} />
                   <span className="hidden sm:inline">Add Product</span>
                   <span className="sm:hidden">Add</span>
                 </button>
-              </div>
-
-              {/* Mobile Filter Buttons Row */}
-              <div className="sm:hidden flex items-center gap-1.5 w-full pt-1 border-t border-slate-100">
-                <button
-                  onClick={() => {
-                    setFilterNewOnly(false);
-                    setFilterSchemeOnly(false);
-                  }}
-                  className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors cursor-pointer ${
-                    !filterNewOnly && !filterSchemeOnly
-                      ? 'bg-slate-900 text-white'
-                      : 'bg-slate-100 text-slate-600'
-                  }`}
-                >
-                  All ({rows.length})
-                </button>
 
                 <button
-                  onClick={() => {
-                    setFilterNewOnly(!filterNewOnly);
-                    if (!filterNewOnly) setFilterSchemeOnly(false);
-                  }}
-                  className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors cursor-pointer flex items-center gap-1 ${
-                    filterNewOnly
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-blue-50 text-blue-700 border border-blue-200'
-                  }`}
+                  type="button"
+                  onClick={() =>
+                    downloadBulkInwardRowsCsv(rows, {
+                      supplierName,
+                      invoiceNo,
+                      inwardDate,
+                      warehouseName: warehouses.find((w) => w.id === targetWarehouseId)?.name,
+                    })
+                  }
+                  className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold rounded cursor-pointer flex items-center gap-1.5 transition-colors text-xs shrink-0"
+                  title="Download current inward items as CSV file"
                 >
-                  <Sparkles size={10} />
-                  New ({newProductsCount})
+                  <Download size={13} className="text-emerald-700" />
+                  <span className="hidden sm:inline">Export CSV</span>
+                  <span className="sm:hidden">CSV</span>
                 </button>
-
-                <button
-                  onClick={() => {
-                    setFilterSchemeOnly(!filterSchemeOnly);
-                    if (!filterSchemeOnly) setFilterNewOnly(false);
-                  }}
-                  className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors cursor-pointer flex items-center gap-1 ${
-                    filterSchemeOnly
-                      ? 'bg-purple-600 text-white'
-                      : 'bg-purple-50 text-purple-700 border border-purple-200'
-                  }`}
-                >
-                  <Tag size={10} />
-                  Schemes ({itemsWithSchemeCount})
-                </button>
-              </div>
-            </div>
-
-            {/* INWARD-TO-GODOWN DIRECT COSTS BANNER */}
-            <div className="bg-amber-50/90 border-b border-amber-200 px-3 sm:px-6 py-2.5 text-xs shrink-0">
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
-                <div className="flex items-start sm:items-center gap-2">
-                  <div className="p-1.5 bg-amber-100 text-amber-900 rounded-md shrink-0 mt-0.5 sm:mt-0">
-                    <Truck size={16} />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-extrabold text-amber-950 text-xs sm:text-sm">
-                        Inward-to-Godown Direct Costs
-                      </span>
-                      <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-200/80 text-amber-900 border border-amber-300">
-                        Allocated to Stock: +₹{money(inwardCostPerCrate)} / Crate
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-amber-800 leading-tight">
-                      Costs required to bring goods into the godown (transport, freight, labour). Allocated equally across all {totalReceivedQty} received crates to calculate true Landed Cost.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 flex-wrap">
-                  <div className="flex items-center gap-1.5 bg-white border border-amber-300 rounded px-2 py-1 shadow-2xs">
-                    <span className="text-[11px] text-slate-500 font-medium">Transport:</span>
-                    <span className="font-mono text-xs font-bold text-slate-800">₹</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="50"
-                      value={transportCost}
-                      onChange={(e) => setTransportCost(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="w-16 font-mono text-xs font-bold text-slate-900 text-right bg-transparent focus:outline-hidden"
-                      placeholder="0"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-1.5 bg-white border border-amber-300 rounded px-2 py-1 shadow-2xs">
-                    <span className="text-[11px] text-slate-500 font-medium">Freight:</span>
-                    <span className="font-mono text-xs font-bold text-slate-800">₹</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="50"
-                      value={freightCost}
-                      onChange={(e) => setFreightCost(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="w-16 font-mono text-xs font-bold text-slate-900 text-right bg-transparent focus:outline-hidden"
-                      placeholder="0"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-1.5 bg-white border border-amber-300 rounded px-2 py-1 shadow-2xs">
-                    <span className="text-[11px] text-slate-500 font-medium">Loading:</span>
-                    <span className="font-mono text-xs font-bold text-slate-800">₹</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="25"
-                      value={loadingLabourCost}
-                      onChange={(e) => setLoadingLabourCost(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="w-14 font-mono text-xs font-bold text-slate-900 text-right bg-transparent focus:outline-hidden"
-                      placeholder="0"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-1.5 bg-white border border-amber-300 rounded px-2 py-1 shadow-2xs">
-                    <span className="text-[11px] text-slate-500 font-medium">Unloading:</span>
-                    <span className="font-mono text-xs font-bold text-slate-800">₹</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="25"
-                      value={unloadingLabourCost}
-                      onChange={(e) => setUnloadingLabourCost(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="w-14 font-mono text-xs font-bold text-slate-900 text-right bg-transparent focus:outline-hidden"
-                      placeholder="0"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-1.5 bg-white border border-amber-300 rounded px-2 py-1 shadow-2xs">
-                    <span className="text-[11px] text-slate-500 font-medium">Other:</span>
-                    <span className="font-mono text-xs font-bold text-slate-800">₹</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="25"
-                      value={otherInwardCost}
-                      onChange={(e) => setOtherInwardCost(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="w-14 font-mono text-xs font-bold text-slate-900 text-right bg-transparent focus:outline-hidden"
-                      placeholder="0"
-                    />
-                  </div>
-
-                  <div className="bg-amber-900 text-amber-100 px-3 py-1 rounded font-mono text-xs font-bold shadow-2xs flex items-center gap-1.5">
-                    <span>Total:</span>
-                    <span className="text-white text-sm">₹{money(totalInwardCost)}</span>
-                  </div>
-                </div>
               </div>
             </div>
 
             {/* REVIEW ITEMS DISPLAY (RESPONSIVE CARDS OR SPREADSHEET TABLE) */}
-            <div className="flex-1 min-h-0 overflow-y-auto bg-slate-100/60 p-2 sm:p-3 md:p-3.5">
+            <div className={`flex-1 min-h-0 bg-slate-100/60 ${viewMode === 'table' ? 'overflow-hidden p-1.5 sm:p-2' : 'overflow-y-auto p-2 sm:p-3'}`}>
               {viewMode === 'cards' ? (
                 <div className="space-y-3 min-w-0">
                   {filteredRows.length === 0 ? (
-                    <div className="py-12 text-center text-slate-500 bg-white rounded-xl border border-slate-200">
+                    <div className="py-12 text-center text-slate-500 bg-white rounded-2xl border border-slate-200">
                       <p className="text-sm font-semibold">No products match the active filters or search query.</p>
                       <button
                         onClick={() => {
@@ -1943,11 +2346,12 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                           index={idx}
                           products={products}
                           inwardCostPerCrate={inwardCostPerCrate}
+                          inwardDate={inwardDate}
                           isExpanded={expandedCardId === r.id}
                           onToggleExpand={() =>
                             setExpandedCardId(expandedCardId === r.id ? null : r.id)
                           }
-                          onUpdateField={(field, val) => updateRowField(r.id, field, val)}
+                          onUpdateField={(field, val) => updateRowField(r.id, field as keyof EditableInwardRow, val)}
                           onCatalogMappingChange={(val) => handleCatalogMappingChange(r.id, val)}
                           onDuplicate={() => handleDuplicateRow(r.id)}
                           onDelete={() => handleDeleteRow(r.id)}
@@ -1958,50 +2362,38 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                   )}
                 </div>
               ) : (
-                <div className="bg-white rounded-xl border shadow-sm overflow-x-auto" style={{ borderColor: palette.line }}>
-                  <table className="w-full text-left text-xs border-collapse min-w-[1200px]">
-                    <thead className="bg-slate-100/90 text-slate-700 border-b font-bold sticky top-0 z-10 backdrop-blur-xs" style={{ borderColor: palette.line }}>
+                <div
+                  className="h-full bg-white rounded-lg border shadow-sm overflow-auto"
+                  style={{ borderColor: palette.line }}
+                >
+                  <table className="w-full text-left data-table text-xs border-separate border-spacing-0 min-w-[1120px]">
+                    <thead className="sticky top-0 z-30 text-[11px] font-bold text-slate-600">
                       <tr>
-                        <th className="px-3 py-3 w-10 text-center">#</th>
-                        <th className="px-4 py-3 min-w-[320px]">Product & Pack Info</th>
-                        <th className="px-3 py-3 w-28 text-right">Billed Qty</th>
-                        <th className="px-4 py-3 min-w-[280px] bg-purple-50/70 border-x border-purple-200">
-                          <div className="flex items-center gap-1.5 text-purple-900">
-                            <Tag size={13} />
-                            <span>Scheme Review & Free Qty</span>
-                          </div>
-                        </th>
-                        <th className="px-4 py-3 min-w-[190px] text-right">
-                          <span>Invoice Unit Rate</span>
-                          <span className="block text-[10px] font-normal text-slate-500">Ex-GST • GST • Incl-GST</span>
-                        </th>
-                        <th className="px-4 py-3 min-w-[190px] text-right bg-indigo-50/60 text-indigo-950 border-x border-indigo-200">
-                          <span>Effective Scheme Rate</span>
-                          <span className="block text-[10px] font-normal text-indigo-700">Per Crate & Per Unit</span>
-                        </th>
-                        <th className="px-3 py-3 min-w-[140px] text-right bg-amber-50/70 text-amber-950">
-                          <span>Inward Cost Share</span>
-                          <span className="block text-[10px] font-normal text-amber-700">Transport/Labour</span>
-                        </th>
-                        <th className="px-4 py-3 min-w-[190px] text-right bg-emerald-50/80 text-emerald-950 border-x border-emerald-200">
-                          <span>Final Landed Cost</span>
-                          <span className="block text-[10px] font-normal text-emerald-700">Per Crate & Per Unit</span>
-                        </th>
-                        <th className="px-4 py-3 min-w-[200px]">Selling & Batch</th>
-                        <th className="px-2 py-3 w-16 text-center">Actions</th>
+                        <th className="sticky left-0 z-40 bg-slate-100 border-b border-slate-300 w-9 min-w-9 px-1 py-2 text-center">#</th>
+                        <th className="sticky left-9 z-40 bg-slate-100 border-b border-r border-slate-300 min-w-[250px] px-2 py-2">Product</th>
+                        <th className="bg-slate-100 border-b border-slate-300 w-20 px-2 py-2 text-right">Qty (cs)</th>
+                        <th className="bg-purple-100 text-purple-900 border-b border-slate-300 w-28 px-2 py-2">Scheme</th>
+                        <th className="bg-slate-100 border-b border-slate-300 w-28 px-2 py-2 text-right">List Price & GST</th>
+                        <th className="bg-slate-100 border-b border-slate-300 w-[76px] px-2 py-2">GST</th>
+                        <th className="bg-slate-100 border-b border-slate-300 w-36 px-2 py-2">Batch / Tag No</th>
+                        <th className="bg-amber-100 text-amber-900 border-b border-slate-300 w-[140px] px-2 py-2">Expiry</th>
+                        <th className="bg-slate-100 border-b border-slate-300 w-28 px-2 py-2 text-right">Line total</th>
+                        <th className="bg-emerald-100 text-emerald-900 border-b border-slate-300 w-28 px-2 py-2 text-right">Landed / cr</th>
+                        <th className="sticky right-0 z-40 bg-slate-100 border-b border-l border-slate-300 w-[92px] px-1 py-2 text-center">Actions</th>
                       </tr>
                     </thead>
 
-                    <tbody className="divide-y divide-slate-200">
+                    <tbody>
                       {filteredRows.length === 0 ? (
                         <tr>
-                          <td colSpan={10} className="py-12 text-center text-slate-500">
+                          <td colSpan={11} className="py-12 text-center text-slate-500">
                             <p className="text-sm font-semibold">No products match the active filters or search query.</p>
                             <button
                               onClick={() => {
                                 setSearchQuery('');
                                 setFilterNewOnly(false);
                                 setFilterSchemeOnly(false);
+                                setFilterAttentionOnly(false);
                               }}
                               className="mt-2 text-xs font-bold text-indigo-600 underline cursor-pointer"
                             >
@@ -2011,7 +2403,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                         </tr>
                       ) : (
                         filteredRows.map((r, idx) => {
-                          const unitsPerCrate = r.unitsPerCrate || (r.volume <= 200 ? 30 : 24);
+                          const unitsPerCrate = r.unitsPerCrate || inferUnitsPerCase(`${r.productName || ''} ${r.rawName || ''} ${r.pack || ''}`, r.volume);
                           const packSize = r.packSize || `${r.volume}ml ${r.pack}`;
                           const breakdown = calculateLandedCostBreakdown({
                             qty: r.qty,
@@ -2034,126 +2426,439 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                             inwardCostPerCrate,
                           });
                           const isComfortable = density === 'comfortable';
+                          const cellPad = isComfortable ? 'py-2.5' : 'py-1.5';
+                          const isOpen = expandedRowId === r.id;
+                          const rowBg = isOpen ? 'bg-indigo-50' : r.isNewProduct ? 'bg-sky-50' : 'bg-white';
+                          const schemeLabel =
+                            r.schemeType === 'discount_percent'
+                              ? `${r.discountPercent}% off`
+                              : r.schemeType === 'discount_flat'
+                              ? `₹${r.discountFlat}/cs off`
+                              : r.schemeType === 'b2g1'
+                              ? `B${r.schemeBuyQty ?? 2}G${r.schemeFreeQty ?? 1}`
+                              : r.freeQty > 0
+                              ? `${r.freeQty} free`
+                              : '—';
+                          const hasScheme = schemeLabel !== '—' || !!r.supplierSchemeId;
 
                           return (
-                            <tr
-                              key={r.id}
-                              className={`hover:bg-indigo-50/20 transition-colors ${
-                                r.isNewProduct ? 'bg-blue-50/15' : ''
-                              }`}
-                            >
-                              {/* Index */}
-                              <td className="px-3 py-3 text-center text-slate-400 font-mono text-[11px] align-top pt-4">
-                                {idx + 1}
-                              </td>
+                            <React.Fragment key={r.id}>
+                              <tr className="group">
+                                {/* # (sticky) */}
+                                <td className={`sticky left-0 z-20 ${rowBg} group-hover:bg-indigo-50 border-b border-slate-200 px-1 ${cellPad} text-center text-slate-400 font-mono text-[11px]`}>
+                                  {idx + 1}
+                                </td>
 
-                              {/* Product Info, Pack Size & Units Per Crate */}
-                              <td className={`px-4 ${isComfortable ? 'py-3.5' : 'py-2.5'} align-top`}>
-                                <div className="flex flex-col gap-1.5">
-                                  {/* Status Badge & Quick Catalog Switcher */}
-                                  <div className="flex items-center gap-1.5 flex-wrap">
-                                    {r.isNewProduct ? (
-                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
-                                        <Sparkles size={11} className="text-blue-600" />
-                                        NEW PRODUCT
-                                      </span>
-                                    ) : (
-                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                        <Check size={11} className="text-emerald-700" />
-                                        EXISTING #{r.matchedProductId} ({r.existingStock ?? 0} cs)
-                                      </span>
-                                    )}
-
-                                    <select
-                                      value={r.isNewProduct ? 'new_product' : String(r.matchedProductId)}
-                                      onChange={(e) => handleCatalogMappingChange(r.id, e.target.value)}
-                                      className="text-[11px] font-medium bg-slate-50 border border-slate-300 rounded px-2 py-0.5 text-slate-700 hover:bg-slate-100 cursor-pointer"
-                                      title="Map to an existing product in your catalog or treat as a new item"
+                                {/* Product name (sticky — stays visible while scrolling sideways) */}
+                                <td className={`sticky left-9 z-20 ${rowBg} group-hover:bg-indigo-50 border-b border-r border-slate-200 px-2 ${cellPad}`}>
+                                  <div className="flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setCatalogPickerRowId(catalogPickerRowId === r.id ? null : r.id);
+                                        setCatalogPickerSearch('');
+                                      }}
+                                      className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-black border transition-colors cursor-pointer ${
+                                        r.isNewProduct
+                                          ? 'bg-blue-100 text-sky-800 border-sky-200 hover:bg-sky-200'
+                                          : 'bg-emerald-100 text-emerald-800 border-emerald-200 hover:bg-emerald-200'
+                                      }`}
+                                      title={r.isNewProduct ? "New product — click to map to existing catalog product" : `Catalog #${r.matchedProductId} • click to change mapping`}
                                     >
-                                      <option value="new_product">Create as New Product</option>
-                                      <optgroup label="Map to Existing Catalog Product:">
-                                        {products.map((p) => (
-                                          <option key={p.id} value={p.id}>
-                                            {p.name} ({p.category.toUpperCase()})
-                                          </option>
-                                        ))}
-                                      </optgroup>
-                                    </select>
+                                      {r.isNewProduct ? 'NEW ▾' : 'CAT ▾'}
+                                    </button>
+                                    <input
+                                      type="text"
+                                      value={r.productName}
+                                      onChange={(e) => updateRowField(r.id, 'productName', e.target.value)}
+                                      className="min-w-0 flex-1 font-bold text-slate-900 bg-white border border-slate-300 rounded px-2 py-1 text-xs focus:border-indigo-500 focus:ring-1 focus:ring-indigo-200 focus:outline-hidden"
+                                      placeholder="Beverage Product Name"
+                                      title={r.productName}
+                                    />
                                   </div>
 
-                                  {/* Editable Product Name */}
+                                  {/* Catalog Match Popover */}
+                                  {catalogPickerRowId === r.id && (
+                                    <div className="absolute left-2 top-full mt-1 z-50 bg-white border border-slate-300 rounded-lg shadow-xl p-2 w-80 max-h-72 flex flex-col text-xs">
+                                      <div className="flex items-center justify-between pb-1.5 border-b border-slate-200 mb-1.5">
+                                        <span className="font-bold text-slate-800 text-[11px]">Select Catalog Beverage</span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setCatalogPickerRowId(null)}
+                                          className="text-slate-400 hover:text-slate-600 font-bold px-1"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                      <input
+                                        type="text"
+                                        value={catalogPickerSearch}
+                                        onChange={(e) => setCatalogPickerSearch(e.target.value)}
+                                        placeholder="Search catalog by name, ml, pack..."
+                                        className="w-full border border-slate-300 rounded px-2 py-1 text-xs mb-1.5 focus:border-indigo-500 focus:outline-hidden"
+                                        autoFocus
+                                      />
+                                      <div className="flex-1 overflow-y-auto space-y-1 pr-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            handleCatalogMappingChange(r.id, 'new_product');
+                                            setCatalogPickerRowId(null);
+                                          }}
+                                          className={`w-full text-left p-1.5 rounded border text-[11px] transition-colors cursor-pointer ${
+                                            r.isNewProduct
+                                              ? 'bg-blue-50 border-blue-300 text-blue-900 font-bold'
+                                              : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                                          }`}
+                                        >
+                                          ✨ Create as New Catalog Product
+                                        </button>
+                                        {products
+                                          .filter((p) => {
+                                            if (!catalogPickerSearch.trim()) {
+                                              const rawTokens = r.productName.toLowerCase().split(/[^a-z0-9]+/);
+                                              return rawTokens.some((t) => t.length >= 3 && p.name.toLowerCase().includes(t));
+                                            }
+                                            const q = catalogPickerSearch.toLowerCase();
+                                            return (
+                                              p.name.toLowerCase().includes(q) ||
+                                              String(p.volume).includes(q) ||
+                                              p.pack?.toLowerCase().includes(q)
+                                            );
+                                          })
+                                          .slice(0, 15)
+                                          .map((p) => (
+                                            <button
+                                              key={p.id}
+                                              type="button"
+                                              onClick={() => {
+                                                handleCatalogMappingChange(r.id, String(p.id));
+                                                setCatalogPickerRowId(null);
+                                              }}
+                                              className={`w-full text-left p-1.5 rounded border text-[11px] flex items-center justify-between transition-colors cursor-pointer ${
+                                                r.matchedProductId === p.id
+                                                  ? 'bg-emerald-50 border-emerald-300 text-emerald-950 font-bold'
+                                                  : 'bg-white border-slate-200 hover:bg-indigo-50 hover:border-indigo-200'
+                                              }`}
+                                            >
+                                              <div className="min-w-0 pr-1">
+                                                <div className="font-bold text-slate-900 truncate">{p.name}</div>
+                                                <div className="text-[10px] text-slate-500">
+                                                  {p.volume ? `${p.volume}ml` : ''} {p.pack} • {p.unitsPerCrate || 24}/cr • Stock: {p.opening ?? 0} cs
+                                                </div>
+                                              </div>
+                                              <span className="shrink-0 text-[10px] text-slate-400 font-mono">#{p.id}</span>
+                                            </button>
+                                          ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Interactive Volume & Pack Controls */}
+                                  <div className="mt-1 pl-0.5 text-[10px] flex items-center gap-1.5 flex-wrap">
+                                    {/* Volume Pill / Quick Picker */}
+                                    <div className="relative inline-block">
+                                      <button
+                                        type="button"
+                                        onClick={() => setVolumePickerRowId(volumePickerRowId === r.id ? null : r.id)}
+                                        className="px-1.5 py-0.5 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 font-mono font-bold text-slate-700 cursor-pointer flex items-center gap-0.5"
+                                        title="Click to change bottle volume (ml)"
+                                      >
+                                        <span>{r.volume ? (r.volume >= 1000 && r.volume % 1000 === 0 ? `${r.volume / 1000}L` : `${r.volume}ml`) : '—'}</span>
+                                        <span className="text-[10px] text-slate-400">▾</span>
+                                      </button>
+                                      {volumePickerRowId === r.id && (
+                                        <div className="absolute left-0 top-full mt-1 z-50 bg-white border border-slate-300 rounded-lg shadow-lg p-1.5 w-48 text-xs flex flex-col gap-1">
+                                          <span className="text-[10px] font-bold text-slate-500 uppercase px-1">Select Size</span>
+                                          <div className="grid grid-cols-3 gap-1">
+                                            {[150, 200, 250, 300, 500, 600, 750, 1000, 1250, 1500, 2000, 2250].map((v) => (
+                                              <button
+                                                key={v}
+                                                type="button"
+                                                onClick={() => {
+                                                  updateRowField(r.id, 'volume', v);
+                                                  setVolumePickerRowId(null);
+                                                }}
+                                                className={`px-1 py-0.5 rounded text-[10px] font-mono font-bold border transition-colors cursor-pointer ${
+                                                  r.volume === v
+                                                    ? 'bg-indigo-600 text-white border-indigo-600'
+                                                    : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                                                }`}
+                                              >
+                                                {v >= 1000 && v % 1000 === 0 ? `${v / 1000}L` : v === 2250 ? '2.25L' : v === 1250 ? '1.25L' : v === 1500 ? '1.5L' : `${v}ml`}
+                                              </button>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {/* Pack Type Toggle */}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const packs = ['PET', 'CAN', 'RGB', 'TETRA'];
+                                        const nextIdx = (packs.indexOf((r.pack || 'PET').toUpperCase()) + 1) % packs.length;
+                                        updateRowField(r.id, 'pack', packs[nextIdx]);
+                                      }}
+                                      className="px-1.5 py-0.5 rounded border border-slate-300 bg-slate-50 hover:bg-slate-100 font-bold text-slate-700 cursor-pointer"
+                                      title="Click to toggle packaging: PET -> CAN -> RGB (Glass) -> TETRA"
+                                    >
+                                      {r.pack || 'PET'}
+                                    </button>
+
+                                    <span className="text-slate-400 font-mono">{unitsPerCrate}/cr</span>
+                                    {!r.isNewProduct && <span className="text-slate-400">· stock {r.existingStock ?? 0} cs</span>}
+                                  </div>
+                                </td>
+
+                                {/* Qty */}
+                                <td className={`border-b border-slate-200 px-2 ${cellPad} text-right ${rowBg} group-hover:bg-indigo-50`}>
                                   <input
-                                    type="text"
-                                    value={r.productName}
-                                    onChange={(e) => updateRowField(r.id, 'productName', e.target.value)}
-                                    className={`font-bold text-slate-900 bg-white border border-slate-300 rounded-md px-2.5 py-1.5 w-full focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 shadow-xs ${
-                                      isComfortable ? 'text-sm' : 'text-xs'
-                                    }`}
-                                    placeholder="Beverage Product Name"
+                                    type="number" inputMode="numeric"
+                                    min="1"
+                                    value={r.qty}
+                                    onChange={(e) => updateRowField(r.id, 'qty', Math.max(1, parseInt(e.target.value, 10) || 1))}
+                                    className="font-mono font-bold text-slate-900 bg-white border border-slate-300 rounded px-1.5 py-1 w-16 text-right text-xs focus:border-indigo-500 focus:outline-hidden"
+                                    title="Total crates printed on the invoice for this line (includes free scheme crates)"
                                   />
+                                </td>
 
-                                  {/* Pack Size, Units/Crate, Category & HSN */}
-                                  <div className="flex items-center gap-2 flex-wrap text-xs text-slate-600 pt-0.5">
-                                    <div className="flex items-center gap-1">
-                                      <span className="text-[11px] text-slate-400 font-medium">Pack:</span>
-                                      <input
-                                        type="text"
-                                        value={packSize}
-                                        onChange={(e) => updateRowField(r.id, 'packSize', e.target.value)}
-                                        className="w-24 px-1.5 py-0.5 border border-slate-300 rounded text-xs text-slate-800 bg-white font-medium"
-                                        placeholder="150ml PET"
-                                      />
-                                    </div>
+                                {/* Scheme summary (click to open full scheme editor) */}
+                                <td className={`border-b border-slate-200 px-2 ${cellPad} ${rowBg} group-hover:bg-indigo-50`}>
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedRowId(isOpen ? null : r.id)}
+                                    className={`px-2 py-1 rounded border text-[11px] font-semibold w-full text-left truncate cursor-pointer ${
+                                      hasScheme
+                                        ? 'bg-purple-50 border-purple-300 text-purple-900 hover:bg-purple-100'
+                                        : 'bg-white border-slate-200 text-slate-400 hover:bg-slate-50'
+                                    }`}
+                                    title={r.schemeText || 'Click to edit scheme / discount'}
+                                  >
+                                    {schemeLabel}
+                                    {r.supplierSchemeId && <span className="ml-1 text-[10px] font-black text-purple-700">+SUP</span>}
+                                  </button>
+                                </td>
 
-                                    <div className="flex items-center gap-1 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                                      <span className="text-[11px] text-amber-900 font-bold">Units/Cr:</span>
-                                      <input
-                                        type="number"
-                                        min="1"
-                                        value={unitsPerCrate}
-                                        onChange={(e) => updateRowField(r.id, 'unitsPerCrate', Math.max(1, parseInt(e.target.value, 10) || 1))}
-                                        className="w-12 font-mono font-bold text-xs text-amber-950 bg-white border border-amber-300 rounded px-1 py-0.5 text-right"
-                                      />
-                                    </div>
-
-                                    <div className="flex items-center gap-1">
-                                      <span className="text-[11px] text-slate-400 font-medium">HSN:</span>
-                                      <input
-                                        type="text"
-                                        value={r.hsn}
-                                        onChange={(e) => updateRowField(r.id, 'hsn', e.target.value)}
-                                        className="w-20 font-mono text-xs px-1.5 py-0.5 border border-slate-300 rounded bg-white text-slate-800"
-                                      />
-                                    </div>
+                                {/* Rate & GST check */}
+                                <td className={`border-b border-slate-200 px-2 ${cellPad} text-right ${rowBg} group-hover:bg-indigo-50`}>
+                                  <div className="flex flex-col items-end gap-1">
+                                    <input
+                                      type="number" inputMode="decimal"
+                                      min="0"
+                                      step="0.01"
+                                      value={r.listPrice !== undefined ? r.listPrice : r.unitPrice}
+                                      onChange={(e) => updateRowField(r.id, 'listPrice', Math.max(0, parseFloat(e.target.value) || 0))}
+                                      className={`font-mono font-bold text-slate-900 border rounded px-1.5 py-1 w-[84px] text-right text-xs focus:border-indigo-500 focus:outline-hidden ${
+                                        !(Number(r.unitPrice) > 0) ? 'border-amber-400 bg-amber-50' : 'border-slate-300 bg-white'
+                                      }`}
+                                      title={`List Price: ₹${money(r.listPrice !== undefined ? r.listPrice : r.unitPrice)}`}
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => updateRowField(r.id, 'isGstIncluded', !r.isGstIncluded)}
+                                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
+                                        r.isGstIncluded
+                                          ? 'bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100'
+                                          : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+                                      }`}
+                                      title={
+                                        r.isGstIncluded
+                                          ? 'List price INCLUDES GST (Base: ₹' + money(r.unitPrice) + '). Click to switch to Ex-GST.'
+                                          : 'List price EXCLUDES GST. +₹' + money(r.calculatedGstAmount || 0) + ' GST calculated. Click to switch.'
+                                      }
+                                    >
+                                      {r.isGstIncluded ? 'GST Incl' : '+Calc GST'}
+                                    </button>
                                   </div>
-                                </div>
-                              </td>
+                                </td>
 
-                              {/* Billed Qty */}
-                              <td className={`px-3 ${isComfortable ? 'py-3.5' : 'py-2.5'} text-right align-top`}>
-                                <input
-                                  type="number"
-                                  min="1"
-                                  value={r.qty}
-                                  onChange={(e) => updateRowField(r.id, 'qty', Math.max(1, parseInt(e.target.value, 10) || 1))}
-                                  className={`font-mono font-bold text-slate-900 bg-white border border-slate-300 rounded-md px-2 py-1.5 w-24 text-right focus:border-indigo-500 shadow-xs ${
-                                    isComfortable ? 'text-sm' : 'text-xs'
-                                  }`}
-                                />
-                                <span className="block text-[11px] text-slate-500 mt-1 font-medium">crates billed</span>
-                              </td>
+                                {/* GST */}
+                                <td className={`border-b border-slate-200 px-2 ${cellPad} ${rowBg} group-hover:bg-indigo-50`}>
+                                  <select
+                                    value={`${r.cgstPercent},${r.sgstPercent}`}
+                                    onChange={(e) => {
+                                      const [cg, sg] = e.target.value.split(',').map(Number);
+                                      updateRowField(r.id, 'cgstPercent', cg);
+                                      updateRowField(r.id, 'sgstPercent', sg);
+                                    }}
+                                    className="font-mono text-[11px] bg-white border border-slate-300 rounded px-1 py-1 text-slate-800 w-full"
+                                  >
+                                    <option value="20,20">40%</option>
+                                    <option value="2.5,2.5">5%</option>
+                                    <option value="9,9">18%</option>
+                                    <option value="6,6">12%</option>
+                                    <option value="0,0">0%</option>
+                                  </select>
+                                </td>
 
-                              {/* PRODUCT SCHEME REVIEW & FREE QUANTITY */}
-                              <td className={`px-4 ${isComfortable ? 'py-3.5' : 'py-2.5'} bg-purple-50/35 border-x border-purple-200 align-top`}>
+                                {/* Batch / Tag */}
+                                <td className={`border-b border-slate-200 px-2 ${cellPad} ${rowBg} group-hover:bg-indigo-50`}>
+                                  <div className="flex items-center gap-1">
+                                    <input
+                                      type="text"
+                                      value={r.batchNumber}
+                                      onChange={(e) => updateRowField(r.id, 'batchNumber', e.target.value)}
+                                      className={`w-full px-1.5 py-1 border rounded font-mono text-[11px] text-slate-800 focus:border-indigo-500 focus:outline-hidden ${
+                                        !(r.batchNumber || '').trim() ? 'border-amber-400 bg-amber-50' : 'border-slate-300 bg-white'
+                                      }`}
+                                      title={!(r.batchNumber || '').trim() ? 'Batch number missing' : 'Batch/Tag number'}
+                                      placeholder="Batch No"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const existingBatches = [
+                                          ...products.map((p) => p.batchNumber).filter(Boolean),
+                                          ...rows.filter((x) => x.id !== r.id).map((x) => x.batchNumber).filter(Boolean),
+                                        ] as string[];
+                                        const fresh = generateBatchNumber(r.productName || r.rawName, undefined, existingBatches, undefined, inwardDate);
+                                        updateRowField(r.id, 'batchNumber', fresh);
+                                      }}
+                                      className="p-1 rounded bg-slate-100 hover:bg-amber-100 text-slate-600 hover:text-amber-800 border border-slate-200 hover:border-amber-300 transition-colors shrink-0 cursor-pointer"
+                                      title="Auto-generate fresh unique batch/tag number (never reuse old one)"
+                                    >
+                                      <Sparkles size={11} />
+                                    </button>
+                                  </div>
+                                </td>
+
+                                {/* Expiry — always in view, highlighted when empty */}
+                                <td className={`border-b border-slate-200 px-2 ${cellPad} ${rowBg} group-hover:bg-indigo-50`}>
+                                  <input
+                                    type="date"
+                                    value={r.expiry}
+                                    onChange={(e) => updateRowField(r.id, 'expiry', e.target.value)}
+                                    className={`w-full px-1 py-1 border rounded text-[11px] text-slate-800 focus:border-indigo-500 focus:outline-hidden ${
+                                      !r.expiry ? 'border-amber-400 bg-amber-50' : 'border-slate-300 bg-white'
+                                    }`}
+                                    title={!r.expiry ? 'Expiry date missing' : 'Expiry date'}
+                                  />
+                                </td>
+
+                                {/* Line total */}
+                                <td className={`border-b border-slate-200 px-2 ${cellPad} text-right font-mono font-bold text-slate-900 ${rowBg} group-hover:bg-indigo-50`}>
+                                  ₹{money(breakdown.lineTotal)}
+                                </td>
+
+                                {/* Landed cost */}
+                                <td className={`border-b border-slate-200 px-2 ${cellPad} text-right font-mono ${rowBg} group-hover:bg-indigo-50`}>
+                                  <div className="font-black text-emerald-800">₹{money(breakdown.landedCostPerCrate)}</div>
+                                  <div className="text-[10px] text-slate-500">₹{money(breakdown.landedCostPerUnit)}/unit</div>
+                                </td>
+
+                                {/* Actions (sticky right) */}
+                                <td className={`sticky right-0 z-20 ${rowBg} group-hover:bg-indigo-50 border-b border-l border-slate-200 px-1 ${cellPad} text-center`}>
+                                  <div className="flex items-center justify-center gap-0.5">
+                                    <button
+                                      onClick={() => setExpandedRowId(isOpen ? null : r.id)}
+                                      className={`p-1 rounded cursor-pointer transition-colors ${
+                                        isOpen ? 'text-indigo-700 bg-indigo-100' : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'
+                                      }`}
+                                      title="Scheme, catalog mapping, pack size & cost breakdown"
+                                    >
+                                      {isOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                                    </button>
+                                    <button
+                                      onClick={() => handleDuplicateRow(r.id)}
+                                      className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded cursor-pointer transition-colors"
+                                      title="Duplicate row (useful to split into different batches or lots)"
+                                    >
+                                      <Copy size={14} />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteRow(r.id)}
+                                      className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded cursor-pointer transition-colors"
+                                      title="Delete this item from inward consignment"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+
+                              {/* Row detail panel (only when opened) */}
+                              {isOpen && (
+                                <tr>
+                                  <td colSpan={11} className="bg-slate-50 border-b-2 border-indigo-300 p-0">
+                                    <div className="sticky left-0 w-[calc(100vw-3rem)] max-w-full px-3 py-2.5 grid gap-3 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,1fr)]">
+                                      {/* Catalog mapping & pack */}
+                                      <div className="flex flex-col gap-2 min-w-0">
+                                        <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                                          Catalog & pack
+                                        </span>
+                                        <select
+                                          value={r.isNewProduct ? 'new_product' : String(r.matchedProductId)}
+                                          onChange={(e) => handleCatalogMappingChange(r.id, e.target.value)}
+                                          className="text-[11px] font-medium bg-white border border-slate-300 rounded px-2 py-1 text-slate-700 cursor-pointer w-full"
+                                          title="Map to an existing product in your catalog or treat as a new item"
+                                        >
+                                          <option value="new_product">Create as New Product</option>
+                                          <optgroup label="Map to Existing Catalog Product:">
+                                            {products.map((p) => (
+                                              <option key={p.id} value={p.id}>
+                                                {p.name} ({p.category.toUpperCase()})
+                                              </option>
+                                            ))}
+                                          </optgroup>
+                                        </select>
+                                        <div className="flex items-center gap-2 flex-wrap text-xs text-slate-600">
+                                          <label className="flex items-center gap-1">
+                                            <span className="text-[11px] text-slate-500 font-medium">Pack</span>
+                                            <input
+                                              type="text"
+                                              value={packSize}
+                                              onChange={(e) => updateRowField(r.id, 'packSize', e.target.value)}
+                                              className="w-24 px-1.5 py-1 border border-slate-300 rounded text-xs text-slate-800 bg-white font-medium"
+                                              placeholder="150ml PET"
+                                            />
+                                          </label>
+                                          <label className="flex items-center gap-1 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                                            <span className="text-[11px] text-amber-900 font-bold">Units/Cr</span>
+                                            <input
+                                              type="number" inputMode="numeric"
+                                              min="1"
+                                              value={unitsPerCrate}
+                                              onChange={(e) => updateRowField(r.id, 'unitsPerCrate', Math.max(1, parseInt(e.target.value, 10) || 1))}
+                                              className="w-12 font-mono font-bold text-xs text-amber-950 bg-white border border-amber-300 rounded px-1 py-0.5 text-right"
+                                            />
+                                          </label>
+                                          <label className="flex items-center gap-1">
+                                            <span className="text-[11px] text-slate-500 font-medium">HSN</span>
+                                            <input
+                                              type="text"
+                                              value={r.hsn}
+                                              onChange={(e) => updateRowField(r.id, 'hsn', e.target.value)}
+                                              className="w-20 font-mono text-xs px-1.5 py-1 border border-slate-300 rounded bg-white text-slate-800"
+                                            />
+                                          </label>
+                                          <label className="flex items-center gap-1">
+                                            <span className="text-[11px] text-slate-500 font-medium">Wholesale ₹</span>
+                                            <input
+                                              type="number" inputMode="decimal"
+                                              value={r.wholesaleRate}
+                                              onChange={(e) => updateRowField(r.id, 'wholesaleRate', parseFloat(e.target.value) || 0)}
+                                              className="w-20 px-1.5 py-1 border border-slate-300 rounded text-right font-bold text-slate-800 bg-white text-xs"
+                                            />
+                                          </label>
+                                        </div>
+                                      </div>
+
+                                      {/* Scheme review (original editor, unchanged) */}
+                                      <div className="bg-purple-50/70 border border-purple-200 rounded-lg p-2.5 min-w-0">
+                                        <span className="text-[10px] font-bold uppercase tracking-wide text-purple-800 flex items-center gap-1 mb-1.5">
+                                          <Tag size={11} /> Scheme review & free qty
+                                        </span>
                                 <div className="flex flex-col gap-1.5">
                                   {/* Scheme Type Selector */}
                                   <select
                                     value={r.schemeType}
                                     onChange={(e) => updateRowField(r.id, 'schemeType', e.target.value as GrnSchemeType)}
-                                    className="font-semibold text-purple-950 text-xs bg-white border border-purple-300 rounded-md px-2.5 py-1.5 w-full focus:border-purple-500 shadow-xs cursor-pointer"
+                                    className="font-semibold text-purple-950 text-xs bg-white border border-purple-300 rounded-md px-2.5 py-1.5 w-full focus:border-purple-500 shadow-sm cursor-pointer"
                                   >
                                     <option value="b2g1">🎁 Buy 2 Get 1 Free (Ratio Scheme)</option>
-                                    <option value="free_cases">+ Free Bonus Cases</option>
+                                    <option value="free_cases">+ Free Cases (included in billed qty, not extra)</option>
                                     <option value="discount_percent">% Percentage Discount</option>
                                     <option value="discount_flat">₹ Flat Off / Case</option>
                                     <option value="none">Standard (No Scheme)</option>
@@ -2161,11 +2866,11 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
 
                                   {/* b2g1 Ratio Scheme Inputs */}
                                   {r.schemeType === 'b2g1' && (
-                                    <div className="p-2 bg-white border border-purple-200 rounded-md shadow-xs space-y-1.5">
+                                    <div className="p-2 bg-white border border-purple-200 rounded-md shadow-sm space-y-1.5">
                                       <div className="flex items-center gap-1 text-xs">
                                         <span className="text-purple-800 font-medium">Buy</span>
                                         <input
-                                          type="number"
+                                          type="number" inputMode="numeric"
                                           min="1"
                                           value={r.schemeBuyQty ?? 2}
                                           onChange={(e) => updateRowField(r.id, 'schemeBuyQty', Math.max(1, parseInt(e.target.value, 10) || 1))}
@@ -2173,7 +2878,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                                         />
                                         <span className="text-purple-800 font-medium">Get</span>
                                         <input
-                                          type="number"
+                                          type="number" inputMode="numeric"
                                           min="1"
                                           value={r.schemeFreeQty ?? 1}
                                           onChange={(e) => updateRowField(r.id, 'schemeFreeQty', Math.max(1, parseInt(e.target.value, 10) || 1))}
@@ -2184,7 +2889,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                                         <div className="ml-auto flex items-center gap-1">
                                           <span className="text-[10px] text-slate-500 font-medium">Free:</span>
                                           <input
-                                            type="number"
+                                            type="number" inputMode="numeric"
                                             min="0"
                                             value={r.freeQty}
                                             onChange={(e) => updateRowField(r.id, 'freeQty', Math.max(0, parseInt(e.target.value, 10) || 0))}
@@ -2216,11 +2921,11 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
 
                                   {/* Free cases input */}
                                   {r.schemeType === 'free_cases' && (
-                                    <div className="p-1.5 bg-white border border-purple-200 rounded-md shadow-xs space-y-1">
+                                    <div className="p-1.5 bg-white border border-purple-200 rounded-md shadow-sm space-y-1">
                                       <div className="flex items-center gap-1.5">
                                         <span className="text-xs text-purple-800 font-bold">Free:</span>
                                         <input
-                                          type="number"
+                                          type="number" inputMode="numeric"
                                           min="0"
                                           value={r.freeQty}
                                           onChange={(e) => updateRowField(r.id, 'freeQty', Math.max(0, parseInt(e.target.value, 10) || 0))}
@@ -2246,10 +2951,10 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
 
                                   {/* Discount percent */}
                                   {r.schemeType === 'discount_percent' && (
-                                    <div className="flex items-center gap-1.5 p-1.5 bg-white border border-purple-200 rounded-md shadow-xs">
+                                    <div className="flex items-center gap-1.5 p-1.5 bg-white border border-purple-200 rounded-md shadow-sm">
                                       <span className="text-xs text-purple-800 font-bold">Disc:</span>
                                       <input
-                                        type="number"
+                                        type="number" inputMode="decimal"
                                         min="0"
                                         max="100"
                                         step="0.1"
@@ -2268,11 +2973,11 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
 
                                   {/* Discount flat */}
                                   {r.schemeType === 'discount_flat' && (
-                                    <div className="flex items-center gap-1.5 p-1.5 bg-white border border-purple-200 rounded-md shadow-xs">
+                                    <div className="flex items-center gap-1.5 p-1.5 bg-white border border-purple-200 rounded-md shadow-sm">
                                       <span className="text-xs text-purple-800 font-bold">Flat:</span>
                                       <span className="text-xs text-purple-800 font-bold">₹</span>
                                       <input
-                                        type="number"
+                                        type="number" inputMode="decimal"
                                         min="0"
                                         step="0.5"
                                         value={r.discountFlat}
@@ -2296,178 +3001,128 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                                     onChange={(e) => updateRowField(r.id, 'schemeText', e.target.value)}
                                     className="text-[11px] text-slate-700 bg-white border border-purple-200 rounded px-2 py-1 placeholder:text-purple-300"
                                   />
-                                </div>
-                              </td>
 
-                              {/* INVOICE UNIT RATE (Supplier Billing Rate) */}
-                              <td className={`px-4 ${isComfortable ? 'py-3.5' : 'py-2.5'} text-right align-top`}>
-                                <div className="flex flex-col items-end gap-1">
-                                  <div className="flex items-center gap-1">
-                                    <span className="text-[11px] text-slate-400 font-medium">Ex-GST:</span>
-                                    <input
-                                      type="number"
-                                      min="0"
-                                      step="0.01"
-                                      value={r.unitPrice}
-                                      onChange={(e) => updateRowField(r.id, 'unitPrice', Math.max(0, parseFloat(e.target.value) || 0))}
-                                      className="font-mono font-bold text-slate-900 bg-white border border-slate-300 rounded px-2 py-1 w-24 text-right focus:border-indigo-500 shadow-xs text-xs"
-                                    />
-                                  </div>
-
-                                  {/* GST Rate Selector & Separate Amount */}
-                                  <div className="flex items-center justify-end gap-1 text-[11px]">
+                                  {/* Supplier Scheme (additive layer, independent of the b2g1/free_cases scheme above) */}
+                                  <div className="p-1.5 bg-amber-50/60 border border-amber-200 rounded-md space-y-1">
                                     <select
-                                      value={`${r.cgstPercent},${r.sgstPercent}`}
+                                      value={r.supplierSchemeId || r.pendingCreditSchemeId || ''}
                                       onChange={(e) => {
-                                        const [cg, sg] = e.target.value.split(',').map(Number);
-                                        updateRowField(r.id, 'cgstPercent', cg);
-                                        updateRowField(r.id, 'sgstPercent', sg);
+                                        const scheme = supplierSchemes.find((s) => s.id === e.target.value);
+                                        if (!scheme) {
+                                          updateRowField(r.id, 'supplierSchemeId', undefined);
+                                          updateRowField(r.id, 'supplierSchemeFreeQty', undefined);
+                                          updateRowField(r.id, 'pendingCreditSchemeId', undefined);
+                                          updateRowField(r.id, 'pendingCreditExpectedAmount', undefined);
+                                          return;
+                                        }
+                                        if (scheme.schemeType === 'free_goods') {
+                                          updateRowField(r.id, 'supplierSchemeId', scheme.id);
+                                          updateRowField(r.id, 'pendingCreditSchemeId', undefined);
+                                        } else if (scheme.schemeType === 'pending_credit') {
+                                          updateRowField(r.id, 'pendingCreditSchemeId', scheme.id);
+                                          updateRowField(r.id, 'supplierSchemeId', undefined);
+                                        }
                                       }}
-                                      className="font-mono text-[10px] bg-slate-50 border border-slate-300 rounded px-1 py-0.5 text-slate-800"
+                                      className="font-medium text-amber-900 text-[10px] bg-white border border-amber-300 rounded px-1.5 py-1 w-full"
+                                      title="Attach a named Supplier Scheme (additive free goods or pending credit) — separate from the invoice scheme above"
                                     >
-                                      <option value="20,20">40% GST</option>
-                                      <option value="2.5,2.5">5% GST</option>
-                                      <option value="9,9">18% GST</option>
-                                      <option value="6,6">12% GST</option>
-                                      <option value="0,0">0% GST</option>
+                                      <option value="">No Supplier Scheme</option>
+                                      {supplierSchemes
+                                        .filter((s) => s.active && s.schemeType !== 'volume_incentive')
+                                        .map((s) => (
+                                          <option key={s.id} value={s.id}>
+                                            {s.schemeType === 'free_goods' ? '🎁' : '⏳'} {s.name}
+                                          </option>
+                                        ))}
                                     </select>
-                                    <span className="text-slate-500 font-mono text-[10px]">
-                                      +₹{money(breakdown.gstAmountPerCrate)}
-                                    </span>
+                                    {r.supplierSchemeId && (
+                                      <div className="flex items-center gap-1.5 text-[10px]">
+                                        <span className="text-amber-800 font-semibold">+Free (additive):</span>
+                                        <input
+                                          type="number" inputMode="numeric"
+                                          min="0"
+                                          value={r.supplierSchemeFreeQty ?? 0}
+                                          onChange={(e) =>
+                                            updateRowField(r.id, 'supplierSchemeFreeQty', Math.max(0, parseInt(e.target.value, 10) || 0))
+                                          }
+                                          className="w-14 font-mono font-bold text-right bg-amber-50 border border-amber-300 rounded px-1 py-0.5"
+                                        />
+                                        <span className="text-emerald-700 font-mono font-bold ml-auto">
+                                          Total: {breakdown.totalReceivedQty + (r.supplierSchemeFreeQty || 0)} cs
+                                        </span>
+                                      </div>
+                                    )}
+                                    {/* FIX: guard against double-counting the SAME free cases twice — once
+                                        already inside r.freeQty (inclusive, part of the invoice's own total
+                                        above) and again here as a separate "additive" Supplier Scheme bonus.
+                                        This is the #1 way a "70 billed + 25 free" line silently becomes 95
+                                        crates in stock: someone re-enters the same 25 here thinking it's how
+                                        you record the invoice's own scheme, when this box is only for bonus
+                                        stock that is NOT already printed/counted on this invoice. */}
+                                    {r.supplierSchemeId && r.freeQty > 0 && (r.supplierSchemeFreeQty || 0) > 0 && (
+                                      <div className="flex items-start gap-1 text-[10px] text-rose-700 bg-rose-50 border border-rose-300 rounded px-1.5 py-1 leading-snug">
+                                        <AlertTriangle size={11} className="shrink-0 mt-0.5" />
+                                        <span>
+                                          This line already has {r.freeQty} free crates included in the {r.qty} billed above
+                                          (already a discount, not extra stock). Only add a Supplier Scheme qty here if the
+                                          supplier is giving <strong>additional</strong> bonus stock beyond what's printed on
+                                          this invoice — never re-enter the same free crates twice.
+                                        </span>
+                                      </div>
+                                    )}
+                                    {r.pendingCreditSchemeId && (
+                                      <div className="flex items-center gap-1.5 text-[10px]">
+                                        <span className="text-amber-800 font-semibold">Expected Credit ₹:</span>
+                                        <input
+                                          type="number" inputMode="decimal"
+                                          min="0"
+                                          value={r.pendingCreditExpectedAmount ?? 0}
+                                          onChange={(e) =>
+                                            updateRowField(r.id, 'pendingCreditExpectedAmount', Math.max(0, parseFloat(e.target.value) || 0))
+                                          }
+                                          className="w-20 font-mono font-bold text-right bg-amber-50 border border-amber-300 rounded px-1 py-0.5"
+                                        />
+                                      </div>
+                                    )}
                                   </div>
+                                </div>
+                                      </div>
 
-                                  {/* Invoice Rate Incl. GST */}
-                                  <div className="mt-1 pt-1 border-t border-slate-200 w-full text-right">
-                                    <div className="font-extrabold text-slate-900 font-mono text-xs">
-                                      ₹{money(breakdown.invoiceRateInclGst)} <span className="text-[10px] font-normal text-slate-500">incl GST</span>
+                                      {/* Cost breakdown (read-only) */}
+                                      <div className="flex flex-col gap-1.5 min-w-0">
+                                        <span className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                                          Cost breakdown
+                                        </span>
+                                        <div className="grid grid-cols-3 gap-1.5 font-mono text-[11px]">
+                                          <div className="bg-indigo-50 border border-indigo-200 rounded p-1.5">
+                                            <div className="font-sans text-[10px] font-semibold text-indigo-700">Effective</div>
+                                            <div className="font-bold text-indigo-950">₹{money(breakdown.effectiveCostPerCrateExGst)} ex</div>
+                                            <div className="font-bold text-indigo-900">₹{money(breakdown.effectiveCostPerCrateInclGst)} incl</div>
+                                            <div className="text-indigo-700">₹{money(breakdown.effectiveUnitRateInclGst)}/btl</div>
+                                          </div>
+                                          <div className="bg-amber-50 border border-amber-200 rounded p-1.5">
+                                            <div className="font-sans text-[10px] font-semibold text-amber-700">Inward share</div>
+                                            <div className="font-bold text-amber-900">+₹{money(breakdown.inwardCostPerCrate)}/cr</div>
+                                            <div className="text-amber-800">+₹{money(breakdown.inwardCostPerCrate / unitsPerCrate)}/btl</div>
+                                          </div>
+                                          <div className="bg-emerald-50 border border-emerald-200 rounded p-1.5">
+                                            <div className="font-sans text-[10px] font-semibold text-emerald-700">Landed</div>
+                                            <div className="font-black text-emerald-900">₹{money(breakdown.landedCostPerCrate)}/cr</div>
+                                            <div className="font-bold text-emerald-800">₹{money(breakdown.landedCostPerUnit)}/unit</div>
+                                            <div className="text-slate-500">pre-tax ₹{money(breakdown.landedCostPerUnitExGst)}</div>
+                                          </div>
+                                        </div>
+                                        <div className="text-[10px] text-slate-500 leading-snug">
+                                          Paid {breakdown.paidQty} cs ({r.qty} billed) → received {breakdown.totalReceivedQty} cs •
+                                          invoice rate incl. GST ₹{money(breakdown.invoiceRateInclGst)}/cr (₹
+                                          {money(breakdown.invoiceUnitRateBottleInclGst)}/btl)
+                                        </div>
+                                      </div>
                                     </div>
-                                    <span className="text-[10px] text-slate-500 font-mono">
-                                      ₹{money(breakdown.invoiceUnitRateBottleInclGst)} / bottle
-                                    </span>
-                                  </div>
-                                </div>
-                              </td>
-
-                              {/* EFFECTIVE SCHEME RATE */}
-                              <td className={`px-4 ${isComfortable ? 'py-3.5' : 'py-2.5'} text-right bg-indigo-50/40 border-x border-indigo-200 align-top`}>
-                                <div className="flex flex-col items-end gap-0.5 font-mono">
-                                  <span className="text-[10px] text-indigo-700 font-medium">Effective Pre-Tax:</span>
-                                  <span className="font-bold text-indigo-950 text-xs">
-                                    ₹{money(breakdown.effectiveCostPerCrateExGst)} / cr
-                                  </span>
-
-                                  <span className="text-[10px] text-indigo-700 font-medium mt-1">Effective Incl-GST:</span>
-                                  <span className="font-extrabold text-indigo-900 text-xs">
-                                    ₹{money(breakdown.effectiveCostPerCrateInclGst)} / cr
-                                  </span>
-
-                                  <div className="bg-indigo-100/90 text-indigo-950 px-1.5 py-0.5 rounded text-[11px] font-extrabold mt-1">
-                                    ₹{money(breakdown.effectiveUnitRateInclGst)} / bottle
-                                  </div>
-                                  <span className="text-[9px] text-indigo-600 mt-0.5">
-                                    Paid {breakdown.paidQty}cs ({r.qty} bld) → Rec {breakdown.totalReceivedQty}cs
-                                  </span>
-                                </div>
-                              </td>
-
-                              {/* INWARD GODOWN COST SHARE */}
-                              <td className={`px-3 ${isComfortable ? 'py-3.5' : 'py-2.5'} text-right bg-amber-50/40 align-top`}>
-                                <div className="flex flex-col items-end gap-0.5 font-mono">
-                                  <span className="font-bold text-amber-900 text-xs">
-                                    +₹{money(breakdown.inwardCostPerCrate)}
-                                  </span>
-                                  <span className="text-[10px] text-amber-700">/ crate</span>
-                                  <span className="text-[10px] text-amber-800 mt-1">
-                                    +₹{money(breakdown.inwardCostPerCrate / unitsPerCrate)} / btl
-                                  </span>
-                                </div>
-                              </td>
-
-                              {/* FINAL LANDED COST (Post-tax Landed Cost into Godown) */}
-                              <td className={`px-4 ${isComfortable ? 'py-3.5' : 'py-2.5'} text-right bg-emerald-50/60 border-x border-emerald-200 align-top`}>
-                                <div className="flex flex-col items-end gap-0.5 font-mono">
-                                  <div className="font-black text-emerald-900 text-sm">
-                                    ₹{money(breakdown.landedCostPerCrate)}
-                                  </div>
-                                  <span className="text-[10px] text-emerald-700 font-bold">
-                                    / crate (incl. inward)
-                                  </span>
-
-                                  <div className="bg-emerald-600 text-white px-2 py-0.5 rounded text-xs font-black mt-1 shadow-2xs">
-                                    ₹{money(breakdown.landedCostPerUnit)} / unit
-                                  </div>
-
-                                  <span className="text-[9px] text-slate-500 mt-0.5">
-                                    Pre-tax: ₹{money(breakdown.landedCostPerUnitExGst)}/unit
-                                  </span>
-                                </div>
-                              </td>
-
-                              {/* SELLING & BATCH */}
-                              <td className={`px-4 ${isComfortable ? 'py-3.5' : 'py-2.5'} align-top`}>
-                                <div className="flex flex-col gap-1.5 text-xs">
-                                  <div className="flex items-center justify-between gap-1">
-                                    <span className="text-slate-500 text-[11px] font-medium">Line Total:</span>
-                                    <span className="font-mono font-bold text-slate-900 text-xs">
-                                      ₹{money(breakdown.lineTotal)}
-                                    </span>
-                                  </div>
-
-                                  <div className="flex items-center justify-between gap-1">
-                                    <span className="text-slate-500 text-[11px] font-medium">Wholesale Rate:</span>
-                                    <div className="flex items-center gap-0.5 font-mono">
-                                      <span>₹</span>
-                                      <input
-                                        type="number"
-                                        value={r.wholesaleRate}
-                                        onChange={(e) => updateRowField(r.id, 'wholesaleRate', parseFloat(e.target.value) || 0)}
-                                        className="w-16 px-1.5 py-0.5 border border-slate-300 rounded text-right font-bold text-slate-800 bg-white text-xs"
-                                      />
-                                    </div>
-                                  </div>
-
-                                  <div className="flex items-center justify-between gap-1">
-                                    <span className="text-slate-500 text-[11px] font-medium">Lot Batch:</span>
-                                    <input
-                                      type="text"
-                                      value={r.batchNumber}
-                                      onChange={(e) => updateRowField(r.id, 'batchNumber', e.target.value)}
-                                      className="w-24 px-1.5 py-0.5 border border-slate-300 rounded font-mono text-[11px] text-slate-800 bg-white"
-                                    />
-                                  </div>
-
-                                  <div className="flex items-center justify-between gap-1">
-                                    <span className="text-slate-500 text-[11px] font-medium">Expiry:</span>
-                                    <input
-                                      type="date"
-                                      value={r.expiry}
-                                      onChange={(e) => updateRowField(r.id, 'expiry', e.target.value)}
-                                      className="w-24 px-1 py-0.5 border border-slate-300 rounded text-[11px] text-slate-800 bg-white"
-                                    />
-                                  </div>
-                                </div>
-                              </td>
-
-                              {/* Actions: Duplicate & Delete */}
-                              <td className={`px-2 ${isComfortable ? 'py-3.5' : 'py-2.5'} text-center align-top pt-4`}>
-                                <div className="flex items-center justify-center gap-1">
-                                  <button
-                                    onClick={() => handleDuplicateRow(r.id)}
-                                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded cursor-pointer transition-colors"
-                                    title="Duplicate row (useful to split into different batches or lots)"
-                                  >
-                                    <Copy size={14} />
-                                  </button>
-                                  <button
-                                    onClick={() => handleDeleteRow(r.id)}
-                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded cursor-pointer transition-colors"
-                                    title="Delete this item from inward consignment"
-                                  >
-                                    <Trash2 size={14} />
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
                           );
                         })
                       )}
@@ -2483,7 +3138,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                 {hasCasesMismatch ? (
                   <div className="flex items-center gap-1.5 text-xs text-red-700 font-bold bg-red-100 border border-red-300 px-2.5 py-1 rounded">
                     <AlertTriangle size={15} className="text-red-600 shrink-0" />
-                    <span>Warning: Total cases mismatch ({totalReceivedQty} received vs {printedTotalCases} printed, {casesDiff > 0 ? `+${casesDiff}` : casesDiff} cs)</span>
+                    <span>Warning: Total cases mismatch ({totalInvoicePrintedQty} vs invoice's {printedTotalCases} printed, {casesDiff > 0 ? `+${casesDiff}` : casesDiff} cs)</span>
                   </div>
                 ) : (
                   <>
@@ -2499,7 +3154,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="px-3 sm:px-4 py-1.5 border border-slate-300 hover:bg-slate-100 font-semibold text-slate-700 rounded cursor-pointer text-xs transition-colors"
+                  className="px-4 py-2.5 rounded-full text-sm font-semibold text-slate-600 hover:bg-black/5 cursor-pointer"
                 >
                   Cancel
                 </button>
@@ -2508,14 +3163,69 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                   type="button"
                   id="btn-confirm-bulk-inward"
                   onClick={handleConfirmAndPostGrn}
-                  className={`flex-1 sm:flex-initial px-4 sm:px-5 py-1.5 font-bold rounded shadow-xs cursor-pointer text-xs flex items-center justify-center gap-1.5 transition-colors ${
-                    hasCasesMismatch
-                      ? 'bg-amber-600 hover:bg-amber-700 text-white'
-                      : 'bg-emerald-700 hover:bg-emerald-800 text-white'
+                  disabled={!targetWarehouseId}
+                  title={!targetWarehouseId ? 'Select a warehouse first — there is no default' : undefined}
+                  className={`flex-1 sm:flex-initial px-5 py-2.5 rounded-full text-sm font-semibold shadow-sm flex items-center justify-center gap-1.5 transition-all active:scale-[0.99] ${
+                    !targetWarehouseId
+                      ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                      : hasCasesMismatch
+                      ? 'bg-amber-600 hover:bg-amber-700 text-white cursor-pointer'
+                      : 'bg-[#0d4a3a] hover:bg-[#0a3d30] text-white cursor-pointer'
                   }`}
                 >
                   {hasCasesMismatch ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}
-                  <span>Confirm & Post ({rows.length} Items • {totalReceivedQty.toLocaleString()} Crates)</span>
+                  <span>
+                    {!targetWarehouseId
+                      ? 'Select godown'
+                      : hasCasesMismatch
+                      ? 'Save with warning'
+                      : 'Save purchase'}{' '}
+                    · {rows.length} items · {totalReceivedQty.toLocaleString()} cs
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* IMPORT-WITH-WARNING DIALOG */}
+        {showWarningDialog && hasCasesMismatch && (
+          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+            <div className="bg-white rounded-lg p-5 max-w-md w-full border-2 border-amber-500 shadow-xl flex flex-col gap-3">
+              <h3 className="font-bold text-amber-900 text-sm flex items-center gap-2">
+                <AlertTriangle size={18} className="text-amber-600" />
+                Import with warning?
+              </h3>
+              <div className="text-xs text-slate-700 space-y-1 bg-amber-50 border border-amber-200 rounded p-3">
+                <div>Invoice printed total: <strong>{printedTotalCases?.toLocaleString()} cs</strong></div>
+                <div>Imported (working table): <strong>{totalReceivedQty.toLocaleString()} cs</strong></div>
+                <div>Difference: <strong>{casesDiff > 0 ? `+${casesDiff}` : casesDiff} cs</strong></div>
+              </div>
+              <p className="text-xs text-slate-600 leading-snug">
+                You can import now and correct the count later from the GRN list (Edit). This warning will be saved
+                in the GRN history so it can be tracked.
+              </p>
+              <textarea
+                value={warningNote}
+                onChange={(e) => setWarningNote(e.target.value)}
+                rows={2}
+                placeholder="Optional note (e.g. 2 crates short, claim raised with supplier)"
+                className="w-full border border-slate-300 rounded p-2 text-xs"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowWarningDialog(false)}
+                  className="px-3 py-1.5 border border-slate-300 hover:bg-slate-100 font-semibold text-slate-700 rounded text-xs cursor-pointer"
+                >
+                  Go back & fix
+                </button>
+                <button
+                  type="button"
+                  onClick={handleImportWithWarning}
+                  className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded text-xs cursor-pointer flex items-center gap-1.5"
+                >
+                  <AlertTriangle size={14} /> Import with warning
                 </button>
               </div>
             </div>
@@ -2564,7 +3274,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                       : 'Free Crates per 10 Billed'}
                   </label>
                   <input
-                    type="number"
+                    type="number" inputMode="numeric"
                     min="0"
                     step={bulkSchemeType === 'discount_percent' ? '0.5' : '1'}
                     value={bulkSchemeValue}

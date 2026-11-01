@@ -4,16 +4,13 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
-  Info,
-  Package,
+  Gift,
   Sparkles,
-  Tag,
   Trash2,
-  Truck,
 } from 'lucide-react';
 import { CATS } from '../../constants/initialData';
 import { CategoryKey, GrnSchemeMode, GrnSchemeType, Product } from '../../types';
-import { calculateLandedCostBreakdown } from '../../utils/billing';
+import { calculateLandedCostBreakdown, generateBatchNumber } from '../../utils/billing';
 
 export interface EditableInwardRow {
   id: string;
@@ -29,8 +26,10 @@ export interface EditableInwardRow {
   freeQty: number;
   paidQty?: number;
   unitPrice: number;
-
-  // Scheme & Discount
+  listPrice?: number;
+  isGstIncluded?: boolean;
+  calculatedGstAmount?: number;
+  priceInclGst?: number;
   schemeType: GrnSchemeType;
   schemeMode?: GrnSchemeMode;
   schemeBuyQty?: number;
@@ -39,54 +38,68 @@ export interface EditableInwardRow {
   discountFlat: number;
   discountAmount: number;
   schemeText: string;
-
-  // Taxes
   cgstPercent: number;
   sgstPercent: number;
-
-  // Pricing & Batches
   wholesaleRate: number;
   retailRate: number;
   batchNumber: string;
   expiry: string;
   mfgDate: string;
-
-  // Catalog Matching
   isNewProduct: boolean;
   matchedProductId?: number;
-  matchedProductName?: string;
   existingStock?: number;
+  supplierSchemeId?: string;
+  notes?: string;
+  [key: string]: any;
 }
 
 interface InwardProductCardProps {
-  row: EditableInwardRow;
-  index: number;
-  products: Product[];
-  inwardCostPerCrate: number;
+  /** Preferred prop from BulkInwardModal */
+  row?: EditableInwardRow;
+  /** Alias used by some call sites */
+  r?: EditableInwardRow;
+  index?: number;
+  idx?: number;
   isExpanded: boolean;
   onToggleExpand: () => void;
-  onUpdateField: <K extends keyof EditableInwardRow>(field: K, value: EditableInwardRow[K]) => void;
-  onCatalogMappingChange: (mapping: string) => void;
-  onDuplicate: () => void;
+  onUpdateField: (field: string, value: any) => void;
   onDelete: () => void;
-  money: (val: number) => string;
+  onDuplicate: () => void;
+  products?: Product[];
+  inwardCostPerCrate?: number;
+  inwardDate?: string;
+  onCatalogMappingChange?: (val: any) => void;
+  money?: (n: number) => string;
 }
 
-export const InwardProductCard: React.FC<InwardProductCardProps> = ({
-  row: r,
-  index: idx,
-  products,
-  inwardCostPerCrate,
-  isExpanded,
-  onToggleExpand,
-  onUpdateField,
-  onCatalogMappingChange,
-  onDuplicate,
-  onDelete,
-  money,
-}) => {
-  // Comprehensive Landed Cost calculation
-  const schemeMode = r.schemeMode || 'inclusive';
+/**
+ * Compact professional line card for GRN review.
+ * Primary: name · qty · free · rate · amount · batch · expiry
+ * Scheme only when needed. Manufacturing date is not shown.
+ */
+export const InwardProductCard: React.FC<InwardProductCardProps> = (props) => {
+  const r = (props.row || props.r)!;
+  const idx = props.index ?? props.idx ?? 0;
+  const {
+    isExpanded,
+    onToggleExpand,
+    onUpdateField,
+    onDelete,
+    onDuplicate,
+    inwardCostPerCrate = 0,
+    inwardDate,
+  } = props;
+  // Was used below ("Auto" batch button) without ever being read from props -> ReferenceError on click.
+  const products = props.products;
+
+  const schemeMode = (r.schemeMode || 'inclusive') as GrnSchemeMode;
+  const hasScheme = r.schemeType !== 'none' && !!r.schemeType;
+  const [schemeOpen, setSchemeOpen] = React.useState(hasScheme);
+
+  React.useEffect(() => {
+    if (hasScheme) setSchemeOpen(true);
+  }, [hasScheme]);
+
   const breakdown = calculateLandedCostBreakdown({
     qty: r.qty,
     unitPrice: r.unitPrice,
@@ -108,100 +121,353 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = ({
     inwardCostPerCrate,
   });
 
+  const lineAmount = breakdown?.lineTotal ?? r.qty * r.unitPrice;
+  const effectiveCost = breakdown?.effectiveCostPerCrateExGst ?? r.unitPrice;
+  const fmt = props.money || ((n: number) => n.toLocaleString('en-IN', { maximumFractionDigits: 2 }));
+
+  const applyB2g1 = (buy: number, free: number) => {
+    onUpdateField('schemeType', 'b2g1');
+    onUpdateField('schemeBuyQty', buy);
+    onUpdateField('schemeFreeQty', free);
+    onUpdateField('schemeText', `Buy ${buy} Get ${free} Free`);
+    onUpdateField('discountPercent', 0);
+    onUpdateField('discountFlat', 0);
+    onUpdateField('discountAmount', 0);
+    const total = Math.max(0, Number(r.qty) || 0);
+    if (total > 0 && buy > 0) {
+      const cycle = buy + free;
+      const freeCases = Math.floor(total / cycle) * free;
+      onUpdateField('freeQty', freeCases);
+      onUpdateField('paidQty', Math.max(0, total - freeCases));
+    }
+  };
+
   return (
     <div
       id={`inward-card-${r.id}`}
-      className={`bg-white rounded-xl border p-3.5 sm:p-4 shadow-xs hover:shadow-md transition-shadow flex flex-col justify-between gap-3 relative ${
-        r.isNewProduct ? 'border-l-4 border-l-blue-500' : 'border-l-4 border-l-emerald-500'
+      className={`bg-white rounded-2xl border shadow-sm hover:shadow-md transition-shadow ${
+        r.isNewProduct ? 'border-l-4 border-l-sky-500 border-slate-200' : 'border-l-4 border-l-emerald-500 border-slate-200'
       }`}
     >
-      {/* CARD TOP BAR */}
-      <div className="flex flex-col gap-2 min-w-0">
-        <div className="flex items-center justify-between gap-2 min-w-0">
-          <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+      <div className="px-3.5 pt-3 pb-2 flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-700 font-bold text-[11px] flex items-center justify-center font-mono shrink-0">
               {idx + 1}
             </span>
             {r.isNewProduct ? (
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200 shrink-0">
-                <Sparkles size={10} className="text-blue-600" />
-                NEW PRODUCT
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">
+                <Sparkles size={10} /> NEW
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
-                <Check size={10} className="text-emerald-700" />
-                CATALOG #{r.matchedProductId}
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                <Check size={10} /> #{r.matchedProductId}
                 {r.existingStock !== undefined && (
-                  <span className="text-emerald-700 font-normal">({r.existingStock} cs)</span>
+                  <span className="font-normal opacity-80">· {r.existingStock} cs</span>
                 )}
               </span>
             )}
+            {hasScheme && (
+              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-violet-100 text-violet-800 border border-violet-200">
+                <Gift size={10} />
+                {r.schemeType === 'b2g1'
+                  ? `B${r.schemeBuyQty || 2}G${r.schemeFreeQty || 1}`
+                  : r.schemeType === 'free_cases'
+                    ? `${r.freeQty || 0} free`
+                    : r.schemeType === 'discount_percent'
+                      ? `${r.discountPercent}%`
+                      : r.schemeType === 'discount_flat'
+                        ? `₹${r.discountFlat}/cs`
+                        : 'Scheme'}
+              </span>
+            )}
           </div>
-
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              type="button"
-              onClick={onDuplicate}
-              className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded cursor-pointer transition-colors"
-              title="Duplicate row"
-            >
-              <Copy size={13} />
-            </button>
-            <button
-              type="button"
-              onClick={onDelete}
-              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded cursor-pointer transition-colors"
-              title="Remove product"
-            >
-              <Trash2 size={13} />
-            </button>
-          </div>
-        </div>
-
-        {/* EDITABLE PRODUCT NAME */}
-        <div className="min-w-0">
-          <label className="text-[9px] font-semibold uppercase text-slate-400 block mb-0.5">
-            Product Title
-          </label>
           <input
             type="text"
             value={r.productName}
             onChange={(e) => onUpdateField('productName', e.target.value)}
-            className="font-bold text-slate-900 text-xs sm:text-sm bg-slate-50 focus:bg-white border border-slate-300 rounded-md px-2 py-1 w-full min-w-0 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 shadow-2xs"
-            placeholder="e.g. CAMPA POWER UP 150ML PET"
+            className="font-bold text-slate-900 text-sm bg-transparent border-0 border-b border-transparent hover:border-slate-200 focus:border-sky-400 focus:outline-none w-full px-0 py-0.5"
+            placeholder="Product name"
+          />
+          <div className="flex items-center gap-1.5 text-[10px] text-slate-500 flex-wrap">
+            <span className="font-semibold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+              {r.volume ? (r.volume >= 1000 && r.volume % 1000 === 0 ? `${r.volume / 1000}L` : `${r.volume}ml`) : '—'} {r.pack || 'PET'}
+            </span>
+            <span>{r.unitsPerCrate || 24}/cr</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-0.5 shrink-0">
+          <button type="button" onClick={onDuplicate} className="p-1.5 text-slate-400 hover:text-sky-700 hover:bg-sky-50 rounded-lg cursor-pointer" title="Duplicate">
+            <Copy size={14} />
+          </button>
+          <button type="button" onClick={onDelete} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer" title="Remove">
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </div>
+
+      <div className="px-3.5 grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <label className="block">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Qty</span>
+          <input
+            type="number" inputMode="numeric"
+            min={0}
+            step="any"
+            value={r.qty}
+            onChange={(e) => onUpdateField('qty', parseFloat(e.target.value) || 0)}
+            className="mt-0.5 w-full font-mono font-bold text-sm text-right border border-slate-300 rounded-lg px-2 py-1.5 focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+          />
+        </label>
+        <label className="block">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Free</span>
+          <input
+            type="number" inputMode="numeric"
+            min={0}
+            step="any"
+            value={r.freeQty}
+            onChange={(e) => {
+              const free = Math.max(0, parseFloat(e.target.value) || 0);
+              onUpdateField('freeQty', free);
+              if (r.schemeType === 'none' && free > 0) onUpdateField('schemeType', 'free_cases');
+            }}
+            className={`mt-0.5 w-full font-mono font-bold text-sm text-right border rounded-lg px-2 py-1.5 focus:border-sky-500 focus:ring-1 focus:ring-sky-500 ${
+              r.freeQty > 0 ? 'border-violet-300 bg-violet-50 text-violet-900' : 'border-slate-300'
+            }`}
+          />
+        </label>
+        <div className="block">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Rate ₹</span>
+            <button
+              type="button"
+              onClick={() => onUpdateField('isGstIncluded', !r.isGstIncluded)}
+              className={`text-[10px] font-bold px-1 py-0.2 rounded border transition-colors cursor-pointer ${
+                r.isGstIncluded
+                  ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+                  : 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+              }`}
+              title={
+                r.isGstIncluded
+                  ? 'List price includes GST. Click to toggle Ex-GST.'
+                  : `List price excludes GST (+₹${fmt(r.calculatedGstAmount || 0)} GST calculated). Click to toggle.`
+              }
+            >
+              {r.isGstIncluded ? 'GST Incl' : '+Calc GST'}
+            </button>
+          </div>
+          <input
+            type="number" inputMode="decimal"
+            min={0}
+            step="any"
+            value={r.listPrice !== undefined ? r.listPrice : r.unitPrice}
+            onChange={(e) => onUpdateField('listPrice', parseFloat(e.target.value) || 0)}
+            className="mt-0.5 w-full font-mono font-bold text-sm text-right border border-slate-300 rounded-lg px-2 py-1.5 focus:border-sky-500 focus:ring-1 focus:ring-sky-500"
+            title={`List Price: ₹${fmt(r.listPrice !== undefined ? r.listPrice : r.unitPrice)}`}
           />
         </div>
-
-        {/* CATALOG MAPPING & PACK SPECIFICATIONS */}
-        <div className="space-y-1.5 min-w-0">
-          <div className="min-w-0">
-            <label className="text-[9px] font-semibold text-slate-400 block mb-0.5">
-              Catalog Match
-            </label>
-            <select
-              value={r.isNewProduct ? 'new_product' : String(r.matchedProductId)}
-              onChange={(e) => onCatalogMappingChange(e.target.value)}
-              className="w-full min-w-0 text-xs font-medium bg-slate-50 border border-slate-300 rounded-md px-2 py-1 text-slate-700 hover:bg-slate-100 cursor-pointer truncate"
-            >
-              <option value="new_product">✨ Create as New Product in Catalog</option>
-              <optgroup label="Link to Existing Catalog Product:">
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.category.toUpperCase()})
-                  </option>
-                ))}
-              </optgroup>
-            </select>
+        <div className="block">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Amount</span>
+          <div className="mt-0.5 w-full font-mono font-black text-sm text-right px-2 py-1.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-900">
+            {fmt(lineAmount)}
           </div>
+        </div>
+      </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 min-w-0">
-            <div>
-              <label className="text-[9px] font-semibold text-slate-400 block mb-0.5">Category</label>
+      <div className="px-3.5 mt-2.5 grid grid-cols-2 gap-2">
+        <label className="block">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              Batch / Tag <span className="text-amber-600">*</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const existingBatches = (products || []).map((p) => p.batchNumber).filter(Boolean) as string[];
+                const fresh = generateBatchNumber(r.productName || r.rawName, undefined, existingBatches, undefined, inwardDate);
+                onUpdateField('batchNumber', fresh);
+              }}
+              className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 flex items-center gap-0.5 cursor-pointer"
+              title="Auto-generate fresh unique batch/tag number (never use old one)"
+            >
+              <Sparkles size={9} /> Auto
+            </button>
+          </div>
+          <input
+            type="text"
+            value={r.batchNumber}
+            onChange={(e) => onUpdateField('batchNumber', e.target.value)}
+            placeholder="Lot / Tag number"
+            className={`mt-0.5 w-full font-mono text-xs border rounded-lg px-2 py-1.5 ${
+              !(r.batchNumber || '').trim()
+                ? 'border-amber-400 bg-amber-50 focus:border-amber-500'
+                : 'border-slate-300 focus:border-sky-500'
+            } focus:ring-1 focus:ring-sky-500`}
+          />
+        </label>
+        <label className="block">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+            Expiry <span className="text-amber-600">*</span>
+          </span>
+          <input
+            type="date"
+            value={r.expiry}
+            onChange={(e) => onUpdateField('expiry', e.target.value)}
+            className={`mt-0.5 w-full text-xs border rounded-lg px-2 py-1.5 ${
+              !r.expiry
+                ? 'border-amber-400 bg-amber-50 focus:border-amber-500'
+                : 'border-slate-300 focus:border-sky-500'
+            } focus:ring-1 focus:ring-sky-500`}
+          />
+        </label>
+      </div>
+
+      <div className="px-3.5 mt-2.5">
+        <button
+          type="button"
+          onClick={() => setSchemeOpen((v) => !v)}
+          className="w-full flex items-center justify-between text-[11px] font-bold text-slate-600 hover:text-violet-700 py-1 cursor-pointer"
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <Gift size={13} className={hasScheme ? 'text-violet-600' : 'text-slate-400'} />
+            Supplier scheme
+            {hasScheme ? (
+              <span className="text-violet-700 font-black">· active</span>
+            ) : (
+              <span className="text-slate-400 font-normal">· optional (B1G1 / free)</span>
+            )}
+          </span>
+          {schemeOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        </button>
+
+        {schemeOpen && (
+          <div className="mt-1.5 p-2.5 rounded-xl border border-violet-200 bg-violet-50/60 space-y-2">
+            <div className="flex flex-wrap gap-1.5">
+              {(
+                [
+                  { id: 'none', label: 'None' },
+                  { id: 'b2g1', label: 'B2G1' },
+                  { id: 'free_cases', label: 'Free cases' },
+                  { id: 'discount_percent', label: '% off' },
+                  { id: 'discount_flat', label: '₹/cs off' },
+                ] as { id: GrnSchemeType; label: string }[]
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => {
+                    if (opt.id === 'b2g1') {
+                      applyB2g1(r.schemeBuyQty || 2, r.schemeFreeQty || 1);
+                    } else {
+                      onUpdateField('schemeType', opt.id);
+                      if (opt.id === 'none') {
+                        onUpdateField('freeQty', 0);
+                        onUpdateField('discountPercent', 0);
+                        onUpdateField('discountFlat', 0);
+                        onUpdateField('discountAmount', 0);
+                        onUpdateField('schemeText', '');
+                      }
+                    }
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border cursor-pointer transition-colors ${
+                    r.schemeType === opt.id
+                      ? 'bg-violet-600 text-white border-violet-600'
+                      : 'bg-white text-slate-700 border-slate-300 hover:border-violet-300'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {r.schemeType === 'b2g1' && (
+              <div className="flex items-center gap-2 text-xs flex-wrap">
+                <span className="text-violet-800 font-semibold">Buy</span>
+                <input
+                  type="number" inputMode="numeric"
+                  min={1}
+                  value={r.schemeBuyQty || 2}
+                  onChange={(e) => applyB2g1(Math.max(1, parseInt(e.target.value, 10) || 1), r.schemeFreeQty || 1)}
+                  className="w-12 font-mono font-bold text-center border border-violet-300 rounded-lg px-1 py-1 bg-white"
+                />
+                <span className="text-violet-800 font-semibold">Get</span>
+                <input
+                  type="number" inputMode="numeric"
+                  min={1}
+                  value={r.schemeFreeQty || 1}
+                  onChange={(e) => applyB2g1(r.schemeBuyQty || 2, Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  className="w-12 font-mono font-bold text-center border border-violet-300 rounded-lg px-1 py-1 bg-white"
+                />
+                <span className="text-violet-800 font-semibold">Free</span>
+                <span className="text-[10px] text-violet-700 ml-auto">
+                  → Free {r.freeQty || 0} of {r.qty} · eff. ₹{fmt(effectiveCost)}/cs
+                </span>
+              </div>
+            )}
+
+            {r.schemeType === 'discount_percent' && (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-violet-800 font-semibold">Discount %</span>
+                <input
+                  type="number" inputMode="decimal"
+                  min={0}
+                  step="0.1"
+                  value={r.discountPercent}
+                  onChange={(e) => {
+                    const p = parseFloat(e.target.value) || 0;
+                    onUpdateField('discountPercent', p);
+                    onUpdateField('discountAmount', (r.qty * r.unitPrice * p) / 100);
+                  }}
+                  className="w-20 font-mono font-bold text-right border border-violet-300 rounded-lg px-2 py-1 bg-white"
+                />
+              </div>
+            )}
+
+            {r.schemeType === 'discount_flat' && (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-violet-800 font-semibold">₹ off / case</span>
+                <input
+                  type="number" inputMode="decimal"
+                  min={0}
+                  step="0.01"
+                  value={r.discountFlat}
+                  onChange={(e) => {
+                    const f = parseFloat(e.target.value) || 0;
+                    onUpdateField('discountFlat', f);
+                    onUpdateField('discountAmount', f * r.qty);
+                  }}
+                  className="w-24 font-mono font-bold text-right border border-violet-300 rounded-lg px-2 py-1 bg-white"
+                />
+              </div>
+            )}
+
+            <p className="text-[10px] text-violet-800/80 leading-relaxed">
+              Use <strong>B2G1 / Free</strong> when free cases arrive as stock (correct qty + cost). Use the header
+              <strong> Bill Discount</strong> for invoice total discounts that are not free stock (e.g. ₹15,467).
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="px-3.5 mt-1.5 pb-3 border-t border-slate-100 pt-1.5">
+        <button
+          type="button"
+          onClick={onToggleExpand}
+          className="w-full flex items-center justify-between text-[11px] font-bold text-slate-500 hover:text-sky-700 py-1 cursor-pointer"
+        >
+          <span>
+            More · GST {r.cgstPercent + r.sgstPercent}% · HSN {r.hsn || '—'} · eff. ₹{fmt(effectiveCost)}/cs
+          </span>
+          {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+        </button>
+
+        {isExpanded && (
+          <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+            <label className="block">
+              <span className="text-[10px] font-bold text-slate-400 uppercase">Category</span>
               <select
                 value={r.category}
                 onChange={(e) => onUpdateField('category', e.target.value as CategoryKey)}
-                className="w-full border border-slate-300 rounded px-1.5 py-0.5 text-xs bg-white text-slate-800 font-medium truncate"
-                title="Category"
+                className="mt-0.5 w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
               >
                 {Object.keys(CATS).map((cat) => (
                   <option key={cat} value={cat}>
@@ -209,393 +475,39 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = ({
                   </option>
                 ))}
               </select>
-            </div>
-
-            <div>
-              <label className="text-[9px] font-semibold text-slate-400 block mb-0.5">Pack Type</label>
+            </label>
+            <label className="block">
+              <span className="text-[10px] font-bold text-slate-400 uppercase">Pack</span>
               <select
                 value={r.pack}
                 onChange={(e) => onUpdateField('pack', e.target.value)}
-                className="w-full border border-slate-300 rounded px-1.5 py-0.5 text-xs bg-white text-slate-800 font-medium"
-                title="Pack"
+                className="mt-0.5 w-full border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
               >
                 <option value="PET">PET</option>
                 <option value="CAN">CAN</option>
                 <option value="RGB">RGB</option>
               </select>
-            </div>
-
-            <div>
-              <label className="text-[9px] font-semibold text-slate-400 block mb-0.5">Volume</label>
-              <div className="flex items-center gap-0.5">
+            </label>
+            <label className="block">
+              <span className="text-[10px] font-bold text-slate-400 uppercase">ml / units</span>
+              <div className="mt-0.5 flex gap-1">
                 <input
-                  type="number"
+                  type="number" inputMode="decimal"
                   value={r.volume}
                   onChange={(e) => onUpdateField('volume', parseInt(e.target.value, 10) || 0)}
-                  className="w-full px-1.5 py-0.5 border border-slate-300 rounded text-xs text-slate-800 bg-white text-right font-mono"
-                  title="Volume in ml"
+                  className="w-1/2 border border-slate-300 rounded-lg px-2 py-1.5 font-mono text-right"
                 />
-                <span className="text-[10px] text-slate-500 font-medium shrink-0">ml</span>
-              </div>
-            </div>
-
-            <div>
-              <label className="text-[9px] font-semibold text-slate-400 block mb-0.5">Pack Size (Bottles/Cr)</label>
-              <div className="flex items-center gap-0.5">
                 <input
-                  type="number"
-                  min="1"
+                  type="number" inputMode="numeric"
+                  min={1}
                   value={r.unitsPerCrate || 24}
                   onChange={(e) => onUpdateField('unitsPerCrate', Math.max(1, parseInt(e.target.value, 10) || 1))}
-                  className="w-full px-1.5 py-0.5 border border-slate-300 rounded text-xs text-slate-800 bg-white text-right font-mono font-bold"
-                  title="Units per crate / pack size"
+                  className="w-1/2 border border-slate-300 rounded-lg px-2 py-1.5 font-mono text-right"
                 />
-                <span className="text-[10px] text-slate-500 font-medium shrink-0">btl</span>
               </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* COSTING & FINANCIALS BREAKDOWN BENTO */}
-      <div className="space-y-2">
-        {/* ROW 1: INVOICE UNIT RATE (EX-GST & INCL-GST) & BILLED QTY */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200 text-xs">
-          {/* Billed Qty */}
-          <div>
-            <span className="text-[9px] uppercase font-bold text-slate-500 block mb-0.5">Billed Qty</span>
-            <div className="flex items-center gap-1">
-              <input
-                type="number"
-                min="1"
-                value={r.qty}
-                onChange={(e) => {
-                  const newQty = Math.max(1, parseInt(e.target.value, 10) || 1);
-                  onUpdateField('qty', newQty);
-                  if (r.schemeType === 'b2g1') {
-                    const buy = Math.max(1, r.schemeBuyQty || 2);
-                    const free = Math.max(1, r.schemeFreeQty || 1);
-                    onUpdateField('freeQty', Math.floor(newQty / buy) * free);
-                  }
-                }}
-                className="font-mono font-bold text-slate-900 bg-white border border-slate-300 rounded px-1.5 py-1 w-full text-right focus:border-indigo-500 text-xs shadow-2xs"
-              />
-              <span className="text-[10px] text-slate-500 font-medium shrink-0">cs</span>
-            </div>
-            {breakdown.freeQty > 0 && (
-              <span className="text-[9px] text-purple-700 font-semibold mt-0.5 block">
-                +{breakdown.freeQty} free ({breakdown.totalReceivedQty} total)
-              </span>
-            )}
-          </div>
-
-          {/* Invoice Unit Rate (ex-GST & incl-GST) */}
-          <div className="col-span-1 sm:col-span-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[9px] uppercase font-bold text-slate-500">Invoice Rate (Per Crate)</span>
-              <span className="text-[9px] font-mono font-semibold text-slate-600">
-                GST: {breakdown.gstPercent}% (+₹{money(breakdown.gstAmountPerCrate)})
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-1.5 mt-1">
-              {/* Rate Incl-GST Prominent */}
-              <div className="bg-white border border-indigo-200 rounded px-2 py-1">
-                <span className="text-[8px] uppercase font-bold text-indigo-700 block">Rate Incl. GST</span>
-                <div className="font-mono font-extrabold text-indigo-900 text-xs sm:text-sm">
-                  ₹{money(breakdown.invoiceRateInclGst)}
-                  <span className="text-[9px] font-normal text-indigo-500">/cr</span>
-                </div>
-                <div className="text-[9px] font-mono text-indigo-700">
-                  ₹{money(breakdown.invoiceUnitRateBottleInclGst)}/btl
-                </div>
-              </div>
-
-              {/* Base Ex-GST Editable */}
-              <div className="bg-white border border-slate-300 rounded px-2 py-1">
-                <span className="text-[8px] uppercase font-bold text-slate-500 block">Base Ex-GST</span>
-                <div className="flex items-center gap-0.5">
-                  <span className="text-slate-400 font-medium text-[10px]">₹</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={r.unitPrice}
-                    onChange={(e) => onUpdateField('unitPrice', Math.max(0, parseFloat(e.target.value) || 0))}
-                    className="font-mono font-bold text-slate-900 bg-transparent w-full text-right focus:outline-hidden text-xs"
-                  />
-                  <span className="text-[9px] text-slate-400">/cr</span>
-                </div>
-                <div className="text-[9px] font-mono text-slate-500 text-right">
-                  ₹{money(breakdown.invoiceUnitRateBottleExGst)}/btl
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* SCHEME REVIEW PANEL */}
-        <div className="bg-purple-50/80 border border-purple-200 rounded-lg p-2.5 text-xs flex flex-col gap-2">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <span className="font-bold text-purple-950 text-[11px] flex items-center gap-1.5">
-              <Tag size={12} className="text-purple-600" />
-              Scheme Review
-              <span className="text-[9px] font-normal text-purple-600 bg-purple-100 px-1 rounded">
-                Included in goods received · Zero double-count
-              </span>
-            </span>
-            <select
-              value={r.schemeType}
-              onChange={(e) => {
-                const newScheme = e.target.value as GrnSchemeType;
-                onUpdateField('schemeType', newScheme);
-                if (newScheme === 'b2g1') {
-                  const buy = Math.max(1, r.schemeBuyQty || 2);
-                  const free = Math.max(1, r.schemeFreeQty || 1);
-                  onUpdateField('freeQty', Math.floor(r.qty / buy) * free);
-                  onUpdateField('schemeText', `Buy ${buy} Get ${free} Free`);
-                } else if (newScheme === 'none') {
-                  onUpdateField('freeQty', 0);
-                  onUpdateField('discountPercent', 0);
-                  onUpdateField('discountFlat', 0);
-                  onUpdateField('discountAmount', 0);
-                  onUpdateField('schemeText', '');
-                }
-              }}
-              className="font-bold text-purple-950 text-xs bg-white border border-purple-300 rounded px-2 py-0.5 focus:border-purple-500 cursor-pointer shadow-2xs"
-            >
-              <option value="b2g1">🎁 Buy X Get Y Free (e.g. Buy 2 Get 1)</option>
-              <option value="free_cases">+ Direct Free Bonus Crates</option>
-              <option value="discount_percent">% Percent Scheme Discount</option>
-              <option value="discount_flat">₹ Flat Scheme / Case</option>
-              <option value="none">Standard (No Scheme)</option>
-            </select>
-          </div>
-
-          {/* Scheme Specific Interactive Controls */}
-          {r.schemeType === 'b2g1' && (
-            <div className="bg-white border border-purple-200 rounded-md p-2 flex flex-col gap-2">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-purple-900 font-bold text-xs">Buy</span>
-                <input
-                  type="number"
-                  min="1"
-                  value={r.schemeBuyQty || 2}
-                  onChange={(e) => {
-                    const newBuy = Math.max(1, parseInt(e.target.value, 10) || 1);
-                    onUpdateField('schemeBuyQty', newBuy);
-                    const freePer = Math.max(1, r.schemeFreeQty || 1);
-                    const isInc = (r.schemeMode || 'inclusive') === 'inclusive';
-                    const calculated = isInc
-                      ? Math.floor(r.qty / (newBuy + freePer)) * freePer
-                      : Math.floor(r.qty / newBuy) * freePer;
-                    onUpdateField('freeQty', calculated);
-                    onUpdateField('schemeText', `Buy ${newBuy} Get ${freePer} Free`);
-                  }}
-                  className="font-mono font-bold text-purple-900 text-xs bg-purple-50 border border-purple-300 rounded px-2 py-0.5 w-12 text-center"
-                />
-                <span className="text-purple-900 font-bold text-xs">Get</span>
-                <input
-                  type="number"
-                  min="1"
-                  value={r.schemeFreeQty || 1}
-                  onChange={(e) => {
-                    const newFree = Math.max(1, parseInt(e.target.value, 10) || 1);
-                    onUpdateField('schemeFreeQty', newFree);
-                    const buy = Math.max(1, r.schemeBuyQty || 2);
-                    const calculated = Math.floor(r.qty / (buy + newFree)) * newFree;
-                    onUpdateField('freeQty', calculated);
-                    onUpdateField('schemeText', `Buy ${buy} Get ${newFree} Free`);
-                  }}
-                  className="font-mono font-bold text-purple-900 text-xs bg-purple-50 border border-purple-300 rounded px-2 py-0.5 w-12 text-center"
-                />
-                <span className="text-purple-900 font-bold text-xs">Free</span>
-
-                <div className="ml-auto flex items-center gap-2">
-                  <span className="text-[10px] text-slate-500 font-medium">Calculated Free:</span>
-                  <input
-                    type="number"
-                    min="0"
-                    value={r.freeQty}
-                    onChange={(e) => onUpdateField('freeQty', Math.max(0, parseInt(e.target.value, 10) || 0))}
-                    className="font-mono font-extrabold text-emerald-800 text-xs bg-emerald-50 border border-emerald-300 rounded px-2 py-0.5 w-16 text-right"
-                    title="Override free crates if needed"
-                  />
-                  <span className="text-emerald-700 font-semibold text-xs">cs</span>
-                </div>
-              </div>
-
-              {/* Scheme Mode: Locked to Inclusive */}
-              <div className="flex items-center justify-between gap-2 p-1.5 bg-purple-50/70 border border-purple-200 rounded text-[11px]">
-                <div className="flex items-center gap-1.5 text-purple-950 font-semibold">
-                  <span>Billing Mode:</span>
-                  <select
-                    value="inclusive"
-                    disabled
-                    className="font-bold text-purple-950 text-[11px] bg-white border border-purple-300 rounded px-1.5 py-0.5 cursor-not-allowed"
-                  >
-                    <option value="inclusive">Inclusive in Billed (50 free out of 150)</option>
-                  </select>
-                </div>
-                <span className="text-[10px] text-purple-700 font-medium">
-                  Free is credited within billed qty (Total received = Invoiced crates)
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between text-[11px] text-purple-900 pt-1 border-t border-purple-100">
-                <span>
-                  Billed: <strong className="font-mono">{r.qty}</strong> (
-                  <strong className="font-mono text-indigo-700">{breakdown.paidQty} Paid</strong> +{' '}
-                  <strong className="font-mono text-emerald-700">{breakdown.freeQty} Free</strong>) = Total Received:{' '}
-                  <strong className="font-mono text-slate-900">{breakdown.totalReceivedQty} crates</strong>
-                </span>
-                <span className="font-semibold text-indigo-700">
-                  Effective Cost: ₹{money(breakdown.effectiveCostPerCrateInclGst)}/cr (₹{money(breakdown.effectiveUnitRateInclGst)}/btl)
-                </span>
-              </div>
-            </div>
-          )}
-
-          {r.schemeType === 'free_cases' && (
-            <div className="flex items-center gap-2 p-1.5 bg-white border border-purple-200 rounded text-xs">
-              <span className="text-purple-900 font-bold">Free Bonus Crates:</span>
-              <input
-                type="number"
-                min="0"
-                value={r.freeQty}
-                onChange={(e) => onUpdateField('freeQty', Math.max(0, parseInt(e.target.value, 10) || 0))}
-                className="font-mono font-bold text-purple-900 text-xs bg-purple-50 border border-purple-300 rounded px-2 py-0.5 w-16 text-right"
-              />
-              <span className="text-emerald-700 font-bold ml-auto text-[11px]">
-                Total: {breakdown.totalReceivedQty} crates received
-              </span>
-            </div>
-          )}
-
-          {r.schemeType === 'discount_percent' && (
-            <div className="flex items-center gap-2 p-1.5 bg-white border border-purple-200 rounded text-xs">
-              <span className="text-purple-900 font-bold">Discount:</span>
-              <input
-                type="number"
-                min="0"
-                max="100"
-                step="0.1"
-                value={r.discountPercent}
-                onChange={(e) => onUpdateField('discountPercent', Math.max(0, parseFloat(e.target.value) || 0))}
-                className="font-mono font-bold text-purple-900 text-xs bg-purple-50 border border-purple-300 rounded px-1.5 py-0.5 w-14 text-right"
-              />
-              <span className="text-purple-900 font-bold">%</span>
-              <span className="text-rose-600 font-mono font-bold ml-auto text-xs">
-                -₹{money(breakdown.discountAmount)}
-              </span>
-            </div>
-          )}
-
-          {r.schemeType === 'discount_flat' && (
-            <div className="flex items-center gap-2 p-1.5 bg-white border border-purple-200 rounded text-xs">
-              <span className="text-purple-900 font-bold">Flat: ₹</span>
-              <input
-                type="number"
-                min="0"
-                step="0.5"
-                value={r.discountFlat}
-                onChange={(e) => onUpdateField('discountFlat', Math.max(0, parseFloat(e.target.value) || 0))}
-                className="font-mono font-bold text-purple-900 text-xs bg-purple-50 border border-purple-300 rounded px-1.5 py-0.5 w-16 text-right"
-              />
-              <span className="text-slate-500 text-[11px]">/case</span>
-              <span className="text-rose-600 font-mono font-bold ml-auto text-xs">
-                -₹{money(breakdown.discountAmount)}
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* ROW 3: EFFECTIVE RATES, INWARD COST ALLOCATION & FINAL LANDED COST */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-gradient-to-r from-slate-50 to-emerald-50/50 p-2.5 rounded-lg border border-emerald-200/80 text-xs">
-          {/* Effective Scheme-Adjusted Purchase Rate */}
-          <div className="min-w-0 bg-white p-2 rounded-md border border-slate-200 shadow-2xs">
-            <span className="text-[9px] uppercase font-bold text-indigo-800 block truncate">
-              Effective Purchase Rate
-            </span>
-            <div className="font-mono font-extrabold text-indigo-950 text-sm truncate">
-              ₹{money(breakdown.effectiveCostPerCrateInclGst)}
-              <span className="text-[10px] font-normal text-slate-500">/cr</span>
-            </div>
-            <div className="text-[10px] font-mono text-indigo-700 font-semibold truncate">
-              ₹{money(breakdown.effectiveUnitRateInclGst)}/btl (incl GST)
-            </div>
-            <div className="text-[9px] text-slate-400 font-mono mt-0.5 truncate">
-              Ex-GST: ₹{money(breakdown.effectiveCostPerCrateExGst)}/cr · ₹{money(breakdown.effectiveUnitRateExGst)}/btl
-            </div>
-          </div>
-
-          {/* Allocated Inward-to-Godown Cost */}
-          <div className="min-w-0 bg-white p-2 rounded-md border border-amber-200 shadow-2xs">
-            <span className="text-[9px] uppercase font-bold text-amber-800 block flex items-center gap-1 truncate">
-              <Truck size={10} className="text-amber-600" />
-              Inward-to-Godown Cost
-            </span>
-            <div className="font-mono font-extrabold text-amber-950 text-sm truncate">
-              +₹{money(inwardCostPerCrate)}
-              <span className="text-[10px] font-normal text-slate-500">/cr</span>
-            </div>
-            <div className="text-[10px] font-mono text-amber-800 font-semibold truncate">
-              +₹{money(breakdown.unitsPerCrate > 0 ? inwardCostPerCrate / breakdown.unitsPerCrate : 0)}/btl
-            </div>
-            <div className="text-[9px] text-amber-700 mt-0.5 truncate">
-              Transport, labour & freight share
-            </div>
-          </div>
-
-          {/* Final Landed Cost */}
-          <div className="min-w-0 bg-emerald-600 text-white p-2 rounded-md shadow-xs flex flex-col justify-between">
-            <div>
-              <span className="text-[9px] uppercase font-bold text-emerald-100 block truncate">
-                Final Landed Cost (All Costs)
-              </span>
-              <div className="font-mono font-black text-white text-base truncate">
-                ₹{money(breakdown.landedCostPerCrate)}
-                <span className="text-[10px] font-normal text-emerald-200">/cr</span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between text-[10px] font-mono border-t border-emerald-500 pt-1 mt-1">
-              <span className="font-bold text-emerald-100">
-                ₹{money(breakdown.landedCostPerUnit)}/btl
-              </span>
-              <span className="text-[9px] text-emerald-200">
-                ex-GST: ₹{money(breakdown.landedCostPerCrateExGst)}/cr
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* LINE TOTAL & TAXES SUMMARY BAR */}
-        <div className="flex items-center justify-between bg-slate-100 px-2.5 py-1.5 rounded-md text-xs font-mono">
-          <span className="text-slate-600 font-medium text-[11px]">
-            Taxable Base: <strong>₹{money(breakdown.taxableAmount)}</strong> + GST ({breakdown.gstPercent}%):{' '}
-            <strong>₹{money(breakdown.taxAmount)}</strong>
-          </span>
-          <span className="text-slate-900 font-extrabold text-xs">
-            Invoice Line Total: ₹{money(breakdown.lineTotal)}
-          </span>
-        </div>
-      </div>
-
-      {/* COLLAPSIBLE DETAILS DRAWER: TAX, WHOLESALE & BATCH */}
-      <div className="border-t pt-2 border-slate-200">
-        <button
-          type="button"
-          onClick={onToggleExpand}
-          className="w-full flex items-center justify-between text-[11px] font-semibold text-slate-600 hover:text-indigo-600 transition-colors py-0.5 cursor-pointer"
-        >
-          <span>GST Rate, Wholesale Rate & Batch Lots</span>
-          {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-        </button>
-
-        {isExpanded && (
-          <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-            <div>
-              <span className="text-[10px] text-slate-500 font-semibold block mb-0.5">GST Rate Split</span>
+            </label>
+            <label className="block">
+              <span className="text-[10px] font-bold text-slate-400 uppercase">GST</span>
               <select
                 value={`${r.cgstPercent},${r.sgstPercent}`}
                 onChange={(e) => {
@@ -603,75 +515,42 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = ({
                   onUpdateField('cgstPercent', cg);
                   onUpdateField('sgstPercent', sg);
                 }}
-                className="w-full font-mono text-[11px] bg-white border border-slate-300 rounded px-1.5 py-1 text-slate-800"
+                className="mt-0.5 w-full font-mono border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
               >
-                <option value="20,20">40% (20% CGST + 20% SGST) Carbonated</option>
-                <option value="2.5,2.5">5% (2.5% CGST + 2.5% SGST) Juices</option>
-                <option value="9,9">18% (9% CGST + 9% SGST) Water</option>
-                <option value="6,6">12% (6% CGST + 6% SGST) Dairy</option>
-                <option value="0,0">0% Exempt</option>
+                <option value="20,20">40% carbonated</option>
+                <option value="2.5,2.5">5% juices</option>
+                <option value="9,9">18% water</option>
+                <option value="6,6">12%</option>
+                <option value="0,0">0% exempt</option>
               </select>
-            </div>
-
-            <div>
-              <span className="text-[10px] text-slate-500 font-semibold block mb-0.5">Wholesale Selling Rate (₹)</span>
-              <input
-                type="number"
-                value={r.wholesaleRate}
-                onChange={(e) => onUpdateField('wholesaleRate', parseFloat(e.target.value) || 0)}
-                className="w-full font-mono text-[11px] bg-white border border-slate-300 rounded px-2 py-1 text-slate-800 text-right font-bold"
-              />
-            </div>
-
-            <div>
-              <span className="text-[10px] text-slate-500 font-semibold block mb-0.5">Retail / MRP Rate (₹)</span>
-              <input
-                type="number"
-                value={r.retailRate}
-                onChange={(e) => onUpdateField('retailRate', parseFloat(e.target.value) || 0)}
-                className="w-full font-mono text-[11px] bg-white border border-slate-300 rounded px-2 py-1 text-slate-800 text-right font-bold"
-              />
-            </div>
-
-            <div>
-              <span className="text-[10px] text-slate-500 font-semibold block mb-0.5">HSN Code</span>
+            </label>
+            <label className="block">
+              <span className="text-[10px] font-bold text-slate-400 uppercase">HSN</span>
               <input
                 type="text"
                 value={r.hsn}
                 onChange={(e) => onUpdateField('hsn', e.target.value)}
-                className="w-full font-mono text-[11px] bg-white border border-slate-300 rounded px-2 py-1 text-slate-800"
+                className="mt-0.5 w-full font-mono border border-slate-300 rounded-lg px-2 py-1.5"
               />
-            </div>
-
-            <div className="col-span-2">
-              <span className="text-[10px] text-slate-500 font-semibold block mb-0.5">Lot Batch #</span>
+            </label>
+            <label className="block">
+              <span className="text-[10px] font-bold text-slate-400 uppercase">Wholesale ₹</span>
               <input
-                type="text"
-                value={r.batchNumber}
-                onChange={(e) => onUpdateField('batchNumber', e.target.value)}
-                className="w-full font-mono text-[11px] bg-white border border-slate-300 rounded px-2 py-1 text-slate-800"
+                type="number" inputMode="decimal"
+                value={r.wholesaleRate}
+                onChange={(e) => onUpdateField('wholesaleRate', parseFloat(e.target.value) || 0)}
+                className="mt-0.5 w-full font-mono border border-slate-300 rounded-lg px-2 py-1.5 text-right"
               />
-            </div>
-
-            <div>
-              <span className="text-[10px] text-slate-500 font-semibold block mb-0.5">Mfg Date</span>
+            </label>
+            <label className="block">
+              <span className="text-[10px] font-bold text-slate-400 uppercase">MRP ₹</span>
               <input
-                type="date"
-                value={r.mfgDate}
-                onChange={(e) => onUpdateField('mfgDate', e.target.value)}
-                className="w-full text-[11px] bg-white border border-slate-300 rounded px-1.5 py-1 text-slate-800"
+                type="number" inputMode="decimal"
+                value={r.retailRate}
+                onChange={(e) => onUpdateField('retailRate', parseFloat(e.target.value) || 0)}
+                className="mt-0.5 w-full font-mono border border-slate-300 rounded-lg px-2 py-1.5 text-right"
               />
-            </div>
-
-            <div>
-              <span className="text-[10px] text-slate-500 font-semibold block mb-0.5">Expiry Date</span>
-              <input
-                type="date"
-                value={r.expiry}
-                onChange={(e) => onUpdateField('expiry', e.target.value)}
-                className="w-full text-[11px] bg-white border border-slate-300 rounded px-1.5 py-1 text-slate-800"
-              />
-            </div>
+            </label>
           </div>
         )}
       </div>

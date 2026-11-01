@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDownToLine,
   ArrowRightLeft,
   Boxes,
+  Package,
   Building2,
   Calendar,
   CheckCircle2,
@@ -16,8 +17,10 @@ import {
   FileText,
   Filter,
   Gift,
+  Info,
   Plus,
   PlusCircle,
+  RefreshCw,
   RotateCcw,
   Search,
   SlidersHorizontal,
@@ -31,13 +34,21 @@ import { CATS } from '../../constants/initialData';
 import { useLedger } from '../../context/LedgerContext';
 import { GRN } from '../../types';
 import { generateSkuId, money } from '../../utils/billing';
+import { collectExpiryAlerts } from '../../utils/fefo';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
+import { EmptyState } from '../common/EmptyState';
+import { LoadingSkeleton } from '../common/LoadingSkeleton';
 import { AuditView } from './AuditView';
 import { BulkInwardModal } from './BulkInwardModal';
 import { InwardConsignmentModal } from './InwardConsignmentModal';
 import { WarehousesView } from './WarehousesView';
+import { DispositionsView } from './DispositionsView';
+import { trackedStage } from './ExpiryReturnsTracker';
+import { InfoTip } from "../common/InfoTip";
+import { todayISO } from "../../utils/dateLocal";
+import { downloadAllGrnsCsv, downloadSingleGrnCsv } from '../../utils/grnCsvExport';
 
-export type InventorySubTab = 'realtime' | 'consignments' | 'audit' | 'transfers' | 'warehouses' | 'batches';
+export type InventorySubTab = 'realtime' | 'consignments' | 'audit' | 'transfers' | 'warehouses' | 'batches' | 'dispositions';
 
 interface InventoryViewProps {
   initialSubTab?: InventorySubTab;
@@ -55,27 +66,77 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
     inventoryBatches,
     audits,
     stockTransfers,
+    supplierCreditNotes,
     palette,
     fz,
     scale,
     billingSettings,
     setTab,
+    pullFromCloud,
+    addStockTransfer,
+    warehouseStock,
+    productBatchLines,
+    saveAudit,
+    bookStock,
+    inventoryDispositions,
   } = useLedger();
 
-  const resolveTab = (tabName?: InventorySubTab): 'realtime' | 'consignments' | 'audit' | 'transfers' => {
+  // Customer expired returns still waiting for a decision / handover (badge on the Returns tab).
+  const pendingExpiryReturns = (inventoryDispositions || []).filter(
+    (d) => !!d.returnTracking && trackedStage(d) === 'held',
+  ).length;
+
+  const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+  const [cloudSyncMsg, setCloudSyncMsg] = useState<string | null>(null);
+
+  const resolveTab = (tabName?: InventorySubTab): 'realtime' | 'consignments' | 'audit' | 'transfers' | 'dispositions' => {
     if (tabName === 'audit') return 'audit';
     if (tabName === 'transfers' || tabName === 'warehouses' || tabName === 'batches') return 'transfers';
     if (tabName === 'consignments') return 'consignments';
+    if (tabName === 'dispositions') return 'dispositions';
     return 'realtime';
   };
 
-  const [activeTab, setActiveTab] = useState<'realtime' | 'consignments' | 'audit' | 'transfers'>(
+  const [activeTab, setActiveTab] = useState<'realtime' | 'consignments' | 'audit' | 'transfers' | 'dispositions'>(
     resolveTab(initialSubTab)
   );
+  const todayStr = todayISO();
+  const expiryAlerts = React.useMemo(
+    () => collectExpiryAlerts(inventoryBatches, products, todayStr),
+    [inventoryBatches, products, todayStr]
+  );
+
+  const creditReceivedByProduct = useMemo(() => {
+    const map: Record<number, number> = {};
+    for (const cn of supplierCreditNotes || []) {
+      const amt = Number(cn.actualAmount) || 0;
+      if (amt > 0) {
+        if (cn.productId) {
+          const pid = Number(cn.productId);
+          map[pid] = (map[pid] || 0) + amt;
+        } else if (cn.grnId) {
+          const matchBatch = inventoryBatches.find(
+            (b) => b.id.includes(cn.grnId!) || (b.supplierInvoiceNo && cn.grnId!.includes(b.supplierInvoiceNo))
+          );
+          if (matchBatch) {
+            map[matchBatch.productId] = (map[matchBatch.productId] || 0) + amt;
+          }
+        } else if (cn.notes) {
+          for (const p of products) {
+            if (cn.notes.toLowerCase().includes(p.name.toLowerCase())) {
+              map[p.id] = (map[p.id] || 0) + amt;
+            }
+          }
+        }
+      }
+    }
+    return map;
+  }, [supplierCreditNotes, products, inventoryBatches]);
+
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCat, setSelectedCat] = useState<string>('all');
   const [selectedWarehouse, setSelectedWarehouse] = useState<string>('all');
-  const [stockLevelFilter, setStockLevelFilter] = useState<'all' | 'instock' | 'low' | 'out'>('all');
+  const [stockLevelFilter, setStockLevelFilter] = useState<'all' | 'instock' | 'low' | 'out' | 'negative'>('all');
   const [showFilterDropdown, setShowFilterDropdown] = useState(false);
   const filterDropdownRef = useRef<HTMLDivElement | null>(null);
 
@@ -103,11 +164,44 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
   const [expandedBatchProductIds, setExpandedBatchProductIds] = useState<Record<number, boolean>>({});
   const [notification, setNotification] = useState<string | null>(null);
 
+  // ── Multi-line inter-godown transfer (Inventory control → Transfer) ──
+  type TransferLine = { key: string; productId: number; qty: number };
+  const [xferFromId, setXferFromId] = useState('');
+  const [xferToId, setXferToId] = useState('');
+  const [xferLines, setXferLines] = useState<TransferLine[]>([]);
+  const [xferNote, setXferNote] = useState('');
+  const [xferBusy, setXferBusy] = useState(false);
+
+  // ── Stock audit (batch-level, matches Inventory control UI) ──
+  const [auditWhId, setAuditWhId] = useState('');
+  const [auditCounts, setAuditCounts] = useState<Record<string, string>>({});
+  const [auditNote, setAuditNote] = useState('');
+  const [auditSearch, setAuditSearch] = useState('');
+
   useEffect(() => {
     if (initialSubTab) {
       setActiveTab(resolveTab(initialSubTab));
     }
   }, [initialSubTab]);
+
+  useEffect(() => {
+    if (!xferFromId && warehouses[0]?.id) setXferFromId(warehouses[0].id);
+    if (!xferToId && (warehouses[1]?.id || warehouses[0]?.id)) {
+      setXferToId(warehouses[1]?.id || warehouses[0].id);
+    }
+    if (!auditWhId && warehouses[0]?.id) setAuditWhId(warehouses[0].id);
+  }, [warehouses, xferFromId, xferToId, auditWhId]);
+
+  React.useEffect(() => {
+    try {
+      if (sessionStorage.getItem('mrwater_open_dispositions') === 'claims') {
+        sessionStorage.removeItem('mrwater_open_dispositions');
+        setActiveTab('dispositions');
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const cardStyle: React.CSSProperties = {
     backgroundColor: palette.panel,
@@ -140,19 +234,34 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
     setSearchTerm('');
   };
 
+  const negativeStockProducts = useMemo(
+    // remainingStock() is never below 0, so look for an oversold godown instead
+    () => products.filter((p) => productWarehouseStock(p.id).some((r) => r.crates < 0)),
+    [products, productWarehouseStock]
+  );
+  const negativeStockCount = negativeStockProducts.length;
+
   const filteredProducts = products.filter((p) => {
     const sku = p.sku || generateSkuId(p.name, p.category, p.id);
     const matchName =
       p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       sku.toLowerCase().includes(searchTerm.toLowerCase());
     const matchCat = selectedCat === 'all' || p.category === selectedCat;
-    const matchWh = selectedWarehouse === 'all' || p.warehouseId === selectedWarehouse;
+    // Location filter: product has batch or book stock at that godown
+    const matchWh =
+      selectedWarehouse === 'all' ||
+      inventoryBatches.some(
+        (b) => b.productId === p.id && b.warehouseId === selectedWarehouse,
+      ) ||
+      warehouseStock(selectedWarehouse, p.id) !== 0 ||
+      p.warehouseId === selectedWarehouse;
     const rem = remainingStock(p.id);
     const threshold = billingSettings?.lowStockThreshold ?? 10;
     let matchStock = true;
     if (stockLevelFilter === 'instock') matchStock = rem > 0;
     else if (stockLevelFilter === 'low') matchStock = rem <= threshold && rem > 0;
-    else if (stockLevelFilter === 'out') matchStock = rem <= 0;
+    else if (stockLevelFilter === 'out') matchStock = rem === 0;
+    else if (stockLevelFilter === 'negative') matchStock = productWarehouseStock(p.id).some((r) => r.crates < 0);
 
     return matchName && matchCat && matchWh && matchStock;
   });
@@ -186,7 +295,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         `"${sku}"`,
         `"${p.name.replace(/"/g, '""')}"`,
         p.category,
-        p.batchNumber || '',
+        productBatchLines(p.id).filter((b) => b.availableQty > 0).map((b) => b.batchNumber).join(' / '),
         wh ? `"${wh.name.replace(/"/g, '""')}"` : 'Main Depot',
         p.opening,
         inwardSum,
@@ -202,17 +311,23 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `inventory_crates_realtime_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `inventory_crates_realtime_${todayISO()}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
 
-  const totalStockCases = filteredProducts.reduce((s, p) => s + remainingStock(p.id), 0);
-  const totalStockValue = filteredProducts.reduce(
-    (s, p) => s + remainingStock(p.id) * p.wholesale,
-    0
+  const totalStockCases = Math.max(
+    0,
+    filteredProducts.reduce((s, p) => s + Math.max(0, remainingStock(p.id)), 0),
+  );
+  const totalStockValue = Math.max(
+    0,
+    filteredProducts.reduce(
+      (s, p) => s + Math.max(0, remainingStock(p.id)) * p.wholesale,
+      0,
+    ),
   );
   const totalSoldCrates = filteredProducts.reduce((s, p) => s + (soldByProduct[p.id] || 0), 0);
   const lowStockCount = filteredProducts.filter(
@@ -220,1203 +335,1080 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
   ).length;
 
   return (
-    <div id="view-inventory" className="p-3 sm:p-5 lg:p-6 max-w-7xl mx-auto flex flex-col gap-4 sm:gap-5 w-full">
+    <div id="view-inventory" className="mw-workspace flex flex-col gap-4 sm:gap-5 w-full min-w-0 max-w-full">
       {/* Toast Notification */}
       {notification && (
-        <div className="flex items-center gap-2 p-3 bg-emerald-700 text-white rounded-md shadow-md animate-fade-in text-sm font-semibold">
+        <div className="flex items-center gap-2 p-3 bg-[#0d4a3a] text-white rounded-2xl shadow-md animate-fade-in text-sm font-semibold">
           <CheckCircle2 size={18} />
           <span>{notification}</span>
         </div>
       )}
 
-      {/* Header Banner - Responsive fit for all screens */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight" style={{ color: palette.ink }}>
-            Inventory Management
-          </h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Real-time crate tracking, godown stock & inward consignments
-          </p>
+      {/* Workspace header — Inventory & Inward */}
+      <div className="flex flex-col gap-3 w-full min-w-0">
+        <div className="hidden sm:block text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">
+          Workspace <span className="text-slate-300 mx-1">/</span> Inventory
         </div>
-
-        {/* Action Buttons with prominent icons & dynamic screen adaptability */}
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-          {/* Inward Invoice */}
-          <button
-            id="btn-receive-inward"
-            type="button"
-            onClick={() => {
-              setSelectedGrnToEdit(null);
-              setSelectedProductForInward(undefined);
-              setIsInwardModalOpen(true);
-            }}
-            className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white font-bold rounded-lg shadow-xs cursor-pointer transition-all text-xs sm:text-sm whitespace-nowrap"
-            title="Record an inward consignment invoice from supplier or truck"
-          >
-            <PlusCircle size={16} className="shrink-0" />
-            <span>Inward Invoice</span>
-          </button>
-
-          {/* Bulk Inward */}
-          <button
-            id="btn-bulk-inward"
-            type="button"
-            onClick={() => setIsBulkModalOpen(true)}
-            className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-2 border-indigo-200 hover:border-indigo-300 font-bold rounded-lg cursor-pointer transition-all text-xs sm:text-sm whitespace-nowrap shadow-xs"
-            title="Import invoices from PDF, Excel, CSV, or Image"
-          >
-            <Upload size={16} className="shrink-0 text-indigo-700" />
-            <span>Bulk Inward</span>
-          </button>
-
-          {/* Export CSV */}
-          <button
-            id="btn-export-inventory"
-            type="button"
-            onClick={exportInventoryCsv}
-            disabled={products.length === 0}
-            className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3 sm:px-3.5 py-2.5 bg-white hover:bg-slate-50 text-slate-700 border-2 border-slate-300 font-bold rounded-lg cursor-pointer transition-all text-xs sm:text-sm whitespace-nowrap shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
-            title="Export real-time inventory to CSV spreadsheet"
-          >
-            <Download size={16} className="shrink-0 text-slate-600" />
-            <span>Export CSV</span>
-          </button>
+        <div className="flex flex-row items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-xl sm:text-3xl font-bold tracking-tight text-slate-900">
+              Inventory
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-500 mt-0.5 sm:mt-1">
+              {totalStockCases.toLocaleString()} units on hand
+              <span className="hidden sm:inline"> · {grns.length} inward record{grns.length === 1 ? '' : 's'}</span>
+            </p>
+          </div>
         </div>
       </div>
 
-      {/* Quick Metrics Bar - Dynamic 2-col on mobile, 4-col on desktop */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
-        <div className="p-3 sm:p-3.5 border-2 rounded-xl shadow-xs flex flex-col justify-between" style={cardStyle}>
-          <div className="text-[11px] sm:text-xs text-slate-500 font-bold uppercase tracking-wider">Available Stock</div>
-          <div className="text-xl sm:text-2xl font-black mt-1 truncate" style={{ color: palette.navy }}>
-            {totalStockCases}{' '}
-            <span className="text-xs font-semibold text-slate-500">crates</span>
-          </div>
-          {lowStockCount > 0 ? (
-            <div className="text-[11px] font-bold text-rose-600 mt-0.5 flex items-center gap-1">
-              <AlertTriangle size={12} className="shrink-0" /> {lowStockCount} low-stock item(s)
-            </div>
-          ) : (
-            <div className="text-[11px] text-slate-400 mt-0.5 font-medium">All items healthy</div>
-          )}
-        </div>
-
-        <div className="p-3 sm:p-3.5 border-2 rounded-xl shadow-xs flex flex-col justify-between" style={cardStyle}>
-          <div className="text-[11px] sm:text-xs text-slate-500 font-bold uppercase tracking-wider">Inward Invoices</div>
-          <div className="text-xl sm:text-2xl font-black text-blue-900 mt-1 truncate">
-            {grns.length}{' '}
-            <span className="text-xs font-semibold text-slate-500">invoices</span>
-          </div>
-          <div className="text-[11px] text-slate-500 mt-0.5">Logged consignments</div>
-        </div>
-
-        <div className="p-3 sm:p-3.5 border-2 rounded-xl shadow-xs flex flex-col justify-between" style={cardStyle}>
-          <div className="text-[11px] sm:text-xs text-slate-500 font-bold uppercase tracking-wider">Godown Locations</div>
-          <div className="text-xl sm:text-2xl font-black text-indigo-900 mt-1 truncate">
-            {warehouses.length}{' '}
-            <span className="text-xs font-semibold text-slate-500">facilities</span>
-          </div>
-          <div className="text-[11px] text-slate-500 mt-0.5">Central & regional depots</div>
-        </div>
-
-        <div className="p-3 sm:p-3.5 border-2 rounded-xl shadow-xs flex flex-col justify-between" style={cardStyle}>
-          <div className="text-[11px] sm:text-xs text-slate-500 font-bold uppercase tracking-wider">Inventory Valuation</div>
-          <div className="text-xl sm:text-2xl font-black text-emerald-800 mt-1 truncate">
-            ₹{money(totalStockValue)}
-          </div>
-          <div className="text-[11px] text-slate-500 mt-0.5">At wholesale rate</div>
-        </div>
-      </div>
-
-      {/* Sub-Tab Navigation - Dynamic 2x2 grid on mobile, sleek 1x4 segmented row on tablet/desktop */}
-      <div className="w-full bg-slate-100/90 p-1 sm:p-1.5 rounded-xl border-2 border-slate-200">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 sm:gap-1.5">
-          {/* Live Stock Tab */}
-          <button
-            type="button"
-            id="tab-live-stock"
-            onClick={() => setActiveTab('realtime')}
-            className={`flex items-center justify-between gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-2 sm:py-2.5 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer border ${
-              activeTab === 'realtime'
-                ? 'bg-white text-blue-900 border-blue-200 shadow-sm ring-1 ring-blue-500/20'
-                : 'bg-transparent text-slate-600 hover:text-slate-900 hover:bg-white/60 border-transparent'
-            }`}
-          >
-            <div className="flex items-center gap-1.5 min-w-0 truncate">
-              <Boxes size={16} className={`shrink-0 ${activeTab === 'realtime' ? 'text-blue-700' : 'text-slate-400'}`} />
-              <span className="truncate">Live Stock</span>
-            </div>
-            <span
-              className={`text-[10px] sm:text-[11px] font-mono font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
-                activeTab === 'realtime' ? 'bg-blue-100 text-blue-800' : 'bg-slate-200 text-slate-700'
-              }`}
-            >
-              {products.length}
-            </span>
-          </button>
-
-          {/* Inward Invoices Tab */}
-          <button
-            type="button"
-            id="tab-inward-invoices"
-            onClick={() => setActiveTab('consignments')}
-            className={`flex items-center justify-between gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-2 sm:py-2.5 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer border ${
-              activeTab === 'consignments'
-                ? 'bg-white text-blue-900 border-blue-200 shadow-sm ring-1 ring-blue-500/20'
-                : 'bg-transparent text-slate-600 hover:text-slate-900 hover:bg-white/60 border-transparent'
-            }`}
-          >
-            <div className="flex items-center gap-1.5 min-w-0 truncate">
-              <ArrowDownToLine size={16} className={`shrink-0 ${activeTab === 'consignments' ? 'text-blue-700' : 'text-slate-400'}`} />
-              <span className="truncate">Inward Invoices</span>
-            </div>
-            <span
-              className={`text-[10px] sm:text-[11px] font-mono font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
-                activeTab === 'consignments' ? 'bg-blue-100 text-blue-800' : 'bg-slate-200 text-slate-700'
-              }`}
-            >
-              {grns.length}
-            </span>
-          </button>
-
-          {/* Physical Stock Audit Tab */}
-          <button
-            type="button"
-            id="tab-stock-audit"
-            onClick={() => setActiveTab('audit')}
-            className={`flex items-center justify-between gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-2 sm:py-2.5 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer border ${
-              activeTab === 'audit'
-                ? 'bg-white text-blue-900 border-blue-200 shadow-sm ring-1 ring-blue-500/20'
-                : 'bg-transparent text-slate-600 hover:text-slate-900 hover:bg-white/60 border-transparent'
-            }`}
-          >
-            <div className="flex items-center gap-1.5 min-w-0 truncate">
-              <ClipboardCheck size={16} className={`shrink-0 ${activeTab === 'audit' ? 'text-blue-700' : 'text-slate-400'}`} />
-              <span className="truncate">Stock Audit</span>
-            </div>
-            <span
-              className={`text-[10px] sm:text-[11px] font-mono font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
-                activeTab === 'audit' ? 'bg-blue-100 text-blue-800' : 'bg-slate-200 text-slate-700'
-              }`}
-            >
-              {audits.length}
-            </span>
-          </button>
-
-          {/* Godown Transfers Tab */}
-          <button
-            type="button"
-            id="tab-godown-transfers"
-            onClick={() => setActiveTab('transfers')}
-            className={`flex items-center justify-between gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-2 sm:py-2.5 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer border ${
-              activeTab === 'transfers'
-                ? 'bg-white text-blue-900 border-blue-200 shadow-sm ring-1 ring-blue-500/20'
-                : 'bg-transparent text-slate-600 hover:text-slate-900 hover:bg-white/60 border-transparent'
-            }`}
-          >
-            <div className="flex items-center gap-1.5 min-w-0 truncate">
-              <ArrowRightLeft size={16} className={`shrink-0 ${activeTab === 'transfers' ? 'text-blue-700' : 'text-slate-400'}`} />
-              <span className="truncate">Transfers</span>
-            </div>
-            <span
-              className={`text-[10px] sm:text-[11px] font-mono font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
-                activeTab === 'transfers' ? 'bg-blue-100 text-blue-800' : 'bg-slate-200 text-slate-700'
-              }`}
-            >
-              {stockTransfers.length}
-            </span>
-          </button>
+      {/* Sub-tabs — pill segmented control (Customers screen pattern), scrollable on mobile */}
+      <div className="w-full">
+        <div className="grid grid-cols-5 w-full bg-[#ebe8e1] rounded-2xl sm:rounded-full p-1 gap-0.5">
+          {(
+            [
+              { id: 'realtime' as const, label: 'Stock', count: products.length, icon: Boxes },
+              { id: 'consignments' as const, label: 'Inward', count: grns.length, icon: ArrowDownToLine },
+              { id: 'audit' as const, label: 'Audit', count: undefined as number | undefined, icon: ClipboardCheck },
+              { id: 'dispositions' as const, label: 'Returns', count: pendingExpiryReturns || undefined, icon: AlertTriangle },
+              { id: 'transfers' as const, label: 'Transfer', count: undefined as number | undefined, icon: ArrowRightLeft },
+            ] as const
+          ).map((t) => {
+            const Icon = t.icon;
+            const active = activeTab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                id={`tab-${t.id}`}
+                onClick={() => setActiveTab(t.id)}
+                className={`relative min-w-0 flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 px-0.5 sm:px-3 py-1.5 sm:py-2.5 rounded-xl sm:rounded-full text-[10px] leading-tight sm:text-sm font-semibold transition-all cursor-pointer ${
+                  active
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <Icon size={15} className={`shrink-0 ${active ? 'text-[#0d4a3a]' : 'text-slate-400'}`} />
+                <span className="truncate max-w-full">{t.label}</span>
+                {t.count !== undefined && (
+                  <span
+                    className={`${
+                      t.id === 'dispositions'
+                        ? 'absolute top-0.5 right-1 sm:static bg-amber-500 text-white sm:bg-black/5 sm:text-slate-500'
+                        : 'hidden sm:inline-block'
+                    } text-[10px] sm:text-[10px] font-bold px-1 sm:px-1.5 py-px sm:py-0.5 rounded-full tabular-nums ${
+                      active ? 'sm:!bg-[#ebe8e1] sm:!text-[#0d4a3a]' : ''
+                    } ${t.id === 'dispositions' ? '' : active ? 'bg-[#ebe8e1] text-[#0d4a3a]' : 'bg-black/5 text-slate-500'}`}
+                  >
+                    {t.count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
       {/* TAB 1: REAL-TIME CRATE COUNTS */}
-      {activeTab === 'realtime' && (
-        <>
-          {products.length === 0 ? (
-            <div className="p-12 text-center border-2 rounded" style={cardStyle}>
-              <Boxes size={52} className="mx-auto mb-3" color={palette.muted} />
-              <h2 style={fz(20, { fontWeight: 700, color: palette.ink })}>No Inventory Registered</h2>
-              <p
-                style={fz(15, {
-                  color: palette.muted,
-                  maxWidth: '480px',
-                  margin: '0.75rem auto 1.5rem',
-                })}
-              >
-                Your inventory database is currently empty and clean. Inward products directly into inventory by receiving invoices from suppliers or using bulk inward.
-              </p>
-              <div className="flex items-center justify-center gap-3 flex-wrap">
-                <button
-                  onClick={() => setIsInwardModalOpen(true)}
-                  className="px-5 py-2.5 bg-blue-700 hover:bg-blue-800 text-white font-bold rounded cursor-pointer"
-                >
-                  Receive Inward Consignment
-                </button>
-                <button
-                  onClick={() => setIsBulkModalOpen(true)}
-                  className="px-4 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-300 font-bold rounded cursor-pointer flex items-center gap-1.5"
-                >
-                  <Upload size={15} /> Bulk Inward (PDF / Excel)
-                </button>
+      {activeTab === 'realtime' && (() => {
+        const today = todayStr;
+        const daysUntil = (exp?: string) => {
+          if (!exp) return null;
+          const d = new Date(exp.length === 10 ? exp + 'T12:00:00' : exp);
+          if (isNaN(d.getTime())) return null;
+          const t = new Date(today + 'T12:00:00');
+          return Math.round((d.getTime() - t.getTime()) / 86400000);
+        };
+        const formatExp = (exp?: string) => {
+          if (!exp) return 'Exp —';
+          const d = new Date(exp.length === 10 ? exp + 'T12:00:00' : exp);
+          if (isNaN(d.getTime())) return `Exp ${exp}`;
+          return `Exp ${d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+        };
+        const expBadge = (days: number | null) => {
+          if (days === null) return null;
+          if (days < 0) {
+            return (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700">
+                Expired
+              </span>
+            );
+          }
+          if (days <= 30) {
+            return (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                {days}d
+              </span>
+            );
+          }
+          if (days <= 90) {
+            return (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-sky-50 text-sky-700">
+                {days}d
+              </span>
+            );
+          }
+          return (
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500">
+              {days}d
+            </span>
+          );
+        };
+
+        // Products to show: filtered, with optional location filter applied to live warehouse stock
+        const stockProducts = filteredProducts
+          .map((p) => {
+            const batchLines = productBatchLines(p.id);
+            const batches =
+              selectedWarehouse === 'all'
+                ? batchLines
+                : batchLines.filter((b) => b.warehouseId === selectedWarehouse);
+
+            const liveStock =
+              selectedWarehouse === 'all'
+                ? remainingStock(p.id)
+                : warehouseStock(selectedWarehouse, p.id);
+
+            const headerQty = Math.max(0, liveStock);
+            return { p, batches, rem: liveStock, headerQty };
+          })
+          .filter(({ p, batches, headerQty }) => {
+            if (selectedWarehouse !== 'all') {
+              // Show product if it has available live stock at this warehouse or matching batches
+              return headerQty > 0 || batches.some((b) => b.availableQty > 0);
+            }
+            return true;
+          })
+          .sort((a, b) => a.p.name.localeCompare(b.p.name));
+
+        return (
+          <div className="flex flex-col gap-4 max-w-none lg:max-w-3xl mx-auto w-full">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <div className="relative flex-1">
+                <Search
+                  size={16}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+                />
+                <input enterKeyHint="search"
+                  type="search"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search product"
+                  className="w-full pl-9 pr-3 py-2 sm:py-2.5 rounded-full border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25"
+                />
               </div>
+              <select
+                value={selectedWarehouse}
+                onChange={(e) => setSelectedWarehouse(e.target.value)}
+                className="w-full sm:w-48 px-3 py-2.5 rounded-full border border-black/10 bg-white text-sm font-medium cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25"
+              >
+                <option value="all">All locations</option>
+                {warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
+                  </option>
+                ))}
+              </select>
             </div>
-          ) : (
-            <>
-              {/* Smart Space-Saving Filter & Search Toolbar */}
-              <div className="relative mb-4">
-                <div
-                  className="flex items-center gap-2 p-2 sm:p-2.5 border-2 rounded-xl bg-white shadow-2xs"
-                  style={{ borderColor: palette.line }}
-                >
-                  {/* Search Input */}
-                  <div className="relative flex-1 min-w-0">
-                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                    <input
-                      id="search-inventory"
-                      type="text"
-                      placeholder="Search beverage name, brand, SKU ID..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="w-full pl-9 pr-8 py-1.5 text-xs sm:text-sm bg-transparent rounded-lg border-0 focus:outline-hidden text-slate-800 placeholder:text-slate-400 font-medium"
-                    />
-                    {searchTerm && (
+
+            {stockProducts.length === 0 ? (
+              <div className="rounded-2xl border border-black/8 bg-white shadow-sm px-6 py-12 text-center">
+                <p className="text-sm font-semibold text-slate-700">No stock to show</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Adjust search or location, or receive inward stock.
+                </p>
+              </div>
+            ) : (
+              <ul className="space-y-2">
+                {stockProducts.map(({ p, batches, headerQty }) => {
+                  const expanded = !!expandedBatchProductIds[p.id];
+                  const hasDetail = batches.length > 0;
+                  return (
+                    <li
+                      key={p.id}
+                      className="rounded-2xl border border-black/8 bg-white shadow-sm overflow-hidden"
+                    >
                       <button
                         type="button"
-                        onClick={() => setSearchTerm('')}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
-                        title="Clear search"
+                        onClick={() =>
+                          setExpandedBatchProductIds((prev) => ({
+                            ...prev,
+                            [p.id]: !prev[p.id],
+                          }))
+                        }
+                        className="w-full flex items-center justify-between gap-3 px-3 sm:px-4 py-3 sm:py-3.5 text-left cursor-pointer hover:bg-slate-50/80 transition-colors"
+                        aria-expanded={expanded}
                       >
-                        <X size={14} />
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Showing Count (Desktop) */}
-                  <div className="hidden md:block text-xs font-medium text-slate-500 shrink-0 px-1">
-                    {filteredProducts.length} of {products.length} items
-                  </div>
-
-                  {/* Smart Filter Trigger Button */}
-                  <div className="relative shrink-0" ref={filterDropdownRef}>
-                    <button
-                      type="button"
-                      id="btn-filter-toggle-inventory"
-                      onClick={() => setShowFilterDropdown((prev) => !prev)}
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border-2 transition-all cursor-pointer ${
-                        showFilterDropdown || activeFiltersCount > 0
-                          ? 'bg-blue-900 text-white border-blue-950 shadow-xs'
-                          : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-300'
-                      }`}
-                    >
-                      <Filter size={14} className={activeFiltersCount > 0 ? 'text-amber-300' : 'text-slate-600'} />
-                      <span>Filters</span>
-                      {activeFiltersCount > 0 && (
-                        <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono font-black bg-amber-400 text-slate-950">
-                          {activeFiltersCount}
+                        <span className="text-[13px] sm:text-sm font-bold text-slate-900 leading-snug break-words min-w-0">
+                          {p.name}
                         </span>
-                      )}
-                      <ChevronDown
-                        size={13}
-                        className={`transition-transform duration-150 ${showFilterDropdown ? 'rotate-180' : ''}`}
-                      />
-                    </button>
+                        <span
+                          className={`text-sm font-extrabold tabular-nums shrink-0 ${
+                            headerQty < 0
+                              ? 'text-rose-600'
+                              : headerQty === 0
+                                ? 'text-slate-400'
+                                : 'text-slate-900'
+                          }`}
+                        >
+                          {headerQty} cs
+                        </span>
+                      </button>
 
-                    {/* Smart Filter Options Popover */}
-                    {showFilterDropdown && (
-                      <div
-                        className="absolute right-0 top-full mt-2 w-72 sm:w-80 p-3.5 bg-white border-2 rounded-xl shadow-xl z-30 space-y-3.5"
-                        style={{ borderColor: palette.navy }}
-                      >
-                        <div className="flex items-center justify-between border-b pb-2">
-                          <div className="flex items-center gap-1.5 font-bold text-xs text-slate-900">
-                            <SlidersHorizontal size={14} className="text-blue-900" />
-                            <span>Filter Inventory</span>
-                          </div>
-                          {activeFiltersCount > 0 && (
-                            <button
-                              type="button"
-                              onClick={clearAllFilters}
-                              className="text-[11px] font-bold text-blue-700 hover:text-blue-900 hover:underline cursor-pointer flex items-center gap-1"
-                            >
-                              <RotateCcw size={11} /> Reset
-                            </button>
-                          )}
-                        </div>
-
-                        {/* Category Option */}
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                            Beverage Category
-                          </label>
-                          <select
-                            value={selectedCat}
-                            onChange={(e) => setSelectedCat(e.target.value)}
-                            className="w-full text-xs border-2 border-slate-200 rounded-lg p-1.5 bg-slate-50 text-slate-800 font-semibold focus:border-blue-900 focus:outline-hidden cursor-pointer"
-                          >
-                            <option value="all">All Categories ({products.length})</option>
-                            {Object.entries(CATS).map(([key, cat]) => {
-                              const count = products.filter((p) => p.category === key).length;
-                              return (
-                                <option key={key} value={key}>
-                                  {cat.name} ({count})
-                                </option>
-                              );
-                            })}
-                          </select>
-                        </div>
-
-                        {/* Godown Option */}
-                        {warehouses.length > 0 && (
-                          <div>
-                            <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                              Godown Location
-                            </label>
-                            <select
-                              value={selectedWarehouse}
-                              onChange={(e) => setSelectedWarehouse(e.target.value)}
-                              className="w-full text-xs border-2 border-slate-200 rounded-lg p-1.5 bg-slate-50 text-slate-800 font-semibold focus:border-blue-900 focus:outline-hidden cursor-pointer"
-                            >
-                              <option value="all">All Godowns</option>
-                              {warehouses.map((w) => (
-                                <option key={w.id} value={w.id}>
-                                  {w.name} {w.isDefault ? '(Default)' : ''}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-
-                        {/* Stock Level Option */}
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1">
-                            Stock Availability
-                          </label>
-                          <div className="grid grid-cols-2 gap-1.5">
-                            {[
-                              { id: 'all', label: 'All Stock' },
-                              { id: 'instock', label: 'In Stock (>0)' },
-                              { id: 'low', label: 'Low Stock (≤10)' },
-                              { id: 'out', label: 'Out of Stock (0)' },
-                            ].map((st) => (
-                              <button
-                                key={st.id}
-                                type="button"
-                                onClick={() => setStockLevelFilter(st.id as any)}
-                                className={`px-2 py-1.5 rounded text-[11px] font-bold border transition-colors cursor-pointer text-left truncate ${
-                                  stockLevelFilter === st.id
-                                    ? 'bg-blue-900 text-white border-blue-950 shadow-2xs'
-                                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                                }`}
-                              >
-                                {st.label}
-                              </button>
+                      {expanded && (
+                        <div className="border-t border-black/5 bg-[#faf9f6]/80">
+                          {productWarehouseStock(p.id)
+                            .filter((r) => r.crates < 0 && (selectedWarehouse === 'all' || r.warehouseId === selectedWarehouse))
+                            .map((r) => (
+                              <div key={`neg_${r.warehouseId}`} className="px-3 sm:px-4 py-2 text-[11px] font-semibold text-rose-700 bg-rose-50 border-b border-rose-100">
+                                Oversold in {r.warehouseName}: book balance {r.crates} cs. Check the godown on those bills or run a stock audit.
+                              </div>
                             ))}
-                          </div>
-                        </div>
-
-                        <div className="pt-2 border-t flex items-center justify-between">
-                          <span className="text-[11px] text-slate-500 font-medium">
-                            Matches {filteredProducts.length} items
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setShowFilterDropdown(false)}
-                            className="px-3 py-1 bg-blue-900 text-white rounded text-xs font-bold hover:bg-blue-950 cursor-pointer shadow-2xs"
-                          >
-                            Done
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Active Filter Chips */}
-                {activeFiltersCount > 0 && (
-                  <div className="flex items-center gap-1.5 flex-wrap mt-2 pt-0.5">
-                    <span className="text-[11px] font-bold text-slate-500">Active Filters:</span>
-
-                    {selectedCat !== 'all' && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-50 text-blue-900 border border-blue-200 text-xs font-semibold">
-                        Category: {CATS[selectedCat as any]?.name || selectedCat}
-                        <button
-                          type="button"
-                          onClick={() => setSelectedCat('all')}
-                          className="hover:text-rose-600 cursor-pointer"
-                        >
-                          <X size={12} />
-                        </button>
-                      </span>
-                    )}
-
-                    {selectedWarehouse !== 'all' && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-900 border border-indigo-200 text-xs font-semibold">
-                        Godown: {warehouses.find((w) => w.id === selectedWarehouse)?.name || 'Selected'}
-                        <button
-                          type="button"
-                          onClick={() => setSelectedWarehouse('all')}
-                          className="hover:text-rose-600 cursor-pointer"
-                        >
-                          <X size={12} />
-                        </button>
-                      </span>
-                    )}
-
-                    {stockLevelFilter !== 'all' && (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200 text-xs font-semibold">
-                        Stock:{' '}
-                        {stockLevelFilter === 'instock'
-                          ? 'In Stock'
-                          : stockLevelFilter === 'low'
-                          ? 'Low Stock'
-                          : 'Out of Stock'}
-                        <button
-                          type="button"
-                          onClick={() => setStockLevelFilter('all')}
-                          className="hover:text-rose-600 cursor-pointer"
-                        >
-                          <X size={12} />
-                        </button>
-                      </span>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={clearAllFilters}
-                      className="text-[11px] font-bold text-rose-700 hover:underline cursor-pointer ml-1"
-                    >
-                      Clear all
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Table of Real-Time Warehouse Stock (Desktop view) */}
-              <div className="hidden lg:block border-2 overflow-x-auto shadow-xs rounded" style={cardStyle}>
-                <table className="w-full text-left min-w-[980px]" style={fz(13)}>
-                  <thead>
-                    <tr
-                      className="border-b-2"
-                      style={{ borderColor: palette.line, backgroundColor: '#f8fafc' }}
-                    >
-                      <th className="px-3.5 py-3 font-bold">SKU ID</th>
-                      <th className="px-3.5 py-3 font-bold">Product Name & Category</th>
-                      <th className="px-3.5 py-3 font-bold">Batch / Lot</th>
-                      <th className="px-3.5 py-3 text-right font-bold">Opening</th>
-                      <th className="px-3.5 py-3 text-right font-bold">Inwarded</th>
-                      <th className="px-3.5 py-3 text-right font-bold">Sold in Bills</th>
-                      <th className="px-3.5 py-3 text-right font-bold">
-                        Real-Time Crate Stock Across Warehouses
-                      </th>
-                      <th className="px-3.5 py-3 text-right font-bold">Wholesale Rate</th>
-                      <th className="px-3.5 py-3 text-right font-bold">Valuation</th>
-                      <th className="px-3.5 py-3 text-right font-bold">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredProducts.map((p) => {
-                      const sku = p.sku || generateSkuId(p.name, p.category, p.id);
-                      const sold = soldByProduct[p.id] || 0;
-                      const rem = remainingStock(p.id);
-                      const threshold = billingSettings?.lowStockThreshold ?? 5;
-                      const isLow = rem < threshold;
-                      const value = rem * p.wholesale;
-                      const whBreakdown = productWarehouseStock(p.id);
-                      const inwardSum = inventoryBatches
-                        .filter((b) => b.productId === p.id)
-                        .reduce((sum, b) => sum + b.quantity, 0);
-
-                      const productBatches = inventoryBatches.filter((b) => b.productId === p.id);
-                      const isBatchExpanded = !!expandedBatchProductIds[p.id];
-
-                      return (
-                        <React.Fragment key={p.id}>
-                          <tr
-                            className="border-t-2 hover:bg-slate-50/80 transition-colors"
-                            style={{ borderColor: palette.line }}
-                          >
-                          {/* SKU ID */}
-                          <td className="px-3.5 py-3">
-                            <span className="font-mono text-xs font-bold px-2 py-0.5 bg-blue-50 text-blue-900 border border-blue-200 rounded">
-                              {sku}
-                            </span>
-                          </td>
-
-                          {/* Product & Category */}
-                          <td className="px-3.5 py-3">
-                            <div className="font-bold text-sm" style={{ color: palette.ink }}>
-                              {p.name}
-                            </div>
-                            <div className="text-xs text-slate-500 mt-0.5">
-                              {CATS[p.category]?.name || p.category} · {p.volume}ml {p.pack} · HSN:{' '}
-                              {p.hsn || CATS[p.category]?.hsn || '2202'}
-                            </div>
-                          </td>
-
-                          {/* Batch / Lot */}
-                          <td className="px-3.5 py-3">
-                            <div className="flex flex-col gap-0.5">
-                              <span className="font-mono text-xs font-bold px-1.5 py-0.5 bg-amber-50 text-amber-900 border border-amber-200 rounded w-fit">
-                                {p.batchNumber || (inventoryBatches.find((b) => b.productId === p.id)?.batchNumber ?? 'LOT-AUTO')}
-                              </span>
-                              <span className="text-[11px] text-slate-400">
-                                Exp: {p.expiry || (inventoryBatches.find((b) => b.productId === p.id)?.expiryDate ?? '—')}
-                              </span>
-                              {inventoryBatches.filter((b) => b.productId === p.id).length > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setExpandedBatchProductIds((prev) => ({
-                                      ...prev,
-                                      [p.id]: !prev[p.id],
-                                    }))
-                                  }
-                                  className="text-[11px] text-blue-700 hover:text-blue-900 font-semibold flex items-center gap-0.5 mt-0.5 cursor-pointer w-fit"
-                                >
-                                  {expandedBatchProductIds[p.id] ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                                  {inventoryBatches.filter((b) => b.productId === p.id).length} lot(s)
-                                </button>
-                              )}
-                            </div>
-                          </td>
-
-                          {/* Opening */}
-                          <td className="px-3.5 py-3 text-right font-medium text-slate-600">
-                            {p.opening} cs
-                          </td>
-
-                          {/* Inwarded */}
-                          <td className="px-3.5 py-3 text-right font-semibold text-emerald-800">
-                            +{inwardSum} cs
-                          </td>
-
-                          {/* Sold in Bills (Deducted live) */}
-                          <td className="px-3.5 py-3 text-right font-medium text-red-700">
-                            -{sold} cs
-                          </td>
-
-                          {/* Real-Time Warehouse Crate Stock */}
-                          <td className="px-3.5 py-3 text-right">
-                            <div className="flex flex-col items-end gap-1">
-                              <div
-                                className="text-sm font-black flex items-center gap-1.5"
-                                style={{ color: isLow ? palette.bad : palette.ink }}
-                              >
-                                <span>{rem} crates</span>
-                                {isLow && (
-                                  <span
-                                    className="px-1.5 py-0.2 border text-[10px] font-bold rounded"
-                                    style={{
-                                      borderColor: palette.bad,
-                                      backgroundColor: `${palette.bad}15`,
-                                      color: palette.bad,
-                                    }}
-                                  >
-                                    LOW
-                                  </span>
-                                )}
-                              </div>
-
-                              {/* Warehouse breakdown pills */}
-                              <div className="flex flex-wrap justify-end gap-1 max-w-[220px]">
-                                {whBreakdown.map((wh) => (
-                                  <span
-                                    key={wh.warehouseId}
-                                    className="text-[11px] font-mono px-1.5 py-0.5 bg-slate-100 border border-slate-200 text-slate-700 rounded"
-                                    title={`${wh.warehouseName}: ${wh.crates} crates available`}
-                                  >
-                                    {wh.warehouseName.slice(0, 12)}:{' '}
-                                    <strong className="text-blue-900">{wh.crates} cs</strong>
-                                  </span>
-                                ))}
-                              </div>
-                            </div>
-                          </td>
-
-                          {/* Wholesale Rate */}
-                          <td className="px-3.5 py-3 text-right font-medium">
-                            ₹{money(p.wholesale)}
-                          </td>
-
-                          {/* Stock Valuation */}
-                          <td className="px-3.5 py-3 text-right font-bold text-slate-800">
-                            ₹{money(value)}
-                          </td>
-
-                          {/* Inward Stock Action */}
-                          <td className="px-3.5 py-3 text-right whitespace-nowrap">
-                            <button
-                              onClick={() => {
-                                setSelectedProductForInward(p.id);
-                                setSelectedGrnToEdit(null);
-                                setIsInwardModalOpen(true);
-                              }}
-                              className="px-2.5 py-1 text-xs font-bold rounded bg-blue-50 text-blue-800 hover:bg-blue-100 border border-blue-200 cursor-pointer inline-flex items-center gap-1"
-                              title={`Inward stock for ${p.name}`}
-                            >
-                              <Plus size={13} /> Inward
-                            </button>
-                          </td>
-                        </tr>
-
-                        {/* Expandable Lot / Batch Details Sub-Row */}
-                        {isBatchExpanded && productBatches.length > 0 && (
-                          <tr className="bg-slate-50 border-t border-b border-slate-200">
-                            <td colSpan={10} className="px-4 py-3">
-                              <div className="border border-slate-200 rounded bg-white p-3 shadow-xs">
-                                <div className="flex items-center justify-between mb-2">
-                                  <div className="font-bold text-xs text-slate-800 flex items-center gap-1.5">
-                                    <FileSpreadsheet size={13} className="text-blue-600" />
-                                    Inward Lots & Batches for {p.name}
-                                  </div>
-                                  <span className="text-[11px] text-slate-500">
-                                    {productBatches.length} lot(s) inwarded via consignments
-                                  </span>
-                                </div>
-                                <div className="overflow-x-auto">
-                                  <table className="w-full text-left text-xs">
-                                    <thead>
-                                      <tr className="border-b border-slate-200 text-slate-500 font-semibold bg-slate-50">
-                                        <th className="py-1.5 px-2 font-bold">Batch / Lot</th>
-                                        <th className="py-1.5 px-2 font-bold">Supplier & Invoice</th>
-                                        <th className="py-1.5 px-2 font-bold">Inward Date</th>
-                                        <th className="py-1.5 px-2 font-bold">Godown</th>
-                                        <th className="py-1.5 px-2 text-right font-bold">Quantity</th>
-                                        <th className="py-1.5 px-2 text-right font-bold">Landed Cost</th>
-                                        <th className="py-1.5 px-2 font-bold">Expiry Date</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-100 font-mono">
-                                      {productBatches.map((b) => {
-                                        const wh = warehouses.find((w) => w.id === b.warehouseId);
-                                        return (
-                                          <tr key={b.id} className="hover:bg-slate-50/80">
-                                            <td className="py-1.5 px-2 font-bold text-amber-900">{b.batchNumber}</td>
-                                            <td className="py-1.5 px-2 font-sans text-slate-700">
-                                              {b.supplierInvoiceNo ? `#${b.supplierInvoiceNo}` : 'Consignment'} ({b.supplierName || 'Direct'})
-                                            </td>
-                                            <td className="py-1.5 px-2 text-slate-600 font-sans">{b.inwardDate || '—'}</td>
-                                            <td className="py-1.5 px-2 font-sans text-slate-700">{wh?.name || 'Kuchinda Central'}</td>
-                                            <td className="py-1.5 px-2 text-right font-bold text-blue-900 font-sans">{b.quantity} cs</td>
-                                            <td className="py-1.5 px-2 text-right text-emerald-800">₹{money(b.effectiveCostPrice || b.costPrice || 0)}</td>
-                                            <td className="py-1.5 px-2 text-slate-600 font-sans">{b.expiryDate || '—'}</td>
-                                          </tr>
-                                        );
-                                      })}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                  </tbody>
-                  <tfoot>
-                    <tr
-                      className="border-t-2 font-bold"
-                      style={{ borderColor: palette.line, backgroundColor: `${palette.navy}08` }}
-                    >
-                      <td colSpan={6} className="px-3.5 py-3">
-                        Total for visible inventory ({filteredProducts.length} items)
-                      </td>
-                      <td className="px-3.5 py-3 text-right font-black" style={{ color: palette.navy }}>
-                        {totalStockCases} cs available
-                      </td>
-                      <td className="px-3.5 py-3 text-right font-medium">—</td>
-                      <td className="px-3.5 py-3 text-right font-black" style={{ color: palette.navy }}>
-                        ₹{money(totalStockValue)}
-                      </td>
-                      <td className="px-3.5 py-3 text-right">—</td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-
-              {/* Responsive Cards View for Mobile & Tablet (matching Dashboard Cards) */}
-              <div className="block lg:hidden space-y-3.5">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-                  {filteredProducts.map((p) => {
-                    const sku = p.sku || generateSkuId(p.name, p.category, p.id);
-                    const sold = soldByProduct[p.id] || 0;
-                    const rem = remainingStock(p.id);
-                    const threshold = billingSettings?.lowStockThreshold ?? 5;
-                    const isLow = rem < threshold;
-                    const value = rem * p.wholesale;
-                    const whBreakdown = productWarehouseStock(p.id);
-                    const inwardSum = inventoryBatches
-                      .filter((b) => b.productId === p.id)
-                      .reduce((sum, b) => sum + b.quantity, 0);
-
-                    const productBatches = inventoryBatches.filter((b) => b.productId === p.id);
-                    const isBatchExpanded = !!expandedBatchProductIds[p.id];
-                    const batchCode = p.batchNumber || (inventoryBatches.find((b) => b.productId === p.id)?.batchNumber ?? 'LOT-AUTO');
-                    const expDate = p.expiry || (inventoryBatches.find((b) => b.productId === p.id)?.expiryDate ?? '—');
-
-                    return (
-                      <div
-                        key={p.id}
-                        className="border-2 rounded-xl p-3.5 sm:p-4 shadow-xs bg-white flex flex-col justify-between gap-3"
-                        style={{ borderColor: isLow ? `${palette.bad}80` : palette.line }}
-                      >
-                        <div>
-                          {/* Header: Title, SKU, Category, Inward CTA */}
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="font-mono text-xs font-bold px-2 py-0.5 bg-blue-50 text-blue-900 border border-blue-200 rounded">
-                                  {sku}
-                                </span>
-                                <span className="text-xs font-semibold px-2 py-0.5 bg-slate-100 text-slate-700 rounded border border-slate-200">
-                                  {CATS[p.category]?.name || p.category}
-                                </span>
-                              </div>
-                              <h3 className="font-bold text-base text-slate-900 mt-1 break-words">
-                                {p.name}
-                              </h3>
-                              <div className="text-xs text-slate-500 mt-0.5">
-                                {p.volume}ml {p.pack} · HSN: {p.hsn || CATS[p.category]?.hsn || '2202'}
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedProductForInward(p.id);
-                                setSelectedGrnToEdit(null);
-                                setIsInwardModalOpen(true);
-                              }}
-                              className="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-blue-50 text-blue-800 hover:bg-blue-100 border border-blue-200 cursor-pointer inline-flex items-center gap-1 shrink-0 shadow-xs"
-                              title={`Inward stock for ${p.name}`}
-                            >
-                              <Plus size={13} /> Inward
-                            </button>
-                          </div>
-
-                          {/* 2x2 Metric Stat Blocks (matches Dashboard style) */}
-                          <div className="grid grid-cols-2 gap-2 mt-3 pt-2.5 border-t border-slate-100">
-                            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-                              <div className="text-[11px] font-semibold text-slate-500">Live Available Stock</div>
-                              <div className="text-base font-black flex items-center gap-1 mt-0.5" style={{ color: isLow ? palette.bad : palette.ink }}>
-                                <span>{rem} cs</span>
-                                {isLow && (
-                                  <span className="px-1.5 py-0.2 border text-[9px] font-bold rounded bg-rose-50 text-rose-700 border-rose-300">
-                                    LOW
-                                  </span>
-                                )}
-                              </div>
-                              <div className="text-[10px] text-slate-400 mt-0.5">Opening: {p.opening} cs</div>
-                            </div>
-
-                            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-                              <div className="text-[11px] font-semibold text-slate-500">Stock Valuation</div>
-                              <div className="text-base font-black text-slate-900 mt-0.5">₹{money(value)}</div>
-                              <div className="text-[10px] text-slate-400 mt-0.5">@ ₹{money(p.wholesale)}/cs</div>
-                            </div>
-
-                            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-                              <div className="text-[11px] font-semibold text-slate-500">Inwarded Cases</div>
-                              <div className="text-sm font-bold text-emerald-700 mt-0.5">+{inwardSum} cs</div>
-                              <div className="text-[10px] text-slate-400 mt-0.5">Total additions</div>
-                            </div>
-
-                            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-                              <div className="text-[11px] font-semibold text-slate-500">Sold in Bills</div>
-                              <div className="text-sm font-bold text-red-700 mt-0.5">-{sold} cs</div>
-                              <div className="text-[10px] text-slate-400 mt-0.5">Delivered to retail</div>
-                            </div>
-                          </div>
-
-                          {/* Batch & Expiry Strip */}
-                          <div className="mt-2.5 flex items-center justify-between gap-2 p-2 bg-slate-50/80 border border-slate-200 rounded-lg text-xs flex-wrap">
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[11px] text-slate-500 font-semibold">Lot:</span>
-                              <span className="font-mono font-bold text-amber-900 bg-amber-50 px-1.5 py-0.5 border border-amber-200 rounded text-[11px]">
-                                {batchCode}
-                              </span>
-                              <span className="text-[11px] text-slate-400">· Exp: {expDate}</span>
-                            </div>
-                            {productBatches.length > 0 && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setExpandedBatchProductIds((prev) => ({
-                                    ...prev,
-                                    [p.id]: !prev[p.id],
-                                  }))
-                                }
-                                className="text-[11px] text-blue-700 hover:text-blue-900 font-semibold flex items-center gap-0.5 cursor-pointer ml-auto"
-                              >
-                                {isBatchExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                                {productBatches.length} lot(s)
-                              </button>
-                            )}
-                          </div>
-
-                          {/* Godown distribution pills */}
-                          {whBreakdown.length > 0 && (
-                            <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
-                              <span className="text-slate-500 font-semibold">Godowns:</span>
-                              {whBreakdown.map((wh) => (
-                                <span
-                                  key={wh.warehouseId}
-                                  className="font-mono px-1.5 py-0.5 bg-blue-50 border border-blue-200 text-blue-900 rounded"
-                                >
-                                  {wh.warehouseName}: <strong>{wh.crates} cs</strong>
-                                </span>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Expanded Lot Details on Cards */}
-                          {isBatchExpanded && productBatches.length > 0 && (
-                            <div className="mt-3 space-y-2 pt-2.5 border-t border-slate-200">
-                              <div className="text-xs font-bold text-slate-700 flex items-center gap-1">
-                                <FileSpreadsheet size={13} className="text-blue-600" />
-                                Inward Batches ({productBatches.length}):
-                              </div>
-                              {productBatches.map((b) => {
+                          {hasDetail ? (
+                            <ul className="divide-y divide-black/5">
+                              {batches.map((b) => {
                                 const wh = warehouses.find((w) => w.id === b.warehouseId);
+                                const days = daysUntil(b.expiryDate);
+                                const qty = b.availableQty;
+                                const inward = b.receivedQty;
                                 return (
-                                  <div key={b.id} className="p-2.5 bg-slate-50 rounded-lg border border-slate-200 text-xs">
-                                    <div className="flex justify-between items-center">
-                                      <span className="font-mono font-bold text-amber-900">{b.batchNumber}</span>
-                                      <span className="font-bold text-emerald-800">+{b.quantity} cs</span>
-                                    </div>
-                                    <div className="flex justify-between items-center text-[11px] text-slate-500 mt-1">
-                                      <span>{b.supplierName || 'Consignment'} ({wh ? wh.name : 'Main'})</span>
-                                      <span>₹{money(b.effectiveCostPrice || b.costPrice || 0)}/cs</span>
-                                    </div>
-                                    {b.expiryDate && (
-                                      <div className="text-[10px] text-slate-400 mt-0.5">
-                                        Expires: {b.expiryDate}
+                                  <li
+                                    key={b.key}
+                                    className="px-3 sm:px-4 py-2.5 flex items-start gap-2 sm:gap-3"
+                                  >
+                                    <div className="min-w-0 flex-1">
+                                      <div className="text-[13px] text-slate-700 leading-snug">
+                                        <span className="font-medium">
+                                          Batch {b.batchNumber ? b.batchNumber : '·'}
+                                        </span>
+                                        <span className="text-slate-400"> · </span>
+                                        <span>{wh?.name || b.warehouseName || b.warehouseId || 'Unknown godown'}</span>
                                       </div>
-                                    )}
-                                  </div>
+                                      <div className="text-[11px] text-slate-500 mt-0.5">
+                                        {formatExp(b.expiryDate)}
+                                        {inward > 0 && inward !== qty && (
+                                          <span className="text-slate-400 ml-1.5 font-normal">
+                                            (inward: {inward} cs)
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0 pt-0.5">
+                                      {expBadge(days)}
+                                      <span
+                                        className={`text-sm font-bold tabular-nums min-w-[2rem] text-right ${
+                                          qty < 0 ? 'text-rose-600' : qty === 0 ? 'text-slate-400' : 'text-slate-800'
+                                        }`}
+                                      >
+                                        {qty} cs
+                                      </span>
+                                    </div>
+                                  </li>
                                 );
                               })}
+                            </ul>
+                          ) : (
+                            <div className="px-4 py-3 text-xs text-slate-500">
+                              No batch rows
+                              {selectedWarehouse !== 'all' ? ' at this location' : ''}.
+                              Book stock:{' '}
+                              <span className="font-semibold text-slate-700">
+                                {selectedWarehouse === 'all'
+                                  ? remainingStock(p.id)
+                                  : warehouseStock(selectedWarehouse, p.id)}{' '}
+                                cs
+                              </span>
                             </div>
                           )}
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
 
-                {/* Mobile/Tablet Total Card */}
-                <div
-                  className="border-2 rounded-xl p-3.5 sm:p-4 bg-slate-50 flex items-center justify-between flex-wrap gap-2"
-                  style={{ borderColor: palette.line }}
-                >
-                  <div>
-                    <div className="text-xs font-bold text-slate-600">Total Visible Inventory</div>
-                    <div className="text-xs text-slate-500">{filteredProducts.length} items</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-lg font-black" style={{ color: palette.navy }}>
-                      {totalStockCases} crates
-                    </div>
-                    <div className="text-xs font-bold text-slate-700">₹{money(totalStockValue)} total value</div>
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-        </>
-      )}
-
-      {/* TAB 2: INWARD INVOICES */}
-      {activeTab === 'consignments' && (
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
-              <h2 className="text-base sm:text-lg font-bold text-slate-900">
-                Inward Consignment Invoices
-              </h2>
-              <p className="text-xs text-slate-500">
-                Verified delivery receipts, batch tracking & wholesale supplier invoices
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedGrnToEdit(null);
-                  setSelectedProductForInward(undefined);
-                  setIsInwardModalOpen(true);
-                }}
-                className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded-lg text-xs sm:text-sm font-bold transition-colors cursor-pointer shadow-xs whitespace-nowrap"
-              >
-                <PlusCircle size={15} /> <span>Inward Invoice</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsBulkModalOpen(true)}
-                className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-2 border-indigo-200 hover:border-indigo-300 rounded-lg text-xs sm:text-sm font-bold transition-colors cursor-pointer whitespace-nowrap shadow-xs"
-              >
-                <Upload size={14} className="text-indigo-700" /> <span>Bulk Inward</span>
-              </button>
-            </div>
           </div>
+        );
+      })()}
 
-          {grns.length === 0 ? (
-            <div className="p-10 text-center border-2 rounded-xl" style={cardStyle}>
-              <FileSpreadsheet size={44} className="mx-auto mb-2 text-slate-400" />
-              <h3 className="font-bold text-base text-slate-800">No Inward Invoices Recorded</h3>
-              <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-                Your database is completely clean. Create your first inward consignment manually or upload an invoice via Bulk Inward.
-              </p>
-              <div className="flex items-center justify-center gap-2.5 mt-4 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedGrnToEdit(null);
-                    setSelectedProductForInward(undefined);
-                    setIsInwardModalOpen(true);
-                  }}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white font-bold text-xs sm:text-sm rounded-lg cursor-pointer shadow-xs"
-                >
-                  <PlusCircle size={15} /> <span>Inward Invoice</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsBulkModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-2 border-indigo-200 hover:border-indigo-300 font-bold text-xs sm:text-sm rounded-lg cursor-pointer shadow-xs"
-                >
-                  <Upload size={14} className="text-indigo-700" /> <span>Bulk Inward</span>
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {grns.map((grn) => {
-                const isExpanded = !!expandedGrnIds[grn.id];
-                const wh = warehouses.find((w) => w.id === grn.warehouseId);
+      {/* TAB 2: PURCHASES (inward supplier invoices) */}
+      {activeTab === 'consignments' && (() => {
+        const formatInvDate = (d?: string) => {
+          if (!d) return '—';
+          const dt = new Date(d.length === 10 ? d + 'T12:00:00' : d);
+          if (isNaN(dt.getTime())) return d;
+          return dt.toLocaleDateString('en-GB', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+          });
+        };
+        const sortedGrns = [...(grns || [])].sort((a, b) => {
+          const da = a.inwardDate || a.invoiceDate || '';
+          const db = b.inwardDate || b.invoiceDate || '';
+          if (da !== db) return db.localeCompare(da);
+          return String(b.id).localeCompare(String(a.id));
+        });
 
-                return (
-                  <div
-                    key={grn.id}
-                    className="border-2 rounded bg-white overflow-hidden shadow-xs"
-                    style={{ borderColor: palette.line }}
+        return (
+          <div className="flex flex-col gap-4 max-w-none lg:max-w-3xl mx-auto w-full">
+            {sortedGrns.length === 0 ? (
+              <div className="rounded-2xl border border-black/8 bg-white shadow-sm px-6 py-12 text-center">
+                <p className="text-sm font-semibold text-slate-800">No purchases yet</p>
+                <div className="mt-4 flex flex-wrap justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedGrnToEdit(null);
+                      setIsInwardModalOpen(true);
+                    }}
+                    className="px-4 py-2 rounded-full bg-[#0d4a3a] text-white text-sm font-semibold cursor-pointer"
                   >
-                    {/* Consignment Header Row */}
-                    <div className="p-4 flex flex-wrap items-center justify-between gap-3 bg-slate-50/60 border-b-2" style={{ borderColor: palette.line }}>
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <span className="font-mono text-xs font-black px-2 py-1 bg-blue-100 text-blue-900 border border-blue-300 rounded">
-                          {grn.grnNumber}
-                        </span>
-                        <div>
-                          <div className="font-bold text-sm text-slate-900">
-                            {grn.supplierName} · Invoice: {grn.invoiceNo}
+                    New purchase
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsBulkModalOpen(true)}
+                    className="px-4 py-2 rounded-full bg-white border border-black/10 text-slate-700 text-sm font-semibold cursor-pointer"
+                  >
+                    Bulk import
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                  <div className="text-xs font-bold text-slate-700">
+                    {sortedGrns.length} Inward Purchase Record{sortedGrns.length === 1 ? '' : 's'}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => downloadAllGrnsCsv(sortedGrns, warehouses)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer shadow-xs transition-colors"
+                      title="Download all inward GRNs with full line items and tax breakdown as CSV"
+                      aria-label="Download all GRNs as CSV"
+                    >
+                      <Download size={13} className="text-emerald-700" />
+                      <span>CSV<span className="hidden sm:inline"> · all GRNs</span></span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedGrnToEdit(null);
+                        setIsInwardModalOpen(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0d4a3a] text-xs font-semibold text-white hover:bg-[#0a3d30] cursor-pointer shadow-xs"
+                    >
+                      <Plus size={13} />
+                      <span>New purchase</span>
+                    </button>
+                  </div>
+                </div>
+              <ul className="rounded-2xl border border-black/8 bg-white shadow-sm overflow-hidden divide-y divide-black/5">
+                {sortedGrns.map((g) => {
+                  const expanded = !!expandedGrnIds[g.id];
+                  const total = Number(g.grandTotal) || 0;
+                  const invLabel = g.invoiceNo || '—';
+                  const grnLabel = g.grnNumber || `GRN-${g.id}`;
+                  const dateLabel = formatInvDate(g.inwardDate || g.invoiceDate);
+                  return (
+                    <li key={g.id}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedGrnIds((prev) => ({
+                            ...prev,
+                            [g.id]: !prev[g.id],
+                          }))
+                        }
+                        className="w-full flex items-center justify-between gap-3 px-3 sm:px-4 py-3 sm:py-3.5 text-left hover:bg-slate-50/80 cursor-pointer transition-colors"
+                        aria-expanded={expanded}
+                      >
+                        <div className="min-w-0">
+                          <div className="text-[13px] sm:text-sm font-bold text-slate-900 leading-snug break-words">
+                            {(g.supplierName || 'Supplier').toUpperCase()}
                           </div>
-                          <div className="text-xs text-slate-500">
-                            Inward Date: <span className="font-medium text-slate-700">{grn.inwardDate}</span> · Godown:{' '}
-                            <span className="font-medium text-slate-700">{wh ? wh.name : 'Kuchinda Central Godown'}</span> · Items:{' '}
-                            <span className="font-bold text-slate-800">{grn.items.length}</span>
+                          <div className="text-[11px] sm:text-[12px] text-slate-500 mt-0.5 break-words">
+                            {grnLabel} · Inv {invLabel} · {dateLabel}
                           </div>
                         </div>
-                      </div>
+                        <div className="text-sm font-extrabold text-slate-900 tabular-nums shrink-0">
+                          ₹{money(total)}
+                        </div>
+                      </button>
 
-                      <div className="flex items-center gap-4 flex-wrap">
-                        <div className="text-right">
-                          <div className="text-xs text-slate-500">Total Cases</div>
-                          <div className="text-sm font-black text-slate-800">
-                            {grn.totalReceivedQty} cs{' '}
-                            {grn.totalFreeQty > 0 && (
-                              <span className="text-[11px] font-bold text-purple-700">
-                                ({grn.totalBilledQty} billed + {grn.totalFreeQty} free)
-                              </span>
-                            )}
+                      {expanded && (
+                        <div className="px-3 sm:px-4 pb-4 pt-2 border-t border-black/5 bg-[#faf9f6]/90 space-y-3">
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                            <div>
+                              <div className="text-slate-500 font-medium">Godown</div>
+                              <div className="font-semibold text-slate-800">
+                                {warehouses.find((w) => w.id === g.warehouseId)?.name ||
+                                  g.warehouseId ||
+                                  '—'}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-slate-500 font-medium">Cases</div>
+                              <div className="font-semibold text-slate-800 tabular-nums">
+                                {Number(g.totalReceivedQty) ||
+                                  (g.items || []).reduce(
+                                    (s, it) =>
+                                      s +
+                                      (Number((it as any).totalReceivedQty) ||
+                                        Number((it as any).qty) ||
+                                        0),
+                                    0,
+                                  )}{' '}
+                                cs
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-slate-500 font-medium">Taxable</div>
+                              <div className="font-semibold text-slate-800 tabular-nums">
+                                ₹{money(Number(g.totalTaxable) || 0)}
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-slate-500 font-medium">GST</div>
+                              <div className="font-semibold text-slate-800 tabular-nums">
+                                ₹
+                                {money(
+                                  Number(g.totalTax) ||
+                                    (Number(g.totalCgst) || 0) + (Number(g.totalSgst) || 0),
+                                )}
+                              </div>
+                            </div>
                           </div>
-                        </div>
 
-                        <div className="text-right">
-                          <div className="text-xs text-slate-500">Invoice Total</div>
-                          <div className="text-base font-black text-emerald-800">
-                            ₹{money(grn.grandTotal)}
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 border-l-2 pl-3" style={{ borderColor: palette.line }}>
-                          <button
-                            onClick={() =>
-                              setExpandedGrnIds((prev) => ({
-                                ...prev,
-                                [grn.id]: !prev[grn.id],
-                              }))
-                            }
-                            className="px-2.5 py-1.5 border text-xs font-bold rounded bg-white hover:bg-slate-100 text-slate-700 cursor-pointer flex items-center gap-1"
-                            title={isExpanded ? 'Hide line items' : 'View line items'}
-                          >
-                            {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                            {isExpanded ? 'Hide' : 'View Items'}
-                          </button>
-
-                          <button
-                            onClick={() => {
-                              setSelectedGrnToEdit(grn);
-                              setSelectedProductForInward(undefined);
-                              setIsInwardModalOpen(true);
-                            }}
-                            className="p-1.5 border rounded bg-white hover:bg-blue-50 text-blue-700 border-blue-200 cursor-pointer"
-                            title="Edit Inward Consignment"
-                          >
-                            <Edit2 size={14} />
-                          </button>
-
-                          <button
-                            id={`btn-delete-grn-${grn.id}`}
-                            onClick={() => {
-                              setGrnToDelete(grn);
-                            }}
-                            className="p-1.5 border rounded bg-white hover:bg-red-50 text-red-600 border-red-200 cursor-pointer"
-                            title="Delete Consignment & Reverse Stock"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Expandable Line Items (Table for desktop, Cards for mobile/tablet) */}
-                    {isExpanded && (
-                      <div className="p-3 bg-white">
-                        <div className="hidden md:block overflow-x-auto">
-                          <table className="w-full text-left text-xs min-w-[800px]">
-                            <thead>
-                              <tr className="border-b text-slate-500 font-bold bg-slate-50/50">
-                                <th className="px-3 py-2">SKU ID</th>
-                                <th className="px-3 py-2">Description / Beverage</th>
-                                <th className="px-3 py-2">HSN/SAC</th>
-                                <th className="px-3 py-2 text-right">Billed Qty</th>
-                                <th className="px-3 py-2 text-right">Free Scheme</th>
-                                <th className="px-3 py-2 text-right">Total Inflow</th>
-                                <th className="px-3 py-2 text-right">Rate / Case</th>
-                                <th className="px-3 py-2 text-right">Landed Cost / Case</th>
-                                <th className="px-3 py-2 text-right">Tax%</th>
-                                <th className="px-3 py-2 text-right">Line Total</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {grn.items.map((item, idx) => (
-                                <tr key={item.id || idx} className="border-b hover:bg-slate-50/60">
-                                  <td className="px-3 py-2 font-mono font-bold text-blue-900">
-                                    {item.sku}
-                                  </td>
-                                  <td className="px-3 py-2 font-bold text-slate-900">
-                                    {item.productName}
+                          {(g.items || []).length > 0 && (
+                            <ul className="rounded-xl border border-black/5 bg-white divide-y divide-black/5 overflow-hidden">
+                              {(g.items || []).map((item, idx) => (
+                                <li
+                                  key={item.id || idx}
+                                  className="px-3 py-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-sm"
+                                >
+                                  <div className="min-w-0">
+                                    <span className="font-semibold text-slate-800">
+                                      {item.productName}
+                                    </span>
                                     {item.schemeText && (
-                                      <span className="ml-2 text-[11px] font-normal text-purple-700 bg-purple-50 px-1 py-0.2 rounded border border-purple-200">
+                                      <span className="ml-1.5 text-[10px] text-purple-700">
                                         {item.schemeText}
                                       </span>
                                     )}
-                                  </td>
-                                  <td className="px-3 py-2 font-mono text-slate-500">{item.hsn}</td>
-                                  <td className="px-3 py-2 text-right font-medium">{item.qty} cs</td>
-                                  <td className="px-3 py-2 text-right">
-                                    {item.freeQty > 0 ? (
-                                      <span className="font-bold text-purple-700">+{item.freeQty} cs</span>
-                                    ) : (
-                                      <span className="text-slate-400">—</span>
-                                    )}
-                                  </td>
-                                  <td className="px-3 py-2 text-right font-bold text-slate-800">
-                                    {item.totalReceivedQty} cs
-                                  </td>
-                                  <td className="px-3 py-2 text-right font-mono">₹{money(item.unitPrice)}</td>
-                                  <td className="px-3 py-2 text-right font-mono font-bold text-emerald-800">
-                                    ₹{money(item.landedCostPerUnit)}
-                                  </td>
-                                  <td className="px-3 py-2 text-right font-mono text-slate-600">
-                                    {item.cgstPercent + item.sgstPercent}%
-                                  </td>
-                                  <td className="px-3 py-2 text-right font-mono font-bold text-slate-900">
-                                    ₹{money(item.lineTotal)}
-                                  </td>
-                                </tr>
+                                    <div className="text-[11px] text-slate-500">
+                                      {item.qty} cs
+                                      {item.freeQty ? ` + ${item.freeQty} free` : ''}
+                                      {item.unitPrice != null
+                                        ? ` · ₹${money(item.unitPrice)}/cs`
+                                        : ''}
+                                    </div>
+                                  </div>
+                                  <span className="font-bold tabular-nums text-slate-900 shrink-0">
+                                    ₹{money(Number(item.lineTotal) || 0)}
+                                  </span>
+                                </li>
                               ))}
-                            </tbody>
-                          </table>
-                        </div>
+                            </ul>
+                          )}
 
-                        {/* Mobile & Tablet Card Layout for Inward Line Items */}
-                        <div className="block md:hidden space-y-2">
-                          {grn.items.map((item, idx) => (
-                            <div key={item.id || idx} className="p-2.5 rounded-lg border border-slate-200 bg-slate-50/70 text-xs">
-                              <div className="flex items-start justify-between gap-2">
-                                <div>
-                                  <div className="font-mono text-[11px] font-bold text-blue-900">{item.sku}</div>
-                                  <div className="font-bold text-sm text-slate-900 mt-0.5">{item.productName}</div>
-                                </div>
-                                <div className="text-right">
-                                  <div className="font-bold text-sm text-slate-900">₹{money(item.lineTotal)}</div>
-                                  <div className="text-[11px] text-slate-500">HSN: {item.hsn}</div>
-                                </div>
-                              </div>
-                              <div className="grid grid-cols-3 gap-1.5 mt-2 pt-2 border-t border-slate-200 text-center">
-                                <div className="bg-white p-1.5 rounded border border-slate-200">
-                                  <div className="text-[10px] text-slate-500 font-medium">Billed Qty</div>
-                                  <div className="font-bold text-slate-800">{item.qty} cs</div>
-                                </div>
-                                <div className="bg-white p-1.5 rounded border border-slate-200">
-                                  <div className="text-[10px] text-slate-500 font-medium">Free Scheme</div>
-                                  <div className="font-bold text-purple-700">+{item.freeQty} cs</div>
-                                </div>
-                                <div className="bg-white p-1.5 rounded border border-slate-200">
-                                  <div className="text-[10px] text-slate-500 font-medium">Total Inflow</div>
-                                  <div className="font-black text-emerald-800">{item.totalReceivedQty} cs</div>
-                                </div>
-                              </div>
-                              <div className="flex justify-between items-center text-[11px] text-slate-600 mt-2">
-                                <span>Rate: ₹{money(item.unitPrice)} | Landed: <strong className="text-emerald-800">₹{money(item.landedCostPerUnit)}</strong></span>
-                                <span>GST: {item.cgstPercent + item.sgstPercent}%</span>
-                              </div>
-                            </div>
-                          ))}
+                          <div className="grid grid-cols-3 sm:flex sm:flex-wrap gap-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => downloadSingleGrnCsv(g, warehouses)}
+                              className="inline-flex items-center justify-center gap-1.5 px-2 sm:px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-xs sm:text-sm font-semibold text-emerald-800 cursor-pointer hover:bg-emerald-100"
+                              title="Download this GRN and its line items as CSV"
+                            >
+                              <Download size={14} />
+                              CSV
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedGrnToEdit(g);
+                                setIsInwardModalOpen(true);
+                              }}
+                              className="inline-flex items-center justify-center gap-1.5 px-2 sm:px-3 py-2 rounded-xl bg-white border border-black/10 text-xs sm:text-sm font-semibold text-[#0d4a3a] cursor-pointer hover:bg-[#0d4a3a]/5"
+                            >
+                              <Edit2 size={14} />
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setGrnToDelete(g)}
+                              className="inline-flex items-center justify-center gap-1.5 px-2 sm:px-3 py-2 rounded-xl bg-rose-50 border border-rose-100 text-xs sm:text-sm font-semibold text-rose-700 cursor-pointer hover:bg-rose-100"
+                            >
+                              <Trash2 size={14} />
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+
+      {activeTab === 'dispositions' && (
+        <DispositionsView />
+      )}
+
+      {activeTab === 'audit' && (() => {
+        const whId = auditWhId || warehouses[0]?.id || '';
+        // System qty = LIVE remaining per batch at this godown (received minus sales, returns,
+        // disposals and earlier audit adjustments), not the original inward quantity.
+        const rows = products
+          .flatMap((prod) =>
+            productBatchLines(prod.id)
+              .filter((l) => !whId || l.warehouseId === whId)
+              .map((l) => ({
+                key: l.key,
+                batch: { productId: prod.id, batchNumber: l.batchNumber, expiryDate: l.expiryDate },
+                name: prod.name,
+                systemQty: l.availableQty,
+              })),
+          )
+          .sort((a, b) => a.name.localeCompare(b.name) || (a.batch.batchNumber || '').localeCompare(b.batch.batchNumber || ''));
+
+        // Also include products with live stock but no batch rows at this warehouse
+        const productIdsWithBatches = new Set(rows.map((r) => r.batch.productId));
+        const orphanProducts = products
+          .filter((p) => !productIdsWithBatches.has(p.id))
+          .map((p) => {
+            const sys = whId ? warehouseStock(whId, p.id) : bookStock(p.id);
+            return { key: `prod_${p.id}`, productId: p.id, name: p.name, systemQty: sys };
+          })
+          .filter((r) => r.systemQty !== 0);
+
+        const handleSaveAudit = () => {
+          // Product-level count for THIS godown. A batch left blank "matches", so it counts as its
+          // system quantity; otherwise a partly filled product would look short by the blank batches.
+          const counts: Record<number, string> = {};
+          const entered = new Set<number>();
+          const totals: Record<number, number> = {};
+          for (const r of rows) {
+            const raw = auditCounts[r.key];
+            const has = raw !== undefined && raw !== '' && !isNaN(Number(raw));
+            if (has) entered.add(r.batch.productId);
+            totals[r.batch.productId] =
+              (totals[r.batch.productId] || 0) + (has ? Number(raw) : r.systemQty);
+          }
+          for (const o of orphanProducts) {
+            const raw = auditCounts[o.key];
+            if (raw === undefined || raw === '' || isNaN(Number(raw))) continue;
+            entered.add(o.productId);
+            totals[o.productId] = (totals[o.productId] || 0) + Number(raw);
+          }
+          for (const pid of entered) counts[pid] = String(totals[pid]);
+          if (Object.keys(counts).length === 0) {
+            showToast('Enter at least one counted quantity.');
+            return;
+          }
+          saveAudit(counts, true, todayISO(), auditNote || undefined, whId || undefined);
+          setAuditCounts({});
+          setAuditNote('');
+          showToast('Stock audit saved. Differences posted to live stock.');
+        };
+
+        // Quick filter so a long list can be searched by name or batch.
+        const q = auditSearch.trim().toLowerCase();
+        const matches = (name: string, batch?: string) =>
+          !q || name.toLowerCase().includes(q) || (batch || '').toLowerCase().includes(q);
+        const visibleRows = rows.filter((r) => matches(r.name, r.batch.batchNumber));
+        const visibleOrphans = orphanProducts.filter((o) => matches(o.name));
+
+        const allKeys = [
+          ...rows.map((r) => ({ key: r.key, sys: r.systemQty })),
+          ...orphanProducts.map((o) => ({ key: o.key, sys: o.systemQty })),
+        ];
+        let countedLines = 0;
+        let diffLines = 0;
+        for (const k of allKeys) {
+          const raw = auditCounts[k.key];
+          if (raw === undefined || raw === '' || isNaN(Number(raw))) continue;
+          countedLines++;
+          if (Number(raw) !== k.sys) diffLines++;
+        }
+
+        // One shared row renderer: stacked card on phones (full product name on its own line,
+        // then System / Counted / Diff), classic 4-column grid from `sm` upwards.
+        const renderAuditRow = (opts: {
+          key: string;
+          name: string;
+          meta: string;
+          systemQty: number;
+        }) => {
+          const countedStr = auditCounts[opts.key] ?? '';
+          const hasCount = countedStr !== '';
+          const counted = hasCount ? Number(countedStr) : NaN;
+          const diff = hasCount && !isNaN(counted) ? counted - opts.systemQty : null;
+          return (
+            <li
+              key={opts.key}
+              className={`grid grid-cols-[1fr_1.4fr_1fr] sm:grid-cols-[1fr_5rem_5.5rem_4rem] gap-x-3 gap-y-1.5 sm:gap-y-0 px-3 sm:px-4 py-2.5 sm:py-3 items-start sm:items-center ${
+                diff !== null && diff !== 0 ? 'bg-amber-50/50' : ''
+              }`}
+            >
+              <div className="col-span-3 sm:col-span-1 min-w-0">
+                <div className="text-[13px] sm:text-sm font-semibold text-slate-900 leading-snug break-words">
+                  {opts.name}
+                </div>
+                <div className="text-[11px] text-slate-500 leading-tight mt-0.5">{opts.meta}</div>
+              </div>
+              <div className="sm:text-right">
+                <div className="sm:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400">System</div>
+                <div
+                  className={`h-[38px] sm:h-auto flex items-center sm:justify-end text-sm font-bold tabular-nums ${
+                    opts.systemQty < 0 ? 'text-rose-600' : 'text-slate-800'
+                  }`}
+                >
+                  {opts.systemQty}
+                </div>
+              </div>
+              <div>
+                <div className="sm:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-0.5">Counted</div>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  value={countedStr}
+                  placeholder="—"
+                  aria-label={`Counted quantity for ${opts.name}`}
+                  onFocus={(e) => e.currentTarget.select()}
+                  onChange={(e) =>
+                    setAuditCounts((prev) => ({
+                      ...prev,
+                      [opts.key]: e.target.value,
+                    }))
+                  }
+                  className="w-full sm:max-w-[5rem] sm:ml-auto block px-2 py-1.5 rounded-lg border border-black/10 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                />
+              </div>
+              <div className="sm:text-right">
+                <div className="sm:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400 text-right">Diff</div>
+                <div
+                  className={`h-[38px] sm:h-auto flex items-center justify-end text-sm font-semibold tabular-nums ${
+                    diff === null
+                      ? 'text-slate-300'
+                      : diff === 0
+                        ? 'text-emerald-600'
+                        : diff > 0
+                          ? 'text-sky-700'
+                          : 'text-rose-600'
+                  }`}
+                >
+                  {diff === null ? '—' : diff > 0 ? `+${diff}` : diff}
+                </div>
+              </div>
+            </li>
+          );
+        };
+
+        const fmtExp = (d?: string) =>
+          d
+            ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })
+            : '—';
+
+        return (
+          <div className="flex flex-col gap-3 max-w-none lg:max-w-3xl mx-auto w-full">
+            {/* Toolbar: godown + search + how-it-works */}
+            <div className="flex flex-col sm:flex-row gap-2">
+              <div className="flex items-center gap-1.5 sm:w-56">
+                <select
+                  value={whId}
+                  aria-label="Godown to audit"
+                  onChange={(e) => {
+                    setAuditWhId(e.target.value);
+                    setAuditCounts({});
+                  }}
+                  className="flex-1 min-w-0 px-3 py-2 sm:py-2.5 rounded-full border border-black/10 bg-white text-sm font-medium text-slate-800 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25"
+                >
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                </select>
+                <InfoTip title="How the stock audit works">
+                  <p>Count what is physically on the shelf and type it under <strong>Counted</strong>. Leave a line blank if it matches the system.</p>
+                  <p>Differences are posted as audit adjustments to live stock and kept in the ledger.</p>
+                </InfoTip>
+              </div>
+              <div className="relative flex-1">
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <input
+                  type="search"
+                  value={auditSearch}
+                  onChange={(e) => setAuditSearch(e.target.value)}
+                  placeholder="Search product or batch"
+                  className="w-full pl-9 pr-3 py-2 sm:py-2.5 rounded-full border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25"
+                />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-black/8 bg-white shadow-sm overflow-hidden">
+              <div className="hidden sm:grid grid-cols-[1fr_5rem_5.5rem_4rem] gap-3 px-4 py-2.5 border-b border-black/5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                <div>Product / batch</div>
+                <div className="text-right">System</div>
+                <div className="text-right">Counted</div>
+                <div className="text-right">Diff</div>
+              </div>
+              <div className="sm:hidden flex items-center justify-between px-3 py-2 border-b border-black/5 text-[11px] font-semibold text-slate-500">
+                <span>{visibleRows.length + visibleOrphans.length} lines</span>
+                <span>
+                  {countedLines} counted
+                  {diffLines > 0 && <span className="text-amber-700"> · {diffLines} differ</span>}
+                </span>
+              </div>
+              <ul className="divide-y divide-black/5 sm:max-h-[60vh] sm:overflow-y-auto">
+                {visibleRows.length === 0 && visibleOrphans.length === 0 && (
+                  <li className="px-4 py-8 text-center text-sm text-slate-500">
+                    {q ? 'No lines match your search.' : 'No stock lines for this godown.'}
+                  </li>
+                )}
+                {visibleRows.map((r) =>
+                  renderAuditRow({
+                    key: r.key,
+                    name: r.name,
+                    meta: `Batch ${r.batch.batchNumber || '—'} · Exp ${fmtExp(r.batch.expiryDate)}`,
+                    systemQty: r.systemQty,
+                  }),
+                )}
+                {visibleOrphans.map((o) =>
+                  renderAuditRow({
+                    key: o.key,
+                    name: o.name,
+                    meta: 'No batch · book stock',
+                    systemQty: o.systemQty,
+                  }),
+                )}
+              </ul>
+            </div>
+
+            {/* Save bar — fixed above the bottom nav on phone/tablet so it is always reachable on a long list.
+                (position: sticky does not engage here because ancestors use overflow:auto.) */}
+            <div className="lg:hidden h-14" aria-hidden="true" />
+            <div className="fixed inset-x-0 z-30 bottom-[calc(4rem+env(safe-area-inset-bottom,0px))] lg:static lg:z-auto px-3 sm:px-6 lg:px-0 py-2 bg-[#f6f4ef]/95 backdrop-blur border-t border-black/5 lg:border-0 lg:bg-transparent lg:backdrop-blur-none lg:py-0">
+              <div className="max-w-none lg:max-w-3xl mx-auto flex flex-row gap-2 items-center">
+                <input
+                  type="text"
+                  value={auditNote}
+                  onChange={(e) => setAuditNote(e.target.value)}
+                  placeholder="Note (optional)"
+                  className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveAudit}
+                  disabled={countedLines === 0}
+                  className="shrink-0 px-4 sm:px-5 py-2.5 rounded-xl bg-[#0d4a3a] text-white font-semibold text-sm cursor-pointer hover:bg-[#0a3d30] disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                >
+                  Save{countedLines > 0 ? ` (${countedLines})` : ''}
+                </button>
+              </div>
+            </div>
+
+            <details className="text-xs text-slate-500">
+              <summary className="cursor-pointer font-semibold text-slate-600 py-1">
+                Audit history &amp; reconciliation
+              </summary>
+              <div className="mt-3">
+                <AuditView embedded />
+              </div>
+            </details>
+          </div>
+        );
+      })()}
+
+      {/* TAB 4: GODOWN TRANSFERS — multi-line form matching Inventory control UI */}
+      {activeTab === 'transfers' && (() => {
+        const fromId = xferFromId || warehouses[0]?.id || '';
+        const toId = xferToId || warehouses[1]?.id || warehouses[0]?.id || '';
+        const availableFor = (productId: number) =>
+          fromId ? Math.max(0, warehouseStock(fromId, productId)) : 0;
+
+        const addProductLine = (productId: number) => {
+          if (!productId) return;
+          if (xferLines.some((l) => l.productId === productId)) {
+            showToast('Product already on the transfer list.');
+            return;
+          }
+          const avail = availableFor(productId);
+          setXferLines((prev) => [
+            ...prev,
+            {
+              key: `line_${productId}_${Date.now()}`,
+              productId,
+              qty: avail > 0 ? 1 : 0,
+            },
+          ]);
+        };
+
+        const executeTransfer = () => {
+          if (!fromId || !toId || fromId === toId) {
+            showToast('Choose two different warehouses.');
+            return;
+          }
+          if (xferLines.length === 0) {
+            showToast('Add at least one product.');
+            return;
+          }
+          setXferBusy(true);
+          let okCount = 0;
+          let failCount = 0;
+          for (const line of xferLines) {
+            const qty = Math.floor(Number(line.qty) || 0);
+            if (qty <= 0) continue;
+            const avail = availableFor(line.productId);
+            if (qty > avail) {
+              const name =
+                products.find((p) => p.id === line.productId)?.name ||
+                `Product #${line.productId}`;
+              showToast(
+                `Cannot transfer ${qty} of ${name} — only ${avail} available at source.`,
+              );
+              failCount++;
+              continue;
+            }
+            const result = addStockTransfer({
+              date: todayISO(),
+              fromWarehouseId: fromId,
+              toWarehouseId: toId,
+              productId: line.productId,
+              batchNumber: '',
+              quantity: qty,
+              referenceNote: xferNote.trim() || undefined,
+            });
+            if (result === false) failCount++;
+            else okCount++;
+          }
+          setXferBusy(false);
+          if (okCount > 0) {
+            showToast(
+              `Transferred ${okCount} product line${okCount === 1 ? '' : 's'}${failCount ? ` (${failCount} failed)` : ''}.`,
+            );
+            setXferLines([]);
+            setXferNote('');
+          } else if (failCount === 0) {
+            showToast('Enter quantities greater than zero.');
+          }
+        };
+
+        const productsNotOnList = products.filter(
+          (p) => !xferLines.some((l) => l.productId === p.id),
+        );
+
+        return (
+          <div className="flex flex-col gap-3 max-w-none lg:max-w-3xl mx-auto w-full">
+            <div className="rounded-2xl border border-black/8 bg-white shadow-sm p-3 sm:p-5 space-y-3 sm:space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-sm font-bold text-slate-800">Move stock between godowns</h2>
+                <InfoTip title="How transfers work" size="sm">
+                  <p>Earliest-expiry batches move first, so the oldest stock leaves the source godown first.</p>
+                </InfoTip>
+              </div>
+
+              <div className="grid grid-cols-1 min-[480px]:grid-cols-2 gap-2 sm:gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">
+                    From
+                  </label>
+                  <select
+                    value={fromId}
+                    onChange={(e) => setXferFromId(e.target.value)}
+                    className="w-full px-2.5 sm:px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm font-medium cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                  >
+                    <option value="">Choose…</option>
+                    {warehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wide text-slate-500 mb-1">
+                    To
+                  </label>
+                  <select
+                    value={toId}
+                    onChange={(e) => setXferToId(e.target.value)}
+                    className="w-full px-2.5 sm:px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm font-medium cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                  >
+                    <option value="">Choose…</option>
+                    {warehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Product lines */}
+              <div className="space-y-1">
+                {xferLines.length === 0 && (
+                  <p className="text-xs text-slate-400 py-1">
+                    No products yet — add one below.
+                  </p>
+                )}
+                {xferLines.map((line) => {
+                  const prod = products.find((p) => p.id === line.productId);
+                  const avail = availableFor(line.productId);
+                  const over = line.qty > avail;
+                  return (
+                    <div
+                      key={line.key}
+                      className="flex items-center gap-2 sm:gap-3 py-2.5 border-b border-black/5 last:border-0"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] sm:text-sm font-semibold text-slate-900 leading-snug break-words">
+                          {prod?.name || `Product #${line.productId}`}
+                        </div>
+                        <div
+                          className={`text-[11px] font-medium ${
+                            avail <= 0
+                              ? 'text-rose-600'
+                              : over
+                                ? 'text-amber-700'
+                                : 'text-slate-500'
+                          }`}
+                        >
+                          Available {avail}
+                          {!fromId && ' (select From)'}
+                          {over && avail > 0 && ` · max ${avail}`}
                         </div>
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        min={0}
+                        max={avail > 0 ? avail : undefined}
+                        value={line.qty}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setXferLines((prev) =>
+                            prev.map((l) =>
+                              l.key === line.key
+                                ? { ...l, qty: isNaN(v) ? 0 : v }
+                                : l,
+                            ),
+                          );
+                        }}
+                        className={`w-16 sm:w-20 shrink-0 px-2 py-1.5 rounded-lg border text-sm text-right font-semibold tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30 ${
+                          over ? 'border-rose-400 bg-rose-50' : 'border-black/10'
+                        }`}
+                      />
+                      <button
+                        type="button"
+                        aria-label="Remove product"
+                        onClick={() =>
+                          setXferLines((prev) =>
+                            prev.filter((l) => l.key !== line.key),
+                          )
+                        }
+                        className="shrink-0 p-2 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
 
-      {/* TAB 3: PHYSICAL STOCK AUDIT */}
-      {activeTab === 'audit' && (
-        <div className="flex flex-col gap-4">
-          <AuditView embedded />
-        </div>
-      )}
+              <select
+                value=""
+                onChange={(e) => {
+                  const pid = Number(e.target.value);
+                  if (pid) addProductLine(pid);
+                }}
+                disabled={!fromId}
+                className="w-full px-3 py-2.5 rounded-xl border border-dashed border-black/15 bg-slate-50/80 text-sm text-slate-600 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30 disabled:opacity-50"
+              >
+                <option value="">
+                  {fromId ? '+ Add product…' : 'Select From warehouse first…'}
+                </option>
+                {[...productsNotOnList]
+                  .sort((a, b) => {
+                    const qa = availableFor(a.id);
+                    const qb = availableFor(b.id);
+                    if (qa > 0 && qb <= 0) return -1;
+                    if (qb > 0 && qa <= 0) return 1;
+                    return a.name.localeCompare(b.name);
+                  })
+                  .map((p) => {
+                    const q = availableFor(p.id);
+                    return (
+                      <option key={p.id} value={p.id}>
+                        {p.name} — {q} available
+                      </option>
+                    );
+                  })}
+              </select>
 
-      {/* TAB 4: GODOWN TRANSFERS */}
-      {activeTab === 'transfers' && (
-        <div className="flex flex-col gap-4">
-          <div className="flex items-center justify-between pb-2 border-b-2" style={{ borderColor: palette.line }}>
-            <div>
-              <h2 className="text-base font-bold text-slate-900">Inter-Godown Stock Transfers</h2>
-              <p className="text-xs text-slate-500">
-                Move beverage crates between godowns with real-time balance reconciliation.
-              </p>
+              <input
+                type="text"
+                value={xferNote}
+                onChange={(e) => setXferNote(e.target.value)}
+                placeholder="Note (optional) — e.g. Shift to Chakan godown"
+                aria-label="Transfer note"
+                className="w-full px-3 py-2.5 rounded-xl border border-black/10 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+              />
+
+              <button
+                type="button"
+                disabled={xferBusy || xferLines.length === 0 || !fromId || !toId}
+                onClick={executeTransfer}
+                className="w-full py-3 rounded-xl bg-[#0d4a3a] text-white font-bold text-sm cursor-pointer hover:bg-[#0a3d30] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Transfer stock
+              </button>
             </div>
-            <button
-              onClick={() => {
-                setTab('settings');
-              }}
-              className="px-3 py-1.5 border text-xs font-semibold rounded hover:bg-slate-50 text-slate-700 cursor-pointer flex items-center gap-1.5"
-            >
-              <Building2 size={13} />
-              Manage Godown Facilities in Settings →
-            </button>
+
+            {/* Recent transfers */}
+            {stockTransfers.length > 0 && (
+              <div className="rounded-2xl border border-black/8 bg-white shadow-sm overflow-hidden">
+                <div className="px-3 sm:px-4 py-2.5 border-b border-black/5 text-sm font-bold text-slate-800">
+                  Recent transfers
+                </div>
+                <ul className="divide-y divide-black/5 sm:max-h-64 sm:overflow-y-auto">
+                  {stockTransfers.slice(0, 12).map((st) => {
+                    const from = warehouses.find((w) => w.id === st.fromWarehouseId);
+                    const to = warehouses.find((w) => w.id === st.toWarehouseId);
+                    const prod = products.find((p) => p.id === st.productId);
+                    return (
+                      <li
+                        key={st.id}
+                        className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <span className="font-semibold text-slate-800 leading-snug break-words min-w-0">
+                            {prod?.name || `Product #${st.productId}`}
+                          </span>
+                          <span className="font-bold tabular-nums text-slate-800 shrink-0">{st.quantity} cs</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 text-[11px] text-slate-500 mt-0.5">
+                          <span className="min-w-0 break-words">{from?.name || '?'} → {to?.name || '?'}</span>
+                          <span className="text-slate-400 shrink-0">{st.date}</span>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
           </div>
-          <WarehousesView embedded initialSubTab="transfers" />
-        </div>
-      )}
+        );
+      })()}
 
       {/* Inward Consignment Modal */}
       <InwardConsignmentModal
@@ -1429,6 +1421,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         preselectedWarehouseId={selectedWarehouse !== 'all' ? selectedWarehouse : undefined}
         preselectedProductId={selectedProductForInward}
         initialGrnToEdit={selectedGrnToEdit}
+        onOpenBulkImport={() => {
+          setIsInwardModalOpen(false);
+          setIsBulkModalOpen(true);
+        }}
       />
 
       {/* Bulk Inward Modal */}

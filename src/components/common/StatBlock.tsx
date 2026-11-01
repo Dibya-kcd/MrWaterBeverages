@@ -1,39 +1,34 @@
 import React from 'react';
-import { useLedger } from '../../context/LedgerContext';
 
 interface StatBlockProps {
   label: string;
-  value: string;
+  value: string | number;
   sub?: string;
   accent?: string;
   id?: string;
+  className?: string;
 }
 
-export const StatBlock: React.FC<StatBlockProps> = ({ label, value, sub, accent, id }) => {
-  const { palette, fz } = useLedger();
-
+/** KPI card — reference design system */
+export const StatBlock: React.FC<StatBlockProps> = ({ label, value, sub, accent, id, className = '' }) => {
   return (
     <div
       id={id}
-      className="border-2 rounded-lg px-3 sm:px-4 py-2.5 sm:py-3.5 flex flex-col justify-between h-full shadow-xs"
-      style={{
-        borderColor: palette.line,
-        backgroundColor: palette.panel,
-      }}
+      className={`mw-panel bg-[var(--panel-solid)] border border-[var(--border)] rounded-xl px-4 py-3.5 sm:px-5 sm:py-4 flex flex-col justify-between h-full shadow-sm transition-all hover:border-[var(--teal)]/25 ${className}`}
     >
-      <div>
-        <div className="text-xs sm:text-sm font-semibold truncate" style={{ color: palette.ink, lineHeight: 1.25 }}>
+      <div className="space-y-1">
+        <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--muted-fg)] truncate">
           {label}
         </div>
         <div
-          className="text-lg sm:text-2xl font-black mt-1 tracking-tight truncate"
-          style={{ color: accent || palette.ink, lineHeight: 1.15 }}
+          className="text-xl sm:text-2xl font-black tracking-tight truncate font-mono tabular-nums text-[var(--ink)]"
+          style={accent ? { color: accent } : undefined}
         >
           {value}
         </div>
       </div>
       {sub && (
-        <div className="text-[11px] sm:text-xs text-slate-500 mt-1 truncate" style={{ lineHeight: 1.2 }}>
+        <div className="text-[11px] sm:text-xs text-[var(--muted-fg)] mt-2.5 pt-2 border-t border-[var(--border)] truncate font-medium">
           {sub}
         </div>
       )}

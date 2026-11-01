@@ -21,19 +21,25 @@ import {
 import { useLedger } from '../../context/LedgerContext';
 import { Audit } from '../../types';
 import { IconButton } from '../common/IconButton';
+import { SmartReconciliationView } from './SmartReconciliationView';
+import { InfoTip } from "../common/InfoTip";
+import { todayISO, toLocalISODate } from "../../utils/dateLocal";
 
 export interface AuditViewProps {
   embedded?: boolean;
 }
 
 export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
-  const { products, bookStock, audits, saveAudit, deleteAudit, palette, fz, scale } = useLedger();
+  const { products, stockAsOf, audits, saveAudit, deleteAudit, palette, fz, scale } = useLedger();
 
   // New Audit Form State
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const yesterdayStr = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const todayStr = todayISO();
+  const yesterdayStr = toLocalISODate(new Date(Date.now() - 86400000));
 
   const [auditDate, setAuditDate] = useState<string>(todayStr);
+  const [mode, setMode] = useState<'quick' | 'smart'>('smart');
+  // System quantity shown and used for the variance is the stock of the audit date (today's balance for today).
+  const bookAt = (productId: number) => stockAsOf(productId, auditDate);
   const [referenceNote, setReferenceNote] = useState<string>('');
   const [physicalCounts, setPhysicalCounts] = useState<Record<number, string>>({});
   const [autoAdjust, setAutoAdjust] = useState<boolean>(true);
@@ -116,7 +122,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
     setReferenceNote('');
     setAuditSavedMessage(
       `Physical stock audit for date ${auditDate} saved successfully! ${
-        autoAdjust ? 'Opening stock balances have been trued-up.' : 'Observation recorded without altering stock.'
+        autoAdjust ? 'Live stock now matches the counted quantities.' : 'Observation recorded without altering stock.'
       }`
     );
     setTimeout(() => setAuditSavedMessage(null), 6000);
@@ -125,7 +131,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
   const fillAllWithBookStock = () => {
     const filled: Record<number, string> = {};
     products.forEach((p) => {
-      filled[p.id] = String(bookStock(p.id));
+      filled[p.id] = String(bookAt(p.id));
     });
     setPhysicalCounts(filled);
   };
@@ -208,7 +214,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
       if (val !== '' && val !== undefined) {
         countedCount++;
         const counted = Number(val);
-        const book = bookStock(p.id);
+        const book = bookAt(p.id);
         const diff = counted - book;
         if (diff !== 0) {
           varianceCount++;
@@ -217,7 +223,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
       }
     }
     return { countedCount, varianceCount, netVariance };
-  }, [products, physicalCounts, bookStock]);
+  }, [products, physicalCounts, stockAsOf, auditDate]);
 
   const toggleDayExpansion = (dateKey: string) => {
     setExpandedDays((prev) => ({
@@ -242,71 +248,95 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
     setExpandedDays(updated);
   };
 
+  const modeToggle = (
+    <div className="flex gap-1 p-1 bg-slate-100 rounded-lg w-fit mb-4">
+      <button
+        type="button"
+        onClick={() => setMode('quick')}
+        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+          mode === 'quick' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
+        }`}
+      >
+        Past audits
+      </button>
+      <button
+        type="button"
+        onClick={() => setMode('smart')}
+        className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+          mode === 'smart' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
+        }`}
+      >
+        Smart Reconciliation
+      </button>
+    </div>
+  );
+
+  if (mode === 'smart') {
+    return (
+      <div id="view-audit" className={embedded ? 'flex flex-col gap-5' : 'py-1 lg:p-6 max-w-none lg:max-w-6xl'}>
+        {modeToggle}
+        <SmartReconciliationView />
+      </div>
+    );
+  }
+
   return (
-    <div id="view-audit" className={embedded ? 'flex flex-col gap-5' : 'p-4 sm:p-6 max-w-6xl'}>
+    <div id="view-audit" className={embedded ? 'flex flex-col gap-5' : 'py-1 lg:p-6 max-w-none lg:max-w-6xl'}>
+      {modeToggle}
       {/* Header with Title and Quick Actions */}
       <div
         className="flex items-center justify-between pb-3 border-b-2 flex-wrap gap-3"
         style={{ borderColor: palette.line }}
       >
-        <div>
-          <div className="flex items-center gap-2">
-            <ClipboardCheck size={embedded ? 22 : 28} className="text-blue-700" aria-hidden="true" />
-            <h1 style={fz(embedded ? 20 : 26, { fontWeight: 800, color: palette.ink })}>
-              Date-Wise Physical Stock Audit & Reconcile
-            </h1>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-amber-600 text-white flex items-center justify-center shadow-md shadow-amber-600/20 shrink-0">
+              <ClipboardCheck className="w-5 h-5" aria-hidden="true" />
+            </div>
+            <div className="flex items-center gap-1.5 min-w-0">
+              <h1 className="text-lg sm:text-2xl font-black tracking-tight text-slate-900">
+                Physical Stock Audit
+              </h1>
+              <InfoTip title="Physical stock audit">
+                <p>Count the stock physically present, date by date, and reconcile it against what the system expects.</p>
+                <p>Differences are never turned into a loss automatically — each shortage or excess is matched, reviewed and approved first.</p>
+              </InfoTip>
+            </div>
           </div>
-          <p style={fz(embedded ? 13 : 14.5, { color: palette.muted, marginTop: '0.25em' })}>
-            Perform physical warehouse counts organized by date. Compare godown crates with ledger book stock and track historical audit logs day by day.
-          </p>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => setShowForm((prev) => !prev)}
-            className="flex items-center gap-1.5 border-2 px-3.5 py-2 focus-ring cursor-pointer font-bold rounded shadow-xs"
-            style={{
-              backgroundColor: showForm ? palette.panel : palette.navy,
-              borderColor: palette.navy,
-              color: showForm ? palette.navy : '#FFFFFF',
-              ...fz(13.5),
-            }}
-          >
-            {showForm ? <ChevronUp size={16} /> : <Plus size={16} />}
-            <span>{showForm ? 'Hide Audit Entry Form' : 'New Physical Audit'}</span>
-          </button>
         </div>
       </div>
 
       {/* Overview Metrics Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="border-2 p-3 rounded-sm shadow-xs" style={cardStyle}>
-          <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">Total Audits Stored</div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
+        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3 sm:p-3.5">
+          <div className="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider">Total Audits</div>
           <div className="text-xl font-extrabold mt-1 text-slate-900">{auditStats.totalAudits}</div>
-          <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Reconciliation stocktakes</div>
+          <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Stocktakes stored</div>
         </div>
-        <div className="border-2 p-3 rounded-sm shadow-xs" style={cardStyle}>
-          <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">Active Audit Dates</div>
+        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3 sm:p-3.5">
+          <div className="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider">Audit Dates</div>
           <div className="text-xl font-extrabold mt-1 text-slate-900">{auditStats.uniqueDays} days</div>
           <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Grouped date-wise</div>
         </div>
-        <div className="border-2 p-3 rounded-sm shadow-xs" style={cardStyle}>
-          <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">Variance Discrepancies</div>
+        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3 sm:p-3.5">
+          <div className="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider">Variances</div>
           <div className="text-xl font-extrabold mt-1 text-slate-900">{auditStats.totalVariances} items</div>
-          <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Products with count difference</div>
+          <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Count differences</div>
         </div>
-        <div className="border-2 p-3 rounded-sm shadow-xs" style={cardStyle}>
-          <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">Products in Catalog</div>
-          <div className="text-xl font-extrabold mt-1 text-slate-900">{products.length} beverages</div>
-          <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Available for stock audit</div>
+        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3 sm:p-3.5">
+          <div className="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider">Catalog</div>
+          <div className="text-xl font-extrabold mt-1 text-slate-900">{products.length}</div>
+          <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Products to count</div>
         </div>
       </div>
 
       {/* Success Notification */}
       {auditSavedMessage && (
         <div
-          className="flex items-center justify-between p-3.5 border-2 rounded shadow-xs"
+          className="flex items-center justify-between p-3.5 border-2 rounded shadow-sm"
           style={{
             borderColor: palette.good,
             backgroundColor: `${palette.good}15`,
@@ -319,7 +349,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
             <CheckCircle2 size={18} aria-hidden="true" />
             <span>{auditSavedMessage}</span>
           </div>
-          <button
+          <button aria-label="Close"
             type="button"
             onClick={() => setAuditSavedMessage(null)}
             className="p-1 hover:bg-emerald-100 rounded text-emerald-800 cursor-pointer"
@@ -332,7 +362,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
       {/* Error Notification */}
       {errorMessage && (
         <div
-          className="flex items-center justify-between p-3.5 border-2 rounded shadow-xs"
+          className="flex items-center justify-between p-3.5 border-2 rounded shadow-sm"
           style={{
             borderColor: palette.bad,
             backgroundColor: `${palette.bad}15`,
@@ -345,7 +375,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
             <AlertTriangle size={18} aria-hidden="true" />
             <span>{errorMessage}</span>
           </div>
-          <button
+          <button aria-label="Close"
             type="button"
             onClick={() => setErrorMessage(null)}
             className="p-1 hover:bg-rose-100 rounded text-rose-800 cursor-pointer"
@@ -355,259 +385,24 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
         </div>
       )}
 
-      {/* NEW AUDIT ENTRY FORM (WITH DATE EXPLICITLY MENTIONED AND SELECTABLE) */}
-      {showForm && (
-        <form
-          id="form-stock-audit"
-          onSubmit={handleSaveAudit}
-          className="border-2 p-5 rounded-sm shadow-sm"
-          style={{ borderColor: palette.navy, backgroundColor: palette.panel }}
+      {/* Product-level counting was retired: counts now go through Smart Reconciliation (every difference is matched and approved before stock changes). Past audits stay readable below. */}
+      <div
+        className="border-2 rounded px-4 py-3 flex items-center justify-between flex-wrap gap-3"
+        style={{ borderColor: palette.line, backgroundColor: palette.panel, color: palette.ink, ...fz(13.5) }}
+      >
+        <span>
+          New stock counts are done in <strong>Smart Reconciliation</strong>. This page keeps the history of earlier quick audits.
+        </span>
+        <button
+          type="button"
+          onClick={() => setMode('smart')}
+          className="border-2 px-3.5 py-2 focus-ring cursor-pointer font-bold rounded"
+          style={{ borderColor: palette.navy, backgroundColor: palette.navy, color: '#FFFFFF', ...fz(13.5) }}
         >
-          {/* Prominent Audit Date Mention & Selector Banner */}
-          <div
-            className="p-3.5 border-2 rounded mb-5 flex items-center justify-between flex-wrap gap-3"
-            style={{ borderColor: palette.line, backgroundColor: `${palette.navy}08` }}
-          >
-            <div className="flex items-center gap-2.5">
-              <Calendar size={20} className="text-blue-800" aria-hidden="true" />
-              <div>
-                <div className="flex items-center gap-2">
-                  <span style={fz(16, { fontWeight: 800, color: palette.ink })}>
-                    Stock Audit Date:
-                  </span>
-                  <span className="font-extrabold text-blue-900 bg-blue-100 px-2.5 py-0.5 rounded text-sm border border-blue-200">
-                    {formatDayHeader(auditDate).label}
-                  </span>
-                  {formatDayHeader(auditDate).tag && (
-                    <span className="text-[11px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-emerald-100 text-emerald-800">
-                      {formatDayHeader(auditDate).tag}
-                    </span>
-                  )}
-                </div>
-                <p style={fz(12.5, { color: palette.muted, marginTop: '0.15em' })}>
-                  Physical stock count will be stamped and recorded under date <strong>{auditDate}</strong>.
-                </p>
-              </div>
-            </div>
+          Start a count
+        </button>
+      </div>
 
-            {/* Quick Date Switchers */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                onClick={() => setAuditDate(todayStr)}
-                className={`px-2.5 py-1 text-xs font-bold rounded border-2 cursor-pointer transition-colors ${
-                  auditDate === todayStr ? 'bg-blue-800 text-white border-blue-800' : 'bg-white text-slate-800 border-slate-300'
-                }`}
-              >
-                Today ({todayStr})
-              </button>
-              <button
-                type="button"
-                onClick={() => setAuditDate(yesterdayStr)}
-                className={`px-2.5 py-1 text-xs font-bold rounded border-2 cursor-pointer transition-colors ${
-                  auditDate === yesterdayStr ? 'bg-blue-800 text-white border-blue-800' : 'bg-white text-slate-800 border-slate-300'
-                }`}
-              >
-                Yesterday ({yesterdayStr})
-              </button>
-            </div>
-          </div>
-
-          {/* Form Fields: Date picker, Reference, Auto-adjust option */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 mb-5">
-            <div>
-              <label htmlFor="audit-date-input" style={labelStyle}>
-                Audit Date * (Date when stock was counted)
-              </label>
-              <input
-                id="audit-date-input"
-                type="date"
-                required
-                value={auditDate}
-                onChange={(e) => setAuditDate(e.target.value)}
-                className="w-full border-2 px-3 py-2 focus-ring rounded font-semibold"
-                style={inputStyle}
-              />
-            </div>
-
-            <div>
-              <label htmlFor="audit-reference-note" style={labelStyle}>
-                Auditor Name / Godown Location (Optional)
-              </label>
-              <input
-                id="audit-reference-note"
-                placeholder="e.g. Main Godown / Suresh (Weekly Reconcile)"
-                value={referenceNote}
-                onChange={(e) => setReferenceNote(e.target.value)}
-                className="w-full border-2 px-3 py-2 focus-ring rounded"
-                style={inputStyle}
-              />
-            </div>
-
-            <div className="flex flex-col justify-end">
-              <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold p-2.5 border-2 rounded select-none" style={{ borderColor: palette.line, backgroundColor: `${palette.line}10` }}>
-                <input
-                  type="checkbox"
-                  checked={autoAdjust}
-                  onChange={(e) => setAutoAdjust(e.target.checked)}
-                  className="w-4 h-4 rounded text-blue-600 focus-ring cursor-pointer"
-                />
-                <span>Auto-adjust product opening stock to match physical count</span>
-              </label>
-            </div>
-          </div>
-
-          {/* Table Tools: Pre-fill and Clear */}
-          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <div className="flex items-center gap-2">
-              <span style={fz(14, { fontWeight: 700, color: palette.ink })}>
-                Counted Beverage Stock (Physical Cases):
-              </span>
-              {formStats.countedCount > 0 && (
-                <span className="text-xs bg-slate-100 border border-slate-300 text-slate-700 px-2 py-0.5 rounded font-bold">
-                  {formStats.countedCount} entered ·{' '}
-                  {formStats.varianceCount === 0 ? (
-                    <span className="text-emerald-700">0 variance</span>
-                  ) : (
-                    <span className="text-amber-700">
-                      {formStats.varianceCount} with variance ({formStats.netVariance > 0 ? `+${formStats.netVariance}` : formStats.netVariance} cs net)
-                    </span>
-                  )}
-                </span>
-              )}
-            </div>
-
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={fillAllWithBookStock}
-                className="border-2 px-3 py-1 text-xs focus-ring cursor-pointer font-semibold rounded hover:bg-slate-100"
-                style={{
-                  borderColor: palette.line,
-                  backgroundColor: palette.panel,
-                  color: palette.ink,
-                }}
-                title="Populate physical count column with current book stock values for quick auditing"
-              >
-                Pre-fill with Book Stock
-              </button>
-              <button
-                type="button"
-                onClick={clearAllCounts}
-                className="border-2 px-3 py-1 text-xs focus-ring cursor-pointer font-semibold rounded text-slate-600 hover:bg-slate-100"
-                style={{
-                  borderColor: palette.line,
-                  backgroundColor: palette.panel,
-                }}
-              >
-                Clear Inputs
-              </button>
-            </div>
-          </div>
-
-          {/* Physical Count Table */}
-          <div className="border-2 overflow-x-auto mb-5 rounded" style={{ borderColor: palette.line }}>
-            <table className="w-full text-left" style={fz(13.5)}>
-              <thead>
-                <tr className="border-b-2 bg-slate-50" style={{ borderColor: palette.line }}>
-                  <th className="px-3.5 py-2.5 font-bold">Product Name</th>
-                  <th className="px-3.5 py-2.5 text-right font-bold">System Book Stock</th>
-                  <th className="px-3.5 py-2.5 text-right font-bold w-40">Physical Count (Cases)</th>
-                  <th className="px-3.5 py-2.5 text-right font-bold">Variance (Diff)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {products.map((p) => {
-                  const book = bookStock(p.id);
-                  const countedStr = physicalCounts[p.id];
-                  const hasCounted = countedStr !== '' && countedStr !== undefined;
-                  const counted = hasCounted ? Number(countedStr) : null;
-                  const diff = counted !== null ? counted - book : null;
-
-                  return (
-                    <tr key={p.id} className="border-t hover:bg-slate-50/50" style={{ borderColor: palette.line }}>
-                      <td className="px-3.5 py-2">
-                        <div className="font-semibold text-slate-900">{p.name}</div>
-                        <div className="text-[11px] text-slate-500">₹{p.retail || p.wholesale || p.cost} / case</div>
-                      </td>
-                      <td className="px-3.5 py-2 text-right font-semibold text-slate-700">{book} cs</td>
-                      <td className="px-3.5 py-2 text-right">
-                        <label htmlFor={`audit-count-${p.id}`} className="sr-only">
-                          Physical count for {p.name}
-                        </label>
-                        <input
-                          id={`audit-count-${p.id}`}
-                          type="number"
-                          min="0"
-                          placeholder="Count cs"
-                          value={countedStr || ''}
-                          onChange={(e) =>
-                            setPhysicalCounts({ ...physicalCounts, [p.id]: e.target.value })
-                          }
-                          className="w-28 border-2 px-2.5 py-1 text-right focus-ring font-bold rounded"
-                          style={inputStyle}
-                        />
-                      </td>
-                      <td
-                        className="px-3.5 py-2 text-right font-bold"
-                        style={{
-                          color:
-                            diff === null
-                              ? palette.muted
-                              : diff === 0
-                              ? palette.good
-                              : diff > 0
-                              ? '#d97706' // amber for excess
-                              : palette.bad, // red for shortage
-                        }}
-                      >
-                        {diff === null
-                          ? '—'
-                          : diff === 0
-                          ? '0 (Exact)'
-                          : `${diff > 0 ? `+${diff}` : diff} cs ${diff > 0 ? '(Excess)' : '(Shortage)'}`}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Form Actions */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <button
-              id="btn-save-audit"
-              type="submit"
-              className="border-2 px-6 py-2.5 focus-ring cursor-pointer font-bold rounded shadow-xs"
-              style={{
-                backgroundColor: palette.navy,
-                borderColor: palette.navy,
-                color: '#FFFFFF',
-                ...fz(14),
-              }}
-            >
-              Save Audit for {auditDate} & Finalize
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setPhysicalCounts({});
-                setShowForm(false);
-              }}
-              className="border-2 px-4 py-2.5 focus-ring cursor-pointer font-semibold rounded hover:bg-slate-100"
-              style={{
-                borderColor: palette.line,
-                color: palette.muted,
-                backgroundColor: palette.panel,
-                ...fz(14),
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
 
       {/* DATE-WISE AUDIT LOG HISTORY SECTION */}
       <div className="space-y-4 pt-2">
@@ -682,7 +477,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
             {/* Quick search input */}
             <div className="relative">
               <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
+              <input enterKeyHint="search"
                 type="text"
                 placeholder="Search audit / note..."
                 value={searchQuery}
@@ -745,7 +540,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                 setDateFilterMode('all');
                 setSearchQuery('');
               }}
-              className="mt-2 text-xs font-bold text-blue-700 underline cursor-pointer"
+              className="mt-2 text-xs font-bold text-sky-700 underline cursor-pointer"
             >
               Reset Filters
             </button>
@@ -771,7 +566,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
               return (
                 <div
                   key={group.date}
-                  className="border-2 rounded-sm overflow-hidden shadow-xs"
+                  className="border-2 rounded-sm overflow-hidden shadow-sm"
                   style={{ borderColor: palette.line, backgroundColor: palette.panel }}
                 >
                   {/* Date Header Accordion Trigger */}
@@ -789,12 +584,12 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                       >
                         {isDayExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
                       </button>
-                      <Calendar size={18} className="text-blue-800" aria-hidden="true" />
+                      <Calendar size={18} className="text-sky-800" aria-hidden="true" />
                       <div>
                         <div className="flex items-center gap-2">
                           <span className="font-extrabold text-slate-900 text-base">{dayLabel}</span>
                           {dayTag && (
-                            <span className="text-[11px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-blue-100 text-blue-800">
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded uppercase tracking-wider bg-blue-100 text-sky-800">
                               {dayTag}
                             </span>
                           )}
@@ -807,10 +602,10 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                     </div>
 
                     <div className="flex items-center gap-3 text-xs font-semibold text-slate-700 flex-wrap">
-                      <span className="bg-white px-2.5 py-1 rounded border border-slate-200 shadow-2xs">
+                      <span className="bg-white px-2.5 py-1 rounded border border-slate-200 shadow-sm">
                         {group.audits.length} Session{group.audits.length === 1 ? '' : 's'}
                       </span>
-                      <span className="bg-white px-2.5 py-1 rounded border border-slate-200 shadow-2xs">
+                      <span className="bg-white px-2.5 py-1 rounded border border-slate-200 shadow-sm">
                         {dayProductsAudited} Items Audited
                       </span>
                       {dayDiscrepanciesCount === 0 ? (
@@ -839,7 +634,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                         return (
                           <div
                             key={a.id}
-                            className="border-2 rounded p-4 bg-white shadow-2xs hover:border-slate-400 transition-colors"
+                            className="border-2 rounded p-4 bg-white shadow-sm hover:border-slate-400 transition-colors"
                             style={{ borderColor: palette.line }}
                           >
                             {/* Audit Card Header */}
@@ -849,7 +644,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                                   <span style={fz(15, { fontWeight: 800, color: palette.ink })}>
                                     Audit #{a.id}
                                   </span>
-                                  <span className="inline-flex items-center gap-1.5 text-xs font-black px-2.5 py-1 rounded bg-blue-900 text-white shadow-xs">
+                                  <span className="inline-flex items-center gap-1.5 text-xs font-black px-2.5 py-1 rounded bg-sky-600 text-white shadow-sm">
                                     <Calendar size={13} />
                                     <span>Date: {a.date}</span>
                                   </span>
@@ -859,7 +654,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                                     </span>
                                   )}
                                   {a.referenceNote && (
-                                    <span className="text-xs font-semibold px-2 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200">
+                                    <span className="text-xs font-semibold px-2 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200">
                                       {a.referenceNote}
                                     </span>
                                   )}
@@ -897,8 +692,8 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                             </div>
 
                             {/* Itemized Table of this Audit */}
-                            <div className="border overflow-x-auto rounded" style={{ borderColor: palette.line }}>
-                              <table className="w-full text-left" style={fz(12.5)}>
+                            <div className="border overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm" style={{ borderColor: palette.line }}>
+                              <table className="w-full text-left data-table" style={fz(12.5)}>
                                 <thead>
                                   <tr className="bg-slate-50 border-b" style={{ borderColor: palette.line }}>
                                     <th className="px-3 py-1.5 font-bold">Beverage Product</th>
@@ -995,7 +790,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                   color: palette.bad,
                 }}
               >
-                This will remove the historical audit log entry containing {auditToDelete.entries.length} product reconciliation counts. Note that if stock was already adjusted, product opening balances remain preserved.
+                This will remove the historical audit log entry containing {auditToDelete.entries.length} product reconciliation counts. Warning: if this audit adjusted stock, deleting it also reverses that adjustment and live stock changes by the same amount.
               </div>
             </div>
 
@@ -1025,7 +820,7 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                   setAuditSavedMessage(`Audit #${id} was deleted successfully.`);
                   setTimeout(() => setAuditSavedMessage(null), 4000);
                 }}
-                className="border-2 px-4 py-2 text-xs font-bold text-white rounded cursor-pointer transition-all shadow-xs"
+                className="border-2 px-4 py-2 text-xs font-bold text-white rounded cursor-pointer transition-all shadow-sm"
                 style={{
                   backgroundColor: palette.bad,
                   borderColor: palette.bad,

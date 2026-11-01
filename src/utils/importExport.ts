@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { CategoryKey, ImportRow } from '../types';
+import { normalizeTo8DigitHsn } from './billing';
 
 export function normalizeImportRow(raw: Record<string, unknown>): ImportRow | null {
   const map: Record<string, unknown> = {};
@@ -20,7 +21,7 @@ export function normalizeImportRow(raw: Record<string, unknown>): ImportRow | nu
   const opening = Number(pick('opening', 'openingstock', 'qty', 'quantity', 'cases', 'caseqty', 'billedcases', 'billedqty')) || 0;
   const retail = Number(pick('retail', 'retailprice', 'mrp', 'sellingprice', 'sp', 'retailmrp')) || 0;
   const wholesale = Number(pick('wholesale', 'wholesaleprice', 'dealerprice', 'wp', 'wholesalerate')) || retail;
-  const cost = Number(pick('cost', 'costprice', 'purchaseprice', 'rate', 'unitrate', 'unitprice', 'purchaserate')) || 0;
+  const cost = Number(pick('cost', 'costprice', 'purchaseprice', 'rate', 'unitrate', 'unitprice', 'purchaserate', 'listprice')) || 0;
   const volume = Number(pick('volume', 'ml', 'size', 'volumeml')) || 150;
   const pack = String(pick('pack', 'packaging') || 'PET').trim() || 'PET';
   const expiry = String(pick('expiry', 'expirydate', 'exp', 'bestbefore') || '').trim();
@@ -60,7 +61,7 @@ export function normalizeImportRow(raw: Record<string, unknown>): ImportRow | nu
     pack,
     expiry,
     category,
-    hsn: hsn || undefined,
+    hsn: normalizeTo8DigitHsn(hsn, category, name),
     batchNumber: batchNumber || undefined,
     scheme: scheme || undefined,
     supplierName: supplierName || undefined,
@@ -154,11 +155,11 @@ export function downloadImportTemplate(): void {
   };
 
   const sample1 = [
-    'RADHIKA ENTERPRISES',
+    'SAMPLE SUPPLIER',
     '21FSDPR8480R1ZU',
     'Main Road, Near Bus Stand, Kuchinda, Sambalpur, Odisha - 768222',
     '+91 94370 84801',
-    'radhika.beverages@gmail.com',
+    'supplier@example.com',
     '38/26-27',
     '2026-09-12',
     'OD15AF7869',
@@ -180,11 +181,11 @@ export function downloadImportTemplate(): void {
   ];
 
   const sample2 = [
-    'RADHIKA ENTERPRISES',
+    'SAMPLE SUPPLIER',
     '21FSDPR8480R1ZU',
     'Main Road, Near Bus Stand, Kuchinda, Sambalpur, Odisha - 768222',
     '+91 94370 84801',
-    'radhika.beverages@gmail.com',
+    'supplier@example.com',
     '38/26-27',
     '2026-09-12',
     'OD15AF7869',
@@ -206,11 +207,11 @@ export function downloadImportTemplate(): void {
   ];
 
   const sample3 = [
-    'RADHIKA ENTERPRISES',
+    'SAMPLE SUPPLIER',
     '21FSDPR8480R1ZU',
     'Main Road, Near Bus Stand, Kuchinda, Sambalpur, Odisha - 768222',
     '+91 94370 84801',
-    'radhika.beverages@gmail.com',
+    'supplier@example.com',
     '38/26-27',
     '2026-09-12',
     'OD15AF7869',
@@ -242,7 +243,7 @@ export function downloadImportTemplate(): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'Radhika_Beverages_Inward_Template.csv';
+  a.download = 'MrWater_Inward_Template.csv';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -259,11 +260,11 @@ export function downloadImportTemplateXlsx(): void {
   // Sheet 1: Invoice Provider Details (Metadata)
   const providerDetailsRows = [
     ['INVOICE PROVIDER & CONSIGNMENT DETAILS', 'CAPTURED VALUE', 'FIELD GUIDELINES'],
-    ['Supplier / Provider Name', 'RADHIKA ENTERPRISES', 'Legal trade name of the beverage manufacturer or principal distributor'],
+    ['Supplier / Provider Name', 'SAMPLE SUPPLIER', 'Legal trade name of the beverage manufacturer or principal distributor'],
     ['Supplier GSTIN', '21FSDPR8480R1ZU', '15-digit GST Identification Number (Odisha code: 21)'],
     ['Supplier Address', 'Main Road, Near Bus Stand, Kuchinda, Sambalpur, Odisha - 768222', 'Registered billing or dispatch godown address'],
     ['Supplier Phone / Contact', '+91 94370 84801', 'Official dispatch or transport contact number'],
-    ['Supplier Email', 'radhika.beverages@gmail.com', 'Billing and accounts confirmation email address'],
+    ['Supplier Email', 'supplier@example.com', 'Billing and accounts confirmation email address'],
     ['Invoice / Bill Number', '38/26-27', 'Tax invoice number, sales quotation, or DC reference number'],
     ['Invoice Date (YYYY-MM-DD)', '2026-09-12', 'Date of tax invoice issue'],
     ['Vehicle / Transport Reg No', 'OD15AF7869', 'Commercial transport carrier or delivery vehicle number'],
@@ -309,7 +310,7 @@ export function downloadImportTemplateXlsx(): void {
   const itemsRows = [
     itemsHeader,
     [
-      'RADHIKA ENTERPRISES',
+      'SAMPLE SUPPLIER',
       '21FSDPR8480R1ZU',
       '38/26-27',
       '2026-09-12',
@@ -337,7 +338,7 @@ export function downloadImportTemplateXlsx(): void {
       '2027-03-31',
     ],
     [
-      'RADHIKA ENTERPRISES',
+      'SAMPLE SUPPLIER',
       '21FSDPR8480R1ZU',
       '38/26-27',
       '2026-09-12',
@@ -365,7 +366,7 @@ export function downloadImportTemplateXlsx(): void {
       '2027-03-31',
     ],
     [
-      'RADHIKA ENTERPRISES',
+      'SAMPLE SUPPLIER',
       '21FSDPR8480R1ZU',
       '38/26-27',
       '2026-09-12',
@@ -439,6 +440,6 @@ export function downloadImportTemplateXlsx(): void {
   gstWs['!cols'] = [{ wch: 38 }, { wch: 18 }, { wch: 18 }, { wch: 28 }, { wch: 45 }];
   XLSX.utils.book_append_sheet(wb, gstWs, 'GST_Slabs_Guide');
 
-  XLSX.writeFile(wb, 'Radhika_Beverages_Inward_Template.xlsx');
+  XLSX.writeFile(wb, 'MrWater_Inward_Template.xlsx');
 }
 

@@ -4,6 +4,7 @@
  * browsers and Node.js runtimes.
  */
 
+// DO NOT RENAME: this is the hashing salt for existing salesman PINs. Changing it locks every salesman out.
 const SALT = 'radhika_distribution_salesman_salt_v1_';
 
 /**

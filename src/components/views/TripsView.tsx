@@ -1,778 +1,625 @@
-import React, { useState, useMemo } from 'react';
-import {
-  AlertTriangle,
-  CheckCircle2,
-  History,
-  Plus,
-  RefreshCw,
-  Trash2,
-  Truck,
-  X,
-} from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { CheckCircle2, Plus, Search, Trash2, Truck, X } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
-import { Bill, Trip } from '../../types';
-import { IconButton } from '../common/IconButton';
-import { EditTripModal } from './EditTripModal';
+import { Trip } from '../../types';
+import { billNetTotal } from '../../utils/salesReturns';
+import { attachableBillsForTrip } from '../../utils/billing';
 import { AssignBillsModal } from './AssignBillsModal';
-import { TripCardItem } from './TripCardItem';
-import { TripHistorySection } from './TripHistorySection';
+import { TripEditScreen } from './TripEditScreen';
+import { TripRecordReturnScreen } from './TripRecordReturnScreen';
+import { NewTripSheet, NewTripPayload } from './trips/NewTripSheet';
+import { TripListCard } from './trips/TripListCard';
+import { SalesmanDuesPanel } from './trips/SalesmanDuesPanel';
+import { useBeats } from '../../hooks/useBeats';
 
 interface TripsViewProps {
   initialSubTab?: 'active' | 'history';
 }
 
+const HISTORY_PAGE = 30;
+
+const fmtDay = (d?: string) => {
+  if (!d) return 'Undated';
+  const dt = new Date(d.length === 10 ? `${d}T12:00:00` : d);
+  return isNaN(dt.getTime())
+    ? d
+    : dt.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+};
+
 export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }) => {
+  const { activeBeats } = useBeats();
   const {
     trips,
     bills,
     products,
     salesmen,
+    customers,
+    warehouses,
+    defaultWarehouse,
+    warehouseStock,
+    remainingStock,
+    getVehicleStock,
     addTrip,
     toggleBillAssignment,
-    unassignBillFromTrip,
     autoAssignTripBills,
     saveReturn,
-    reopenTrip,
+    saveReturnDraft,
+    recordTripCashRecovery,
+    writeOffTripCashShort,
+    payments,
     updateTrip,
     deleteTrip,
-    syncTripsToCloud,
-    supabaseStatus,
     tripBreakdown,
     palette,
     fz,
     scale,
   } = useLedger();
 
-  // Sub-Navigation: 'active' (active trip screen) vs 'history' (dedicated history section)
+  // Active is the default; closed trips live under History.
   const [tripsTab, setTripsTab] = useState<'active' | 'history'>(initialSubTab);
+  const [showNewTrip, setShowNewTrip] = useState(false);
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyLimit, setHistoryLimit] = useState(HISTORY_PAGE);
+  const [histFrom, setHistFrom] = useState('');
+  const [histTo, setHistTo] = useState('');
+  const [histSalesman, setHistSalesman] = useState('');
+  const [toast, setToast] = useState<string | null>(null);
 
-  const [showAddTrip, setShowAddTrip] = useState(false);
-  const [selectedSalesmanId, setSelectedSalesmanId] = useState<string>('');
-  const [vehicleName, setVehicleName] = useState('');
-  const [tripDate, setTripDate] = useState(new Date().toISOString().slice(0, 10));
-  const [autoAttachBillsForDate, setAutoAttachBillsForDate] = useState(true);
-  const [loadedQuantities, setLoadedQuantities] = useState<Record<number, string>>({});
-  const [formError, setFormError] = useState<string | null>(null);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncMsg, setSyncMsg] = useState<string | null>(null);
-
-  // Return reconciliation modal/drawer state
-  const [returningTripId, setReturningTripId] = useState<number | null>(null);
-  const [returnDraft, setReturnDraft] = useState<Record<number, string>>({});
-
-  // Editing trip state (load/unload & details)
-  const [editingTrip, setEditingTrip] = useState<Trip | null>(null);
-
-  // Managing bills modal state (Assign / Unassign customer bills)
+  const [viewMode, setViewMode] = useState<'list' | 'edit-trip' | 'record-return'>('list');
+  const [tripForEdit, setTripForEdit] = useState<Trip | null>(null);
+  const [editReopens, setEditReopens] = useState(false);
+  const [tripForReturn, setTripForReturn] = useState<Trip | null>(null);
   const [managingBillsTrip, setManagingBillsTrip] = useState<Trip | null>(null);
-
-  // Deletion confirmation modal state (Custom in-app modal to avoid iframe suppression)
   const [tripToDelete, setTripToDelete] = useState<Trip | null>(null);
 
-  const cardStyle: React.CSSProperties = {
-    backgroundColor: palette.panel,
-    borderColor: palette.line,
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 4500);
   };
 
-  const inputStyle: React.CSSProperties = {
-    backgroundColor: palette.panel,
-    color: palette.ink,
-    borderColor: palette.line,
-    ...fz(14),
+  // Editing a completed trip reopens it: the edit form opens as an active trip and is only
+  // reopened if the user saves. Going back leaves the trip completed.
+  const openEdit = (t: Trip) => {
+    const closed = t.status === 'closed';
+    setEditReopens(closed);
+    setTripForEdit(closed ? { ...t, status: 'out' } : t);
+    setViewMode('edit-trip');
+  };
+  const openSettle = (t: Trip) => {
+    setTripForReturn(t);
+    setViewMode('record-return');
   };
 
-  const labelStyle: React.CSSProperties = {
-    ...fz(12.5, { fontWeight: 700, color: palette.ink, marginBottom: '0.25em' }),
-    display: 'block',
-  };
+  const sortedTrips = useMemo(
+    () =>
+      [...trips].sort((a, b) => {
+        const da = a.date || '';
+        const db = b.date || '';
+        if (db !== da) return db.localeCompare(da);
+        return Number(b.id) - Number(a.id);
+      }),
+    [trips],
+  );
+  const activeTrips = useMemo(() => sortedTrips.filter((t) => t.status !== 'closed'), [sortedTrips]);
+  const closedTrips = useMemo(() => sortedTrips.filter((t) => t.status === 'closed'), [sortedTrips]);
 
-  const availableDateBillsCount = useMemo(() => {
-    return bills.filter((b) => b.date === tripDate).length;
-  }, [bills, tripDate]);
+  const vehicleOptions = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...trips.map((t) => t.vehicle),
+          ...salesmen.map((s) => s.defaultVehicle || ''),
+        ].map((v) => (v || '').trim()).filter(Boolean)),
+      ),
+    [trips, salesmen],
+  );
+  const routeOptions = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...activeBeats.map((b) => b.name),
+          ...trips.map((t) => t.route || ''),
+          ...(customers || []).map((c) => c.route || ''),
+        ].map((v) => (v || '').trim()).filter(Boolean)),
+      ).sort((a, b) => a.localeCompare(b)),
+    [trips, customers, activeBeats],
+  );
 
-  // Active trips vs historic closed trips
-  const activeTrips = useMemo(() => trips.filter((t) => t.status === 'out'), [trips]);
-  const closedTrips = useMemo(() => trips.filter((t) => t.status === 'closed'), [trips]);
-
-  // Overall totals across all trips
-  const overallStats = useMemo(() => {
-    let totalLoaded = 0;
-    let totalReturned = 0;
-    let totalDispatchedTrips = trips.length;
-    let activeTripsCount = activeTrips.length;
-    let closedTripsCount = closedTrips.length;
-
-    for (const t of trips) {
-      for (const qty of Object.values(t.loaded || {})) {
-        totalLoaded += qty || 0;
-      }
-      for (const qty of Object.values(t.returned || {})) {
-        totalReturned += qty || 0;
-      }
-    }
-    return { totalLoaded, totalReturned, totalDispatchedTrips, activeTripsCount, closedTripsCount };
-  }, [trips, activeTrips, closedTrips]);
-
-  const handleCreateTrip = (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormError(null);
-
-    if (!vehicleName.trim()) {
-      setFormError('Vehicle number or driver name is required.');
-      return;
-    }
-
-    const loadedMap: Record<number, number> = {};
-    for (const [pid, val] of Object.entries(loadedQuantities)) {
-      const num = Number(val);
-      if (num > 0) {
-        loadedMap[Number(pid)] = num;
-      }
-    }
-
-    if (Object.keys(loadedMap).length === 0) {
-      setFormError('Please enter loaded crate quantities for at least one beverage product.');
-      return;
-    }
-
-    // Auto-attach matching customer bills for this date if checked
-    const initialBillIds = autoAttachBillsForDate
-      ? bills.filter((b) => b.date === tripDate).map((b) => b.id)
-      : [];
-
-    const matchedSalesman = salesmen.find((s) => s.id === selectedSalesmanId);
-    const resolvedSalesmanName = matchedSalesman?.name;
-
-    addTrip(
-      vehicleName,
-      tripDate,
-      loadedMap,
-      undefined,
-      initialBillIds,
-      resolvedSalesmanName,
-      undefined,
-      selectedSalesmanId || undefined
+  const godownLabel = (t: Trip) => {
+    const ids = t.warehouseLoads ? Object.keys(t.warehouseLoads) : [];
+    const names = (ids.length ? ids : [t.warehouseId || '']).map(
+      (id) => warehouses.find((w) => w.id === id)?.name || 'Main Godown',
     );
-    setVehicleName('');
-    setSelectedSalesmanId('');
-    setLoadedQuantities({});
-    setShowAddTrip(false);
+    return Array.from(new Set(names)).join(' + ');
+  };
+
+  const tripBillStats = (t: Trip) => {
+    const ids = new Set((t.billIds || []).map(Number));
+    const tb = bills.filter((b) => Number(b.tripId) === Number(t.id) || ids.has(Number(b.id)));
+    return { count: tb.length, value: tb.reduce((s, b) => s + billNetTotal(b), 0) };
+  };
+
+  const renderCard = (t: Trip, mode: 'active' | 'history') => {
+    const rows = tripBreakdown(t).rows.map((r) => ({
+      ...r,
+      reason: t.shortageReasons?.[r.productId]?.reason,
+      reasonNote: t.shortageReasons?.[r.productId]?.note,
+    }));
+    const stats = tripBillStats(t);
+    return (
+      <TripListCard
+        key={t.id}
+        trip={t}
+        mode={mode}
+        rows={rows}
+        billsCount={stats.count}
+        soldValue={stats.value}
+        godownLabel={godownLabel(t)}
+        personLabel={t.driver || t.salesman || salesmen.find((s) => s.id === t.salesmanId)?.name}
+        onSettle={openSettle}
+        onEdit={openEdit}
+        onBills={setManagingBillsTrip}
+        onDelete={setTripToDelete}
+      />
+    );
+  };
+
+  const handleCreate = (p: NewTripPayload): string | null => {
+    if (!p.vehicle) return 'Enter the vehicle (van) for this trip.';
+    if (p.lines.length === 0) return 'Add at least one product with units to load.';
+
+    // Stock is deducted when a bill is raised, not when the van is loaded, so the load sheet must
+    // itself refuse loads the godown cannot cover (previously this was only a warning).
+    // Bills this trip will pick up by date. Their crates are already out of stock (stock is deducted
+    // at billing) and the load must cover them, or the trip starts with sold > loaded.
+    const attachedBills = p.autoAttachBills
+      ? attachableBillsForTrip({ date: p.date, salesmanId: p.salesmanId || undefined, vehicle: p.vehicle }, bills, trips)
+      : [];
+    const billedByProduct: Record<number, number> = {};
+    for (const b of attachedBills) {
+      for (const it of b.items || []) {
+        const pid = Number(it.productId);
+        billedByProduct[pid] = (billedByProduct[pid] || 0) + (Number(it.qty) || 0);
+      }
+    }
+    const loadByProduct: Record<number, number> = {};
+    for (const l of p.lines) loadByProduct[l.productId] = (loadByProduct[l.productId] || 0) + l.qty;
+    for (const [pidStr, billed] of Object.entries(billedByProduct)) {
+      const pid = Number(pidStr);
+      if (billed > (loadByProduct[pid] || 0)) {
+        const nm = products.find((x) => x.id === pid)?.name || `Product #${pid}`;
+        return `${nm}: ${billed} already billed on the bills this trip would attach, so the load cannot be less than ${billed}. Add the units or untick "Attach today's bills".`;
+      }
+    }
+
+    const wantByWh: Record<string, number> = {};
+    const wantByProduct: Record<number, number> = {};
+    for (const l of p.lines) {
+      const wh = l.warehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
+      wantByWh[`${wh}|${l.productId}`] = (wantByWh[`${wh}|${l.productId}`] || 0) + l.qty;
+      wantByProduct[l.productId] = (wantByProduct[l.productId] || 0) + l.qty;
+    }
+    const nameOf = (id: number) => products.find((x) => x.id === id)?.name || `Product #${id}`;
+    // Billed crates already left the godown, so only the unsold part of the load needs stock.
+    const toCover = { ...billedByProduct };
+    for (const key of Object.keys(wantByWh)) {
+      const pid = Number(key.split('|')[1]);
+      const use = Math.min(toCover[pid] || 0, wantByWh[key]);
+      wantByWh[key] -= use;
+      toCover[pid] = (toCover[pid] || 0) - use;
+    }
+    for (const [key, qty] of Object.entries(wantByWh)) {
+      if (qty <= 0) continue;
+      const [wh, pidStr] = key.split('|');
+      const have = warehouseStock(wh, Number(pidStr));
+      if (qty > have) {
+        const whName = warehouses.find((w) => w.id === wh)?.name || 'Main Godown';
+        return `${nameOf(Number(pidStr))}: loading ${qty} but ${whName} has only ${have}.`;
+      }
+    }
+    // Crates already sitting unsold on other open vans are still counted in the godown balance,
+    // so a second van could be loaded with the same crates. Count them as taken.
+    for (const [pidStr, qty] of Object.entries(wantByProduct)) {
+      const pid = Number(pidStr);
+      const onVans = trips
+        .filter((t) => t.status === 'out')
+        .reduce((sum, t) => sum + getVehicleStock(t, pid).available, 0);
+      const free = remainingStock(pid) - onVans;
+      if (qty - (billedByProduct[pid] || 0) > free) {
+        return `${nameOf(pid)}: only ${Math.max(0, free)} free to load (${onVans} already on other vans).`;
+      }
+    }
+
+    const warehouseLoads: Record<string, Record<number, number>> = {};
+    const loaded: Record<number, number> = {};
+    for (const l of p.lines) {
+      const wh = l.warehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
+      warehouseLoads[wh] = warehouseLoads[wh] || {};
+      warehouseLoads[wh][l.productId] = (warehouseLoads[wh][l.productId] || 0) + l.qty;
+      loaded[l.productId] = (loaded[l.productId] || 0) + l.qty;
+    }
+    const perWh = Object.entries(warehouseLoads).map(([id, m]) => [id, Object.values(m).reduce((s, q) => s + q, 0)] as const);
+    const primary = [...perWh].sort((a, b) => b[1] - a[1])[0]?.[0] || defaultWarehouse?.id || '';
+    const salesman = salesmen.find((s) => s.id === p.salesmanId);
+    const initialBillIds = attachedBills.map((b) => b.id);
+
+    addTrip(p.vehicle, p.date, loaded, primary, initialBillIds, salesman?.name, p.route || undefined, p.salesmanId || undefined, warehouseLoads);
+
+    const total = perWh.reduce((s, [, q]) => s + q, 0);
+    setShowNewTrip(false);
     setTripsTab('active');
+    showToast(`${p.vehicle} loaded with ${total} cs${perWh.length > 1 ? ` from ${perWh.length} godowns` : ''}.`);
+    return null;
+  };
 
-    if (initialBillIds.length > 0) {
-      setSyncMsg(
-        `Trip dispatched with ${initialBillIds.length} customer delivery bill(s) automatically assigned!`
-      );
+  /* ---------- Full-screen sub-views ---------- */
+  if (viewMode === 'edit-trip' && tripForEdit) {
+    return (
+      <TripEditScreen
+        trip={tripForEdit}
+        products={products}
+        bills={bills}
+        salesmen={salesmen}
+        warehouses={warehouses}
+        warehouseStock={warehouseStock}
+        allTrips={trips}
+        validateLoad={(t, newLoaded, billed) => {
+          // Same free-stock rule as a new trip, applied only to products whose load goes up so
+          // older trips can still be edited. Stock is deducted at billing, not at loading, so
+          // crates unsold on other open vans must be counted as taken.
+          for (const [pidStr, qty] of Object.entries(newLoaded)) {
+            const pid = Number(pidStr);
+            const before = Number(t.loaded?.[pid]) || 0;
+            if (qty <= before) continue;
+            const unsoldOnThisVan = Math.max(0, qty - (billed[pid] || 0));
+            const onOtherVans = trips
+              .filter((x) => x.status === 'out' && Number(x.id) !== Number(t.id))
+              .reduce((sum, x) => sum + getVehicleStock(x, pid).available, 0);
+            const free = remainingStock(pid) - onOtherVans;
+            if (unsoldOnThisVan > free) {
+              const name = products.find((x) => x.id === pid)?.name || `Product #${pid}`;
+              return `${name}: only ${Math.max(0, free)} free to load (${onOtherVans} already on other vans), but this van would carry ${unsoldOnThisVan} unsold.`;
+            }
+          }
+          return null;
+        }}
+        reopensOnSave={editReopens}
+        onBack={() => {
+          setViewMode('list');
+          setTripForEdit(null);
+        }}
+        onSave={(updated) => {
+          updateTrip(updated);
+          setViewMode('list');
+          setTripForEdit(null);
+          if (editReopens && updated.status !== 'closed') setTripsTab('active');
+          showToast(
+            editReopens && updated.status !== 'closed'
+              ? `Trip #${updated.id} (${updated.vehicle}) updated and moved back to Active.`
+              : `Trip #${updated.id} (${updated.vehicle}) updated.`,
+          );
+        }}
+        onRecordReturn={openSettle}
+        onManageBills={(t) => setManagingBillsTrip(t)}
+      />
+    );
+  }
+
+  if (viewMode === 'record-return' && tripForReturn) {
+    return (
+      <TripRecordReturnScreen
+        trip={tripForReturn}
+        products={products}
+        bills={bills}
+        warehouses={warehouses}
+        onBack={() => {
+          setViewMode('list');
+          setTripForReturn(null);
+        }}
+        payments={payments}
+        onSaveReturn={(tripId, finalReturn, closeTrip, shortageReasons, cashHandedIn, cashShortBooked) => {
+          // A draft is kept apart from the recorded returns and never closes the trip.
+          if (closeTrip) {
+            const saved = saveReturn(tripId, finalReturn, shortageReasons, cashHandedIn, cashShortBooked);
+            if (saved.ok === false) return saved.error; // stay on the screen and show why
+          } else saveReturnDraft(tripId, finalReturn, cashHandedIn);
+          setViewMode('list');
+          setTripForReturn(null);
+          if (closeTrip) setTripsTab('history');
+          showToast(
+            closeTrip ? `Trip #${tripId} settled and moved to History.` : `Trip #${tripId} settlement draft saved.`,
+          );
+        }}
+        onEditTrip={openEdit}
+      />
+    );
+  }
+
+  /* ---------- History filtering ---------- */
+  const q = historySearch.trim().toLowerCase();
+  const historySalesmen = Array.from(new Set(closedTrips.map((t) => (t.salesman || '').trim()).filter(Boolean))).sort(
+    (a, b) => a.localeCompare(b),
+  );
+  const filteredHistory = closedTrips.filter((t) => {
+    const day = (t.date || '').slice(0, 10);
+    if (histFrom && (!day || day < histFrom)) return false;
+    if (histTo && (!day || day > histTo)) return false;
+    if (histSalesman && (t.salesman || '').trim() !== histSalesman) return false;
+    if (!q) return true;
+    return (
+      (t.vehicle || '').toLowerCase().includes(q) ||
+      String(t.id).includes(q) ||
+      (t.date || '').includes(q) ||
+      (t.route || '').toLowerCase().includes(q) ||
+      (t.salesman || '').toLowerCase().includes(q)
+    );
+  });
+  const historyFiltered = Boolean(q || histFrom || histTo || histSalesman);
+  const setQuickRange = (days: number | 'month' | 'all') => {
+    setHistoryLimit(HISTORY_PAGE);
+    if (days === 'all') {
+      setHistFrom('');
+      setHistTo('');
+      return;
+    }
+    const now = new Date();
+    const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (days === 'month') {
+      setHistFrom(iso(new Date(now.getFullYear(), now.getMonth(), 1)));
     } else {
-      setSyncMsg('Trip dispatched & synchronized to database!');
+      setHistFrom(iso(new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1))));
     }
-    setTimeout(() => setSyncMsg(null), 4000);
+    setHistTo(iso(now));
   };
-
-  const handleAutoAssign = (tripId: number, dateStr: string) => {
-    const addedCount = autoAssignTripBills(tripId);
-    if (addedCount > 0) {
-      setSyncMsg(
-        `Automatically assigned ${addedCount} customer bill(s) for ${dateStr} to Trip #${tripId}!`
-      );
-    } else {
-      setSyncMsg(`All customer bills for ${dateStr} are already assigned to this trip.`);
-    }
-    setTimeout(() => setSyncMsg(null), 4000);
-  };
-
-  const startReturnRecord = (trip: Trip) => {
-    setReturningTripId(trip.id);
-    const initial: Record<number, string> = {};
-    for (const pid of Object.keys(trip.loaded)) {
-      initial[Number(pid)] =
-        trip.returned[Number(pid)] !== undefined ? String(trip.returned[Number(pid)]) : '0';
-    }
-    setReturnDraft(initial);
-  };
-
-  const handleSaveReturn = () => {
-    if (!returningTripId) return;
-    const finalReturn: Record<number, number> = {};
-    for (const [pid, val] of Object.entries(returnDraft)) {
-      finalReturn[Number(pid)] = Number(val) || 0;
-    }
-    saveReturn(returningTripId, finalReturn);
-    setReturningTripId(null);
-    setSyncMsg(`Trip #${returningTripId} return recorded and reconciled.`);
-    setTimeout(() => setSyncMsg(null), 4000);
-  };
+  const shownHistory = filteredHistory.slice(0, historyLimit);
+  const historyGroups: { day: string; trips: Trip[] }[] = [];
+  for (const t of shownHistory) {
+    const day = fmtDay(t.date);
+    const last = historyGroups[historyGroups.length - 1];
+    if (last && last.day === day) last.trips.push(t);
+    else historyGroups.push({ day, trips: [t] });
+  }
 
   return (
-    <div className="space-y-4">
-      {/* Top Header & Global Actions */}
-      <div
-        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2 border-b-2"
-        style={{ borderColor: palette.line }}
-      >
-        <div>
-          <h1
-            className="text-lg sm:text-2xl font-black tracking-tight"
-            style={{ color: palette.ink }}
-          >
-            Vehicle Delivery Trips
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Track vehicle dispatch loading sheets, delivery bills, and return reconciliations.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Supabase Status Indicator */}
-          <div
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold border-2"
-            style={{
-              borderColor: supabaseStatus.isConnected ? palette.good : palette.line,
-              backgroundColor: supabaseStatus.isConnected ? `${palette.good}15` : `${palette.line}40`,
-              color: supabaseStatus.isConnected ? palette.good : palette.muted,
-            }}
-            title={supabaseStatus.message}
-          >
-            <div
-              className={`w-2 h-2 rounded-full ${
-                supabaseStatus.isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
-              }`}
-            />
-            <span className="hidden sm:inline">
-              {supabaseStatus.isConnected ? 'Supabase Sync Active' : 'Offline / Standalone'}
-            </span>
-            <span className="sm:hidden">
-              {supabaseStatus.isConnected ? 'Online' : 'Offline'}
-            </span>
-          </div>
-
-          <button
-            type="button"
-            onClick={async () => {
-              setIsSyncing(true);
-              const res = await syncTripsToCloud();
-              setIsSyncing(false);
-              setSyncMsg(res.success ? `Synced ${res.count} trips!` : `Sync error: ${res.error}`);
-              setTimeout(() => setSyncMsg(null), 4000);
-            }}
-            disabled={isSyncing}
-            className="flex items-center gap-1 border-2 px-2.5 py-1.5 focus-ring cursor-pointer font-semibold rounded text-xs transition-colors hover:bg-slate-100"
-            style={{ borderColor: palette.line, color: palette.ink, backgroundColor: palette.panel }}
-            title="Force push trips to Supabase"
-          >
-            <RefreshCw size={13} className={isSyncing ? 'animate-spin' : ''} aria-hidden="true" />
-            <span>{isSyncing ? 'Syncing...' : 'Sync'}</span>
-          </button>
-
-          <button
-            type="button"
-            id="btn-dispatch-trip"
-            onClick={() => {
-              setShowAddTrip(true);
-              setTripsTab('active');
-            }}
-            className="flex items-center gap-1 border-2 px-3 py-1.5 focus-ring cursor-pointer font-bold rounded shadow-xs text-xs sm:text-sm text-white transition-opacity hover:opacity-95"
-            style={{
-              backgroundColor: palette.navy,
-              borderColor: palette.navy,
-            }}
-          >
-            <Plus size={14} aria-hidden="true" />
-            <span>Dispatch Trip</span>
-          </button>
-        </div>
+    <div id="view-trips" className="mw-workspace w-full min-w-0 max-w-none lg:max-w-3xl mx-auto space-y-4 pb-24">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">Trips</h1>
+        <button
+          type="button"
+          id="btn-dispatch-trip"
+          onClick={() => setShowNewTrip(true)}
+          className="inline-flex items-center gap-1.5 min-h-11 px-4 rounded-full bg-[#0d4a3a] hover:bg-[#0a3d30] text-white text-sm font-semibold shadow-sm cursor-pointer active:scale-[0.98]"
+        >
+          <Plus size={17} /> New trip
+        </button>
       </div>
 
-      {/* Sync / Success Toast */}
-      {syncMsg && (
-        <div
-          className="flex items-center justify-between p-3 border-2 rounded text-xs font-semibold transition-all"
-          style={{
-            borderColor: palette.good,
-            backgroundColor: `${palette.good}15`,
-            color: palette.good,
-          }}
-        >
-          <div className="flex items-center gap-2">
-            <CheckCircle2 size={16} aria-hidden="true" />
-            <span>{syncMsg}</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setSyncMsg(null)}
-            className="text-slate-400 hover:text-slate-700 p-1 cursor-pointer"
-          >
+      {toast && (
+        <div role="status" className="flex items-center justify-between gap-2 p-3 rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm font-semibold">
+          <span className="flex items-center gap-2 min-w-0">
+            <CheckCircle2 size={16} className="shrink-0" />
+            <span>{toast}</span>
+          </span>
+          <button type="button" onClick={() => setToast(null)} className="p-1 text-slate-400 hover:text-slate-700 cursor-pointer" aria-label="Dismiss">
             <X size={14} />
           </button>
         </div>
       )}
 
-      {/* Primary Section Switcher: Active Trips ("Trip Screen") vs History ("History Section") */}
-      <div
-        className="flex items-center justify-between border-b-2 gap-2 flex-wrap"
-        style={{ borderColor: palette.line }}
-      >
-        <div className="flex items-center gap-1 sm:gap-2">
+      {/* Active / History */}
+      <div className="flex bg-[#ebe8e1] rounded-full p-1 gap-0.5" role="tablist">
+        {([
+          { id: 'active' as const, label: 'Active', n: activeTrips.length },
+          { id: 'history' as const, label: 'History', n: closedTrips.length },
+        ]).map((t) => (
           <button
+            key={t.id}
             type="button"
-            id="tab-active-trips"
-            onClick={() => setTripsTab('active')}
-            className={`flex items-center gap-2 px-3.5 sm:px-5 py-2.5 text-xs sm:text-sm font-black border-b-2 -mb-[2px] transition-colors cursor-pointer ${
-              tripsTab === 'active'
-                ? 'border-blue-600 text-blue-700 bg-blue-50/60'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
+            role="tab"
+            aria-selected={tripsTab === t.id}
+            id={`tab-${t.id === 'active' ? 'active-trips' : 'trip-history'}`}
+            onClick={() => setTripsTab(t.id)}
+            className={`flex-1 min-h-10 px-4 rounded-full text-sm font-semibold cursor-pointer transition-all ${
+              tripsTab === t.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
             }`}
           >
-            <Truck size={16} />
-            <span>Active Trips ({activeTrips.length})</span>
+            {t.label} · {t.n}
           </button>
-
-          <button
-            type="button"
-            id="tab-trip-history"
-            onClick={() => setTripsTab('history')}
-            className={`flex items-center gap-2 px-3.5 sm:px-5 py-2.5 text-xs sm:text-sm font-black border-b-2 -mb-[2px] transition-colors cursor-pointer ${
-              tripsTab === 'history'
-                ? 'border-blue-600 text-blue-700 bg-blue-50/60'
-                : 'border-transparent text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <History size={16} />
-            <span>Trip History ({trips.length})</span>
-          </button>
-        </div>
-
-        <div className="text-xs text-slate-500 font-medium py-1">
-          {tripsTab === 'active'
-            ? `${activeTrips.length} active vehicle run(s)`
-            : `${trips.length} total sequential dispatches`}
-        </div>
+        ))}
       </div>
 
-      {/* TAB 1: ACTIVE TRIPS SCREEN */}
+      {/* ACTIVE */}
       {tripsTab === 'active' && (
-        <div className="space-y-4">
-          {/* Active Trips Metrics Summary */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="border-2 p-3 rounded-sm shadow-xs" style={cardStyle}>
-              <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                Vehicles on Delivery
+        <div className="space-y-3">
+          {activeTrips.length === 0 ? (
+            <div className="rounded-2xl border border-black/8 bg-white px-6 py-12 text-center">
+              <div className="mx-auto size-12 rounded-2xl bg-[#e9f1ec] text-[#0d4a3a] flex items-center justify-center mb-3">
+                <Truck size={22} />
               </div>
-              <div className="text-xl font-extrabold mt-1 text-slate-900">
-                {overallStats.activeTripsCount}
-              </div>
-              <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Currently on run</div>
+              <h2 className="text-base font-bold text-slate-900">No active trips</h2>
+              <p className="text-sm text-slate-500 mt-1">Load a vehicle to start a trip.</p>
+              <button
+                type="button"
+                onClick={() => setShowNewTrip(true)}
+                className="mt-4 inline-flex items-center gap-1.5 min-h-11 px-5 rounded-full bg-[#0d4a3a] text-white text-sm font-semibold cursor-pointer"
+              >
+                <Plus size={16} /> New trip
+              </button>
             </div>
-            <div className="border-2 p-3 rounded-sm shadow-xs" style={cardStyle}>
-              <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                Loaded On Active Vans
-              </div>
-              <div className="text-xl font-extrabold mt-1 text-slate-900">
-                {activeTrips.reduce(
-                  (acc, t) =>
-                    acc + Object.values(t.loaded || {}).reduce((s, q) => s + (q || 0), 0),
-                  0
-                )}{' '}
-                cs
-              </div>
-              <div className="text-[11px] text-slate-500 mt-0.5 font-medium">In transit to retailers</div>
+          ) : (
+            activeTrips.map((t) => renderCard(t, 'active'))
+          )}
+        </div>
+      )}
+
+      {/* HISTORY */}
+      {tripsTab === 'history' && (
+        <div className="space-y-3">
+          <SalesmanDuesPanel
+            trips={trips}
+            salesmen={salesmen}
+            onRecover={recordTripCashRecovery}
+            onWriteOff={writeOffTripCashShort}
+          />
+          <div className="relative">
+            <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input
+              type="search"
+              value={historySearch}
+              onChange={(e) => {
+                setHistorySearch(e.target.value);
+                setHistoryLimit(HISTORY_PAGE);
+              }}
+              placeholder="Search vehicle, beat, date, trip no."
+              className="w-full pl-10 pr-3 py-3 rounded-full border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25"
+            />
+          </div>
+
+          <div className="rounded-2xl border border-black/8 bg-white p-3 space-y-2.5">
+            <div className="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1">
+              {([
+                ['Last 7 days', 7],
+                ['Last 30 days', 30],
+                ['This month', 'month'],
+                ['All', 'all'],
+              ] as const).map(([label, v]) => (
+                <button
+                  key={label}
+                  type="button"
+                  onClick={() => setQuickRange(v as number | 'month' | 'all')}
+                  className="shrink-0 min-h-9 px-3.5 rounded-full border border-black/10 bg-slate-50 text-xs font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                >
+                  {label}
+                </button>
+              ))}
             </div>
-            <div className="border-2 p-3 rounded-sm shadow-xs" style={cardStyle}>
-              <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                Customer Stops Out
-              </div>
-              <div className="text-xl font-extrabold mt-1 text-slate-900">
-                {activeTrips.reduce((acc, t) => acc + (t.billIds || []).length, 0)}
-              </div>
-              <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Assigned delivery bills</div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              <label className="text-[11px] font-bold text-slate-500">
+                From
+                <input
+                  type="date"
+                  value={histFrom}
+                  onChange={(e) => {
+                    setHistFrom(e.target.value);
+                    setHistoryLimit(HISTORY_PAGE);
+                  }}
+                  className="mt-0.5 w-full px-2.5 py-2 rounded-xl border border-black/10 bg-white text-sm"
+                />
+              </label>
+              <label className="text-[11px] font-bold text-slate-500">
+                To
+                <input
+                  type="date"
+                  value={histTo}
+                  onChange={(e) => {
+                    setHistTo(e.target.value);
+                    setHistoryLimit(HISTORY_PAGE);
+                  }}
+                  className="mt-0.5 w-full px-2.5 py-2 rounded-xl border border-black/10 bg-white text-sm"
+                />
+              </label>
+              <label className="col-span-2 sm:col-span-1 text-[11px] font-bold text-slate-500">
+                Salesman
+                <select
+                  value={histSalesman}
+                  onChange={(e) => {
+                    setHistSalesman(e.target.value);
+                    setHistoryLimit(HISTORY_PAGE);
+                  }}
+                  className="mt-0.5 w-full px-2.5 py-2 rounded-xl border border-black/10 bg-white text-sm"
+                >
+                  <option value="">All salesmen</option>
+                  {historySalesmen.map((n) => (
+                    <option key={n} value={n}>
+                      {n} ({closedTrips.filter((t) => (t.salesman || '').trim() === n).length})
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
-            <div className="border-2 p-3 rounded-sm shadow-xs" style={cardStyle}>
-              <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                Completed in History
-              </div>
-              <div className="text-xl font-extrabold mt-1 text-slate-900">
-                {overallStats.closedTripsCount}
-              </div>
-              <div className="text-[11px] text-slate-500 mt-0.5 font-medium">
-                Reconciled runs archived
-              </div>
+            <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-500">
+              <span>
+                Showing {shownHistory.length} of {filteredHistory.length}
+                {historyFiltered ? ` (${closedTrips.length} completed trips in total)` : ' completed trips'}
+              </span>
+              {historyFiltered && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHistFrom('');
+                    setHistTo('');
+                    setHistSalesman('');
+                    setHistorySearch('');
+                    setHistoryLimit(HISTORY_PAGE);
+                  }}
+                  className="font-bold text-rose-600 hover:text-rose-800 cursor-pointer"
+                >
+                  Clear filters
+                </button>
+              )}
             </div>
           </div>
 
-          {/* New Trip Form Drawer */}
-          {showAddTrip && (
-            <form
-              id="form-new-trip"
-              onSubmit={handleCreateTrip}
-              className="border-2 p-5 mb-4 shadow-sm rounded-sm"
-              style={{ borderColor: palette.navy, backgroundColor: palette.panel }}
-            >
-              <div className="flex items-center justify-between mb-4">
-                <h2 style={fz(18, { fontWeight: 700, color: palette.ink })}>
-                  Dispatch Vehicle Loading Sheet
-                </h2>
-                <IconButton onClick={() => setShowAddTrip(false)} icon={X} label="Close trip form" />
-              </div>
-
-              {formError && (
-                <div
-                  className="flex items-center gap-2 p-3 border-2 mb-4 rounded"
-                  style={{
-                    borderColor: palette.bad,
-                    backgroundColor: `${palette.bad}15`,
-                    color: palette.bad,
-                    ...fz(14, { fontWeight: 600 }),
-                  }}
-                  role="alert"
-                >
-                  <AlertTriangle size={Math.round(18 * scale)} aria-hidden="true" />
-                  {formError}
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
-                <div>
-                  <label htmlFor="trip-salesman-select" style={labelStyle}>
-                    Assigned Salesman *
-                  </label>
-                  <select
-                    id="trip-salesman-select"
-                    value={selectedSalesmanId}
-                    onChange={(e) => {
-                      const smId = e.target.value;
-                      setSelectedSalesmanId(smId);
-                      const sm = salesmen.find((s) => s.id === smId);
-                      if (sm?.defaultVehicle && !vehicleName) {
-                        setVehicleName(sm.defaultVehicle);
-                      }
-                    }}
-                    className="w-full border-2 px-3 py-2.5 focus-ring rounded"
-                    style={inputStyle}
-                  >
-                    <option value="">-- Choose Field Salesman --</option>
-                    {salesmen
-                      .filter((s) => s.active !== false)
-                      .map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name} ({s.phone}){s.defaultVehicle ? ` • ${s.defaultVehicle}` : ''}
-                        </option>
-                      ))}
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="vehicle-name" style={labelStyle}>
-                    Vehicle Number / Van *
-                  </label>
-                  <input
-                    id="vehicle-name"
-                    type="text"
-                    required
-                    placeholder="e.g. Tata Ace MH-14-1234"
-                    value={vehicleName}
-                    onChange={(e) => setVehicleName(e.target.value)}
-                    className="w-full border-2 px-3 py-2.5 focus-ring rounded"
-                    style={inputStyle}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="trip-date" style={labelStyle}>
-                    Dispatch Date
-                  </label>
-                  <input
-                    id="trip-date"
-                    type="date"
-                    value={tripDate}
-                    onChange={(e) => setTripDate(e.target.value)}
-                    className="w-full border-2 px-3 py-2.5 focus-ring rounded"
-                    style={inputStyle}
-                  />
-                </div>
-              </div>
-
-              {/* Automatic Customer Bill Assignment Checkbox */}
-              <div
-                className="mb-4 p-3 border-2 rounded flex items-center justify-between flex-wrap gap-2"
-                style={{ borderColor: palette.line, backgroundColor: `${palette.line}15` }}
-              >
-                <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold select-none">
-                  <input
-                    type="checkbox"
-                    checked={autoAttachBillsForDate}
-                    onChange={(e) => setAutoAttachBillsForDate(e.target.checked)}
-                    className="w-4 h-4 rounded text-blue-600 focus-ring cursor-pointer"
-                  />
-                  <span>
-                    Automatically attach customer delivery bills dated {tripDate} to this vehicle run
-                  </span>
-                </label>
-                {availableDateBillsCount > 0 && (
-                  <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                    ⚡ {availableDateBillsCount} bill(s) ready for this date
-                  </span>
-                )}
-              </div>
-
-              <div style={fz(14, { fontWeight: 700, color: palette.ink, marginBottom: '0.4em' })}>
-                Load Quantities into Vehicle (Cases):
-              </div>
-              <div
-                className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-4 max-h-72 overflow-y-auto p-3 border-2 rounded"
-                style={{ borderColor: palette.line, backgroundColor: palette.panel }}
-              >
-                {products.map((p) => (
-                  <div key={p.id} className="flex items-center justify-between gap-2 border-b pb-1">
-                    <label htmlFor={`load-${p.id}`} className="truncate text-xs font-semibold" title={p.name}>
-                      {p.name}
-                    </label>
-                    <input
-                      id={`load-${p.id}`}
-                      type="number"
-                      min="0"
-                      placeholder="0"
-                      value={loadedQuantities[p.id] || ''}
-                      onChange={(e) =>
-                        setLoadedQuantities({ ...loadedQuantities, [p.id]: e.target.value })
-                      }
-                      className="w-20 border-2 px-2 py-1 text-right focus-ring font-semibold rounded"
-                      style={inputStyle}
-                    />
-                  </div>
-                ))}
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  id="btn-submit-trip"
-                  type="submit"
-                  className="border-2 px-5 py-2.5 focus-ring cursor-pointer font-bold rounded"
-                  style={{
-                    backgroundColor: palette.navy,
-                    borderColor: palette.navy,
-                    color: '#FFFFFF',
-                    ...fz(14),
-                  }}
-                >
-                  Confirm & Dispatch Trip
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowAddTrip(false)}
-                  className="border-2 px-4 py-2.5 focus-ring cursor-pointer font-semibold rounded"
-                  style={{
-                    borderColor: palette.line,
-                    color: palette.muted,
-                    backgroundColor: palette.panel,
-                    ...fz(14),
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          )}
-
-          {/* Record Return Drawer / Form */}
-          {(() => {
-            if (!returningTripId) return null;
-            const returningTrip = trips.find((t) => t.id === returningTripId);
-            if (!returningTrip) return null;
-
-            return (
-              <div
-                className="border-2 p-5 mb-4 shadow-md rounded-sm"
-                style={{ borderColor: palette.good, backgroundColor: palette.panel }}
-              >
-                <div className="flex items-center justify-between mb-4">
-                  <h2 style={fz(18, { fontWeight: 700, color: palette.ink })}>
-                    Record Vehicle Return & Reconcile — Trip #{returningTrip.id} ({returningTrip.vehicle})
-                  </h2>
-                  <IconButton onClick={() => setReturningTripId(null)} icon={X} label="Close return form" />
-                </div>
-
-                <p style={fz(13, { color: palette.muted, marginBottom: '1em' })}>
-                  Count crates brought back on the vehicle. The system compares Loaded vs Delivered (via assigned customer bills) vs Returned to flag any shortage.
-                </p>
-
-                <div
-                  className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-4 max-h-72 overflow-y-auto p-3 border-2 rounded"
-                  style={{ borderColor: palette.line }}
-                >
-                  {Object.keys(returningTrip.loaded).map((pidStr) => {
-                    const pid = Number(pidStr);
-                    const p = products.find((x) => x.id === pid);
-                    const loaded = returningTrip.loaded[pid] || 0;
-                    return (
-                      <div key={pid} className="flex items-center justify-between gap-2 border-b pb-1">
-                        <div>
-                          <div className="text-xs font-semibold truncate" title={p?.name}>
-                            {p?.name || `Product #${pid}`}
-                          </div>
-                          <div className="text-[11px] text-slate-500">Loaded: {loaded} cs</div>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <label htmlFor={`ret-${pid}`} className="sr-only">
-                            Returned crates for {p?.name}
-                          </label>
-                          <input
-                            id={`ret-${pid}`}
-                            type="number"
-                            min="0"
-                            value={returnDraft[pid] || ''}
-                            onChange={(e) => setReturnDraft({ ...returnDraft, [pid]: e.target.value })}
-                            className="w-20 border-2 px-2 py-1 text-right focus-ring font-semibold rounded"
-                            style={inputStyle}
-                          />
-                          <span className="text-xs text-slate-500">cs</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div className="flex gap-2">
-                  <button
-                    id="btn-save-return-trip"
-                    type="button"
-                    onClick={handleSaveReturn}
-                    className="border-2 px-5 py-2.5 focus-ring cursor-pointer font-bold rounded"
-                    style={{
-                      backgroundColor: palette.good,
-                      borderColor: palette.good,
-                      color: '#FFFFFF',
-                      ...fz(14),
-                    }}
-                  >
-                    Close Trip & Reconcile
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setReturningTripId(null)}
-                    className="border-2 px-4 py-2.5 focus-ring cursor-pointer font-semibold rounded"
-                    style={{
-                      borderColor: palette.line,
-                      color: palette.muted,
-                      backgroundColor: palette.panel,
-                      ...fz(14),
-                    }}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            );
-          })()}
-
-          {/* Active Trips Content */}
-          {activeTrips.length === 0 ? (
-            <div
-              className="border-2 p-8 text-center shadow-xs rounded-lg bg-white space-y-3"
-              style={cardStyle}
-            >
-              <Truck
-                size={Math.round(36 * scale)}
-                className="mx-auto text-slate-400 opacity-60"
-                aria-hidden="true"
-              />
-              <div style={fz(16, { fontWeight: 700, color: palette.ink })}>
-                No vehicles currently out on delivery
-              </div>
-              <div style={fz(13, { color: palette.muted, maxWidth: '420px', margin: '0 auto' })}>
-                All dispatches have returned and reconciled. Past completed runs are archived in the dedicated{' '}
-                <strong>Trip History</strong> section.
-              </div>
-              <div className="flex items-center justify-center gap-3 pt-2 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => setShowAddTrip(true)}
-                  className="border-2 px-4 py-2 font-bold text-xs rounded text-white cursor-pointer shadow-xs transition-opacity hover:opacity-90"
-                  style={{ backgroundColor: palette.navy, borderColor: palette.navy }}
-                >
-                  + Dispatch New Trip
-                </button>
-                {trips.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setTripsTab('history')}
-                    className="border-2 px-4 py-2 font-bold text-xs rounded cursor-pointer hover:bg-slate-50 transition-colors"
-                    style={{ borderColor: palette.line, color: palette.ink }}
-                  >
-                    View Trip History ({trips.length}) →
-                  </button>
-                )}
-              </div>
+          {filteredHistory.length === 0 ? (
+            <div className="rounded-2xl border border-black/8 bg-white px-6 py-10 text-center text-sm text-slate-500">
+              {historyFiltered ? 'No completed trips match these filters.' : 'Completed trips will appear here after day-end settlement.'}
             </div>
           ) : (
-            <div className="space-y-3">
-              <div className="text-xs font-bold text-slate-500 uppercase tracking-wider px-1">
-                Active Vehicle Runs ({activeTrips.length})
-              </div>
-              <div
-                className="divide-y-2 border-2 rounded-lg overflow-hidden bg-white shadow-xs"
-                style={{ borderColor: palette.line }}
-              >
-                {activeTrips.map((trip) => (
-                  <TripCardItem
-                    key={trip.id}
-                    trip={trip}
-                    palette={palette}
-                    scale={scale}
-                    fz={fz}
-                    products={products}
-                    bills={bills}
-                    onEdit={setEditingTrip}
-                    onRecordReturn={startReturnRecord}
-                    onReopen={reopenTrip}
-                    onDelete={setTripToDelete}
-                    onAutoAssign={handleAutoAssign}
-                    onManageBills={setManagingBillsTrip}
-                    tripBreakdown={tripBreakdown}
-                    initiallyExpandedBreakdown={true}
-                  />
-                ))}
-              </div>
-            </div>
+            <>
+              {historyGroups.map((g) => (
+                <section key={g.day} className="space-y-2">
+                  <h2 className="px-1 pt-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">{g.day}</h2>
+                  {g.trips.map((t) => renderCard(t, 'history'))}
+                </section>
+              ))}
+              {filteredHistory.length > shownHistory.length && (
+                <button
+                  type="button"
+                  onClick={() => setHistoryLimit((n) => n + HISTORY_PAGE)}
+                  className="w-full min-h-11 rounded-full border border-black/10 bg-white text-sm font-semibold text-slate-700 cursor-pointer hover:bg-slate-50"
+                >
+                  Show more ({filteredHistory.length - shownHistory.length} older)
+                </button>
+              )}
+              {filteredHistory.length > shownHistory.length && (
+                <button
+                  type="button"
+                  onClick={() => setHistoryLimit(filteredHistory.length)}
+                  className="w-full min-h-10 text-xs font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
+                >
+                  Show all {filteredHistory.length} trips
+                </button>
+              )}
+            </>
           )}
         </div>
       )}
 
-      {/* TAB 2: DEDICATED TRIP HISTORY SECTION (Date-wise, sequential, default contracted) */}
-      {tripsTab === 'history' && (
-        <TripHistorySection
-          trips={trips}
+      {/* New trip */}
+      {showNewTrip && (
+        <NewTripSheet
           products={products}
-          bills={bills}
-          palette={palette}
-          scale={scale}
-          fz={fz}
-          onEdit={setEditingTrip}
-          onRecordReturn={startReturnRecord}
-          onReopen={reopenTrip}
-          onDelete={setTripToDelete}
-          onAutoAssign={handleAutoAssign}
-          onManageBills={setManagingBillsTrip}
-          tripBreakdown={tripBreakdown}
+          warehouses={warehouses}
+          salesmen={salesmen}
+          vehicles={vehicleOptions}
+          routes={routeOptions}
+          defaultWarehouseId={defaultWarehouse?.id || warehouses[0]?.id || ''}
+          warehouseStock={warehouseStock}
+          attachableBills={(d, sid, veh) =>
+            attachableBillsForTrip({ date: d, salesmanId: sid || undefined, vehicle: veh }, bills, trips)
+          }
+          onSubmit={handleCreate}
+          onClose={() => setShowNewTrip(false)}
         />
       )}
 
-      {/* Modal 1: Edit Trip Modal */}
-      {editingTrip && (
-        <EditTripModal
-          trip={editingTrip}
-          isOpen={Boolean(editingTrip)}
-          products={products}
-          bills={bills}
-          palette={palette}
-          fz={fz}
-          scale={scale}
-          onClose={() => setEditingTrip(null)}
-          onSave={updateTrip}
-        />
-      )}
-
-      {/* Modal 2: Assign Customer Bills Modal */}
+      {/* Bills on trip */}
       {managingBillsTrip && (
         <AssignBillsModal
-          trip={managingBillsTrip}
+          // Always the live trip, so ticks update as bills are attached or detached.
+          trip={trips.find((x) => Number(x.id) === Number(managingBillsTrip.id)) || managingBillsTrip}
+          allTrips={trips}
           isOpen={Boolean(managingBillsTrip)}
           bills={bills}
           products={products}
@@ -785,70 +632,27 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
         />
       )}
 
-      {/* Modal 3: Custom In-App Modal for Delete Confirmation (Guaranteed to work in iframe) */}
+      {/* Delete confirmation */}
       {tripToDelete && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs"
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/50 p-0 sm:p-4"
           role="dialog"
           aria-modal="true"
           aria-labelledby="modal-delete-trip-title"
         >
-          <div
-            className="w-full max-w-md border-2 shadow-2xl rounded-sm overflow-hidden"
-            style={{ backgroundColor: palette.panel, borderColor: palette.bad }}
-          >
-            <div
-              className="p-4 border-b-2 flex items-center justify-between text-white"
-              style={{ backgroundColor: palette.bad }}
-            >
-              <div className="flex items-center gap-2 font-bold text-base">
-                <Trash2 size={20} aria-hidden="true" />
-                <span id="modal-delete-trip-title">Confirm Delete Trip</span>
-              </div>
+          <div className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-4">
+            <div className="flex items-center gap-2 text-rose-700 font-bold text-base" id="modal-delete-trip-title">
+              <Trash2 size={20} /> Delete trip?
+            </div>
+            <p className="text-sm text-slate-700 leading-relaxed">
+              <strong>Trip #{tripToDelete.id} ({tripToDelete.vehicle})</strong> from {fmtDay(tripToDelete.date)} will be removed and its
+              bills unassigned. This can&apos;t be undone.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={() => setTripToDelete(null)}
-                className="text-white/80 hover:text-white p-1 rounded transition-colors cursor-pointer"
-                aria-label="Close dialog"
-              >
-                <X size={18} aria-hidden="true" />
-              </button>
-            </div>
-
-            <div className="p-5 space-y-3">
-              <p style={fz(14, { color: palette.ink, lineHeight: 1.5 })}>
-                Are you sure you want to permanently delete{' '}
-                <strong>
-                  Trip #{tripToDelete.id} ({tripToDelete.vehicle})
-                </strong>{' '}
-                dispatched on <strong>{tripToDelete.date}</strong>?
-              </p>
-              <div
-                className="p-3 border-2 rounded text-xs"
-                style={{
-                  backgroundColor: `${palette.bad}10`,
-                  borderColor: palette.bad,
-                  color: palette.bad,
-                }}
-              >
-                This will remove the vehicle loading record and dissociate its assigned delivery bills.
-                This action is synchronized to cloud storage and cannot be undone.
-              </div>
-            </div>
-
-            <div
-              className="p-4 border-t-2 flex items-center justify-end gap-2"
-              style={{ borderColor: palette.line, backgroundColor: `${palette.line}20` }}
-            >
-              <button
-                type="button"
-                onClick={() => setTripToDelete(null)}
-                className="border-2 px-4 py-2 text-xs font-semibold rounded cursor-pointer transition-colors"
-                style={{
-                  borderColor: palette.line,
-                  color: palette.ink,
-                  backgroundColor: palette.panel,
-                }}
+                className="min-h-11 rounded-xl border border-black/10 text-sm font-semibold text-slate-700 cursor-pointer"
               >
                 Cancel
               </button>
@@ -856,20 +660,14 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
                 type="button"
                 id="btn-confirm-delete-trip"
                 onClick={() => {
-                  const id = tripToDelete.id;
-                  const v = tripToDelete.vehicle;
+                  const { id, vehicle } = tripToDelete;
                   deleteTrip(id);
                   setTripToDelete(null);
-                  setSyncMsg(`Trip #${id} (${v}) was deleted successfully.`);
-                  setTimeout(() => setSyncMsg(null), 4000);
+                  showToast(`Trip #${id} (${vehicle}) deleted.`);
                 }}
-                className="border-2 px-4 py-2 text-xs font-bold text-white rounded cursor-pointer transition-all shadow-xs"
-                style={{
-                  backgroundColor: palette.bad,
-                  borderColor: palette.bad,
-                }}
+                className="min-h-11 rounded-xl bg-rose-600 text-white text-sm font-semibold cursor-pointer"
               >
-                Yes, Delete Trip
+                Delete
               </button>
             </div>
           </div>

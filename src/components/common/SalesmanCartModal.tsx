@@ -1,4 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { SizeChip } from "../common/SizeChip";
+import { sizeTheme } from "../../utils/sizeColor";
 import {
   X,
   ShoppingCart,
@@ -270,7 +272,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   setIsBrowsingBeverages(false);
                   if (isLowVision) speakAssistiveText('Returned to invoice cart view.');
                 }}
-                className={`px-3 py-1.5 rounded-lg border-2 cursor-pointer font-black transition-colors flex items-center gap-1.5 text-xs shadow-xs ${
+                className={`px-3 py-1.5 rounded-lg border-2 cursor-pointer font-black transition-colors flex items-center gap-1.5 text-xs shadow-sm ${
                   isLowVision
                     ? 'bg-black text-yellow-300 border-yellow-400 hover:bg-zinc-900'
                     : 'bg-white/10 hover:bg-white/20 text-white border-white/20'
@@ -338,7 +340,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
             {/* Top controls: Search, Category pills, Price Tier selector */}
             <div
               className={`p-3.5 rounded-xl border-2 space-y-3 ${
-                isLowVision ? 'bg-gray-900 border-yellow-400 text-yellow-300' : 'bg-white border-slate-300 shadow-xs'
+                isLowVision ? 'bg-gray-900 border-yellow-400 text-yellow-300' : 'bg-white border-slate-300 shadow-sm'
               }`}
             >
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
@@ -347,7 +349,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                     <span>Van Beverage List</span>
                     <span
                       className={`text-xs px-2 py-0.5 rounded-full font-black ${
-                        isLowVision ? 'bg-yellow-400 text-black' : 'bg-blue-100 text-blue-900 border border-blue-300'
+                        isLowVision ? 'bg-yellow-400 text-black' : 'bg-blue-100 text-sky-700 border border-blue-300'
                       }`}
                     >
                       {filteredBeverages.length} Items
@@ -374,7 +376,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                         activePriceType === tier
                           ? isLowVision
                             ? 'bg-yellow-400 text-black'
-                            : 'bg-blue-900 text-white shadow-xs'
+                            : 'bg-sky-600 text-white shadow-sm'
                           : 'text-slate-700 hover:bg-slate-200'
                       }`}
                     >
@@ -401,7 +403,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   style={{ minHeight: '42px' }}
                 />
                 {beverageSearchQuery && (
-                  <button
+                  <button aria-label="Close"
                     type="button"
                     onClick={() => setBeverageSearchQuery('')}
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-full opacity-60 hover:opacity-100 cursor-pointer"
@@ -412,7 +414,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
               </div>
 
               {/* Category Filter Pills */}
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+              <div className="flex items-center gap-1.5 overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm pb-1">
                 {beverageCategories.map((cat) => (
                   <button
                     key={cat}
@@ -423,7 +425,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                       selectedBeverageCategory === cat
                         ? isLowVision
                           ? 'bg-yellow-400 text-black border-yellow-400 font-black'
-                          : 'bg-blue-900 text-white border-blue-950 shadow-xs'
+                          : 'bg-sky-600 text-white border-blue-950 shadow-sm'
                         : isLowVision
                         ? 'bg-black text-yellow-300 border-yellow-400/50 hover:bg-gray-800'
                         : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
@@ -452,11 +454,12 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   <div
                     key={prod.id}
                     id={`beverage-select-card-${prod.id}`}
+                    style={{ borderLeftWidth: 6, borderLeftColor: sizeTheme(prod.volume, prod.name).hex }}
                     className={`p-3 rounded-xl border-2 flex flex-col justify-between gap-2.5 transition-all ${
                       currentQty > 0
                         ? isLowVision
                           ? 'bg-zinc-900 border-yellow-400 text-yellow-300 shadow-md ring-2 ring-yellow-400/30'
-                          : 'bg-blue-50/70 border-blue-500 text-slate-900 shadow-sm'
+                          : 'bg-sky-50/70 border-blue-500 text-slate-900 shadow-sm'
                         : isLowVision
                         ? 'bg-black border-gray-800 text-yellow-300'
                         : 'bg-white border-slate-300 text-slate-900'
@@ -467,13 +470,13 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                         <div>
                           <h4 className="font-black text-sm sm:text-base leading-snug">{prod.name}</h4>
                           <div className="text-xs font-semibold opacity-75 mt-0.5">
-                            {prod.volume ? `${prod.volume}ml` : ''} • {prod.category}
+                            <SizeChip volume={prod.volume} pack={prod.pack} name={prod.name} className="mr-1" /> {prod.category}
                           </div>
                         </div>
 
                         <div className="text-right shrink-0">
                           <span className="text-[11px] font-bold opacity-60 block">Price / case</span>
-                          <span className="font-black text-sm sm:text-base text-blue-900 dark:text-yellow-300">
+                          <span className="font-black text-sm sm:text-base text-sky-700 dark:text-yellow-300">
                             ₹{money(currentRate)}
                           </span>
                         </div>
@@ -506,10 +509,10 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                           id={`btn-add-bev-${prod.id}`}
                           disabled={isOutOfVanStock}
                           onClick={() => handleAddBeverageDelta(prod, 1)}
-                          className={`w-full py-2.5 px-3 rounded-lg font-black text-xs sm:text-sm border-2 flex items-center justify-center gap-1.5 cursor-pointer shadow-xs transition-transform active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
+                          className={`w-full py-2.5 px-3 rounded-lg font-black text-xs sm:text-sm border-2 flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-transform active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
                             isLowVision
                               ? 'bg-yellow-400 text-black border-yellow-400 hover:bg-yellow-300'
-                              : 'bg-blue-900 hover:bg-blue-950 text-white border-blue-950'
+                              : 'bg-sky-600 hover:bg-sky-700 text-white border-blue-950'
                           }`}
                           style={{ minHeight: '42px' }}
                         >
@@ -519,7 +522,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                       ) : (
                         <div className="w-full flex items-center justify-between gap-2">
                           <div className="flex items-center border-2 rounded-lg overflow-hidden border-blue-600">
-                            <button
+                            <button aria-label="Decrease"
                               type="button"
                               id={`btn-bev-modal-minus-${prod.id}`}
                               onClick={() => handleAddBeverageDelta(prod, -1)}
@@ -535,7 +538,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                             <span className="px-3 py-1.5 font-black text-sm min-w-[48px] text-center bg-white text-slate-900">
                               {currentQty} cs
                             </span>
-                            <button
+                            <button aria-label="Increase"
                               type="button"
                               id={`btn-bev-modal-plus-${prod.id}`}
                               disabled={currentQty >= vehicleStock.available}
@@ -605,13 +608,13 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
             className={`p-3 rounded-xl border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
               isLowVision
                 ? 'bg-zinc-950 border-yellow-400 text-yellow-300'
-                : 'bg-slate-50 border-slate-300 text-slate-900 shadow-xs'
+                : 'bg-slate-50 border-slate-300 text-slate-900 shadow-sm'
             }`}
           >
             <div className="flex items-center gap-2.5 min-w-0">
               <div
                 className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 font-black ${
-                  isLowVision ? 'bg-yellow-400 text-black' : 'bg-blue-900 text-white'
+                  isLowVision ? 'bg-yellow-400 text-black' : 'bg-sky-600 text-white'
                 }`}
               >
                 <Store size={18} />
@@ -642,7 +645,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   type="button"
                   id="cart-btn-walkin-cash"
                   onClick={handlePickWalkInCash}
-                  className={`px-3 py-2 rounded-lg text-xs font-black border-2 flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors ${
+                  className={`px-3 py-2 rounded-lg text-xs font-black border-2 flex items-center gap-1.5 cursor-pointer shadow-sm transition-colors ${
                     isLowVision
                       ? 'bg-yellow-400 text-black border-yellow-400 hover:bg-yellow-300'
                       : 'bg-amber-50 text-amber-950 border-amber-300 hover:bg-amber-100'
@@ -659,7 +662,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                 type="button"
                 id="cart-btn-voice-recog"
                 onClick={onVoiceSearchCustomer}
-                className={`px-3 py-2 rounded-lg text-xs font-black border-2 flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors ${
+                className={`px-3 py-2 rounded-lg text-xs font-black border-2 flex items-center gap-1.5 cursor-pointer shadow-sm transition-colors ${
                   isVoiceSearching
                     ? 'bg-rose-600 text-white border-rose-700 animate-pulse ring-2 ring-rose-400'
                     : isLowVision
@@ -676,7 +679,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   </>
                 ) : (
                   <>
-                    <Mic size={14} className={isLowVision ? 'text-yellow-400' : 'text-blue-900'} />
+                    <Mic size={14} className={isLowVision ? 'text-yellow-400' : 'text-sky-700'} />
                     <span>Voice Search</span>
                   </>
                 )}
@@ -699,10 +702,10 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                     setIsBrowsingBeverages(true);
                     if (isLowVision) speakAssistiveText('Opening beverage catalog to add items.');
                   }}
-                  className={`px-3 py-1 rounded-lg text-xs font-black border-2 cursor-pointer flex items-center gap-1.5 shadow-xs transition-colors ${
+                  className={`px-3 py-1 rounded-lg text-xs font-black border-2 cursor-pointer flex items-center gap-1.5 shadow-sm transition-colors ${
                     isLowVision
                       ? 'bg-yellow-400 text-black border-yellow-400 hover:bg-yellow-300'
-                      : 'bg-blue-50 text-blue-900 border-blue-300 hover:bg-blue-100'
+                      : 'bg-sky-50 text-sky-700 border-blue-300 hover:bg-sky-100'
                   }`}
                 >
                   <Plus size={14} />
@@ -730,7 +733,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                     className={`px-5 py-2.5 rounded-lg font-black text-xs sm:text-sm border-2 cursor-pointer shadow-md flex items-center gap-2 mx-auto ${
                       isLowVision
                         ? 'bg-yellow-400 text-black border-yellow-500 hover:bg-yellow-300'
-                        : 'bg-blue-900 text-white border-blue-950 hover:bg-blue-950'
+                        : 'bg-sky-600 text-white border-blue-950 hover:bg-sky-700'
                     }`}
                   >
                     <Plus size={16} />
@@ -748,10 +751,11 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   <div
                     key={item.key}
                     id={`cart-item-${item.key}`}
+                    style={{ borderLeftWidth: 6, borderLeftColor: sizeTheme(prod?.volume, item.productName).hex }}
                     className={`p-3.5 rounded-xl border-2 transition-all ${
                       isLowVision
                         ? 'bg-gray-950 border-yellow-400 text-yellow-300'
-                        : 'bg-white border-slate-300 text-slate-900 shadow-xs'
+                        : 'bg-white border-slate-300 text-slate-900 shadow-sm'
                     }`}
                   >
                     {/* Top Row: Product Info & Actions */}
@@ -762,10 +766,11 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                             {idx + 1}
                           </span>
                           <span className="font-black text-base sm:text-lg">{item.productName}</span>
+                          <SizeChip volume={prod?.volume} pack={prod?.pack} name={item.productName} />
                           <span
                             className={`px-2 py-0.5 text-[11px] font-black rounded uppercase ${
                               item.priceType === 'Retail'
-                                ? 'bg-blue-100 text-blue-900 border border-blue-300'
+                                ? 'bg-blue-100 text-sky-700 border border-blue-300'
                                 : 'bg-purple-100 text-purple-900 border border-purple-300'
                             }`}
                           >
@@ -828,7 +833,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                             <Minus size={16} />
                           </button>
                           <input
-                            type="number"
+                            type="number" inputMode="numeric"
                             min={1}
                             max={vehicleStock.available}
                             value={item.qty}
@@ -880,13 +885,13 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                         {isEditing && !isPriceLocked ? (
                           <div className="flex items-center gap-1">
                             <input
-                              type="number"
+                              type="number" inputMode="decimal"
                               value={editingRateDraft}
                               onChange={(e) => setEditingRateDraft(e.target.value)}
                               placeholder={`₹${item.rate}`}
                               className="w-full px-2 py-1.5 text-xs font-black rounded border-2 border-blue-500"
                             />
-                            <button
+                            <button aria-label="Confirm"
                               type="button"
                               onClick={() => saveEditingItem(item.key)}
                               className="px-2.5 py-1.5 rounded bg-emerald-600 text-white font-black text-xs cursor-pointer"
@@ -921,7 +926,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                           Line Discount (₹):
                         </label>
                         <input
-                          type="number"
+                          type="number" inputMode="numeric"
                           min={0}
                           value={item.discount || ''}
                           onChange={(e) => onUpdateDiscount(item.key, Number(e.target.value) || 0)}
@@ -995,7 +1000,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   </label>
                   <input
                     id="cart-special-discount-amt"
-                    type="number"
+                    type="number" inputMode="numeric"
                     min={0}
                     value={invoiceDiscountDraft}
                     onChange={(e) => handleDiscountChange(e.target.value)}
@@ -1012,7 +1017,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   </label>
                   <input
                     id="cart-settled-total-amt"
-                    type="number"
+                    type="number" inputMode="decimal"
                     min={0}
                     value={settledTotalDraft}
                     onChange={(e) => handleSettledTotalChange(e.target.value)}
@@ -1142,7 +1147,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                       Or enter custom / partial payment (₹):
                     </span>
                     {isPartial && (
-                      <span className="text-[11px] font-black text-blue-700 bg-blue-100 px-2 py-0.5 rounded border border-blue-300">
+                      <span className="text-[11px] font-black text-sky-700 bg-blue-100 px-2 py-0.5 rounded border border-blue-300">
                         Partial Payment
                       </span>
                     )}
@@ -1151,7 +1156,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 font-black opacity-60">₹</span>
                     <input
                       id="cart-amount-paid-today"
-                      type="number"
+                      type="number" inputMode="decimal"
                       min={0}
                       step="any"
                       value={amountPaidDraft}
@@ -1217,7 +1222,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
             <div className="flex flex-col sm:flex-row items-center justify-between gap-3 w-full">
               <div className="text-xs sm:text-sm font-bold flex items-center gap-2 flex-wrap">
                 <span>Selected:</span>
-                <span className="font-black text-blue-900 bg-blue-100 px-2 py-0.5 rounded border border-blue-300">
+                <span className="font-black text-sky-700 bg-blue-100 px-2 py-0.5 rounded border border-blue-300">
                   {cart.items.length} {cart.items.length === 1 ? 'Beverage' : 'Beverages'} ({totalCases} cases)
                 </span>
                 <span>• Subtotal:</span>

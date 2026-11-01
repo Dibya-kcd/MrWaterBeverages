@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { notify } from "../../utils/toast";
 import {
   Search,
   Phone,
@@ -15,11 +16,14 @@ import {
   X,
   Clock,
   ArrowRight,
+  UserPlus,
 } from 'lucide-react';
 import { Bill } from '../../types';
 import { money } from '../../utils/billing';
 import { useLedger } from '../../context/LedgerContext';
+import { AddCustomerModal } from '../common/AddCustomerModal';
 import { isSpeechRecognitionSupported, startSpeechRecognition } from '../../utils/speechRecognition';
+import { billBalance } from '../../utils/salesReturns';
 
 export interface CustomerDueRecord {
   name: string;
@@ -28,6 +32,8 @@ export interface CustomerDueRecord {
   lastBillDate: string | null;
   lastBillAmount: number | null;
   unpaidBills: { id: number; date: string; due: number }[];
+  /** Paid ahead by the customer (credit on account), from the customer ledger. */
+  advance?: number;
 }
 
 interface SalesmanCustomerDueLookupProps {
@@ -47,7 +53,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
   isLowVision = false,
   speakAssistiveText,
 }) => {
-  const { orgProfile } = useLedger();
+  const { orgProfile, existingCustomers: ledgerCustomers } = useLedger();
   const [searchQuery, setSearchQuery] = useState('');
   const [filterDueOnly, setFilterDueOnly] = useState(true);
   const [isVoiceSearching, setIsVoiceSearching] = useState(false);
@@ -58,6 +64,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
   const [payMode, setPayMode] = useState<'Cash' | 'UPI' | 'Cheque'>('Cash');
   const [payNote, setPayNote] = useState<string>('');
   const [paymentSuccessMsg, setPaymentSuccessMsg] = useState<string | null>(null);
+  const [showAddCustomerModal, setShowAddCustomerModal] = useState<boolean>(false);
 
   // Voice Search Handler
   const handleVoiceSearch = () => {
@@ -66,7 +73,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
       return;
     }
     if (!isSpeechRecognitionSupported()) {
-      alert('Speech recognition is not supported in this browser.');
+      notify('Speech recognition is not supported in this browser.');
       return;
     }
     setIsVoiceSearching(true);
@@ -139,7 +146,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
       let totalDue = 0;
 
       for (const bill of sortedBills) {
-        const due = Math.max(0, bill.total - bill.amountPaid);
+        const due = billBalance(bill);
         if (due > 0.01) {
           totalDue += due;
           unpaidBills.push({ id: bill.id, date: bill.date, due });
@@ -153,6 +160,10 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
         lastBillDate: mostRecent ? mostRecent.date : null,
         lastBillAmount: mostRecent ? mostRecent.total : null,
         unpaidBills,
+        advance:
+          ledgerCustomers.find(
+            (c) => c.name.trim().toLowerCase() === data.name.trim().toLowerCase(),
+          )?.advance || 0,
       });
     }
 
@@ -161,7 +172,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
       if (b.balanceDue !== a.balanceDue) return b.balanceDue - a.balanceDue;
       return a.name.localeCompare(b.name);
     });
-  }, [bills]);
+  }, [bills, ledgerCustomers]);
 
   // Filtered customer records based on query and filterDueOnly
   const filteredCustomers = useMemo(() => {
@@ -201,7 +212,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
 
     const entered = parseFloat(payAmount);
     if (isNaN(entered) || entered <= 0) {
-      alert('Please enter a valid payment amount greater than zero.');
+      notify('Please enter a valid payment amount greater than zero.');
       return;
     }
 
@@ -230,11 +241,11 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
   };
 
   return (
-    <section id="salesman-customer-due-lookup" className="space-y-4 max-w-5xl mx-auto pb-8">
+    <section id="salesman-customer-due-lookup" className="space-y-4 max-w-none lg:max-w-5xl mx-auto pb-8">
       {/* Top Banner & Field Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div
-          className="p-4 rounded-xl border-2 shadow-xs"
+          className="p-4 rounded-xl border-2 shadow-sm"
           style={{
             backgroundColor: palette.panel,
             borderColor: palette.line,
@@ -252,7 +263,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
         </div>
 
         <div
-          className="p-4 rounded-xl border-2 shadow-xs"
+          className="p-4 rounded-xl border-2 shadow-sm"
           style={{
             backgroundColor: palette.panel,
             borderColor: palette.line,
@@ -270,17 +281,17 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
         </div>
 
         <div
-          className="p-4 rounded-xl border-2 shadow-xs flex flex-col justify-between"
+          className="p-4 rounded-xl border-2 shadow-sm flex flex-col justify-between"
           style={{
             backgroundColor: '#EFF6FF',
             borderColor: '#93C5FD',
           }}
         >
           <div>
-            <div className="text-xs font-black uppercase tracking-wider text-blue-900">
+            <div className="text-xs font-black uppercase tracking-wider text-sky-700">
               Payment Due Lookup
             </div>
-            <p className="text-xs text-blue-800 font-medium mt-1 leading-relaxed">
+            <p className="hidden sm:block text-xs text-sky-800 font-medium mt-1 leading-relaxed">
               Verify outstanding dues before dispatching stock. Record on-the-spot cash/UPI collections directly into the ledger.
             </p>
           </div>
@@ -291,7 +302,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
       {paymentSuccessMsg && (
         <div
           role="alert"
-          className="p-3.5 bg-emerald-50 border-2 border-emerald-500 rounded-xl text-emerald-900 font-black text-sm flex items-center gap-2.5 shadow-xs transition-all animate-fadeIn"
+          className="p-3.5 bg-emerald-50 border-2 border-emerald-500 rounded-xl text-emerald-900 font-black text-sm flex items-center gap-2.5 shadow-sm transition-all animate-fadeIn"
         >
           <CheckCircle2 size={20} className="text-emerald-600 shrink-0" />
           <span className="flex-1">{paymentSuccessMsg}</span>
@@ -308,7 +319,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
 
       {/* Search & Quick Filters */}
       <div
-        className="p-3.5 rounded-xl border-2 shadow-xs space-y-3"
+        className="p-3.5 rounded-xl border-2 shadow-sm space-y-3"
         style={{
           backgroundColor: palette.panel,
           borderColor: palette.line,
@@ -320,13 +331,13 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
               size={18}
               className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
             />
-            <input
+            <input enterKeyHint="search"
               id="input-customer-due-search"
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search customer by shop name or phone number..."
-              className="w-full pl-10 pr-4 py-2.5 rounded-xl border-2 border-slate-300 font-bold text-slate-900 text-sm focus:border-blue-900 focus:outline-none bg-white transition-colors"
+              className="w-full pl-10 pr-4 py-2.5 rounded-xl border-2 border-slate-300 font-bold text-slate-900 text-sm focus:border-sky-600 focus:outline-none bg-white transition-colors"
             />
             {searchQuery && (
               <button
@@ -353,6 +364,18 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
             }`}
           >
             {isVoiceSearching ? <MicOff size={18} /> : <Mic size={18} />}
+          </button>
+
+          {/* Add New Customer Button */}
+          <button
+            type="button"
+            id="btn-due-add-new-customer"
+            onClick={() => setShowAddCustomerModal(true)}
+            className="min-h-[44px] px-3.5 rounded-xl border-2 border-emerald-600 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center gap-1.5 cursor-pointer whitespace-nowrap shadow-sm transition-transform active:scale-[0.99]"
+            title="Register New Customer / Retailer"
+          >
+            <UserPlus size={16} />
+            <span className="hidden sm:inline">+ Customer</span>
           </button>
         </div>
 
@@ -406,7 +429,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
               <button
                 type="button"
                 onClick={() => setFilterDueOnly(false)}
-                className="mt-2 inline-block px-3 py-1.5 rounded-lg bg-blue-900 text-white font-bold text-xs"
+                className="mt-2 inline-block px-3 py-1.5 rounded-lg bg-sky-600 text-white font-bold text-xs"
               >
                 View All Customer Records
               </button>
@@ -420,7 +443,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
               <div
                 key={cust.name}
                 id={`customer-due-card-${cust.name.replace(/\s+/g, '-').toLowerCase()}`}
-                className="rounded-xl border-2 p-3.5 sm:p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 transition-all"
+                className="rounded-xl border-2 p-3.5 sm:p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 transition-all"
                 style={{
                   backgroundColor: palette.panel,
                   borderColor: hasDue ? '#FCA5A5' : palette.line,
@@ -436,6 +459,10 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
                     {hasDue ? (
                       <span className="px-2.5 py-0.5 rounded-full text-xs font-black uppercase bg-rose-100 text-rose-800 border border-rose-300">
                         ₹{money(cust.balanceDue)} Due
+                      </span>
+                    ) : (cust.advance || 0) > 0.004 ? (
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-black uppercase bg-sky-100 text-sky-800 border border-sky-300">
+                        ₹{money(cust.advance || 0)} Advance • No Due
                       </span>
                     ) : (
                       <span className="px-2.5 py-0.5 rounded-full text-xs font-black uppercase bg-emerald-100 text-emerald-800 border border-emerald-300">
@@ -494,7 +521,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
                       type="button"
                       id={`btn-record-payment-${cust.name.replace(/\s+/g, '-').toLowerCase()}`}
                       onClick={() => handleOpenPaymentModal(cust)}
-                      className="min-h-[40px] px-3.5 py-1.5 rounded-xl border-2 border-emerald-600 bg-emerald-600 text-white font-black text-xs sm:text-sm flex items-center gap-1.5 hover:bg-emerald-700 cursor-pointer shadow-xs transition-colors"
+                      className="min-h-[40px] px-3.5 py-1.5 rounded-xl border-2 border-emerald-600 bg-emerald-600 text-white font-black text-xs sm:text-sm flex items-center gap-1.5 hover:bg-emerald-700 cursor-pointer shadow-sm transition-colors"
                       title={`Record payment collected from ${cust.name}`}
                     >
                       <IndianRupee size={15} />
@@ -511,7 +538,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
                     <button
                       type="button"
                       onClick={() => onSelectForSale(cust.name, cust.phone || '')}
-                      className="min-h-[40px] px-3 py-1.5 rounded-xl border-2 border-blue-900 bg-white text-blue-900 font-black text-xs flex items-center gap-1.5 hover:bg-blue-50 cursor-pointer shadow-xs transition-colors"
+                      className="min-h-[40px] px-3 py-1.5 rounded-xl border-2 border-sky-600 bg-white text-sky-700 font-black text-xs flex items-center gap-1.5 hover:bg-sky-50 cursor-pointer shadow-sm transition-colors"
                       title={`Start fresh delivery sale for ${cust.name}`}
                     >
                       <ShoppingCart size={14} />
@@ -595,7 +622,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
                   </span>
                   <input
                     id="input-collect-amount"
-                    type="number"
+                    type="number" inputMode="decimal"
                     step="0.01"
                     min="1"
                     max={payingCustomer.balanceDue}
@@ -645,7 +672,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
                       onClick={() => setPayMode(mode)}
                       className={`min-h-[40px] py-1.5 px-2 rounded-xl border-2 font-black text-xs cursor-pointer transition-all ${
                         payMode === mode
-                          ? 'border-emerald-600 bg-emerald-50 text-emerald-900 shadow-xs'
+                          ? 'border-emerald-600 bg-emerald-50 text-emerald-900 shadow-sm'
                           : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                       }`}
                     >
@@ -686,7 +713,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
                 <button
                   type="submit"
                   id="btn-confirm-record-payment"
-                  className="flex-1 min-h-[44px] py-2 px-4 rounded-xl border-2 border-emerald-600 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+                  className="flex-1 min-h-[44px] py-2 px-4 rounded-xl border-2 border-emerald-600 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors"
                 >
                   <CheckCircle2 size={16} />
                   <span>Save Payment</span>
@@ -696,6 +723,20 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
           </div>
         </div>
       )}
+
+      {/* Add New Customer Modal */}
+      <AddCustomerModal
+        isOpen={showAddCustomerModal}
+        onClose={() => setShowAddCustomerModal(false)}
+        initialName={searchQuery.trim()}
+        isLowVision={isLowVision}
+        onCustomerCreated={(newCust) => {
+          setSearchQuery(newCust.name);
+          if (speakAssistiveText) {
+            speakAssistiveText(`Customer ${newCust.name} created.`);
+          }
+        }}
+      />
     </section>
   );
 };

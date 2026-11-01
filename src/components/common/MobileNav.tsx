@@ -1,91 +1,77 @@
 import React from 'react';
 import {
-  BarChart3,
-  Boxes,
-  LayoutDashboard,
-  Package,
-  Receipt,
-  Settings,
-  Tag,
-  Truck,
-  UserCheck,
+  Home,
+  Menu,
+  ShoppingCart,
+  Users,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { TabId } from '../../types';
 
-interface MobileNavItem {
+interface PrimaryNavItem {
   id: TabId;
   label: string;
-  icon: React.ComponentType<{ size?: number; color?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>;
+  icon: React.ComponentType<{
+    className?: string;
+    'aria-hidden'?: boolean | 'true' | 'false';
+    size?: number;
+    strokeWidth?: number;
+  }>;
 }
 
-const MOBILE_ITEMS: MobileNavItem[] = [
-  { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
-  { id: 'salesman', label: 'Salesman', icon: UserCheck },
-  { id: 'billing', label: 'Billing', icon: Receipt },
-  { id: 'trips', label: 'Trips', icon: Truck },
-  { id: 'inventory', label: 'Inventory', icon: Boxes },
-  { id: 'products', label: 'Products', icon: Package },
-  { id: 'reports', label: 'Reports', icon: BarChart3 },
-  { id: 'promotions', label: 'Promos', icon: Tag },
-  { id: 'settings', label: 'Settings', icon: Settings },
+const PRIMARY_ITEMS: PrimaryNavItem[] = [
+  { id: 'dashboard', label: 'Home', icon: Home },
+  { id: 'billing', label: 'Sell', icon: ShoppingCart },
+  { id: 'customers', label: 'Parties', icon: Users },
 ];
 
-export const MobileNav: React.FC = () => {
-  const { tab, setTab, palette, scale, fz } = useLedger();
+export interface MobileNavProps {
+  onOpenMenu?: () => void;
+}
 
-  // In Salesman-mode sessions, reduce visible mobile bottom nav to Salesman, Trips, Settings
-  const items = React.useMemo(() => {
-    if (tab === 'salesman') {
-      return MOBILE_ITEMS.filter((item) => item.id === 'salesman' || item.id === 'trips' || item.id === 'settings');
-    }
-    return MOBILE_ITEMS;
-  }, [tab]);
-
-  const isSalesmanSession = tab === 'salesman';
+/** Bottom navigation — full width, equal slots (mobile + tablet) */
+export const MobileNav: React.FC<MobileNavProps> = ({ onOpenMenu }) => {
+  const { tab, setTab } = useLedger();
 
   return (
     <nav
       id="mobile-nav"
-      aria-label="Main sections"
-      className={`flex md:hidden fixed bottom-0 inset-x-0 z-40 ${
-        isSalesmanSession ? 'grid grid-cols-3' : 'overflow-x-auto no-scrollbar scroll-smooth'
-      } border-t-2 select-none shadow-lg`}
-      style={{
-        borderColor: palette.line,
-        backgroundColor: palette.navy,
-        paddingBottom: 'env(safe-area-inset-bottom, 0px)',
-      }}
+      className="fixed bottom-0 inset-x-0 z-40 w-full bg-white/95 backdrop-blur-xl border-t border-black/6 shadow-[0_-4px_24px_rgba(15,39,44,0.06)] pb-[env(safe-area-inset-bottom,0px)] lg:hidden"
+      aria-label="Primary"
     >
-      {items.map(({ id, label, icon: Icon }) => {
-        const active = tab === id;
-        return (
-          <button
-            key={id}
-            id={`mobile-nav-${id}`}
-            onClick={() => setTab(id)}
-            aria-current={active ? 'page' : undefined}
-            className="flex flex-col items-center justify-center gap-1 shrink-0 focus-ring cursor-pointer select-none transition-all"
-            style={{
-              minWidth: isSalesmanSession ? 'auto' : `${66 * Math.min(scale, 1.2)}px`,
-              minHeight: '52px',
-              padding: '6px 8px',
-              backgroundColor: active ? '#FFFFFF' : 'transparent',
-              color: active ? palette.navy : '#FFFFFF',
-              fontWeight: active ? 800 : 500,
-              borderTop: active ? `3px solid ${palette.amber}` : '3px solid transparent',
-            }}
-          >
-            <Icon size={Math.round(20 * Math.min(scale, 1.2))} aria-hidden="true" />
-            <span
-              className="whitespace-nowrap leading-none"
-              style={fz(isSalesmanSession ? 13 : 11, { fontWeight: active ? 800 : 600 })}
+      <div className="w-full max-w-none mx-0 grid grid-cols-4 items-stretch px-1.5 sm:px-2 pt-1.5 pb-1.5">
+        {PRIMARY_ITEMS.map(({ id, label, icon: Icon }) => {
+          const active = tab === id;
+          return (
+            <button
+              key={id}
+              type="button"
+              data-active={active ? 'true' : 'false'}
+              onClick={() => setTab(id)}
+              className={`min-h-[54px] w-full flex flex-col items-center justify-center gap-0.5 cursor-pointer transition-all rounded-xl ${
+                active
+                  ? 'text-[#0d4a3a] bg-[#0d4a3a]/8'
+                  : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+              }`}
             >
-              {label}
-            </span>
-          </button>
-        );
-      })}
+              <Icon size={22} aria-hidden="true" strokeWidth={active ? 2.5 : 1.8} />
+              <span className={`text-[11px] leading-tight ${active ? 'font-bold' : 'font-medium'}`}>
+                {label}
+              </span>
+            </button>
+          );
+        })}
+
+        <button
+          type="button"
+          onClick={() => onOpenMenu?.()}
+          aria-label="Open menu"
+          className="min-h-[54px] w-full flex flex-col items-center justify-center gap-0.5 cursor-pointer text-slate-500 hover:text-slate-800 hover:bg-slate-50 transition-all rounded-xl"
+        >
+          <Menu size={22} aria-hidden="true" strokeWidth={2} />
+          <span className="text-[11px] leading-tight font-medium">More</span>
+        </button>
+      </div>
     </nav>
   );
 };
