@@ -220,9 +220,10 @@ export const SalesmanView: React.FC = () => {
 
   // Quick Trip / Van Load Creator State
   const [showNewVanModal, setShowNewVanModal] = useState(false);
-  const [newVehicleName, setNewVehicleName] = useState('Tata Ace - MH-14-GH-1234');
+  const [newVehicleName, setNewVehicleName] = useState('');
   const [newSalesmanName, setNewSalesmanName] = useState('');
-  const [newRouteName, setNewRouteName] = useState(activeBeats[0]?.name || '');
+  const [newRouteName, setNewRouteName] = useState('');
+  const [newTripDate, setNewTripDate] = useState<string>(() => todayISO());
   const [loadQuantities, setLoadQuantities] = useState<Record<number, number>>({});
   const [loadQuantityWarnings, setLoadQuantityWarnings] = useState<Record<number, string>>({});
   const [selectedLoadWarehouseId, setSelectedLoadWarehouseId] = useState<string>(
@@ -595,12 +596,33 @@ export const SalesmanView: React.FC = () => {
     return { todayCash: Math.max(0, cash), todayUpi: Math.max(0, upi) };
   }, [todayPayments, todayBills]);
 
+  // Open the Load Vehicle Run sheet pre-filled from the signed-in salesman.
+  // Salesman + vehicle come from the login/profile, date defaults to today,
+  // beat stays blank until the salesman picks one (or types one if none are configured in Settings).
+  const openVanModal = () => {
+    const me = currentUser?.role === 'salesman' ? currentUser : null;
+    const myProfile = me ? salesmen.find((s) => s.id === me.id) || me.salesman : null;
+    const lastMine = relevantTrips.find((t) => (t.vehicle || '').trim());
+    const profileVehicle = (myProfile?.defaultVehicle || myProfile?.default_vehicle || '').trim();
+    setNewSalesmanName(me?.name || activeSalesman?.name || '');
+    setNewVehicleName(profileVehicle || lastMine?.vehicle || '');
+    setNewTripDate(todayISO());
+    setNewRouteName('');
+    setLoadQuantities({});
+    setLoadQuantityWarnings({});
+    setShowNewVanModal(true);
+  };
+
   // Handle Quick Load of a Van Trip
   const handleCreateVanTrip = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const vehicle = newVehicleName.trim() || 'Van MH-14-1234';
-    const salesman = newSalesmanName.trim() || 'Salesman';
-    const date = todayISO();
+    const vehicle = newVehicleName.trim();
+    const salesman = (userSalesmanName || newSalesmanName).trim() || 'Salesman';
+    const date = newTripDate || todayISO();
+    if (!vehicle) {
+      triggerFeedback('Please enter the vehicle registration / model.', 'warn');
+      return;
+    }
     const whId = selectedLoadWarehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
 
     // Only load items where qty > 0, capped to warehouse stock
@@ -2144,7 +2166,7 @@ export const SalesmanView: React.FC = () => {
                 setSelectedTripId(id);
                 if (isLowVision) speakAssistiveText(`Switched to vehicle ${(trips.find(t => t.id === id))?.vehicle || 'van'}.`);
               }}
-              onOpenNewVanModal={() => setShowNewVanModal(true)}
+              onOpenNewVanModal={openVanModal}
               products={products}
               customers={existingCustomers}
               selectedRetailer={selectedRetailer}
@@ -2217,7 +2239,7 @@ export const SalesmanView: React.FC = () => {
                 <button
                   type="button"
                   id="btn-load-new-van-run"
-                  onClick={() => setShowNewVanModal(true)}
+                  onClick={openVanModal}
                   className="min-h-[40px] px-4 py-2 rounded-xl border-2 border-sky-600 bg-sky-600 hover:bg-sky-700 text-white font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors shrink-0"
                 >
                   <Plus size={15} />
@@ -2302,19 +2324,10 @@ export const SalesmanView: React.FC = () => {
                         </span>
                       </div>
                       <div className="text-xs font-semibold text-slate-600 mt-1">
-                        No delivery vehicle is currently dispatched. Load a vehicle run to start selling on route.
+                        No delivery vehicle is currently dispatched. Tap “Load Vehicle Run” above to start selling on route.
                       </div>
                     </div>
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setShowNewVanModal(true)}
-                    className="min-h-[40px] px-3.5 py-2 rounded-xl bg-sky-600 text-white font-black text-xs flex items-center gap-1.5 hover:bg-sky-700 cursor-pointer shadow-sm shrink-0"
-                  >
-                    <Plus size={14} />
-                    <span>Load Vehicle Run</span>
-                  </button>
                 </div>
               )}
 
@@ -2359,7 +2372,7 @@ export const SalesmanView: React.FC = () => {
                     <Truck size={36} className="mx-auto text-slate-400" />
                     <div className="font-black text-sm text-slate-700">No vehicle runs assigned</div>
                     <div className="text-xs font-semibold">
-                      Click "Load Vehicle Run" to load products onto a delivery vehicle.
+                      Tap "Load Vehicle Run" above to load products onto a delivery vehicle.
                     </div>
                   </div>
                 ) : (
@@ -2474,10 +2487,10 @@ export const SalesmanView: React.FC = () => {
         <div
           role="dialog"
           aria-modal="true"
-          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-3 sm:p-4 overflow-y-auto backdrop-blur-xs"
+          className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-xs"
         >
           <div
-            className="w-full max-w-lg max-h-[92dvh] max-h-[92svh] flex flex-col rounded-2xl border-2 shadow-2xl p-4 sm:p-6 overflow-hidden"
+            className="w-full max-w-lg max-h-[94dvh] flex flex-col rounded-t-2xl sm:rounded-2xl border-2 shadow-2xl p-4 sm:p-6 overflow-hidden"
             style={{
               backgroundColor: palette.panel,
               borderColor: palette.line,
@@ -2508,71 +2521,89 @@ export const SalesmanView: React.FC = () => {
                   value={newVehicleName}
                   onChange={(e) => setNewVehicleName(e.target.value)}
                   placeholder="e.g. Tata Ace - MH-14-GH-1234"
-                  className="w-full min-h-[44px] p-2.5 text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
+                  autoCapitalize="characters"
+                  className="w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
                   style={{ borderColor: palette.line }}
                 />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold mb-1">Salesman Name *</label>
+                  <label className="block text-xs font-bold mb-1">
+                    Salesman {userSalesmanName ? '(signed in)' : '*'}
+                  </label>
                   <input
                     type="text"
                     required
-                    value={newSalesmanName}
+                    readOnly={Boolean(userSalesmanName)}
+                    value={userSalesmanName || newSalesmanName}
                     onChange={(e) => setNewSalesmanName(e.target.value)}
                     placeholder="e.g. Ramesh Kumar"
-                    className="w-full min-h-[44px] p-2.5 text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
+                    className={`w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:outline-none ${
+                      userSalesmanName ? 'bg-slate-100 text-slate-700 cursor-not-allowed' : 'focus:border-sky-600'
+                    }`}
                     style={{ borderColor: palette.line }}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold mb-1">Source Warehouse / Godown *</label>
-                  <select
-                    value={selectedLoadWarehouseId}
-                    onChange={(e) => setSelectedLoadWarehouseId(e.target.value)}
-                    className="w-full min-h-[44px] p-2.5 text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
+                  <label className="block text-xs font-bold mb-1">Trip Date *</label>
+                  <input
+                    type="date"
+                    required
+                    value={newTripDate}
+                    onChange={(e) => setNewTripDate(e.target.value || todayISO())}
+                    className="w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none bg-white"
                     style={{ borderColor: palette.line }}
-                  >
-                    {warehouses.length === 0 ? (
-                      <option value="">Main Godown</option>
-                    ) : (
-                      warehouses.map((w) => (
-                        <option key={w.id} value={w.id}>
-                          {w.name} {w.code ? `(${w.code})` : ''}
-                        </option>
-                      ))
-                    )}
-                  </select>
+                  />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-bold mb-1">Beat route</label>
+                <label className="block text-xs font-bold mb-1">Source Warehouse / Godown *</label>
                 <select
-                  value={activeBeats.some((b) => b.name === newRouteName) ? newRouteName : '__custom__'}
-                  onChange={(e) => {
-                    if (e.target.value === '__custom__') return;
-                    setNewRouteName(e.target.value);
-                  }}
-                  className="w-full min-h-[44px] p-2.5 text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none bg-white mb-1.5"
+                  value={selectedLoadWarehouseId}
+                  onChange={(e) => setSelectedLoadWarehouseId(e.target.value)}
+                  className="w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none bg-white"
                   style={{ borderColor: palette.line }}
                 >
-                  {activeBeats.map((b) => (
-                    <option key={b.id} value={b.name}>
-                      {beatLabel(b)}
-                    </option>
-                  ))}
-                  <option value="__custom__">Custom route…</option>
+                  {warehouses.length === 0 ? (
+                    <option value="">Main Godown</option>
+                  ) : (
+                    warehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name} {w.code ? `(${w.code})` : ''}
+                      </option>
+                    ))
+                  )}
                 </select>
-                <input
-                  type="text"
-                  value={newRouteName}
-                  onChange={(e) => setNewRouteName(e.target.value)}
-                  placeholder="Or type a custom route name"
-                  className="w-full min-h-[40px] p-2 text-xs font-semibold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
-                  style={{ borderColor: palette.line }}
-                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold mb-1">Beat route (optional)</label>
+                {activeBeats.length > 0 ? (
+                  <select
+                    value={newRouteName}
+                    onChange={(e) => setNewRouteName(e.target.value)}
+                    className="w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none bg-white"
+                    style={{ borderColor: palette.line }}
+                  >
+                    <option value="">— Select beat —</option>
+                    {activeBeats.map((b) => (
+                      <option key={b.id} value={b.name}>
+                        {beatLabel(b)}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={newRouteName}
+                    onChange={(e) => setNewRouteName(e.target.value)}
+                    placeholder="Type route / beat name (none set in Settings)"
+                    className="w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
+                    style={{ borderColor: palette.line }}
+                  />
+                )}
                 {(() => {
                   const sel = activeBeats.find((b) => b.name === newRouteName);
                   return sel ? (
@@ -2670,17 +2701,17 @@ export const SalesmanView: React.FC = () => {
                 </div>
               </div>
 
-              <div className="flex items-center justify-end gap-2.5 pt-3 border-t shrink-0">
+              <div className="flex items-center justify-end gap-2.5 pt-3 pb-[env(safe-area-inset-bottom)] border-t sticky bottom-0 bg-inherit shrink-0">
                 <button
                   type="button"
                   onClick={() => setShowNewVanModal(false)}
-                  className="min-h-[44px] px-5 py-2 text-sm font-bold rounded-xl border-2 cursor-pointer hover:bg-slate-100"
+                  className="min-h-[48px] px-5 py-2 text-sm font-bold rounded-xl border-2 cursor-pointer hover:bg-slate-100"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="min-h-[44px] px-6 py-2 text-sm font-black rounded-xl text-white bg-sky-600 hover:bg-sky-700 cursor-pointer shadow-sm"
+                  className="min-h-[48px] flex-1 sm:flex-none px-6 py-2 text-sm font-black rounded-xl text-white bg-sky-600 hover:bg-sky-700 cursor-pointer shadow-sm"
                 >
                   Start Trip & Enable Selling
                 </button>
