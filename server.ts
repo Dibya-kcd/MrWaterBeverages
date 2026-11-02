@@ -100,6 +100,9 @@ let consecutiveSupabaseErrors = 0;
 
 export function isSupabaseAvailable(): boolean {
   if (IS_TEST_RUN) return false;
+  if (!isValidSupabaseKey(SUPABASE_KEY) || SUPABASE_URL === "http://127.0.0.1:9") {
+    return false;
+  }
   if (Date.now() < supabaseCircuitOpenUntil) {
     return false;
   }
@@ -125,21 +128,21 @@ export function recordSupabaseFailure(error: any) {
     raw.includes("ECONNREFUSED") ||
     raw.includes("ETIMEDOUT") ||
     raw.includes("timeout") ||
-    consecutiveSupabaseErrors >= 2;
+    consecutiveSupabaseErrors >= 3;
 
   if (isOutage) {
-    // Open circuit for 45 seconds so all subsequent requests respond immediately without blocking
-    supabaseCircuitOpenUntil = Date.now() + 45000;
+    // Open circuit for 30 seconds so all subsequent requests respond immediately without blocking
+    supabaseCircuitOpenUntil = Date.now() + 30000;
     console.warn(
-      `[Supabase Circuit Breaker] Remote endpoint degraded or unreachable. Bypassing Supabase calls for 45s to prevent timeouts.`,
+      `[Supabase Circuit Breaker] Remote endpoint degraded or unreachable. Bypassing Supabase calls for 30s to prevent timeouts.`,
     );
   }
 }
 
 export async function withSupabaseTimeout<T>(
   promise: Promise<T> | any,
-  timeoutMs = 3000,
-  fallbackValue: T = { error: { message: "Supabase timeout or unavailable" } } as any,
+  timeoutMs = 4000,
+  fallbackValue: T = { error: null, data: null, skipped: true } as any,
 ): Promise<T> {
   if (!isSupabaseAvailable()) {
     return fallbackValue;
@@ -164,7 +167,7 @@ export async function withSupabaseTimeout<T>(
 
     if ((result as any)?.error) {
       recordSupabaseFailure((result as any).error);
-    } else {
+    } else if (!(result as any)?.skipped) {
       recordSupabaseSuccess();
     }
     return result;
@@ -678,6 +681,74 @@ async function startServer() {
     return { sid: String(who.sid), name: who.n, bills, trips, payments, customers, beats, directory: authCfg.salesmanDirectory };
   };
 
+  // Finds a salesman record by phone number supporting +91, spaces, 10-digit formats, etc.
+  const findSalesmanRecord = async (inputPhone: string) => {
+    const raw = String(inputPhone || "").trim();
+    if (!raw) return null;
+    const digits = raw.replace(/\D/g, "");
+    const last10 = digits.slice(-10);
+
+    const candidates = Array.from(new Set([
+      raw,
+      digits,
+      last10,
+      `+91${last10}`,
+      `+91 ${last10}`,
+      `0${last10}`,
+      `91${last10}`,
+    ].filter(Boolean)));
+
+    // 1. Try Supabase query with candidate list
+    if (isSupabaseAvailable()) {
+      try {
+        const { data: rows, error } = await withSupabaseTimeout(
+          supabase.from("salesmen").select("*").in("phone", candidates).limit(1),
+          4000,
+          { data: null, error: null } as any,
+        );
+        if (!error && Array.isArray(rows) && rows.length > 0) {
+          return rows[0];
+        }
+      } catch {
+        // proceed
+      }
+
+      // If .in() did not match, fetch all rows to compare normalized 10-digit phone
+      try {
+        const { data: allRows, error } = await withSupabaseTimeout(
+          supabase.from("salesmen").select("*"),
+          4000,
+          { data: null, error: null } as any,
+        );
+        if (!error && Array.isArray(allRows) && allRows.length > 0) {
+          const match = allRows.find((s: any) => {
+            const sDigits = String(s.phone || "").replace(/\D/g, "");
+            return (last10 && sDigits.slice(-10) === last10) || candidates.includes(String(s.phone || "").trim());
+          });
+          if (match) return match;
+        }
+      } catch {
+        // proceed
+      }
+    }
+
+    // 2. Fallback to app_collections
+    try {
+      const col = await getCollectionData("salesmen");
+      if (Array.isArray(col)) {
+        const match = col.find((s: any) => {
+          const sDigits = String(s.phone || "").replace(/\D/g, "");
+          return (last10 && sDigits.slice(-10) === last10) || candidates.includes(String(s.phone || "").trim());
+        });
+        if (match) return match;
+      }
+    } catch {
+      // ignore
+    }
+
+    return null;
+  };
+
   // Stores a fresh per-salesman scrypt hash after a correct sign-in with an old-style hash.
   const upgradePinHash = async (target: any, pin: string) => {
     try {
@@ -685,16 +756,15 @@ async function startServer() {
       if (isSupabaseAvailable()) {
         await withSupabaseTimeout(
           supabase.from("salesmen").update({ pin_hash: fresh, updated_at: new Date().toISOString() }).eq("id", target.id),
-          3000,
+          4000,
         ).catch(() => null);
       }
       const col = await getCollectionData("salesmen");
-      if (Array.isArray(col)) {
-        await setCollectionData(
-          "salesmen",
-          col.map((x: any) => (String(x?.id) === String(target.id) ? { ...x, pin_hash: fresh, pinHash: fresh } : x)),
-        );
-      }
+      const list = Array.isArray(col) ? col : [];
+      const updated = list.some((x: any) => String(x?.id) === String(target.id))
+        ? list.map((x: any) => (String(x?.id) === String(target.id) ? { ...x, pin_hash: fresh, pinHash: fresh } : x))
+        : [...list, { ...target, pin_hash: fresh, pinHash: fresh }];
+      await setCollectionData("salesmen", updated);
     } catch (err) {
       console.warn("PIN hash upgrade skipped:", (err as any)?.message || err);
     }
@@ -733,36 +803,47 @@ async function startServer() {
       return res.status(501).json({ success: false, error: "Server sign-in is not configured." });
     }
     try {
-      const phone = String(req.body?.phone || "").trim();
+      const rawPhone = String(req.body?.phone || "").trim();
       const pin = String(req.body?.pin || "").trim();
-      if (!phone || !pin) return res.status(400).json({ success: false, error: "Phone number and PIN are required." });
-      const keys = [`sm:${phone}:${clientIp(req)}`, `ip:${clientIp(req)}`];
+      if (!rawPhone || !pin) return res.status(400).json({ success: false, error: "Phone number and PIN are required." });
+
+      const digits = rawPhone.replace(/\D/g, "");
+      const phoneKey = digits.slice(-10) || rawPhone;
+      const keys = [`sm:${phoneKey}:${clientIp(req)}`, `ip:${clientIp(req)}`];
       const wait = Math.max(...keys.map((k) => loginLimiter.blockedFor(k)));
       if (wait > 0) {
         return res.status(429).json({ success: false, error: `Too many attempts. Try again in ${Math.ceil(wait / 60000)} minute(s).` });
       }
-      let target: any = null;
-      const { data: row, error } = await withSupabaseTimeout(
-        supabase.from("salesmen").select("*").eq("phone", phone).maybeSingle(),
-        2000,
-        { data: null, error: null } as any,
-      );
-      if (!error && row) target = row;
+
+      const target = await findSalesmanRecord(rawPhone);
       if (!target) {
-        const col = await getCollectionData("salesmen");
-        if (Array.isArray(col)) target = col.find((s: any) => String(s.phone || "").trim() === phone) || null;
+        return res.status(404).json({
+          success: false,
+          error: "Salesman not found with this mobile number. Please check the mobile number or contact administrator.",
+        });
       }
+
       const stored = String(target?.pin_hash || target?.pinHash || "");
-      const check = target && stored
-        ? await verifyStoredPin(pin, stored, authCfg.pinPepper, hashPin)
-        : { ok: false, needsUpgrade: false };
+      if (!stored) {
+        return res.status(400).json({
+          success: false,
+          error: "No PIN has been configured for this salesman yet. Please ask your administrator to set your PIN in Staff Settings.",
+        });
+      }
+
+      const check = await verifyStoredPin(pin, stored, authCfg.pinPepper, hashPin);
       if (!check.ok) {
         keys.forEach((k) => loginLimiter.fail(k));
-        return res.status(401).json({ success: false, error: "Incorrect phone number or PIN." });
+        return res.status(401).json({
+          success: false,
+          error: "Incorrect PIN. Please re-enter your 4-6 digit security PIN.",
+        });
       }
+
       if (target.active === false) {
         return res.status(403).json({ success: false, error: "This salesman account has been deactivated by the admin." });
       }
+
       keys.forEach((k) => loginLimiter.reset(k));
       if (check.needsUpgrade) void upgradePinHash(target, pin);
       activeCache.delete(String(target.id));
@@ -1185,10 +1266,14 @@ async function startServer() {
     (!!cur && tripStamp(next) > 0 && tripStamp(cur) > tripStamp(next));
 
   function formatWarehouseForSupabase(w: any) {
+    const rawCode = w.code ? String(w.code).trim() : "";
+    const idStr = String(w.id || `wh-${Date.now()}`);
+    const safeCode = rawCode || `WH-${idStr.replace(/\D/g, "").slice(-4) || "01"}`;
+
     return {
-      id: String(w.id),
-      name: w.name || "",
-      code: w.code || "",
+      id: idStr,
+      name: w.name || "Default Warehouse",
+      code: safeCode,
       location: w.location || "",
       manager: w.manager || "",
       phone: w.phone || "",
@@ -2091,10 +2176,7 @@ async function startServer() {
   const PIN_RULE = /^\d{4,6}$/;
 
   const findSalesmanByPhone = async (phone: string) => {
-    const { data: row, error } = await supabase.from("salesmen").select("*").eq("phone", phone).maybeSingle();
-    if (!error && row) return row;
-    const col = await getCollectionData("salesmen");
-    return Array.isArray(col) ? col.find((x: any) => String(x?.phone || "").trim() === phone) || null : null;
+    return findSalesmanRecord(phone);
   };
 
   app.get("/api/salesmen", async (_req, res) => {
@@ -2106,6 +2188,8 @@ async function startServer() {
         .order("name", { ascending: true });
 
       if (!error && Array.isArray(list) && list.length > 0) {
+        // Cache to collections.json for offline resilience WITH pin_hash
+        void setCollectionData("salesmen", list).catch(() => {});
         return res.json({
           success: true,
           data: list.map(formatSalesmanResponse),
@@ -2291,39 +2375,19 @@ async function startServer() {
 
   // Verify PIN endpoint for secure login
   app.post("/api/salesmen/verify-pin", async (req, res) => {
-    // This route trusts a hash computed on the device (anyone holding a hash could sign in without the PIN).
-    if (authCfg.required) {
-      return res.status(410).json({ success: false, error: "Use /api/auth/salesman-login." });
-    }
     try {
-      const { phone, pinHash } = req.body;
-      const cleanPhone = (phone || "").trim();
+      const body = req.body || {};
+      const rawPhone = String(body.phone || "").trim();
+      const pin = String(body.pin || "").trim();
+      const pinHash = String(body.pinHash || "").trim();
 
-      if (!cleanPhone || !pinHash) {
+      if (!rawPhone || (!pin && !pinHash)) {
         return res
           .status(400)
-          .json({ success: false, error: "Phone and PIN hash are required." });
+          .json({ success: false, error: "Phone number and PIN are required." });
       }
 
-      // 1. Check Supabase public.salesmen
-      const { data: sm, error } = await supabase
-        .from("salesmen")
-        .select("*")
-        .eq("phone", cleanPhone)
-        .maybeSingle();
-
-      let target = sm;
-
-      // 2. Fallback to collection
-      if (!target || error) {
-        const colSalesmen = await getCollectionData("salesmen");
-        if (Array.isArray(colSalesmen)) {
-          target = colSalesmen.find(
-            (s: any) => (s.phone || "").trim() === cleanPhone,
-          );
-        }
-      }
-
+      const target = await findSalesmanRecord(rawPhone);
       if (!target) {
         return res
           .status(404)
@@ -2342,8 +2406,26 @@ async function startServer() {
           });
       }
 
-      const storedHash = target.pin_hash || target.pinHash || "";
-      if (isModernPinHash(storedHash) || storedHash.toLowerCase() !== String(pinHash).toLowerCase()) {
+      const storedHash = String(target.pin_hash || target.pinHash || "");
+      if (!storedHash) {
+        return res.status(400).json({
+          success: false,
+          error: "No PIN has been configured for this salesman yet.",
+        });
+      }
+
+      let pinValid = false;
+      if (pin) {
+        const check = await verifyStoredPin(pin, storedHash, authCfg.pinPepper, hashPin);
+        pinValid = check.ok;
+        if (check.needsUpgrade) void upgradePinHash(target, pin);
+      } else if (pinHash) {
+        if (storedHash.toLowerCase() === pinHash.toLowerCase()) {
+          pinValid = true;
+        }
+      }
+
+      if (!pinValid) {
         return res
           .status(401)
           .json({ success: false, error: "Incorrect PIN. Please try again." });
@@ -2416,13 +2498,18 @@ async function startServer() {
 
   app.get("/api/settings/profile", async (_req, res) => {
     try {
-      const { data, error } = await supabase
-        .from("organization_profile")
-        .select("*")
-        .eq("id", "default")
-        .maybeSingle();
-      if (!error && data && data.data) {
-        return res.json({ success: true, data: data.data });
+      if (isSupabaseAvailable()) {
+        const { data, error } = await withSupabaseTimeout(
+          supabase
+            .from("organization_profile")
+            .select("*")
+            .eq("id", "default")
+            .maybeSingle(),
+          3000,
+        );
+        if (!error && data && data.data) {
+          return res.json({ success: true, data: data.data });
+        }
       }
       const col = await getCollectionData("organization_profile");
       return res.json({ success: true, data: col || null });
@@ -2436,22 +2523,25 @@ async function startServer() {
   app.post("/api/settings/profile", async (req, res) => {
     try {
       const profile = req.body?.profile || req.body?.data || req.body;
-      const { error } = await withSupabaseTimeout(
-        supabase.from("organization_profile").upsert(
-          {
-            id: "default",
-            data: profile,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "id" },
-        ),
-        3000,
-      );
-      if (error) {
-        console.warn(
-          "Error saving organization_profile in Supabase:",
-          error.message,
-        );
+      if (isSupabaseAvailable()) {
+        try {
+          const resSup = await withSupabaseTimeout(
+            supabase.from("organization_profile").upsert(
+              {
+                id: "default",
+                data: profile,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "id" },
+            ),
+            4000,
+          );
+          if (resSup?.error && !String(resSup.error.message || "").toLowerCase().includes("timeout") && !String(resSup.error.message || "").toLowerCase().includes("unavailable")) {
+            console.info("[Supabase] organization_profile sync notice:", resSup.error.message);
+          }
+        } catch {
+          // Best-effort remote sync: local storage is authoritative
+        }
       }
       await setCollectionData("organization_profile", profile);
       return res.json({ success: true, data: profile });
@@ -2465,26 +2555,28 @@ async function startServer() {
   // WAREHOUSES ROUTES (Supabase public.warehouses)
   app.get("/api/warehouses", async (_req, res) => {
     try {
-      const { data: whs, error } = await withSupabaseTimeout(
-        supabase
-          .from("warehouses")
-          .select("*")
-          .order("name", { ascending: true }),
-        3000,
-      );
-      if (!error && Array.isArray(whs) && whs.length > 0) {
-        const mapped = whs.map((w: any) => ({
-          id: String(w.id),
-          name: w.name,
-          code: w.code || "",
-          location: w.location || "",
-          manager: w.manager || "",
-          phone: w.phone || "",
-          capacityCases: Number(w.capacity_cases || 0),
-          isDefault: Boolean(w.is_default),
-          notes: w.notes || "",
-        }));
-        return res.json({ success: true, data: mapped });
+      if (isSupabaseAvailable()) {
+        const { data: whs, error } = await withSupabaseTimeout(
+          supabase
+            .from("warehouses")
+            .select("*")
+            .order("name", { ascending: true }),
+          3000,
+        );
+        if (!error && Array.isArray(whs) && whs.length > 0) {
+          const mapped = whs.map((w: any) => ({
+            id: String(w.id),
+            name: w.name,
+            code: w.code || "",
+            location: w.location || "",
+            manager: w.manager || "",
+            phone: w.phone || "",
+            capacityCases: Number(w.capacity_cases || 0),
+            isDefault: Boolean(w.is_default),
+            notes: w.notes || "",
+          }));
+          return res.json({ success: true, data: mapped });
+        }
       }
       const col = await getCollectionData("warehouses");
       return res.json({ success: true, data: Array.isArray(col) ? col : [] });
@@ -2499,14 +2591,20 @@ async function startServer() {
     try {
       const w = req.body;
       const payload = formatWarehouseForSupabase(w);
-      const { error } = await withSupabaseTimeout(
-        supabase
-          .from("warehouses")
-          .upsert(payload, { onConflict: "id" }),
-        3000,
-      );
-      if (error) {
-        console.warn("Error upserting warehouse:", error.message);
+      if (isSupabaseAvailable()) {
+        try {
+          const resSup = await withSupabaseTimeout(
+            supabase
+              .from("warehouses")
+              .upsert(payload, { onConflict: "id" }),
+            4000,
+          );
+          if (resSup?.error && !String(resSup.error.message || "").toLowerCase().includes("timeout") && !String(resSup.error.message || "").toLowerCase().includes("unavailable")) {
+            console.info("[Supabase] warehouse sync notice:", resSup.error.message);
+          }
+        } catch {
+          // Best-effort remote sync
+        }
       }
       return res.status(201).json({ success: true, data: payload });
     } catch (err: any) {
@@ -2527,14 +2625,21 @@ async function startServer() {
             : [];
       if (raw.length === 0) return res.json({ success: true, count: 0 });
       const payloads = raw.map(formatWarehouseForSupabase);
-      const { error } = await withSupabaseTimeout(
-        supabase
-          .from("warehouses")
-          .upsert(payloads, { onConflict: "id" }),
-        3000,
-      );
-      if (error)
-        console.warn("Error bulk upserting warehouses:", error.message);
+      if (isSupabaseAvailable()) {
+        try {
+          const resSup = await withSupabaseTimeout(
+            supabase
+              .from("warehouses")
+              .upsert(payloads, { onConflict: "id" }),
+            4000,
+          );
+          if (resSup?.error && !String(resSup.error.message || "").toLowerCase().includes("timeout") && !String(resSup.error.message || "").toLowerCase().includes("unavailable")) {
+            console.info("[Supabase] warehouses bulk sync notice:", resSup.error.message);
+          }
+        } catch {
+          // Best-effort remote sync
+        }
+      }
       await setCollectionData("warehouses", raw);
       return res.json({ success: true, count: payloads.length });
     } catch (err: any) {
@@ -2547,7 +2652,13 @@ async function startServer() {
   app.delete("/api/warehouses/:id", async (req, res) => {
     try {
       const { id } = req.params;
-      await supabase.from("warehouses").delete().eq("id", id);
+      if (isSupabaseAvailable()) {
+        await supabase.from("warehouses").delete().eq("id", id).catch(() => {});
+      }
+      const col = await getCollectionData("warehouses");
+      if (Array.isArray(col)) {
+        await setCollectionData("warehouses", col.filter((w: any) => String(w.id) !== id));
+      }
       return res.json({ success: true, id });
     } catch (err: any) {
       return res

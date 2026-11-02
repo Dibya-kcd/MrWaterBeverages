@@ -528,6 +528,7 @@ export interface Salesman {
   phone: string; // unique login identifier
   pinHash?: string; // never store plaintext
   pin_hash?: string;
+  hasPin?: boolean;
   active: boolean; // default true - can deactivate without deleting history
   defaultVehicle?: string;
   default_vehicle?: string;

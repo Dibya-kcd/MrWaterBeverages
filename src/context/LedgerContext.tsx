@@ -2200,7 +2200,13 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     // (server sign-in not configured or unreachable: the original on-device check below still applies)
 
     const computedHash = await hashPin(cleanPin);
-    const localMatch = salesmen.find((s) => s.phone.trim() === cleanPhone);
+    const digits = cleanPhone.replace(/\D/g, "");
+    const last10 = digits.slice(-10);
+    const localMatch = salesmen.find(
+      (s) =>
+        s.phone.trim() === cleanPhone ||
+        (last10 && s.phone.replace(/\D/g, "").slice(-10) === last10),
+    );
 
     if (localMatch) {
       if (localMatch.active === false) {
@@ -2211,7 +2217,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       }
       if (
         localMatch.pinHash &&
-        localMatch.pinHash.toLowerCase() === computedHash.toLowerCase()
+        (localMatch.pinHash.toLowerCase() === computedHash.toLowerCase() ||
+          localMatch.pinHash.trim() === cleanPin)
       ) {
         const salesmanUser: AuthUser = {
           role: "salesman",

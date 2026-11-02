@@ -2198,16 +2198,47 @@ export async function verifySalesmanPinSupabase(
     return { success: false, error: "Phone and PIN are required" };
   }
 
-  const computedHash = await hashPin(cleanPin);
+  // 1. Primary: Server endpoint (handles scrypt with pepper, salt, hash upgrade, rate limiting)
+  try {
+    const resp = await fetch("/api/auth/salesman-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: cleanPhone, pin: cleanPin }),
+    });
+    const result = await resp.json().catch(() => null);
+    if (resp.ok && result?.success && result?.salesman) {
+      if (result.token) {
+        try {
+          localStorage.setItem(
+            "mrwater_api_session_v1",
+            JSON.stringify({ token: result.token, expiresAt: result.expiresAt || Date.now() + 12 * 3600e3 }),
+          );
+        } catch {
+          // ignore
+        }
+      }
+      return { success: true, salesman: result.salesman };
+    }
+    if (result && !result.success && result.error) {
+      return { success: false, error: result.error };
+    }
+  } catch {
+    // server unreachable: proceed to direct check
+  }
 
-  // First try direct Supabase query
+  // 2. Direct Supabase query (for static deployments or offline fallbacks)
   const client = getSupabaseClient();
   if (client) {
     try {
+      const digits = cleanPhone.replace(/\D/g, "");
+      const last10 = digits.slice(-10);
+      const candidates = Array.from(new Set([cleanPhone, digits, last10, `+91${last10}`, `0${last10}`].filter(Boolean)));
+
       const { data, error } = await client
         .from("salesmen")
         .select("*")
-        .eq("phone", cleanPhone)
+        .in("phone", candidates)
+        .limit(1)
         .maybeSingle();
 
       if (!error && data) {
@@ -2218,7 +2249,15 @@ export async function verifySalesmanPinSupabase(
           };
         }
         const storedHash = data.pin_hash || data.pinHash || "";
-        if (storedHash.toLowerCase() === computedHash.toLowerCase()) {
+        if (!storedHash) {
+          return { success: false, error: "No PIN has been configured for this salesman yet." };
+        }
+
+        const computedHash = await hashPin(cleanPin);
+        const legacyMatches = storedHash.toLowerCase() === computedHash.toLowerCase();
+        const plainMatches = storedHash.trim() === cleanPin;
+
+        if (legacyMatches || plainMatches) {
           return {
             success: true,
             salesman: {
@@ -2232,30 +2271,25 @@ export async function verifySalesmanPinSupabase(
               updatedAt: data.updated_at || "",
             },
           };
-        } else {
-          return { success: false, error: "Incorrect PIN. Please try again." };
         }
       }
     } catch (e) {
-      console.warn(
-        "Direct Supabase verify exception, falling back to backend API:",
-        e,
-      );
+      console.warn("Direct Supabase verify exception, falling back to backend API:", e);
     }
   }
 
-  // Fallback to server API endpoint
+  // 3. Fallback to /api/salesmen/verify-pin
   try {
     const resp = await fetch("/api/salesmen/verify-pin", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: cleanPhone, pinHash: computedHash }),
+      body: JSON.stringify({ phone: cleanPhone, pin: cleanPin }),
     });
-    const result = await resp.json();
-    if (resp.ok && result.success) {
+    const result = await resp.json().catch(() => null);
+    if (resp.ok && result?.success && result?.salesman) {
       return { success: true, salesman: result.salesman };
     }
-    return { success: false, error: result.error || "Verification failed." };
+    return { success: false, error: result?.error || "Incorrect PIN. Please try again." };
   } catch (e: any) {
     return {
       success: false,

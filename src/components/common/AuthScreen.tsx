@@ -87,7 +87,9 @@ export const AuthScreen: React.FC = () => {
     if (e) e.preventDefault();
     setSalesmanError(null);
 
-    const phone = salesmanPhone.trim();
+    const raw = salesmanPhone.trim();
+    const digits = raw.replace(/\D/g, '');
+    const phone = digits.length > 10 && digits.startsWith('91') ? digits.slice(2, 12) : digits.slice(-10) || raw;
     const pin = salesmanPin.trim();
 
     if (!phone) {
@@ -151,12 +153,15 @@ export const AuthScreen: React.FC = () => {
   };
 
   const handleSelectSalesman = (phone: string) => {
-    setSalesmanPhone(phone);
+    const raw = String(phone || '').trim();
+    const digits = raw.replace(/\D/g, '');
+    const clean = digits.length > 10 && digits.startsWith('91') ? digits.slice(2, 12) : digits.slice(-10) || raw;
+    setSalesmanPhone(clean);
     setSalesmanPin('');
     setSalesmanError(null);
     if (voiceAssist) {
-      const target = salesmen.find((s) => s.phone === phone);
-      speakAssistiveText(`Selected salesman ${target?.name || phone}`);
+      const target = salesmen.find((s) => s.phone.replace(/\D/g, '').slice(-10) === clean);
+      speakAssistiveText(`Selected salesman ${target?.name || clean}`);
     }
   };
 
@@ -555,14 +560,41 @@ export const AuthScreen: React.FC = () => {
                 type="tel"
                 id="input-salesman-phone"
                 inputMode="numeric"
-                placeholder="10-digit mobile"
+                placeholder="10-digit mobile (e.g. 9606987658)"
                 value={salesmanPhone}
                 onChange={(e) => {
-                  setSalesmanPhone(e.target.value.replace(/\D/g, '').slice(0, 10));
+                  const raw = e.target.value;
+                  const digits = raw.replace(/\D/g, '');
+                  let normalized = digits;
+                  if (digits.length > 10 && digits.startsWith('91')) {
+                    normalized = digits.slice(2, 12);
+                  } else if (digits.length > 10 && digits.startsWith('0')) {
+                    normalized = digits.slice(1, 11);
+                  } else if (digits.length > 10) {
+                    normalized = digits.slice(-10);
+                  }
+                  setSalesmanPhone(normalized);
                   setSalesmanError(null);
                 }}
                 className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/30 focus:border-[#0B3D32]"
               />
+              {(() => {
+                const targetClean = salesmanPhone.replace(/\D/g, '').slice(-10);
+                if (!targetClean) return null;
+                const sm = salesmen.find((s) => s.phone.replace(/\D/g, '').slice(-10) === targetClean);
+                if (sm && sm.hasPin === false) {
+                  return (
+                    <div className="mt-2 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800 flex items-start gap-2">
+                      <AlertCircle size={15} className="text-amber-600 mt-0.5 shrink-0" />
+                      <div>
+                        <span className="font-semibold">{sm.name}</span> does not have a PIN configured yet.
+                        <span className="block text-[11px] text-amber-700 mt-0.5">Please ask the Administrator to set a 4-digit PIN in Staff Settings.</span>
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
             </div>
 
             <div>

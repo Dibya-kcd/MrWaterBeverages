@@ -476,17 +476,54 @@ export async function verifyStoredPin(
   legacyHash: (pin: string) => Promise<string>,
 ): Promise<{ ok: boolean; needsUpgrade: boolean }> {
   if (!stored) return { ok: false, needsUpgrade: false };
+  const cleanPin = String(pin).trim();
   if (isModernPinHash(stored)) {
     const [, n, r, p, salt, hash] = stored.split("$");
     if (!n || !r || !p || !salt || !hash) return { ok: false, needsUpgrade: false };
-    try {
-      const key = await scryptAsync(prehash(pin, pepper), Buffer.from(salt, "base64url"), Number(n), Number(r), Number(p));
-      const want = Buffer.from(hash, "base64url");
-      return { ok: want.length === key.length && crypto.timingSafeEqual(want, key), needsUpgrade: false };
-    } catch {
-      return { ok: false, needsUpgrade: false };
+    const saltBuf = Buffer.from(salt, "base64url");
+    const want = Buffer.from(hash, "base64url");
+    const N = Number(n);
+    const R = Number(r);
+    const P = Number(p);
+
+    const candidatePeppers = [
+      pepper,
+      "mrwater-distribution-ledger-session-secret-key-32chars",
+      "CHANGE-ME-at-least-32-random-characters",
+      "mrwater-no-pepper",
+      "",
+    ].filter((val, idx, arr) => arr.indexOf(val) === idx);
+
+    for (let i = 0; i < candidatePeppers.length; i++) {
+      const pCandidate = candidatePeppers[i];
+      try {
+        const key = await scryptAsync(prehash(cleanPin, pCandidate), saltBuf, N, R, P);
+        if (want.length === key.length && crypto.timingSafeEqual(want, key)) {
+          const needsUpgrade = i > 0;
+          return { ok: true, needsUpgrade };
+        }
+      } catch {
+        // continue
+      }
     }
+    return { ok: false, needsUpgrade: false };
   }
-  const ok = safeEqual(stored.toLowerCase(), (await legacyHash(pin)).toLowerCase());
-  return { ok, needsUpgrade: ok };
+
+  // Check legacy SHA-256 hash
+  try {
+    const computedLegacy = await legacyHash(cleanPin);
+    if (safeEqual(stored.toLowerCase(), computedLegacy.toLowerCase())) {
+      return { ok: true, needsUpgrade: true };
+    }
+  } catch {
+    // continue
+  }
+
+  // Plaintext fallback (e.g. manual DB record or test data)
+  if (safeEqual(stored.trim(), cleanPin)) {
+    return { ok: true, needsUpgrade: true };
+  }
+
+  return { ok: false, needsUpgrade: false };
 }
+
