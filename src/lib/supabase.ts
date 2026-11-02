@@ -99,6 +99,8 @@ export function getSupabaseConfig(): SupabaseConfig {
     !finalKey ||
     finalKey === "YOUR_SUPABASE_ANON_KEY" ||
     finalKey === "MY_SUPABASE_ANON_KEY" ||
+    finalKey.includes("CHANGE-ME") ||
+    finalKey.startsWith("missing-") ||
     finalKey.trim() === "";
 
   let projectRef = "psizakmtxppariejawbd";
@@ -384,6 +386,158 @@ export function isValidUuid(val: any): boolean {
   );
 }
 
+/* =========================================================================
+ * Change-only pushes (keeps Supabase Disk IO low)
+ *
+ * "Sync to cloud" used to upsert EVERY row of every table each time, stamping a fresh updated_at on all of them.
+ * That rewrote the whole database on every press and made every other device think everything had changed.
+ * Now each row's content is fingerprinted (ignoring updated_at); a row is only sent when its fingerprint differs
+ * from the one last pushed successfully. The fingerprints live in localStorage, per Supabase project.
+ * ========================================================================= */
+const PUSH_CACHE_KEY = "mrwater_push_hashes_v1";
+const PUSH_CACHED_TABLES = new Set([
+  "bills",
+  "trips",
+  "grns",
+  "products",
+  "inventory_batches",
+  "salesmen",
+  "promotions",
+  "warehouses",
+  "audits",
+  "app_collections",
+]);
+interface PushCache {
+  ref: string;
+  h: Record<string, string>;
+}
+let pushCache: PushCache | null = null;
+let pushCacheSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Small, fast, non-cryptographic 53-bit string hash (cyrb53). */
+function fastHash(str: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36) + ":" + str.length.toString(36);
+}
+
+function getPushCache(): PushCache {
+  let ref = "";
+  try {
+    ref = getSupabaseConfig().projectRef;
+  } catch {
+    // ignore
+  }
+  if (pushCache && pushCache.ref === ref) return pushCache;
+  let loaded: PushCache | null = null;
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(PUSH_CACHE_KEY) : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.ref === ref && parsed.h && typeof parsed.h === "object") loaded = parsed;
+    }
+  } catch {
+    // ignore a damaged cache: it only means one extra full push
+  }
+  pushCache = loaded || { ref, h: {} };
+  return pushCache;
+}
+
+function schedulePushCacheSave() {
+  if (pushCacheSaveTimer || typeof localStorage === "undefined") return;
+  pushCacheSaveTimer = setTimeout(() => {
+    pushCacheSaveTimer = null;
+    try {
+      if (pushCache) localStorage.setItem(PUSH_CACHE_KEY, JSON.stringify(pushCache));
+    } catch {
+      // storage full: the cache is only an optimisation
+    }
+  }, 1500);
+}
+
+/** Forget what was pushed, so the next "Sync to cloud" sends everything once. */
+export function clearPushCache() {
+  pushCache = { ref: pushCache?.ref || "", h: {} };
+  try {
+    if (typeof localStorage !== "undefined") localStorage.removeItem(PUSH_CACHE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+function rowIdentity(table: string, row: any): string | null {
+  if (!row || typeof row !== "object") return null;
+  const id = table === "app_collections" ? row.key : row.id;
+  return id === undefined || id === null ? null : `${table}|${id}`;
+}
+
+function rowFingerprint(row: any): string {
+  const { updated_at: _ignored, ...rest } = row;
+  try {
+    return fastHash(JSON.stringify(rest));
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Wraps a Supabase client so that `.from(table).upsert(rows)` only sends rows whose content changed since the last
+ * successful push. Everything else passes straight through. `force` sends every row (and refreshes the fingerprints).
+ */
+export function changedOnlyClient(client: any, force = false): any {
+  return new Proxy(client, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (prop !== "from") return typeof value === "function" ? value.bind(target) : value;
+      return (table: string) => {
+        const builder = target.from(table);
+        if (!PUSH_CACHED_TABLES.has(table)) return builder;
+        return new Proxy(builder, {
+          get(b, p) {
+            const member = Reflect.get(b, p, b);
+            if (p !== "upsert") return typeof member === "function" ? member.bind(b) : member;
+            return (rows: any, opts?: any) => {
+              const list: any[] = Array.isArray(rows) ? rows : [rows];
+              if (list.length === 0 || list.some((r) => rowIdentity(table, r) === null)) {
+                return b.upsert(rows, opts);
+              }
+              const cache = getPushCache();
+              const pending: Array<[string, string]> = [];
+              const changed = list.filter((r) => {
+                const key = rowIdentity(table, r) as string;
+                const fp = rowFingerprint(r);
+                if (!force && fp && cache.h[key] === fp) return false;
+                if (fp) pending.push([key, fp]);
+                return true;
+              });
+              if (changed.length === 0) {
+                return Promise.resolve({ data: null, error: null, count: null, status: 200, statusText: "unchanged" });
+              }
+              return (async () => {
+                const res = await b.upsert(Array.isArray(rows) ? changed : changed[0], opts);
+                if (!res?.error) {
+                  pending.forEach(([k, fp]) => {
+                    cache.h[k] = fp;
+                  });
+                  schedulePushCacheSave();
+                }
+                return res;
+              })();
+            };
+          },
+        });
+      };
+    },
+  });
+}
+
 /**
  * Resilient upsert helper that handles PostgREST schema cache misses gracefully.
  * If PostgREST schema cache has not yet refreshed for newly added columns (e.g. 'salesman', 'salesman_id'),
@@ -496,11 +650,13 @@ export async function pushLedgerToSupabase(data: {
   auditSessions?: AuditSession[];
   reconciliationTransactions?: ReconciliationTransaction[];
   stockLedgerEntries?: StockLedgerEntry[];
-}): Promise<SyncResult> {
-  const client = getSupabaseClient();
-  if (!client) {
+}, options: { full?: boolean } = {}): Promise<SyncResult> {
+  const rawClient = getSupabaseClient();
+  if (!rawClient) {
     throw new Error("Supabase client is not configured.");
   }
+  // Only rows whose content changed are sent (options.full = send everything once and refresh the fingerprints).
+  const client = changedOnlyClient(rawClient, options.full === true);
 
   // Never re-create what was deleted: drop bills / GRNs / trips that are on the cloud deletion lists.
   try {
@@ -1514,12 +1670,32 @@ export function mergeConcurrentLists(remote: any[], local: any[]): any[] {
  * Writes one app_collections list. When the list is one of the shared ones and the cloud copy changed since this
  * device last saw it, the lists are merged first. `guard` lets the caller add a timeout.
  */
+const collectionHashes = new Map<string, string[]>();
+
+function contentHash(value: any): string {
+  try {
+    return fastHash(JSON.stringify(value ?? null));
+  } catch {
+    return "";
+  }
+}
+
+/** Remember what the cloud holds for a collection (called after a read), so an identical write-back can be skipped. */
+export function noteCollectionContent(key: string, value: any) {
+  const h = contentHash(value);
+  if (h) collectionHashes.set(key, [h]);
+}
+
 export async function writeCollectionMerged(
   client: any,
   key: string,
   data: any,
   guard: <T>(p: PromiseLike<T>) => Promise<T> = (p) => Promise.resolve(p),
 ): Promise<{ error: any }> {
+  // Identical to what the cloud already holds (or what we last wrote): nothing to save. After every download the app
+  // writes its merged lists back; without this check each of those write-backs rewrote whole rows for no change.
+  const dataHash = contentHash(data);
+  if (dataHash && collectionHashes.get(key)?.includes(dataHash)) return { error: null };
   let outgoing = data;
   if (MERGEABLE_COLLECTIONS.has(key) && Array.isArray(data) && collectionSeen.has(key)) {
     try {
@@ -1539,7 +1715,11 @@ export async function writeCollectionMerged(
   const res = (await guard(
     client.from("app_collections").upsert({ key, data: outgoing, updated_at: stamp }, { onConflict: "key" }),
   )) as any;
-  if (!res?.error) collectionSeen.set(key, stamp);
+  if (!res?.error) {
+    collectionSeen.set(key, stamp);
+    const outHash = contentHash(outgoing);
+    collectionHashes.set(key, [dataHash, outHash].filter(Boolean));
+  }
   return { error: res?.error || null };
 }
 
@@ -2089,22 +2269,32 @@ export async function signInAdminSupabase(
   email: string,
   pass: string,
 ): Promise<{ success: boolean; user?: any; error?: string }> {
+  const trimmedEmail = email.trim();
+  if (!trimmedEmail.includes("@")) {
+    return { success: false, error: "Not a Supabase Auth email" };
+  }
+
   const client = getSupabaseClient();
   if (!client) {
     return { success: false, error: "Supabase client is not configured" };
   }
 
   try {
-    const { data, error } = await client.auth.signInWithPassword({
-      email: email.trim(),
+    const authPromise = client.auth.signInWithPassword({
+      email: trimmedEmail,
       password: pass,
     });
+    const timeoutPromise = new Promise<{ data: any; error: any }>((_, reject) =>
+      setTimeout(() => reject(new Error("Supabase authentication timed out")), 3500)
+    );
+
+    const { data, error } = (await Promise.race([authPromise, timeoutPromise])) as any;
 
     if (error) {
       return { success: false, error: error.message };
     }
 
-    return { success: true, user: data.user };
+    return { success: true, user: data?.user };
   } catch (e: any) {
     return { success: false, error: e?.message || "Login failed" };
   }

@@ -14,20 +14,51 @@ import { getSyncStatus, subscribeToSyncStatus, clearSyncStatus, reportSyncSucces
 import { CloudAlert, WifiOff, RefreshCw, X, ShieldCheck, Download, Info } from "lucide-react";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 
+function lazyWithRetry<T extends React.ComponentType<any>>(
+  factory: () => Promise<{ default?: T; [key: string]: any }>,
+  name?: string
+): React.LazyExoticComponent<T> {
+  return lazy(() =>
+    new Promise<{ default: T }>((resolve, reject) => {
+      const attempt = (retriesLeft: number) => {
+        factory()
+          .then((m) => {
+            const comp =
+              m.default ||
+              (name ? (m as any)[name] : undefined) ||
+              Object.values(m).find((v) => typeof v === "function");
+            if (!comp) {
+              throw new Error(`Module ${name || "view"} has no exported component.`);
+            }
+            resolve({ default: comp as T });
+          })
+          .catch((err) => {
+            if (retriesLeft <= 0) {
+              reject(err);
+              return;
+            }
+            setTimeout(() => attempt(retriesLeft - 1), 600);
+          });
+      };
+      attempt(3);
+    })
+  );
+}
+
 // Screens load when first opened, so the app starts fast on phones.
-const BillingView = lazy(() => import("./components/views/BillingView").then((m) => ({ default: m.BillingView })));
-const CustomersView = lazy(() => import("./components/views/CustomersView").then((m) => ({ default: m.CustomersView })));
-const DashboardView = lazy(() => import("./components/views/DashboardView").then((m) => ({ default: m.DashboardView })));
-const InventoryView = lazy(() => import("./components/views/InventoryView").then((m) => ({ default: m.InventoryView })));
-const PaymentsView = lazy(() => import("./components/views/PaymentsView").then((m) => ({ default: m.PaymentsView })));
-const ProductsView = lazy(() => import("./components/views/ProductsView").then((m) => ({ default: m.ProductsView })));
-const PromotionsView = lazy(() => import("./components/views/PromotionsView").then((m) => ({ default: m.PromotionsView })));
-const SupplierSchemesView = lazy(() => import("./components/views/SupplierSchemesView").then((m) => ({ default: m.SupplierSchemesView })));
-const ReportsView = lazy(() => import("./components/views/ReportsView").then((m) => ({ default: m.ReportsView })));
-const SalesmanView = lazy(() => import("./components/views/SalesmanView").then((m) => ({ default: m.SalesmanView })));
-const SettingsView = lazy(() => import("./components/views/SettingsView").then((m) => ({ default: m.SettingsView })));
-const TripsView = lazy(() => import("./components/views/TripsView").then((m) => ({ default: m.TripsView })));
-const CratesDepositsView = lazy(() => import("./components/views/CratesDepositsView").then((m) => ({ default: m.CratesDepositsView })));
+const BillingView = lazyWithRetry(() => import("./components/views/BillingView"), "BillingView");
+const CustomersView = lazyWithRetry(() => import("./components/views/CustomersView"), "CustomersView");
+const DashboardView = lazyWithRetry(() => import("./components/views/DashboardView"), "DashboardView");
+const InventoryView = lazyWithRetry(() => import("./components/views/InventoryView"), "InventoryView");
+const PaymentsView = lazyWithRetry(() => import("./components/views/PaymentsView"), "PaymentsView");
+const ProductsView = lazyWithRetry(() => import("./components/views/ProductsView"), "ProductsView");
+const PromotionsView = lazyWithRetry(() => import("./components/views/PromotionsView"), "PromotionsView");
+const SupplierSchemesView = lazyWithRetry(() => import("./components/views/SupplierSchemesView"), "SupplierSchemesView");
+const ReportsView = lazyWithRetry(() => import("./components/views/ReportsView"), "ReportsView");
+const SalesmanView = lazyWithRetry(() => import("./components/views/SalesmanView"), "SalesmanView");
+const SettingsView = lazyWithRetry(() => import("./components/views/SettingsView"), "SettingsView");
+const TripsView = lazyWithRetry(() => import("./components/views/TripsView"), "TripsView");
+const CratesDepositsView = lazyWithRetry(() => import("./components/views/CratesDepositsView"), "CratesDepositsView");
 
 const ScreenLoading: React.FC = () => (
   <div className="flex items-center justify-center py-24" role="status" aria-label="Loading">
@@ -214,9 +245,15 @@ export const App: React.FC = () => {
 
             {/* Reassurance & Backup Modal */}
             {showSyncModal && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150">
-                <div className="w-full max-w-lg rounded-2xl bg-white border border-slate-200 shadow-2xl p-6 text-slate-800 space-y-4">
-                  <div className="flex items-start justify-between gap-3">
+              <div
+                className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-3 sm:p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150"
+                onClick={() => setShowSyncModal(false)}
+              >
+                <div
+                  className="w-full max-w-lg max-h-[90dvh] overflow-y-auto overscroll-contain rounded-2xl bg-white border border-slate-200 shadow-2xl p-4 sm:p-6 text-slate-800 space-y-4"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="sticky top-0 z-10 -mt-1 bg-white pb-2 flex items-start justify-between gap-3">
                     <div className="flex items-center gap-2.5">
                       <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200">
                         <ShieldCheck className="w-6 h-6" />
@@ -229,7 +266,7 @@ export const App: React.FC = () => {
                     <button aria-label="Close"
                       type="button"
                       onClick={() => setShowSyncModal(false)}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition"
+                      className="p-2 rounded-lg text-slate-500 hover:text-slate-700 hover:bg-slate-100 transition shrink-0"
                     >
                       <X className="w-5 h-5" />
                     </button>
@@ -249,7 +286,7 @@ export const App: React.FC = () => {
                   </div>
 
                   {syncStatus?.lastError && (
-                    <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-[11px] font-mono text-slate-600 truncate">
+                    <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-[11px] font-mono text-slate-600 break-words">
                       Last cloud response: {syncStatus.lastError}
                     </div>
                   )}

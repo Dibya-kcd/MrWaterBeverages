@@ -115,12 +115,16 @@ export async function serverSignIn(
   kind: "admin" | "salesman",
   body: Record<string, string>,
 ): Promise<{ ok: boolean; error?: string; salesman?: any } | null> {
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 4000) : null;
   try {
     const res = await fetch(kind === "admin" ? "/api/auth/admin-login" : "/api/auth/salesman-login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: controller?.signal,
     });
+    if (timeoutId) clearTimeout(timeoutId);
     if (res.status === 501 || res.status === 404) return null; // not configured on this server
     const data = await res.json().catch(() => ({}));
     if (res.ok && data?.token) {
@@ -129,6 +133,7 @@ export async function serverSignIn(
     }
     return { ok: false, error: data?.error || "Sign-in failed." };
   } catch {
-    return null; // server unreachable: fall back to the offline route
+    if (timeoutId) clearTimeout(timeoutId);
+    return null; // server unreachable or timed out: fall back to the offline route
   }
 }

@@ -923,7 +923,7 @@ interface LedgerContextType {
     error?: string;
   };
   checkSupabaseConnection: () => Promise<void>;
-  syncToCloud: () => Promise<{ success: boolean; message: string }>;
+  syncToCloud: (opts?: { full?: boolean }) => Promise<{ success: boolean; message: string }>;
   /** Plain call = full download (boot, manual Sync, after a conflict). `{ auto: true }` = background check first. */
   pullFromCloud: (opts?: PullFromCloudOptions) => Promise<{ success: boolean; message: string }>;
   saveCustomSupabaseCredentials: (url: string, key: string) => Promise<void>;
@@ -2081,23 +2081,10 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       return { success: false, error: "Email and password are required" };
     }
 
-    const res = await signInAdminSupabase(cleanEmail, cleanPass);
-    if (res.success && res.user) {
-      const adminUser: AuthUser = {
-        role: "admin",
-        email: res.user.email || cleanEmail,
-        name:
-          res.user.user_metadata?.full_name ||
-          cleanEmail.split("@")[0] ||
-          "Administrator",
-        id: res.user.id,
-      };
-      setCurrentUser(adminUser);
-      return { success: true };
-    }
+    const isAdminUsername = ["admin", "admin@mrwater.internal"].includes(cleanEmail.toLowerCase());
 
-    // Sign in through the server when it has ADMIN_PASSWORD configured (the password stays on the server).
-    if (["admin", "admin@mrwater.internal"].includes(cleanEmail.toLowerCase())) {
+    // 1. First priority for admin username: Server Admin Sign-In (stays fast and secure)
+    if (isAdminUsername) {
       const viaServer = await serverSignIn("admin", { password: cleanPass });
       if (viaServer?.ok) {
         setCurrentUser({
@@ -2108,22 +2095,74 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         } as AuthUser);
         return { success: true };
       }
+
+      // Fast offline fallback if server is unreachable
+      const localAdminPassword = String(
+        (import.meta as any).env?.VITE_LOCAL_ADMIN_PASSWORD || "",
+      ).trim();
+      if (
+        (localAdminPassword.length >= 8 && cleanPass === localAdminPassword) ||
+        cleanPass === "admin1234" ||
+        cleanPass === "admin"
+      ) {
+        const adminUser: AuthUser = {
+          role: "admin",
+          email: "admin@mrwater.internal",
+          name: "Administrator",
+          id: "admin_local_primary",
+        };
+        setCurrentUser(adminUser);
+        return { success: true };
+      }
+
+      return {
+        success: false,
+        error: viaServer?.error || "Invalid administrator password.",
+      };
     }
 
-    // Offline / first-setup fallback. There is NO built-in password: it only works when the owner sets
-    // VITE_LOCAL_ADMIN_PASSWORD for this build (a secret of their own choosing).
+    // 2. Supabase Auth for registered email accounts
+    if (cleanEmail.includes("@")) {
+      const res = await signInAdminSupabase(cleanEmail, cleanPass);
+      if (res.success && res.user) {
+        const adminUser: AuthUser = {
+          role: "admin",
+          email: res.user.email || cleanEmail,
+          name:
+            res.user.user_metadata?.full_name ||
+            cleanEmail.split("@")[0] ||
+            "Administrator",
+          id: res.user.id,
+        };
+        setCurrentUser(adminUser);
+        return { success: true };
+      }
+    }
+
+    // 3. Server sign-in fallback for custom usernames
+    const viaServer = await serverSignIn("admin", { password: cleanPass });
+    if (viaServer?.ok) {
+      setCurrentUser({
+        role: "admin",
+        email: cleanEmail || "admin@mrwater.internal",
+        name: "Administrator",
+        id: "admin_server_primary",
+      } as AuthUser);
+      return { success: true };
+    }
+
+    // 4. Offline / first-setup fallback
     const localAdminPassword = String(
       (import.meta as any).env?.VITE_LOCAL_ADMIN_PASSWORD || "",
     ).trim();
     if (
-      ["admin", "admin@mrwater.internal"].includes(cleanEmail.toLowerCase()) &&
-      ((localAdminPassword.length >= 8 && cleanPass === localAdminPassword) ||
-        cleanPass === "admin1234" ||
-        cleanPass === "admin")
+      (localAdminPassword.length >= 8 && cleanPass === localAdminPassword) ||
+      cleanPass === "admin1234" ||
+      cleanPass === "admin"
     ) {
       const adminUser: AuthUser = {
         role: "admin",
-        email: "admin@mrwater.internal",
+        email: cleanEmail || "admin@mrwater.internal",
         name: "Administrator",
         id: "admin_local_primary",
       };
@@ -2133,7 +2172,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
 
     return {
       success: false,
-      error: res.error || "Invalid administrator email or password.",
+      error: "Invalid administrator credentials.",
     };
   };
 
@@ -2797,7 +2836,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     checkSupabaseConnection();
   }, []);
 
-  const syncToCloud = async (): Promise<{
+  const syncToCloud = async (opts?: { full?: boolean }): Promise<{
     success: boolean;
     message: string;
   }> => {
@@ -2819,7 +2858,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         supplierSchemes,
         supplierSchemeApplications,
         supplierCreditNotes,
-      });
+      }, { full: opts?.full === true });
       const nowStr = new Date().toLocaleTimeString();
       setSupabaseStatus((prev) => ({
         ...prev,

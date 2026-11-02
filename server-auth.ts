@@ -123,7 +123,8 @@ export function startupProblems(env: Record<string, string | undefined> = proces
     problems.push("Set ADMIN_PASSWORD (or ADMIN_EMAILS) so the owner can sign in.");
   }
   const url = (env.SUPABASE_URL || env.VITE_SUPABASE_URL || "").trim();
-  const key = (env.SUPABASE_SERVICE_ROLE_KEY || env.VITE_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || "").trim();
+  const rawCandidateKeys = [env.SUPABASE_SERVICE_ROLE_KEY, env.VITE_SUPABASE_ANON_KEY, env.SUPABASE_ANON_KEY];
+  const key = (rawCandidateKeys.find((k) => k && !k.includes("CHANGE-ME") && !k.startsWith("YOUR_") && !k.startsWith("missing-") && k.trim() !== "") || "").trim();
   if (!url || !key) {
     problems.push("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (no built-in database address or key is used in production).");
   }

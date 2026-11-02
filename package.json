@@ -8,6 +8,7 @@
     "dev:vite": "vite --port=3000 --host=0.0.0.0",
     "start": "NODE_ENV=production tsx server.ts",
     "build": "vite build",
+    "build:web": "vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts"

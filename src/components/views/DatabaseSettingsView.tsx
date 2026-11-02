@@ -67,11 +67,19 @@ export const DatabaseSettingsView: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  const handlePush = async () => {
+  const handlePush = async (full: boolean = false) => {
+    if (
+      full &&
+      !window.confirm(
+        'Re-send EVERYTHING to Supabase? This rewrites every record and uses a lot of database disk activity. Only needed after restoring or changing the database. Normal "Push to Cloud" sends just what changed.',
+      )
+    ) {
+      return;
+    }
     setSyncingPush(true);
     setSyncFeedback(null);
     try {
-      const res = await syncToCloud();
+      const res = await syncToCloud({ full });
       if (res.success) {
         setSyncFeedback({ type: 'success', message: res.message });
       } else {
@@ -325,7 +333,7 @@ export const DatabaseSettingsView: React.FC = () => {
             <button
               id="btn-push-to-supabase"
               type="button"
-              onClick={handlePush}
+              onClick={() => handlePush(false)}
               disabled={syncingPush || !supabaseStatus.isConnected}
               className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded font-bold cursor-pointer text-white focus-ring transition-all disabled:opacity-50"
               style={{
@@ -334,7 +342,16 @@ export const DatabaseSettingsView: React.FC = () => {
               }}
             >
               <RefreshCw size={16} className={syncingPush ? 'animate-spin' : ''} />
-              {syncingPush ? 'Pushing Data...' : 'Push to Cloud'}
+              {syncingPush ? 'Pushing Data...' : 'Push Changes to Cloud'}
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePush(true)}
+              disabled={syncingPush || !supabaseStatus.isConnected}
+              className="mt-2 w-full text-center text-xs underline cursor-pointer disabled:opacity-50"
+              style={{ color: palette.ink }}
+            >
+              Re-send everything (rarely needed)
             </button>
           </div>
 

@@ -10,13 +10,13 @@
  */
 
 /** How often a visible tab asks "has anything changed?". */
-export const POLL_INTERVAL_MS = 120_000;
+export const POLL_INTERVAL_MS = 300_000;
 /** Never run two checks closer together than this (window focus, tab switches and tab messages all ask). */
 export const MIN_CHECK_GAP_MS = 20_000;
 /** A full pull at least this often, even if nothing looks changed (catches anything the tiny check cannot see). */
-export const SAFETY_FULL_PULL_MS = 5 * 60_000;
+export const SAFETY_FULL_PULL_MS = 15 * 60_000;
 /** When the tiny check is unavailable (offline, or the database refuses it), fall back to a plain slow poll. */
-export const FALLBACK_PULL_MS = 3 * 60_000;
+export const FALLBACK_PULL_MS = 10 * 60_000;
 /** After a full pull the app writes merged data back to the cloud; wait for that to land before taking the baseline. */
 export const SETTLE_MS = 8_000;
 /** Tab messages and storage events arrive in bursts: act once, a moment after the last one. */

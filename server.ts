@@ -65,10 +65,24 @@ const SUPABASE_URL = IS_TEST_RUN
   ? "http://127.0.0.1:9"
   : process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "http://127.0.0.1:9";
 
+const isValidSupabaseKey = (k?: string | null): boolean => {
+  if (!k) return false;
+  const trimmed = k.trim();
+  return (
+    trimmed !== "" &&
+    !trimmed.includes("CHANGE-ME") &&
+    !trimmed.startsWith("YOUR_") &&
+    !trimmed.startsWith("MY_") &&
+    !trimmed.startsWith("missing-")
+  );
+};
+
+const rawServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const rawAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+
 const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ||
-  process.env.VITE_SUPABASE_ANON_KEY ||
-  process.env.SUPABASE_ANON_KEY ||
+  (isValidSupabaseKey(rawServiceKey) ? rawServiceKey!.trim() : "") ||
+  (isValidSupabaseKey(rawAnonKey) ? rawAnonKey!.trim() : "") ||
   "missing-supabase-key";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -653,7 +667,11 @@ async function startServer() {
         return res.status(429).json({ success: false, error: `Too many attempts. Try again in ${Math.ceil(wait / 60000)} minute(s).` });
       }
       let target: any = null;
-      const { data: row, error } = await supabase.from("salesmen").select("*").eq("phone", phone).maybeSingle();
+      const { data: row, error } = await withSupabaseTimeout(
+        supabase.from("salesmen").select("*").eq("phone", phone).maybeSingle(),
+        2000,
+        { data: null, error: null } as any,
+      );
       if (!error && row) target = row;
       if (!target) {
         const col = await getCollectionData("salesmen");
@@ -2340,13 +2358,16 @@ async function startServer() {
   app.post("/api/settings/profile", async (req, res) => {
     try {
       const profile = req.body?.profile || req.body?.data || req.body;
-      const { error } = await supabase.from("organization_profile").upsert(
-        {
-          id: "default",
-          data: profile,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "id" },
+      const { error } = await withSupabaseTimeout(
+        supabase.from("organization_profile").upsert(
+          {
+            id: "default",
+            data: profile,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "id" },
+        ),
+        3000,
       );
       if (error) {
         console.warn(
@@ -2366,10 +2387,13 @@ async function startServer() {
   // WAREHOUSES ROUTES (Supabase public.warehouses)
   app.get("/api/warehouses", async (_req, res) => {
     try {
-      const { data: whs, error } = await supabase
-        .from("warehouses")
-        .select("*")
-        .order("name", { ascending: true });
+      const { data: whs, error } = await withSupabaseTimeout(
+        supabase
+          .from("warehouses")
+          .select("*")
+          .order("name", { ascending: true }),
+        3000,
+      );
       if (!error && Array.isArray(whs) && whs.length > 0) {
         const mapped = whs.map((w: any) => ({
           id: String(w.id),
@@ -2397,9 +2421,12 @@ async function startServer() {
     try {
       const w = req.body;
       const payload = formatWarehouseForSupabase(w);
-      const { error } = await supabase
-        .from("warehouses")
-        .upsert(payload, { onConflict: "id" });
+      const { error } = await withSupabaseTimeout(
+        supabase
+          .from("warehouses")
+          .upsert(payload, { onConflict: "id" }),
+        3000,
+      );
       if (error) {
         console.warn("Error upserting warehouse:", error.message);
       }
@@ -2422,9 +2449,12 @@ async function startServer() {
             : [];
       if (raw.length === 0) return res.json({ success: true, count: 0 });
       const payloads = raw.map(formatWarehouseForSupabase);
-      const { error } = await supabase
-        .from("warehouses")
-        .upsert(payloads, { onConflict: "id" });
+      const { error } = await withSupabaseTimeout(
+        supabase
+          .from("warehouses")
+          .upsert(payloads, { onConflict: "id" }),
+        3000,
+      );
       if (error)
         console.warn("Error bulk upserting warehouses:", error.message);
       await setCollectionData("warehouses", raw);

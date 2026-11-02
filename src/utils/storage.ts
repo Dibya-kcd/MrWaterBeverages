@@ -17,7 +17,7 @@ import {
   ReconciliationTransaction,
   StockLedgerEntry,
 } from "../types";
-import { getSupabaseClient, dropDeletedFromList, writeCollectionMerged, collectionSeen } from "../lib/supabase";
+import { getSupabaseClient, dropDeletedFromList, writeCollectionMerged, collectionSeen, noteCollectionContent } from "../lib/supabase";
 import { announceCloudChange } from "../lib/syncSignal";
 
 export interface Order {
@@ -734,6 +734,7 @@ async function fetchFromStaticCollection<T>(url: string): Promise<T | null> {
       (key === "billing_settings" || key === "organization_profile"
         ? null
         : []);
+    noteCollectionContent(key, value);
     notifySyncStatus({
       consecutiveFailures: 0,
       lastSuccessfulSync: new Date().toISOString(),
