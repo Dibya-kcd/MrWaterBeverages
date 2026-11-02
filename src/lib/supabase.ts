@@ -2289,11 +2289,19 @@ export async function verifySalesmanPinSupabase(
     if (resp.ok && result?.success && result?.salesman) {
       return { success: true, salesman: result.salesman };
     }
-    return { success: false, error: result?.error || "Incorrect PIN. Please try again." };
-  } catch (e: any) {
+    if (result?.error) return { success: false, error: result.error };
+    // No JSON answer (for example GitHub Pages replying 404 because there is no /api there): the PIN was never
+    // checked by the server, so do not claim it is wrong.
     return {
       success: false,
-      error: e?.message || "Network error during PIN verification",
+      error: result
+        ? "Incorrect PIN. Please try again."
+        : "Could not reach the server to check your PIN. Check your internet connection and try again in a minute. If it keeps happening, ask the admin to check the app's server address.",
+    };
+  } catch {
+    return {
+      success: false,
+      error: "Could not reach the server to check your PIN. Check your internet connection and try again in a minute.",
     };
   }
 }

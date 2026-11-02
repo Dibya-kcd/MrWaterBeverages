@@ -1,11 +1,9 @@
 name: Build Web (Pages), Android APK and iOS IPA
 
+# Builds run ONLY when you start them by hand: GitHub > Actions > "Build Web (Pages), Android APK and iOS IPA"
+# > Run workflow. Nothing runs on push, pull request or tag. To publish a GitHub Release, pick a v* tag in the
+# "Use workflow from" box when you run it.
 on:
-  push:
-    branches: [main, master]
-    tags: ['v*']
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
 
 # Least privilege: jobs that need more ask for it themselves.

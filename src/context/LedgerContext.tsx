@@ -2194,7 +2194,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       setSalesmen((prev) => (prev.some((x) => x.id === sm.id) ? prev : [...prev, sm]));
       return { success: true };
     }
-    if (viaServer && !viaServer.ok) {
+    if (viaServer && !viaServer.ok && !viaServer.unreachable) {
       return { success: false, error: viaServer.error || "Incorrect phone number or PIN." };
     }
     // (server sign-in not configured or unreachable: the original on-device check below still applies)

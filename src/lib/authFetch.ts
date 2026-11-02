@@ -139,9 +139,11 @@ export function installAuthFetch() {
 export async function serverSignIn(
   kind: "admin" | "salesman",
   body: Record<string, string>,
-): Promise<{ ok: boolean; error?: string; salesman?: any } | null> {
+): Promise<{ ok: boolean; error?: string; salesman?: any; unreachable?: boolean } | null> {
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  const timeoutId = controller ? setTimeout(() => controller.abort(), 4000) : null;
+  // 30 s, not 4 s: a free-tier host (Render, Railway...) needs 20-40 s to wake up after being idle. With a short
+  // limit the app gave up, fell back to the on-device check and told the salesman "Incorrect PIN".
+  const timeoutId = controller ? setTimeout(() => controller.abort(), 30000) : null;
   try {
     const res = await fetch(kind === "admin" ? "/api/auth/admin-login" : "/api/auth/salesman-login", {
       method: "POST",
@@ -150,17 +152,21 @@ export async function serverSignIn(
       signal: controller?.signal,
     });
     if (timeoutId) clearTimeout(timeoutId);
-    // 404/405/501 = no sign-in server here (e.g. GitHub Pages answers 405 to POST): use the offline route
-    if (res.status === 501 || res.status === 404 || res.status === 405) return null;
-    const data = await res.json().catch(() => null);
-    if (data === null && !res.ok) return null; // not a JSON answer from our server: treat as unreachable
+    if (res.status === 501 || res.status === 404) return null; // not configured on this server
+    const data = await res.json().catch(() => ({}));
     if (res.ok && data?.token) {
       setApiSession(data.token, data.expiresAt);
       return { ok: true, salesman: data.salesman };
     }
-    return { ok: false, error: (data as any)?.error || "Sign-in failed." };
+    return { ok: false, error: data?.error || "Sign-in failed." };
   } catch {
     if (timeoutId) clearTimeout(timeoutId);
-    return null; // server unreachable or timed out: fall back to the offline route
+    // Server unreachable, blocked by CORS, or timed out. The caller may still try the offline route, but must not
+    // report a wrong PIN just because the server could not be asked.
+    return {
+      ok: false,
+      unreachable: true,
+      error: "Cannot reach the server to check your sign-in. Check your internet connection and try again in a minute.",
+    };
   }
 }
