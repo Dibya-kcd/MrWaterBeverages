@@ -150,13 +150,15 @@ export async function serverSignIn(
       signal: controller?.signal,
     });
     if (timeoutId) clearTimeout(timeoutId);
-    if (res.status === 501 || res.status === 404) return null; // not configured on this server
-    const data = await res.json().catch(() => ({}));
+    // 404/405/501 = no sign-in server here (e.g. GitHub Pages answers 405 to POST): use the offline route
+    if (res.status === 501 || res.status === 404 || res.status === 405) return null;
+    const data = await res.json().catch(() => null);
+    if (data === null && !res.ok) return null; // not a JSON answer from our server: treat as unreachable
     if (res.ok && data?.token) {
       setApiSession(data.token, data.expiresAt);
       return { ok: true, salesman: data.salesman };
     }
-    return { ok: false, error: data?.error || "Sign-in failed." };
+    return { ok: false, error: (data as any)?.error || "Sign-in failed." };
   } catch {
     if (timeoutId) clearTimeout(timeoutId);
     return null; // server unreachable or timed out: fall back to the offline route
