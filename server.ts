@@ -1,4 +1,6 @@
 import express from "express";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import { billExtraFields, applyBillExtra, grnExtraFields, applyGrnExtra } from "./src/utils/billExtra";
 import { volumeFromName, detectPack } from "./src/utils/billing";
 import { hashPin } from "./src/utils/crypto";
@@ -495,9 +497,59 @@ async function startServer() {
   const httpServer = http.createServer(app);
   const PORT = parseInt(process.env.PORT || "3000", 10);
 
-  // Increase payload limit for high-res invoice images and multi-page PDFs
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+  // ---- Basic hardening: security headers + request rate limit -------------------------------------------------
+  // Behind Render / Railway / Nginx set TRUST_PROXY=1 so the limiter sees each visitor's real address.
+  if (process.env.TRUST_PROXY) {
+    const tp = process.env.TRUST_PROXY.trim();
+    app.set("trust proxy", /^\d+$/.test(tp) ? parseInt(tp, 10) : tp === "true" ? 1 : tp);
+  }
+  app.disable("x-powered-by");
+  app.use(
+    helmet({
+      contentSecurityPolicy: false, // the app loads Google Fonts and talks to Supabase; add a tailored CSP later
+      crossOriginResourcePolicy: false, // the Pages / Android / iOS builds call this API from another origin
+      crossOriginEmbedderPolicy: false,
+    }),
+  );
+  if (!IS_TEST_RUN) {
+    app.use(
+      "/api",
+      rateLimit({
+        windowMs: 60_000,
+        limit: parseInt(process.env.API_RATE_LIMIT_PER_MIN || "600", 10),
+        standardHeaders: true,
+        legacyHeaders: false,
+        skip: (req) => req.method === "OPTIONS",
+        message: { error: "Too many requests. Please wait a minute." },
+        validate: { xForwardedForHeader: false },
+      }),
+    );
+  }
+
+  // ---- CORS (needed only when the app is NOT served by this server: GitHub Pages build, Android, iOS) --------
+  // ALLOWED_ORIGINS = comma separated list, e.g.
+  //   https://dibya-kcd.github.io,https://localhost,capacitor://localhost
+  // Empty (default) = same-origin only, no cross-origin browser access. Sign-in uses a Bearer token (no cookies),
+  // so credentials are never allowed cross-origin.
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((o) => o.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+  if (allowedOrigins.length > 0) {
+    app.use("/api", (req, res, next) => {
+      const origin = String(req.headers.origin || "");
+      if (origin && allowedOrigins.includes(origin)) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Vary", "Origin");
+        res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+        res.setHeader("Access-Control-Expose-Headers", "X-Records-Skipped");
+        res.setHeader("Access-Control-Max-Age", "600");
+      }
+      if (req.method === "OPTIONS") return res.sendStatus(origin && allowedOrigins.includes(origin) ? 204 : 403);
+      return next();
+    });
+  }
 
   // ---- Access control (ON by default; see server-auth.ts and security/RUNBOOK.md) ---------------------------
   const authCfg = authConfig();
@@ -539,6 +591,29 @@ async function startServer() {
       return null;
     }
   };
+
+  // ---- Body parsing AFTER a cheap sign-in check -------------------------------------------------------------
+  // Large bodies (invoice photos, whole collections) are allowed only for signed-in users, so a stranger cannot make
+  // the server swallow 50 MB per request. Sign-in routes only ever need a tiny body.
+  const bigJson = express.json({ limit: "50mb" });
+  const bigForm = express.urlencoded({ extended: true, limit: "50mb" });
+  const smallJson = express.json({ limit: "20kb" });
+  app.use(async (req, res, next) => {
+    try {
+      if (!req.originalUrl.startsWith("/api") || req.method === "OPTIONS") return next();
+      const p = normalizeApiPath(req.originalUrl);
+      if (isPublicApiPath(p)) return smallJson(req, res, next);
+      if (authCfg.required) {
+        const who = await resolveAuth(req);
+        if (!who) return res.status(401).json({ error: "Sign in required.", code: "AUTH_REQUIRED" });
+        (req as any).authUser = who; // reused by the access-control step below
+      }
+      return bigJson(req, res, (err?: any) => (err ? next(err) : bigForm(req, res, next)));
+    } catch (err) {
+      return next(err);
+    }
+  });
+  // Non-API requests (static files, dev server) never carry a body we care about.
 
   // A salesman who is deactivated or deleted loses access within 30 seconds, not when his 12-hour token runs out.
   const activeCache = new Map<string, { ok: boolean; until: number }>();
@@ -708,7 +783,7 @@ async function startServer() {
     if (!authCfg.required) return next();
     const path = normalizeApiPath(req.originalUrl);
     if (isPublicApiPath(path)) return next();
-    const who = await resolveAuth(req);
+    const who = (req as any).authUser || (await resolveAuth(req));
     if (!who) return res.status(401).json({ error: "Sign in required.", code: "AUTH_REQUIRED" });
     (req as any).authUser = who;
     if (who.r !== "salesman") return next();
@@ -754,7 +829,10 @@ async function startServer() {
   });
 
   // Health check endpoint
-  app.get("/api/health", (_req, res) => {
+  app.get("/api/health", async (req, res) => {
+    // Anonymous callers only learn that the server is up; configuration details need a valid sign-in.
+    const who = await resolveAuth(req).catch(() => null);
+    if (!who) return res.json({ status: "ok" });
     res.json({
       status: "ok",
       hasGeminiKey: !!process.env.GEMINI_API_KEY,
@@ -4194,7 +4272,17 @@ async function startServer() {
     });
   }
 
-  httpServer.listen(PORT, "0.0.0.0", () => {
+  // The built-in dev password / session secret exist only for a developer machine. If they are in use, do not expose
+  // the server to the network (set ADMIN_PASSWORD and APP_SESSION_SECRET, or ALLOW_INSECURE_DEV_HOST=true to override).
+  const usingDevDefaults =
+    !authCfg.production &&
+    !IS_TEST_RUN &&
+    (!(process.env.ADMIN_PASSWORD || process.env.VITE_LOCAL_ADMIN_PASSWORD) || !process.env.APP_SESSION_SECRET);
+  const HOST = usingDevDefaults && process.env.ALLOW_INSECURE_DEV_HOST !== "true" ? "127.0.0.1" : "0.0.0.0";
+  if (HOST === "127.0.0.1") {
+    console.warn("[SECURITY] Built-in dev credentials in use: listening on 127.0.0.1 only. Set ADMIN_PASSWORD and APP_SESSION_SECRET to open it up.");
+  }
+  httpServer.listen(PORT, HOST, () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }

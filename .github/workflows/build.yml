@@ -1,66 +1,86 @@
-name: Build PWA, GitHub Pages, and Android APK
+name: Build Web (Pages), Android APK and iOS IPA
 
 on:
   push:
     branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
   workflow_dispatch:
 
+# Least privilege: jobs that need more ask for it themselves.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   NODE_VERSION: '24'
   JAVA_VERSION: '21'
   ANDROID_HOME: /usr/local/lib/android/sdk
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+  # Public build-time values (set them under Settings > Secrets and variables > Actions > Variables).
+  # Never put the Supabase service-role key, ADMIN_PASSWORD, APP_SESSION_SECRET or GEMINI_API_KEY here:
+  # everything prefixed VITE_ is copied into the downloadable app.
+  VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+  VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+  VITE_API_BASE_URL: ${{ vars.API_BASE_URL }}
 
 jobs:
+  # ---------------------------------------------------------------- Web / PWA ----------------------------
   build-web:
     name: Build Web/PWA
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Lint
+      - name: Type-check
         run: npm run lint
 
+      # GitHub Pages serves the site from /<repository-name>/
       - name: Build web app
         run: npm run build:web
+        env:
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
 
       - name: Upload PWA artifact
         uses: actions/upload-artifact@v4
         with:
           name: pwa-web-dist
           path: dist/
+          if-no-files-found: error
           retention-days: 30
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
       - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist/
 
   deploy-pages:
     name: Deploy GitHub Pages
+    # One-time setup: repository Settings > Pages > Build and deployment > Source = "GitHub Actions".
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
     needs: build-web
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -69,60 +89,63 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
+  # ---------------------------------------------------------------- Android ------------------------------
   build-android:
     name: Build Android APK
     runs-on: ubuntu-latest
-    needs: build-web
+    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: npm
 
-      - name: Set up Java
-        uses: actions/setup-java@v5
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
 
-      # GitHub-hosted Ubuntu runners already include a working Android SDK.
-      # Do not run android-actions/setup-android here: on newer runners it can
-      # select a different cmdline-tools revision and fail with "Wrong version
-      # in preinstalled sdkmanager" before the build even starts.
-      - name: Verify preinstalled Android SDK
+      - name: Warn when the app has no server address
         shell: bash
         run: |
-          set -euxo pipefail
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          command -v sdkmanager || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          if [ -z "${VITE_API_BASE_URL}" ]; then
+            echo "::warning title=API_BASE_URL is not set::The APK will open, but sign-in and sync need the server. Add the repository variable API_BASE_URL (e.g. https://api.example.com)."
+          fi
 
+      # GitHub-hosted Ubuntu runners ship an Android SDK. Do not run android-actions/setup-android here:
+      # it can pick a different cmdline-tools revision and fail before the build starts.
       - name: Install required Android SDK packages
         shell: bash
         run: |
           set -euxo pipefail
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
             "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
+            "platforms;android-36" \
+            "build-tools;36.0.0"
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build web assets for Capacitor
         run: npm run build:web
 
-      - name: Generate Android project
-        run: npx cap add android
+      - name: Generate Android project (skipped if android/ is committed)
+        shell: bash
+        run: |
+          if [ ! -d android ]; then npx cap add android; fi
+          npx cap sync android
 
-      - name: Sync web assets into Android project
-        run: npx cap sync android
+      - name: Set version code and turn off Android auto-backup of app data
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sed -i "s/versionCode [0-9]*/versionCode ${{ github.run_number }}/" android/app/build.gradle
+          # the saved sign-in token must not be copied into Google/ADB backups
+          sed -i 's/android:allowBackup="true"/android:allowBackup="false"/' android/app/src/main/AndroidManifest.xml
 
       - name: Build debug APK
         working-directory: android
@@ -138,7 +161,98 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mrwater-distribution-ledger-apk
+          name: mrwater-android-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+  # ---------------------------------------------------------------- iOS ----------------------------------
+  # Produces an UNSIGNED .ipa (no Apple Developer account needed). It cannot be installed on a phone until it is
+  # signed (AltStore / Sideloadly / your own certificate). Signed builds for TestFlight need Apple secrets.
+  build-ios:
+    name: Build iOS IPA (unsigned)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web assets for Capacitor
+        run: npm run build:web
+
+      - name: Generate iOS project (skipped if ios/ is committed)
+        shell: bash
+        run: |
+          if [ ! -d ios ]; then npx cap add ios; fi
+          npx cap sync ios
+
+      - name: Build app (no code signing)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/ios \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APP="build/ios/Build/Products/Release-iphoneos/App.app"
+          test -d "$APP"
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry mrwater-ios-unsigned.ipa Payload
+          ls -lh mrwater-ios-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mrwater-ios-unsigned-ipa
+          path: mrwater-ios-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------- Release (tags like v1.2.0) ------------
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-web, build-android, build-ios]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Zip the web build
+        run: cd artifacts/pwa-web-dist && zip -qr ../mrwater-web.zip .
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/mrwater-android-apk/app-debug.apk
+            artifacts/mrwater-ios-unsigned-ipa/mrwater-ios-unsigned.ipa
+            artifacts/mrwater-web.zip

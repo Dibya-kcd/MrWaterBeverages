@@ -11,6 +11,8 @@ export function applyPwaUpdate() {
 
 export default function registerServiceWorker() {
   if (typeof window === 'undefined') return;
+  // Android / iOS (Capacitor) apps ship their files inside the app; a service worker would only add stale caches.
+  if ((window as any).Capacitor?.isNativePlatform?.()) return;
   // Inside an iframe (e.g. AI Studio development environment), service workers are prohibited
   try {
     if (window.self !== window.top) return;
