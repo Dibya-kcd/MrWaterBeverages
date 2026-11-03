@@ -97,6 +97,20 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
             </div>
           )}
         </div>
+
+        {/* Quick Top Primary Action: Create Next Invoice immediately without scrolling */}
+        <div className="pt-2 flex items-center justify-center">
+          <button
+            type="button"
+            id="btn-create-next-invoice-top"
+            onClick={onCreateNextBill}
+            className="w-full sm:w-auto min-h-[46px] px-6 py-2.5 rounded-xl font-black text-sm bg-[#0B3D32] hover:bg-[#072720] text-white cursor-pointer shadow-md inline-flex items-center justify-center gap-2 transition-all active:scale-[0.98] border-2 border-emerald-400 ring-2 ring-emerald-500/20"
+          >
+            <Plus size={18} strokeWidth={3} />
+            <span>Create Next Invoice</span>
+            <ArrowRight size={16} />
+          </button>
+        </div>
       </div>
 
       {/* Document Format Switcher (GST vs Non-GST) */}
@@ -247,12 +261,12 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
       </div>
 
       {/* 4. Bottom Footer: Next Sale / History */}
-      <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-3">
+      <div className="pt-3 pb-2 border-t border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
         {onOpenHistory ? (
           <button
             type="button"
             onClick={onOpenHistory}
-            className="text-xs font-bold text-slate-500 hover:text-slate-800 flex items-center gap-1 cursor-pointer"
+            className="text-xs font-bold text-slate-600 hover:text-slate-900 flex items-center justify-center sm:justify-start gap-1 cursor-pointer py-2 px-3 rounded-lg hover:bg-slate-100 transition-colors"
           >
             <span>Billing History</span>
             <ArrowRight size={13} />
@@ -263,11 +277,13 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
 
         <button
           type="button"
+          id="btn-create-next-invoice-bottom"
           onClick={onCreateNextBill}
-          className="px-5 py-2.5 rounded-xl font-black text-xs sm:text-sm bg-slate-900 hover:bg-black text-white cursor-pointer shadow-sm flex items-center gap-1.5 transition-all"
+          className="min-h-[46px] px-6 py-2.5 rounded-xl font-black text-sm bg-[#0B3D32] hover:bg-[#072720] text-white cursor-pointer shadow-md flex items-center justify-center gap-2 transition-all active:scale-[0.98] border-2 border-emerald-400"
         >
-          <Plus size={16} />
+          <Plus size={18} strokeWidth={3} />
           <span>Create Next Invoice</span>
+          <ArrowRight size={16} />
         </button>
       </div>
     </div>

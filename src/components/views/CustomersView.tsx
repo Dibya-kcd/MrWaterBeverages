@@ -32,6 +32,7 @@ import { RecordPaymentModal } from "../common/RecordPaymentModal";
 import { RecordRefundModal } from "../common/RecordRefundModal";
 import { EditBillModal } from "../common/EditBillModal";
 import { DeleteConfirmModal } from "../common/DeleteConfirmModal";
+import { normCustName } from "../../context/ledgerHelpers";
 
 type PartyTab = "customers" | "suppliers";
 
@@ -1188,6 +1189,8 @@ export const CustomersView: React.FC = () => {
                 payload.mode,
                 payload.referenceNote,
                 payload.billId,
+                // only a registered customer's own id; a name typed in the modal is matched by name as before
+                normCustName(payload.customerName) === normCustName(c.name) ? c.id : undefined,
               );
               setShowRecordPayment(false);
             }}

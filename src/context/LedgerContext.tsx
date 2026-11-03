@@ -288,6 +288,7 @@ import {
   buildCatalogFromGrns,
   cloud,
   cloudFetch,
+  findDuplicateCustomer,
   diffGrn,
   docReservationInFlight,
   emptyCart,
@@ -660,6 +661,8 @@ interface LedgerContextType {
         salesman?: string;
         vehicle?: string;
         warehouseId?: string;
+        /** the customer record the person picked; used as the bill's customer link instead of guessing from name + phone */
+        customerId?: string;
       };
     },
   ) => number | null;
@@ -744,6 +747,8 @@ interface LedgerContextType {
     mode?: PaymentMode,
     referenceNote?: string,
     billId?: number,
+    /** the customer record the money is from; keeps two shops with the same name apart */
+    customerId?: string,
   ) => boolean;
   deletePayment: (paymentId: string, rectificationReason?: string) => void;
   updatePayment: (updated: PaymentRecord) => void;
@@ -7580,10 +7585,20 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         salesman?: string;
         vehicle?: string;
         warehouseId?: string;
+        /** the customer record the person picked; used as the bill's customer link instead of guessing from name + phone */
+        customerId?: string;
       };
     },
   ): number | null {
     const effCart = extras?.party ? { ...cart, ...extras.party } : cart;
+    // The customer the person actually picked. Only trusted while its name still matches the bill's party name
+    // (a stale id from an earlier selection is ignored and the name/phone rules take over).
+    const pickedCust = (() => {
+      const pid = extras?.party?.customerId;
+      if (!pid) return undefined;
+      const c = customers.find((x) => x.id === pid);
+      return c && normCustName(c.name) === normCustName(effCart.retailer) ? c : undefined;
+    })();
     if (effCart.items.length === 0) return null;
     // setCart() is async, so callers that just changed the sale date (salesman confirm) pass it
     // explicitly; otherwise this closure would still see the stale effCart.date.
@@ -7719,7 +7734,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       if (!isCash && paid < totals.total - 0.005) {
         // Identify the customer by ID: a name that only one customer has, or name + phone to tell two shops of the
         // same name apart, or the phone alone, so a differently typed name cannot slip past the credit limit.
-        const cust = findBillingCustomer(retailer, effCart.phone);
+        const cust = pickedCust ?? findBillingCustomer(retailer, effCart.phone);
         const limit = Number(cust?.creditLimit) || 0;
         if (limit > 0) {
           // Use the same figure as the customer ledger (opening balance + invoices - returns -
@@ -7910,7 +7925,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         id: nextId,
         retailer: effCart.retailer || "Cash Sale",
         phone: effCart.phone,
-        customerId: resolveMasterCustomerId(effCart.retailer, effCart.phone),
+        customerId: pickedCust?.id ?? resolveMasterCustomerId(effCart.retailer, effCart.phone),
         date: effectiveBillDate,
         items: billItems,
         amountPaid: paid,
@@ -8729,6 +8744,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       id: `pay_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       billId,
       customerName: updatedBill.retailer || "Cash Sale",
+      customerId: updatedBill.customerId,
       customerPhone: updatedBill.phone,
       paymentDate: payDate,
       amount: applied,
@@ -8756,8 +8772,21 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     mode?: PaymentMode,
     referenceNote?: string,
     billId?: number,
+    customerId?: string,
   ): boolean {
     const cleanCustomer = customerName.trim();
+    // When the caller knows which customer record this is, work from that record (not from the name alone).
+    // (an invoice that is being paid also tells us the customer, as long as it carries the same name)
+    const billHint = billId ? allBillsRef.current.find((b) => b.id === billId) : undefined;
+    const idHint =
+      customerId ||
+      (billHint && normCustName(billHint.retailer) === normCustName(cleanCustomer)
+        ? billHint.customerId
+        : undefined);
+    const pickedCust = idHint
+      ? customers.find((c) => c.id === idHint)
+      : undefined;
+    const ledgerKey = pickedCust ? pickedCust.id : cleanCustomer;
     if (!cleanCustomer || !(Number(amount) > 0)) return false;
     const payDate =
       paymentDate && paymentDate.trim()
@@ -8775,7 +8804,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const latest = (b: Bill) => allBillsRef.current.find((x) => x.id === b.id) ?? b;
     const isLive = (b: Bill) => b.status !== "cancelled" && !b.cancelled;
-    const customerBills = getCustomerLedger(cleanCustomer)
+    const customerBills = getCustomerLedger(ledgerKey)
       .bills.map(latest)
       .filter(isLive);
     // A specifically chosen invoice is always honoured, even if the name/phone rules missed it.
@@ -8800,19 +8829,21 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     commitBillUpdates(updatedById);
 
     if (!targetPhone) {
-      const matchCust = customers.find(
-        (c) => normCustName(c.name) === normCustName(cleanCustomer),
-      );
+      const matchCust =
+        pickedCust ??
+        customers.find(
+          (c) => normCustName(c.name) === normCustName(cleanCustomer),
+        );
       targetPhone = matchCust?.phone || customerBills[0]?.phone || "";
     }
 
     const stamp = Date.now();
     let seq = 0;
-    const ledgerBefore = getCustomerLedger(cleanCustomer);
+    const ledgerBefore = getCustomerLedger(ledgerKey);
     const rows = buildReceiptRows(
       {
         customerName: cleanCustomer,
-        customerId: resolveMasterCustomerId(cleanCustomer, targetPhone),
+        customerId: pickedCust?.id ?? resolveMasterCustomerId(cleanCustomer, targetPhone),
         customerPhone: targetPhone,
         paymentDate: payDate,
         mode: payMode,
@@ -9358,20 +9389,30 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
   function addCustomer(
     customerData: Omit<Customer, "id" | "createdAt"> & { id?: string },
   ): Customer {
-    // Same shop entered twice: same name and the same phone (or one side has no phone) is the same
-    // customer. Reuse it instead of adding a second master record. Shops that share a name but
-    // have different phone numbers are still kept apart.
+    // One shop = one customer record. Same name and the same phone (or one side has no phone) is the
+    // same customer: reuse it instead of adding a second master record. Shops that share a name but
+    // have different phone numbers are kept apart. The same mobile number under a different name
+    // asks first, because it is usually the same shop typed differently.
     if (!customerData.id) {
-      const n = normCustName(customerData.name);
-      const ph = last10Of(customerData.phone);
-      const dup = customersRef.current.find((c) => {
-        if (normCustName(c.name) !== n) return false;
-        const cp = last10Of(c.phone);
-        return !ph || !cp || ph === cp;
-      });
+      const { sameShop: dup, samePhone } = findDuplicateCustomer(
+        customersRef.current,
+        customerData.name,
+        customerData.phone,
+      );
       if (dup) {
-        notify(`${dup.name} is already in the customer list - no duplicate was added.`);
+        notify(
+          `${dup.name} is already in the customer list - the existing customer was used and nothing was changed.`,
+        );
         return dup;
+      }
+      if (
+        samePhone &&
+        typeof window !== "undefined" &&
+        window.confirm(
+          `Mobile ${last10Of(customerData.phone)} already belongs to "${samePhone.name}".\n\nOK = use that existing customer (no new record)\nCancel = create "${customerData.name.trim()}" as a separate customer`,
+        )
+      ) {
+        return samePhone;
       }
     }
     const id =
@@ -9385,6 +9426,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    customersRef.current = [newCust, ...customersRef.current.filter((c) => c.id !== id)];
     setCustomers((prev) => [newCust, ...prev.filter((c) => c.id !== id)]);
     {
       const n = normCustName(newCust.name);
@@ -9524,14 +9566,6 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     if (isDummyPhone(phone)) return "";
     const d = (phone || "").replace(/\D/g, "");
     return d.length >= 10 ? d.slice(-10) : "";
-  };
-
-  const normCustName = (n?: string): string => {
-    return (n || "")
-      .trim()
-      .replace(/[^\w\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .toLowerCase();
   };
 
   const customerPhonesMatch = (
@@ -9740,11 +9774,17 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     if (sameName.length === 1) return sameName[0].id;
     if (sameName.length > 1 && ph.length === 10) {
       const byPhone = sameName.filter((c) => last10Of(c.phone) === ph || last10Of(c.altPhone || "") === ph);
-      return byPhone.length === 1 ? byPhone[0].id : undefined;
+      if (byPhone.length >= 1) return byPhone[0].id;
+    }
+    if (sameName.length > 1 && ph.length === 0) {
+      const distinctPhones = new Set(sameName.map((c) => last10Of(c.phone)).filter(Boolean));
+      if (distinctPhones.size <= 1) {
+        return sameName[0].id;
+      }
     }
     if (sameName.length === 0 && ph.length === 10) {
       const byPhone = customers.filter((c) => last10Of(c.phone) === ph);
-      return byPhone.length === 1 ? byPhone[0].id : undefined;
+      return byPhone.length >= 1 ? byPhone[0].id : undefined;
     }
     return undefined;
   }
@@ -9824,26 +9864,65 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     );
     const isUniqueCustomerName = distinctPhones.size <= 1;
 
+    // Two registered shops share this name but have different phones, and we know exactly which one is meant:
+    // their invoices and receipts must never be mixed. Only same-name records with the same number (or no number,
+    // i.e. an accidental duplicate of this shop) stay merged into this ledger.
+    const ownPhones = custInMaster
+      ? [custInMaster.phone, custInMaster.altPhone].map((p) => last10Of(p)).filter(Boolean)
+      : [];
+    const keepSeparate = !!custInMaster && !isUniqueCustomerName && ownPhones.length > 0;
+    const relatedSame = keepSeparate
+      ? sameNameCusts.filter((c) => {
+          if (c.id === custInMaster!.id) return true;
+          const cp = [c.phone, c.altPhone].map((p) => last10Of(p)).filter(Boolean);
+          return cp.length === 0 || cp.some((p) => ownPhones.includes(p));
+        })
+      : sameNameCusts;
+
     const allCustPhones = [
       resolvedPhone,
       resolvedAltPhone,
-      ...sameNameCusts.map((c) => c.phone),
-      ...sameNameCusts.map((c) => c.altPhone),
-      existing?.phone,
-      existing?.altPhone,
+      ...relatedSame.map((c) => c.phone),
+      ...relatedSame.map((c) => c.altPhone),
+      ...(keepSeparate ? [] : [existing?.phone, existing?.altPhone]),
       customerPhone,
       customerAltPhone,
     ].filter((p) => !isDummyPhone(p));
 
+    // Master customer map and IDs belonging to this customer profile (handling duplicate master entries)
+    const customerById = new Map<string, Customer>(customers.map((c) => [c.id, c]));
+    const matchingCustIds = new Set<string>();
+    if (custInMaster?.id) matchingCustIds.add(custInMaster.id);
+    for (const c of relatedSame) {
+      if (
+        keepSeparate ||
+        isUniqueCustomerName ||
+        customerPhonesMatch(allCustPhones, c.phone, isUniqueCustomerName)
+      ) {
+        matchingCustIds.add(c.id);
+      }
+    }
+
     // 2. Match non-cancelled bills
-    // An invoice stamped with a customer id belongs to that customer, whatever its name says. If the id no longer
-    // belongs to any customer (deleted and re-added), the old name + phone rule decides, so history is never dropped.
-    const masterIds = new Set(customers.map((c) => c.id));
+    // If a bill has a customerId belonging to this customer (including duplicate profiles), it matches.
+    // If it has a customerId belonging to a genuinely different customer in master, exclude it.
+    // Otherwise fallback to matching customer name and phone.
     const matchedBills = bills
       .filter((b) => {
         if (b.status === "cancelled" || b.cancelled) return false;
-        if (b.customerId && custInMaster && masterIds.has(b.customerId)) {
-          return b.customerId === custInMaster.id;
+        if (b.customerId && matchingCustIds.has(b.customerId)) {
+          return true;
+        }
+        // an invoice that belongs to the other same-name shop is never this shop's
+        if (keepSeparate && b.customerId && customerById.has(b.customerId)) return false;
+        if (b.customerId && customerById.has(b.customerId)) {
+          const otherCust = customerById.get(b.customerId)!;
+          if (
+            normCustName(otherCust.name) !== cleanName &&
+            !customerPhonesMatch(allCustPhones, otherCust.phone, false)
+          ) {
+            return false;
+          }
         }
         const bRetailer = normCustName(b.retailer);
         return (
@@ -9859,8 +9938,18 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     const matchedPayments = payments
       .filter((p) => {
         if (p.billId && matchedBillIds.has(p.billId)) return true;
-        if (p.customerId && custInMaster && masterIds.has(p.customerId)) {
-          return p.customerId === custInMaster.id;
+        if (p.customerId && matchingCustIds.has(p.customerId)) {
+          return true;
+        }
+        if (keepSeparate && p.customerId && customerById.has(p.customerId)) return false;
+        if (p.customerId && customerById.has(p.customerId)) {
+          const otherCust = customerById.get(p.customerId)!;
+          if (
+            normCustName(otherCust.name) !== cleanName &&
+            !customerPhonesMatch(allCustPhones, otherCust.phone, false)
+          ) {
+            return false;
+          }
         }
         const pCust = normCustName(p.customerName);
         return (

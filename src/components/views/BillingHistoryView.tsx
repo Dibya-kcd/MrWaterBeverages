@@ -271,7 +271,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
     // invoice is paid first, the rest goes to the customer's oldest unpaid invoices, and whatever
     // is left is kept as an advance on account.
     if (bill && amount > billBalance(bill) + 0.004) {
-      recordCustomerPayment(bill.retailer, amount, todayISO(), 'cash', undefined, billId);
+      recordCustomerPayment(bill.retailer, amount, todayISO(), 'cash', undefined, billId, bill.customerId);
     } else {
       recordPayment(billId, amount);
     }
@@ -811,7 +811,8 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
               paymentDate,
               mode,
               referenceNote,
-              billId || paymentModalBill.id
+              billId || paymentModalBill.id,
+              paymentModalBill.customerId
             );
             setPaymentModalBill(null);
           }}

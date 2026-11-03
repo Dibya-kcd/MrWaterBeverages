@@ -501,10 +501,13 @@ async function startServer() {
   const PORT = parseInt(process.env.PORT || "3000", 10);
 
   // ---- Basic hardening: security headers + request rate limit -------------------------------------------------
-  // Behind Render / Railway / Nginx set TRUST_PROXY=1 so the limiter sees each visitor's real address.
+  // Behind Google Cloud Run / Render / Railway / Nginx set trust proxy so the limiter sees each visitor's real address.
   if (process.env.TRUST_PROXY) {
     const tp = process.env.TRUST_PROXY.trim();
     app.set("trust proxy", /^\d+$/.test(tp) ? parseInt(tp, 10) : tp === "true" ? 1 : tp);
+  } else {
+    // In cloud hosting (Google Cloud Run / AI Studio / container proxies), trust the fronting reverse proxy
+    app.set("trust proxy", 1);
   }
   app.disable("x-powered-by");
   app.use(
@@ -524,7 +527,15 @@ async function startServer() {
         legacyHeaders: false,
         skip: (req) => req.method === "OPTIONS",
         message: { error: "Too many requests. Please wait a minute." },
-        validate: { xForwardedForHeader: false },
+        keyGenerator: (req) => {
+          const forwarded = req.headers["forwarded"];
+          if (typeof forwarded === "string") {
+            const match = forwarded.match(/for="?([^";,\s]+)"?/i);
+            if (match && match[1]) return match[1];
+          }
+          return req.ip || (req.headers["x-forwarded-for"] as string) || req.socket.remoteAddress || "127.0.0.1";
+        },
+        validate: false,
       }),
     );
   }

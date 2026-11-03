@@ -16,6 +16,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { Customer, ExistingCustomer } from '../../types';
+import { normCustName } from '../../context/ledgerHelpers';
 
 export interface RichCustomerOption {
   id: string;
@@ -129,7 +130,7 @@ export const CustomerPredictiveSearch: React.FC<CustomerPredictiveSearchProps> =
     (existingCustomers || []).forEach((ec, idx) => {
       const trimmed = (ec.name || '').trim();
       if (!trimmed) return;
-      const key = trimmed.toLowerCase();
+      const key = normCustName(trimmed) || trimmed.toLowerCase();
       const ecId = ec.id || `ec_${idx}_${encodeURIComponent(key)}`;
       map.set(key, {
         id: ecId,
@@ -146,11 +147,30 @@ export const CustomerPredictiveSearch: React.FC<CustomerPredictiveSearchProps> =
       });
     });
 
+    // Shops that share a name but have different phone numbers are different customers: list each one
+    // separately (the by-name summary above cannot tell them apart, so it is dropped for those names).
+    const last10 = (p?: string) => (p || '').replace(/\D/g, '').slice(-10);
+    const phonesByName = new Map<string, Set<string>>();
+    ((customers || []) as Customer[]).forEach((c) => {
+      const k = normCustName(c.name);
+      const d = last10(c.phone);
+      if (!k || d.length < 10) return;
+      if (!phonesByName.has(k)) phonesByName.set(k, new Set());
+      phonesByName.get(k)!.add(d);
+    });
+    const splitNames = new Set<string>();
+    phonesByName.forEach((set, k) => {
+      if (set.size > 1) splitNames.add(k);
+    });
+    splitNames.forEach((k) => map.delete(k));
+
     // 2. Process master customers
     ((customers || []) as Array<Customer & { balanceDue?: number }>).forEach((c, idx) => {
       const trimmed = (c.name || '').trim();
       if (!trimmed) return;
-      const key = trimmed.toLowerCase();
+      const nameKey = normCustName(trimmed) || trimmed.toLowerCase();
+      const d = last10(c.phone);
+      const key = splitNames.has(nameKey) ? `${nameKey}|${d.length === 10 ? d : c.id}` : nameKey;
       const existing = map.get(key);
       const custId = c.id || `cust_${idx}_${encodeURIComponent(key)}`;
 

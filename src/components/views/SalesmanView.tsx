@@ -50,6 +50,7 @@ import {
   List,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
+import { normCustName, splitSameNameShops } from '../../context/ledgerHelpers';
 import { Bill, BillItem, ExistingCustomer, PriceType, Product, Trip } from '../../types';
 import { billTotals, buildBillText, computeLine, normalizeGstFraction, money, schemeLabel, whatsappLink, resolveProductGstRate, resolveProductHsn, formatProductVolPack, volumeFromName } from '../../utils/billing';
 import { downloadInvoicePdf } from '../../utils/invoicePdf';
@@ -244,6 +245,8 @@ export const SalesmanView: React.FC = () => {
   // Sales form state
   const [selectedRetailer, setSelectedRetailer] = useState('');
   const [retailerPhone, setRetailerPhone] = useState('');
+  // The registered customer record that was picked (empty when the shop was typed / spoken as free text).
+  const [retailerCustomerId, setRetailerCustomerId] = useState('');
   const [selectedProductId, setSelectedProductId] = useState<number | null>(null);
   const [quantity, setQuantity] = useState<number>(1);
   const [priceType, setPriceType] = useState<PriceType>('Retail');
@@ -352,6 +355,7 @@ export const SalesmanView: React.FC = () => {
   const handleCancelSaleSequence = () => {
     setSelectedRetailer('');
     setRetailerPhone('');
+    setRetailerCustomerId('');
     setSelectedProductId(null);
     setSaleDate(todayISO());
     setCart({
@@ -369,6 +373,31 @@ export const SalesmanView: React.FC = () => {
     setConfirmedBill(null);
     triggerFeedback('Sale sequence cancelled. Ready for new customer.', 'warn');
     if (isLowVision) speakAssistiveText('Sale cancelled. Ready for new customer.');
+  };
+
+  // Start next invoice cleanly without cancellation warning
+  const handleCreateNextInvoice = () => {
+    setSelectedRetailer('');
+    setRetailerPhone('');
+    setRetailerCustomerId('');
+    setSelectedProductId(null);
+    setSaleDate(todayISO());
+    setCart({
+      retailer: '',
+      phone: '',
+      items: [],
+      date: todayISO(),
+    });
+    setAmountPaidDraft('0');
+    setInvoiceDiscountDraft('');
+    setSettledTotalDraft('');
+    setBatchQuantities({});
+    setIsMultiSelectMode(false);
+    setIsCartOpen(false);
+    setConfirmedBill(null);
+    setSalesmanTab('sell');
+    triggerFeedback('Ready for next invoice! Select customer to begin.', 'success');
+    if (isLowVision) speakAssistiveText('Ready for next invoice. Select customer.');
   };
 
   // Compile customer history from bills
@@ -393,10 +422,14 @@ export const SalesmanView: React.FC = () => {
   // One source of truth for customer balances: the ledger's own list (opening balance, every
   // receipt, advances and returns included). A private list built from bills alone showed
   // "0 due / settled" for a customer who had paid in advance.
-  const { existingCustomers: ledgerCustomers } = useLedger();
+  const { existingCustomers: ledgerCustomers, customers: masterCustomers } = useLedger();
   const existingCustomers: ExistingCustomer[] = useMemo(
-    () => [...ledgerCustomers].sort((a, b) => b.totalBills - a.totalBills),
-    [ledgerCustomers],
+    () =>
+      splitSameNameShops(
+        [...ledgerCustomers].sort((a, b) => b.totalBills - a.totalBills),
+        masterCustomers,
+      ),
+    [ledgerCustomers, masterCustomers],
   );
 
   // Calculate vehicle stock status for all products
@@ -1024,19 +1057,42 @@ export const SalesmanView: React.FC = () => {
       onStart: () => setIsVoiceSearching(true),
       onResult: (transcript) => {
         setIsVoiceSearching(false);
-        const lower = transcript.toLowerCase().trim();
-        const matched = frequentRetailers.find(
-          (r) => r.name.toLowerCase().includes(lower) || lower.includes(r.name.toLowerCase())
-        );
-        if (matched) {
+        const spoken = normCustName(transcript);
+        // Match against every registered shop, not only the six most frequent. An exact name wins; otherwise
+        // a partial match is accepted only when it points to exactly one shop (a short word like "ram" must not
+        // silently pick one of several).
+        const pool = existingCustomers.filter((c) => normCustName(c.name));
+        const exact = pool.filter((c) => normCustName(c.name) === spoken);
+        const partial =
+          spoken.length >= 3
+            ? pool.filter((c) => {
+                const n = normCustName(c.name);
+                return n.includes(spoken) || spoken.includes(n);
+              })
+            : [];
+        const candidates = exact.length > 0 ? exact : partial;
+        if (candidates.length === 1) {
+          const matched = candidates[0];
           setSelectedRetailer(matched.name);
           setRetailerPhone(matched.phone || '');
+          setRetailerCustomerId(matched.id || '');
           speakAssistiveText(`Selected shop ${matched.name}`);
           triggerFeedback(`Voice matched: ${matched.name}`);
+        } else if (candidates.length > 1) {
+          // several shops fit: let the person choose from the list instead of guessing
+          setSelectedRetailer('');
+          setRetailerPhone('');
+          setRetailerCustomerId('');
+          setShowCustomerSelectorModal(true);
+          speakAssistiveText('More than one shop matches. Please choose from the list.');
+          triggerFeedback(`More than one shop matches "${transcript}". Choose one from the list.`, 'warn');
         } else {
+          // not a registered shop: keep what was heard as a one-off name, but never keep the previous shop's phone
           setSelectedRetailer(transcript);
-          speakAssistiveText(`Customer set to ${transcript}`);
-          triggerFeedback(`Customer set to: ${transcript}`);
+          setRetailerPhone('');
+          setRetailerCustomerId('');
+          speakAssistiveText(`No registered shop named ${transcript}. Customer set to ${transcript}.`);
+          triggerFeedback(`No registered shop "${transcript}" - use Add Customer to register it`, 'warn');
         }
       },
       onError: () => {
@@ -1090,6 +1146,8 @@ export const SalesmanView: React.FC = () => {
         salesman: activeTrip.salesman,
         vehicle: activeTrip.vehicle,
         warehouseId: activeTrip.warehouseId || '',
+        // the picked customer record (checked against name/phone inside finalizeBill); empty = match by name + phone
+        customerId: retailerCustomerId || undefined,
       },
     });
     if (billId !== null) {
@@ -1146,6 +1204,7 @@ export const SalesmanView: React.FC = () => {
 
       setSelectedRetailer('');
       setRetailerPhone('');
+      setRetailerCustomerId('');
       setAmountPaidDraft('0');
       setInvoiceDiscountDraft('');
       setSettledTotalDraft('');
@@ -2173,6 +2232,7 @@ export const SalesmanView: React.FC = () => {
               setSelectedRetailer={setSelectedRetailer}
               retailerPhone={retailerPhone}
               setRetailerPhone={setRetailerPhone}
+              setRetailerCustomerId={setRetailerCustomerId}
               priceType={priceType}
               setPriceType={setPriceType}
               isLowVision={isLowVision}
@@ -2184,6 +2244,7 @@ export const SalesmanView: React.FC = () => {
               onQuickProductCartChange={handleQuickProductCartChange}
               onOpenCart={() => setIsCartOpen(true)}
               onCancelSaleSequence={handleCancelSaleSequence}
+              onCreateNextInvoice={handleCreateNextInvoice}
               onOpenCustomerDirectory={() => setShowCustomerSelectorModal(true)}
               onVoiceSearchCustomer={handleVoiceSearchCustomer}
               isVoiceSearching={isVoiceSearching}
@@ -2204,6 +2265,7 @@ export const SalesmanView: React.FC = () => {
             onSelectForSale={(customerName, phone) => {
               setSelectedRetailer(customerName);
               setRetailerPhone(phone);
+              setRetailerCustomerId('');
               setSalesmanTab('sell');
               if (isLowVision) speakAssistiveText(`Selected ${customerName} for sale.`);
             }}
@@ -2768,6 +2830,7 @@ export const SalesmanView: React.FC = () => {
                       onClick={() => {
                         setSelectedRetailer(r.name);
                         setRetailerPhone(r.phone);
+                        setRetailerCustomerId('');
                         setShowAllRetailersModal(false);
                       }}
                       className="w-full p-2.5 text-left text-xs font-bold rounded border hover:bg-black/5 cursor-pointer flex justify-between items-center"
@@ -2813,6 +2876,7 @@ export const SalesmanView: React.FC = () => {
           onSelect={(c) => {
             setSelectedRetailer(c.name);
             setRetailerPhone(c.phone || '');
+            setRetailerCustomerId(c.id || '');
             setShowCustomerSelectorModal(false);
             if (isLowVision) speakAssistiveText(`Selected customer ${c.name}`);
           }}
@@ -2950,6 +3014,7 @@ export const SalesmanView: React.FC = () => {
         onCustomerCreated={(newCust) => {
           setSelectedRetailer(newCust.name);
           setRetailerPhone(newCust.phone || '');
+          setRetailerCustomerId(newCust.id);
           setSalesmanTab('sell');
           triggerFeedback(`New customer "${newCust.name}" added to route. Ready for billing!`, 'success');
           speakAssistiveText(`Customer ${newCust.name} added. Ready for sale.`);

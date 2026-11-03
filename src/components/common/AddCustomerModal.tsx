@@ -45,7 +45,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
   title = 'Add New Customer / Retailer',
   isLowVision = false,
 }) => {
-  const { addCustomer, palette } = useLedger();
+  const { addCustomer, palette, customers: registeredCustomers } = useLedger();
   const { activeBeats, myBeats } = useBeats();
 
   const [name, setName] = useState('');
@@ -165,6 +165,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
         notes.trim(),
       ].filter(Boolean);
 
+      const knownIds = new Set((registeredCustomers || []).map((c) => c.id));
       const newCustomer = addCustomer({
         name: cleanName,
         phone: cleanPhone,
@@ -178,7 +179,11 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
         notes: noteParts.length > 0 ? noteParts.join(' · ') : undefined,
       });
 
-      speakAssistiveText(`New customer ${newCustomer.name} created.`);
+      speakAssistiveText(
+        knownIds.has(newCustomer.id)
+          ? `${newCustomer.name} is already registered. Existing customer selected.`
+          : `New customer ${newCustomer.name} created.`,
+      );
 
       if (onCustomerCreated) {
         onCustomerCreated(newCustomer);

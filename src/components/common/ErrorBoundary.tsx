@@ -31,6 +31,11 @@ export class ErrorBoundary extends Component<Props, State> {
 
   public render() {
     if (this.state.hasError) {
+      const isModuleFetchError =
+        this.state.error?.name === 'TypeError' ||
+        /Failed to fetch dynamically imported module/i.test(this.state.error?.message || '') ||
+        /Loading chunk/i.test(this.state.error?.message || '');
+
       return (
         <div className="p-4 sm:p-6 max-w-xl mx-auto my-8 bg-white border-2 border-rose-200 rounded-2xl shadow-lg text-slate-800">
           <div className="flex items-center gap-3 text-rose-600 mb-3">
@@ -39,9 +44,15 @@ export class ErrorBoundary extends Component<Props, State> {
             </div>
             <div>
               <h2 className="text-base font-bold text-slate-900">
-                {this.props.fallbackTitle || 'Something went wrong displaying this section'}
+                {isModuleFetchError
+                  ? 'Application Reload Required'
+                  : this.props.fallbackTitle || 'Something went wrong displaying this section'}
               </h2>
-              <p className="text-xs text-slate-500">The module encountered an unexpected display error.</p>
+              <p className="text-xs text-slate-500">
+                {isModuleFetchError
+                  ? 'A new update was deployed or the connection reconnected. Please reload to load the latest version.'
+                  : 'The module encountered an unexpected display error.'}
+              </p>
             </div>
           </div>
           {this.state.error && (
@@ -52,17 +63,17 @@ export class ErrorBoundary extends Component<Props, State> {
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={this.handleReset}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold rounded-lg shadow-sm cursor-pointer transition-colors"
+              onClick={() => window.location.reload()}
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow-sm cursor-pointer transition-colors"
             >
-              <RefreshCw className="w-3.5 h-3.5" /> Retry Display
+              <RefreshCw className="w-3.5 h-3.5" /> Reload App
             </button>
             <button
               type="button"
-              onClick={() => window.location.reload()}
+              onClick={this.handleReset}
               className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-lg cursor-pointer transition-colors"
             >
-              Reload App
+              Retry Display
             </button>
           </div>
         </div>

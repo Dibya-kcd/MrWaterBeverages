@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
+import { normCustName } from '../../context/ledgerHelpers';
 import { Bill, BillItem, Customer, PaymentMode, Product, Promotion, PriceType } from '../../types';
 import { applyCartSchemes, computeLine, money, schemeLabel } from '../../utils/billing';
 import { SchemeSelectorModal } from '../billing/SchemeSelectorModal';
@@ -184,11 +185,27 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   const customerOptions = useMemo(() => {
     const list: { id: string; name: string; phone?: string; gstin?: string }[] = [];
     const seenNames = new Set<string>();
+    const last10 = (p?: string) => (p || '').replace(/\D/g, '').slice(-10);
+
+    // same name + different phone numbers = different shops, so each stays its own choice
+    const phonesByName = new Map<string, Set<string>>();
+    (customers || []).forEach((c) => {
+      const k = normCustName(c.name);
+      const d = last10(c.phone);
+      if (!k || d.length < 10) return;
+      if (!phonesByName.has(k)) phonesByName.set(k, new Set());
+      phonesByName.get(k)!.add(d);
+    });
 
     (customers || []).forEach((c, idx) => {
       const trimmed = (c.name || '').trim();
-      if (trimmed && !seenNames.has(trimmed.toLowerCase())) {
-        seenNames.add(trimmed.toLowerCase());
+      const nameKey = normCustName(trimmed) || trimmed.toLowerCase();
+      const d = last10(c.phone);
+      const split = (phonesByName.get(nameKey)?.size || 0) > 1;
+      const key = split ? `${nameKey}|${d.length === 10 ? d : c.id}` : nameKey;
+      if (trimmed && !seenNames.has(key)) {
+        seenNames.add(key);
+        seenNames.add(nameKey);
         const custId = c.id || `cust_${idx}_${encodeURIComponent(trimmed.toLowerCase())}`;
         list.push({ id: custId, name: trimmed, phone: c.phone, gstin: c.gstin });
       }
@@ -196,8 +213,9 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
 
     (existingCustomers || []).forEach((c, idx) => {
       const trimmed = (c.name || '').trim();
-      if (trimmed && !seenNames.has(trimmed.toLowerCase())) {
-        seenNames.add(trimmed.toLowerCase());
+      const nameKey = normCustName(trimmed) || trimmed.toLowerCase();
+      if (trimmed && !seenNames.has(nameKey)) {
+        seenNames.add(nameKey);
         const custId = c.id || `ec_${idx}_${encodeURIComponent(trimmed.toLowerCase())}`;
         list.push({ id: custId, name: trimmed, phone: c.phone });
       }
@@ -520,6 +538,13 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
         isRetrospective: false,
         invoiceType: billType === 'tax_invoice' ? 'tax_invoice' : 'bill_of_supply',
         isGstInvoice: isGst,
+        // the customer that was picked, so the bill links to exactly that record (not a name/phone guess)
+        party: {
+          retailer: customerName,
+          phone: customerPhone,
+          customerId:
+            selectedCustomerId && selectedCustomerId !== '__walkin__' ? selectedCustomerId : undefined,
+        },
       }
     );
 

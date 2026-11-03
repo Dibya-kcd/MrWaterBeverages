@@ -14,13 +14,16 @@ import { getSyncStatus, subscribeToSyncStatus, clearSyncStatus, reportSyncSucces
 import { CloudAlert, WifiOff, RefreshCw, X, ShieldCheck, Download, Info } from "lucide-react";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 
+// Statically import DashboardView so the default home tab renders instantly without dynamic module fetch failures
+import DashboardView from "./components/views/DashboardView";
+
 function lazyWithRetry<T extends React.ComponentType<any>>(
   factory: () => Promise<{ default?: T; [key: string]: any }>,
   name?: string
 ): React.LazyExoticComponent<T> {
   return lazy(() =>
     new Promise<{ default: T }>((resolve, reject) => {
-      const attempt = (retriesLeft: number) => {
+      const attempt = (retriesLeft: number, delayMs: number) => {
         factory()
           .then((m) => {
             const comp =
@@ -33,14 +36,29 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
             resolve({ default: comp as T });
           })
           .catch((err) => {
+            const isImportError =
+              err?.name === "TypeError" ||
+              /Failed to fetch dynamically imported module/i.test(err?.message || "") ||
+              /Loading chunk/i.test(err?.message || "");
+
             if (retriesLeft <= 0) {
+              // If dynamic import failed, auto-reload once to fetch fresh assets if not reloaded recently
+              if (typeof window !== "undefined" && isImportError) {
+                const lastReload = Number(sessionStorage.getItem("last_chunk_reload") || "0");
+                const now = Date.now();
+                if (now - lastReload > 15000) {
+                  sessionStorage.setItem("last_chunk_reload", String(now));
+                  window.location.reload();
+                  return;
+                }
+              }
               reject(err);
               return;
             }
-            setTimeout(() => attempt(retriesLeft - 1), 600);
+            setTimeout(() => attempt(retriesLeft - 1, delayMs * 1.5), delayMs);
           });
       };
-      attempt(3);
+      attempt(4, 600);
     })
   );
 }
@@ -48,7 +66,6 @@ function lazyWithRetry<T extends React.ComponentType<any>>(
 // Screens load when first opened, so the app starts fast on phones.
 const BillingView = lazyWithRetry(() => import("./components/views/BillingView"), "BillingView");
 const CustomersView = lazyWithRetry(() => import("./components/views/CustomersView"), "CustomersView");
-const DashboardView = lazyWithRetry(() => import("./components/views/DashboardView"), "DashboardView");
 const InventoryView = lazyWithRetry(() => import("./components/views/InventoryView"), "InventoryView");
 const PaymentsView = lazyWithRetry(() => import("./components/views/PaymentsView"), "PaymentsView");
 const ProductsView = lazyWithRetry(() => import("./components/views/ProductsView"), "ProductsView");

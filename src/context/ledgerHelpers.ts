@@ -5,7 +5,7 @@
  */
 import { DEFAULT_BILLING_SETTINGS, DEFAULT_ORG_PROFILE, INIT_WAREHOUSES } from "../constants/initialData";
 import { loadCachedBillingSettings, loadCachedOrders, loadCachedGrns, reportSyncFailure, reportSyncSuccess } from "../utils/storage";
-import { Audit, Bill, BillingSettings, CartState, Customer, FontSize, GRN, GrnLineItem, GrnChange, GstMode, InventoryBatch, OrganizationProfile, PaymentRecord, PaymentAuditEntry, Product, Promotion, StickyTotalPosition, StockTransfer, Trip, Warehouse } from "../types";
+import { Audit, Bill, BillingSettings, CartState, Customer, ExistingCustomer, FontSize, GRN, GrnLineItem, GrnChange, GstMode, InventoryBatch, OrganizationProfile, PaymentRecord, PaymentAuditEntry, Product, Promotion, StickyTotalPosition, StockTransfer, Trip, Warehouse } from "../types";
 import { generateAutoSku, generateBatchNumber, normalizeTo8DigitHsn, gstRateFromHsn, inferUnitsPerCase, productTaxFields, resolveItemCrateCost, resolveItemLandedCrateCost } from "../utils/billing";
 import { buildProductBatchLines, productHasBatchInWarehouse, validateGrnDraft, replayStockTransfers } from "../utils/stockLocations";
 import { todayISO } from "../utils/dateLocal";
@@ -39,11 +39,18 @@ export function addExpenseTombstones(ids: string[]) {
   }
 }
 
+/**
+ * Canonical form of a customer name used for every "is this the same shop?" check.
+ * Keeps letters and digits of ANY script (Odia, Hindi, ...) - the old ASCII-only rule turned every
+ * non-English name into a blank, so all such shops looked identical. Case, spacing and punctuation
+ * are ignored; for plain English names the result is the same as before.
+ */
 export const normCustName = (n?: string): string => {
   return (n || "")
-    .trim()
-    .replace(/[^\w\s]/g, " ")
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{M}\p{N}_\s]/gu, " ")
     .replace(/\s+/g, " ")
+    .trim()
     .toLowerCase();
 };
 
@@ -233,6 +240,95 @@ export function stampChangedBills(prev: Bill[], next: Bill[]): Bill[] {
     }
     return { ...b, updatedAt: now };
   });
+}
+
+/** Last 10 digits of a usable phone number, or "" for blank / placeholder numbers (1234567890, 0000000000, ...). */
+export function last10PhoneDigits(phone?: string): string {
+  const d = (phone || "").replace(/\D/g, "");
+  if (!d || d === "1234567890" || /^0+$/.test(d) || /^9+$/.test(d) || d.length < 5) return "";
+  return d.length >= 10 ? d.slice(-10) : "";
+}
+
+/**
+ * Is a customer about to be added already registered?
+ *  - sameShop:  same (normalized) name and a compatible phone (equal, or one side has none) -> the same customer
+ *  - samePhone: same mobile number under a different name -> probably the same shop typed differently (ask first)
+ * Two shops with the same name but different phone numbers are NOT the same shop.
+ */
+export function findDuplicateCustomer(
+  list: Customer[],
+  name: string,
+  phone?: string,
+): { sameShop?: Customer; samePhone?: Customer } {
+  const n = normCustName(name);
+  const ph = last10PhoneDigits(phone);
+  const sameShop = n
+    ? list.find((c) => {
+        if (normCustName(c.name) !== n) return false;
+        const cp = last10PhoneDigits(c.phone);
+        const ca = last10PhoneDigits(c.altPhone);
+        return !ph || (!cp && !ca) || ph === cp || ph === ca;
+      })
+    : undefined;
+  if (sameShop) return { sameShop };
+  const samePhone = ph
+    ? list.find((c) => last10PhoneDigits(c.phone) === ph || last10PhoneDigits(c.altPhone) === ph)
+    : undefined;
+  return { samePhone };
+}
+
+/**
+ * The by-name customer summary (`existingCustomers`) shows two registered shops that share a name but have
+ * different phone numbers as ONE entry, so the second shop can never be picked. For pick-lists only: replace
+ * such an entry by one entry per registered shop (each with its own id and phone). Their by-name totals cannot
+ * be split, so those rows show no balance; the ledger is still exact once the shop is chosen by id.
+ * Every other entry is returned unchanged.
+ */
+export function splitSameNameShops(existing: ExistingCustomer[], masters: Customer[]): ExistingCustomer[] {
+  const last10 = (p?: string) => (p || "").replace(/\D/g, "").slice(-10);
+  const byName = new Map<string, Customer[]>();
+  for (const c of masters || []) {
+    const k = normCustName(c.name);
+    if (!k) continue;
+    if (!byName.has(k)) byName.set(k, []);
+    byName.get(k)!.push(c);
+  }
+  const split = new Set<string>();
+  byName.forEach((list, k) => {
+    const phones = new Set(list.map((c) => last10(c.phone)).filter((d) => d.length === 10));
+    if (phones.size > 1) split.add(k);
+  });
+  if (split.size === 0) return existing;
+  const out: ExistingCustomer[] = [];
+  const done = new Set<string>();
+  for (const e of existing) {
+    const k = normCustName(e.name);
+    if (!split.has(k)) {
+      out.push(e);
+      continue;
+    }
+    if (done.has(k)) continue;
+    done.add(k);
+    for (const c of byName.get(k)!) {
+      out.push({
+        id: c.id,
+        name: c.name,
+        phone: c.phone || "",
+        altPhone: c.altPhone,
+        address: c.address,
+        city: c.city,
+        gstin: c.gstin,
+        creditLimit: c.creditLimit,
+        openingBalance: c.openingBalance || 0,
+        totalBills: 0,
+        totalBilled: 0,
+        totalPaid: 0,
+        balanceDue: 0,
+        lastBillDate: "",
+      });
+    }
+  }
+  return out;
 }
 
 /** Merge by id; when both sides have the same customer the most recently edited copy wins

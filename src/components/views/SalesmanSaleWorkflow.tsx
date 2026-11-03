@@ -32,6 +32,7 @@ import { Bill, BillItem, ExistingCustomer, PriceType, Product, Trip } from '../.
 import { money } from '../../utils/billing';
 import { downloadInvoicePdf } from '../../utils/invoicePdf';
 import { InvoiceSuccessCard } from '../billing/InvoiceSuccessCard';
+import { normCustName } from '../../context/ledgerHelpers';
 import { AddCustomerModal } from '../common/AddCustomerModal';
 import {
   startSpeechRecognition,
@@ -58,6 +59,8 @@ interface SalesmanSaleWorkflowProps {
   setSelectedRetailer: (name: string) => void;
   retailerPhone: string;
   setRetailerPhone: (phone: string) => void;
+  /** remembers which registered customer record was picked (empty for a one-off typed name) */
+  setRetailerCustomerId?: (id: string) => void;
   priceType: PriceType;
   setPriceType: (pt: PriceType) => void;
   isLowVision: boolean;
@@ -69,6 +72,7 @@ interface SalesmanSaleWorkflowProps {
   onQuickProductCartChange: (productId: number, delta: number) => void;
   onOpenCart: () => void;
   onCancelSaleSequence: () => void;
+  onCreateNextInvoice?: () => void;
   onOpenCustomerDirectory?: () => void;
   onVoiceSearchCustomer: () => void;
   isVoiceSearching: boolean;
@@ -94,6 +98,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
   setSelectedRetailer,
   retailerPhone,
   setRetailerPhone,
+  setRetailerCustomerId,
   priceType,
   setPriceType,
   isLowVision,
@@ -105,6 +110,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
   onQuickProductCartChange,
   onOpenCart,
   onCancelSaleSequence,
+  onCreateNextInvoice,
   onVoiceSearchCustomer,
   isVoiceSearching,
   speakAssistiveText,
@@ -433,19 +439,41 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
   // VIEW 1: SEPARATE INVOICE CONFIRMATION SCREEN (COMPLETE SALE)
   // =========================================================================
   if (confirmedBill) {
+    const handleNextInvoice = () => {
+      setConfirmedBill(null);
+      if (onCreateNextInvoice) {
+        onCreateNextInvoice();
+      } else {
+        onCancelSaleSequence();
+      }
+    };
+
     return (
-      <div id="confirmed-sale-screen" className="space-y-4 max-w-none lg:max-w-2xl mx-auto py-2">
+      <div id="confirmed-sale-screen" className="space-y-4 max-w-none lg:max-w-2xl mx-auto py-2 pb-36 sm:pb-40">
         <InvoiceSuccessCard
           bill={confirmedBill}
-          onCreateNextBill={() => {
-            setConfirmedBill(null);
-            onCancelSaleSequence();
-          }}
+          onCreateNextBill={handleNextInvoice}
           onOpenHistory={() => {
             setConfirmedBill(null);
             onSetSalesmanTab('bills');
           }}
         />
+
+        {/* Floating Quick Action: Create Next Invoice — Always visible above bottom navigation */}
+        <div className="fixed bottom-16 sm:bottom-20 inset-x-0 z-30 px-3 sm:px-4 pointer-events-none">
+          <div className="max-w-2xl mx-auto flex items-center justify-end pointer-events-auto">
+            <button
+              type="button"
+              id="btn-floating-next-invoice"
+              onClick={handleNextInvoice}
+              className="px-5 py-2.5 rounded-full font-black text-xs sm:text-sm bg-[#0B3D32] hover:bg-[#072720] text-white cursor-pointer shadow-2xl border-2 border-emerald-400 flex items-center gap-2 transition-transform hover:scale-105 active:scale-95 ring-4 ring-emerald-500/20"
+            >
+              <Plus size={16} strokeWidth={3} />
+              <span>Create Next Invoice</span>
+              <ArrowRight size={14} />
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -674,6 +702,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 onClick={() => {
                   setSelectedRetailer('');
                   setRetailerPhone('');
+                  setRetailerCustomerId?.('');
                   speakAssistiveText('Customer deselected.');
                 }}
                 className="px-2.5 py-1.5 rounded-lg bg-white border border-emerald-300 text-emerald-900 hover:bg-emerald-100 font-bold text-xs cursor-pointer shadow-sm"
@@ -722,11 +751,12 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 <div className="absolute top-full left-0 right-0 z-30 mt-1 bg-white border-2 border-sky-600 rounded-xl shadow-2xl overflow-hidden divide-y divide-slate-100 max-h-64 overflow-y-auto">
                   {filteredCustomerSuggestions.map((cust) => (
                     <button
-                      key={cust.phone || cust.name}
+                      key={`${cust.id || ''}|${cust.phone || ''}|${cust.name}`}
                       type="button"
                       onClick={() => {
                         setSelectedRetailer(cust.name);
                         setRetailerPhone(cust.phone || '');
+                        setRetailerCustomerId?.(cust.id || '');
                         setShowCustomerDropdown(false);
                         setCustomerSearchQuery('');
                         speakAssistiveText(`Selected ${cust.name}`);
@@ -782,10 +812,25 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                     <button
                       type="button"
                       onClick={() => {
-                        setSelectedRetailer(customerSearchQuery.trim());
+                        const typed = customerSearchQuery.trim();
+                        // A name typed slightly differently ("Sharma Stores", "M/s Sharma Store") may still be a
+                        // registered shop: use that record instead of creating a look-alike free-text customer.
+                        const key = normCustName(typed);
+                        const same = key ? (customers || []).filter((c) => normCustName(c.name) === key) : [];
+                        if (same.length === 1) {
+                          setSelectedRetailer(same[0].name);
+                          setRetailerPhone(same[0].phone || '');
+                          setRetailerCustomerId?.(same[0].id || '');
+                          speakAssistiveText(`Selected ${same[0].name}`);
+                        } else {
+                          setSelectedRetailer(typed);
+                          // never carry the previous shop's phone / record onto a different name
+                          setRetailerPhone('');
+                          setRetailerCustomerId?.('');
+                          speakAssistiveText(`Selected ${typed}`);
+                        }
                         setShowCustomerDropdown(false);
                         setCustomerSearchQuery('');
-                        speakAssistiveText(`Selected ${customerSearchQuery.trim()}`);
                       }}
                       className="w-full sm:w-auto px-3 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 text-slate-700 font-bold text-xs cursor-pointer"
                     >
@@ -840,6 +885,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 onClick={() => {
                   setSelectedRetailer('Spot Cash / Walk-in Customer');
                   setRetailerPhone('');
+                  setRetailerCustomerId?.('');
                   speakAssistiveText('Spot cash customer selected.');
                 }}
                 className="min-h-[44px] py-2 px-3 rounded-xl border-2 border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-950 font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors"
@@ -1294,6 +1340,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
         onCustomerCreated={(newCust) => {
           setSelectedRetailer(newCust.name);
           setRetailerPhone(newCust.phone || '');
+          setRetailerCustomerId?.(newCust.id);
           setShowCustomerDropdown(false);
           setCustomerSearchQuery('');
           speakAssistiveText(`Selected ${newCust.name}`);

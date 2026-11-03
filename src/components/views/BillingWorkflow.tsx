@@ -1218,7 +1218,7 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
   // ===========================================================================
   if (finalizedBill) {
     return (
-      <div id="billing-invoice-success-screen" className="max-w-none lg:max-w-3xl mx-auto py-4 space-y-4">
+      <div id="billing-invoice-success-screen" className="max-w-none lg:max-w-3xl mx-auto py-4 space-y-4 pb-36 sm:pb-40">
         <InvoiceSuccessCard
           bill={finalizedBill}
           onOpenInvoiceModal={onOpenInvoiceModal}

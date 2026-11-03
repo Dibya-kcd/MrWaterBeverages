@@ -11,8 +11,7 @@
     "build:web": "vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
-    "build:web": "vite build"
+    "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.6.0",
