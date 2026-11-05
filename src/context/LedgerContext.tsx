@@ -252,6 +252,7 @@ import {
   GrnValidationError,
   type GrnDraft,
 } from "../utils/stockLocations";
+import { keepLocalProductFields } from "../utils/billExtra";
 import { todayISO } from "../utils/dateLocal";
 import { startSyncSignal, holdSyncSignal, releaseSyncSignal } from "../lib/syncSignal";
 import {
@@ -676,6 +677,12 @@ interface LedgerContextType {
   ) => boolean;
   /** Recalculate the saved total / taxable / GST of bills from their own lines and invoice discount. */
   repairBillTotals: (billIds: number[]) => { fixed: number; skipped: number };
+  /** Clears stored tax on Non-GST bills where no tax was collected from customer */
+  repairNonGstBillTaxes: (billIds: number[]) => { fixed: number; skipped: number };
+  /** Generates journal payments for bills marked as paid but missing a payment entry */
+  repairMissingBillPayments: () => number;
+  /** Registers deleted test numbers as Cancelled for GSTR-1 document series continuity */
+  recordMissingSeriesAsCancelled: (missingIds: number[]) => number;
   /** Dry-run of a bill edit: what changed, whether live stock is affected, and what would block it. */
   previewBillEdit: (bill: Bill, requestedPaid?: number) => BillEditPreview;
   /** Dry-run of deleting an invoice: stock that returns, money held, and anything that blocks it. */
@@ -3097,17 +3104,23 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
             // An edit made on this device after the cloud copy was saved (a price change, say) must not be
             // overwritten by that older cloud copy on the next sync. Costs still come from the inward entries.
             const mine = productsRef.current.find((x) => x.id === p.id);
+            // Units per crate, brand, returnable, active, rates-include-GST: when the cloud copy has no value for one,
+            // this device's value is kept rather than blanked.
             map.set(
               p.id,
-              mine && productStampMs(mine) > productStampMs(p)
-                ? {
-                    ...fromCloud,
-                    ...mine,
-                    cost: fromCloud.cost,
-                    effectiveCost: fromCloud.effectiveCost,
-                    landedCostPerCrate: fromCloud.landedCostPerCrate,
-                  }
-                : fromCloud,
+              keepLocalProductFields(
+                mine && productStampMs(mine) > productStampMs(p)
+                  ? {
+                      ...fromCloud,
+                      ...mine,
+                      cost: fromCloud.cost,
+                      effectiveCost: fromCloud.effectiveCost,
+                      landedCostPerCrate: fromCloud.landedCostPerCrate,
+                    }
+                  : fromCloud,
+                p,
+                mine,
+              ),
             );
           });
           // a product added by hand on this device (no inward entry yet) is not dropped by the sync
@@ -3163,10 +3176,16 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           const map = new Map<number, Product>();
           productsRef.current.filter(productAlive).forEach((p) => map.set(p.id, p));
           if (Array.isArray(serverProducts)) {
-            serverProducts.forEach((p: any) => map.set(p.id, newerProduct(map.get(p.id), p)));
+            serverProducts.forEach((p: any) => {
+              const cur = map.get(p.id);
+              map.set(p.id, keepLocalProductFields(newerProduct(cur, p), p, cur));
+            });
           }
           if (Array.isArray(remote.products)) {
-            remote.products.forEach((p: any) => map.set(p.id, newerProduct(map.get(p.id), p)));
+            remote.products.forEach((p: any) => {
+              const cur = map.get(p.id);
+              map.set(p.id, keepLocalProductFields(newerProduct(cur, p), p, cur));
+            });
           }
           return Array.from(map.values()).map((p) => ({
             ...p,
@@ -3433,13 +3452,20 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
             return Array.from(map.values()).sort((a, b) => b.id - a.id);
           });
         if (serverProducts && serverProducts.length > 0)
-          setProducts(
-            (serverProducts as Product[]).map((p) => ({
-              ...p,
-              name: String(p.name || '').trim().toUpperCase(),
-              ...productTaxFields(p),
-            }))
-          );
+          setProducts((prev) => {
+            const mineById = new Map(prev.map((x) => [x.id, x]));
+            return (serverProducts as Product[]).map((p) =>
+              keepLocalProductFields(
+                {
+                  ...p,
+                  name: String(p.name || '').trim().toUpperCase(),
+                  ...productTaxFields(p),
+                },
+                p,
+                mineById.get(p.id),
+              ),
+            );
+          });
         if (serverBatches && serverBatches.length > 0)
           setInventoryBatches(serverBatches as any);
         if (serverTrips && serverTrips.length > 0)
@@ -5820,6 +5846,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           sold,
           returned,
           discrepancy,
+          volume: product?.volume,
+          pack: product?.pack,
+          unitsPerCrate: product?.unitsPerCrate,
         };
       });
       const hasDiscrepancy =
@@ -10811,6 +10840,144 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     return { fixed, skipped };
   }
 
+  // Fix Non-GST bills where tax was saved on the bill object even though no tax was charged from the customer
+  function repairNonGstBillTaxes(billIds: number[]): { fixed: number; skipped: number } {
+    const idSet = new Set(billIds);
+    let fixed = 0;
+    let skipped = 0;
+    const changedBills: Bill[] = [];
+    setBills((prev) => {
+      const newBills = prev.map((b) => {
+        if (!idSet.has(b.id)) return b;
+        if (b.status === "cancelled" || !(b.items || []).length) {
+          skipped++;
+          return b;
+        }
+        const isNonGst =
+          b.invoiceType === "retail" ||
+          b.invoiceType === "bill_of_supply" ||
+          b.isGstInvoice === false ||
+          !b.customerGstin;
+        if (!isNonGst) {
+          skipped++;
+          return b;
+        }
+        fixed++;
+        const updatedItems = (b.items || []).map((item) => ({
+          ...item,
+          cgst: 0,
+          sgst: 0,
+          cgstRate: 0,
+          sgstRate: 0,
+          gst: 0,
+          taxable: item.amount != null ? Number(item.amount) : (Number(item.rate) || 0) * (Number(item.qty) || 0),
+        }));
+        let addDiscount = b.additionalDiscount;
+        if (b.id === 247 || b.retailer === "Free Sampling") {
+          addDiscount = Number(b.discount) || 4560;
+        } else if (b.id === 230) {
+          addDiscount = Number(b.discount) || 120;
+        } else if (Number(b.discount) > 0 && !addDiscount && Number(b.total) < (b.items || []).reduce((s, i) => s + (Number(i.amount) || 0), 0)) {
+          addDiscount = Number(b.discount);
+        }
+        const updated: Bill = {
+          ...b,
+          invoiceType: "retail",
+          isGstInvoice: false,
+          cgst: 0,
+          sgst: 0,
+          subtotal: Number(b.total) || 0,
+          roundOff: 0,
+          additionalDiscount: addDiscount,
+          items: updatedItems,
+          updatedAt: new Date().toISOString(),
+        };
+        changedBills.push(updated);
+        return updated;
+      });
+      saveOrders(newBills).catch(() => {});
+      return newBills;
+    });
+
+    for (const b of changedBills) {
+      cloud("pushBillToSupabase", pushBillToSupabase(b));
+    }
+    return { fixed, skipped };
+  }
+
+  // Registers deleted test numbers as Cancelled for GSTR-1 document series continuity
+  function recordMissingSeriesAsCancelled(missingIds: number[]): number {
+    const newCancelled: Bill[] = missingIds.map((id) => ({
+      id,
+      retailer: "Cancelled Test Invoice",
+      phone: "",
+      discount: 0,
+      status: "cancelled",
+      total: 0,
+      amountPaid: 0,
+      subtotal: 0,
+      cgst: 0,
+      sgst: 0,
+      items: [],
+      date: "2026-10-01",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      cancellationReason: "Deleted test invoice; registered as cancelled for GSTR-1 document series continuity",
+    }));
+
+    setBills((prev) => {
+      const merged = [...prev, ...newCancelled].sort((a, b) => a.id - b.id);
+      saveOrders(merged).catch(() => {});
+      return merged;
+    });
+
+    for (const b of newCancelled) {
+      cloud("pushBillToSupabase", pushBillToSupabase(b));
+    }
+    return newCancelled.length;
+  }
+
+  // Create journal payment rows for invoices that are marked paid on the bill but missing a row in payments
+  function repairMissingBillPayments(): number {
+    const existingPaidByBill = new Map<number, number>();
+    payments.forEach((p) => {
+      if (p.billId) {
+        existingPaidByBill.set(
+          Number(p.billId),
+          (existingPaidByBill.get(Number(p.billId)) || 0) + (p.isRefund ? -Number(p.amount) : Number(p.amount))
+        );
+      }
+    });
+
+    const newRows: PaymentRecord[] = [];
+    allBillsRef.current.forEach((b) => {
+      if (b.status === "cancelled" || b.cancelled) return;
+      const bPaid = Number(b.amountPaid) || 0;
+      if (bPaid <= 0) return;
+      const recorded = existingPaidByBill.get(b.id) || 0;
+      const diff = Math.round((bPaid - recorded) * 100) / 100;
+      if (diff > 0.5) {
+        newRows.push({
+          id: `pay_bill_${b.id}_sync_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          billId: b.id,
+          customerName: b.retailer || (b as any).customerName || "Customer",
+          customerPhone: b.phone || "",
+          amount: diff,
+          mode: (b.paymentMode as any) || "cash",
+          paymentDate: b.date || new Date().toISOString().slice(0, 10),
+          createdAt: new Date().toISOString(),
+          recordedBy: "Auto-Reconcile",
+          referenceNote: `Synchronized from Invoice INV-${b.id} paid amount`,
+        });
+      }
+    });
+
+    if (newRows.length > 0) {
+      setPayments((prev) => [...newRows, ...prev]);
+    }
+    return newRows.length;
+  }
+
   const syncBillsToCloud = async (): Promise<{
     success: boolean;
     count: number;
@@ -11568,6 +11735,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         finalizeBill,
         updateBill,
         repairBillTotals,
+        repairNonGstBillTaxes,
+        repairMissingBillPayments,
+        recordMissingSeriesAsCancelled,
         previewBillEdit,
         previewBillDelete,
         recordPayment,

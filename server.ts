@@ -1,7 +1,7 @@
 import express from "express";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import { billExtraFields, applyBillExtra, grnExtraFields, applyGrnExtra } from "./src/utils/billExtra";
+import { billExtraFields, applyBillExtra, grnExtraFields, applyGrnExtra, productExtraFields, applyProductExtra } from "./src/utils/billExtra";
 import { volumeFromName, detectPack } from "./src/utils/billing";
 import { hashPin } from "./src/utils/crypto";
 import { findOverReturns, describeOverReturn } from "./src/utils/tripReturns";
@@ -1303,10 +1303,10 @@ async function startServer() {
       const deadBillIds = new Set<number>(
         Array.from(await readTombstones("deleted_bill_ids")).map(Number),
       );
-      // Older POSTs cached the database-shaped row (amount_paid, extra, ...): hand the app the bill shape it expects.
+      // Cancelled bills must be preserved for GST series continuity (GSTR-1 Table 13); only truly deleted active bills are filtered out
       const colOrders = Array.isArray(colOrdersRaw)
         ? colOrdersRaw
-            .filter((o: any) => !deadBillIds.has(Number(o?.id)))
+            .filter((o: any) => o?.status === "cancelled" || !deadBillIds.has(Number(o?.id)))
             .map((o: any) =>
               o && o.amountPaid === undefined && o.amount_paid !== undefined
                 ? applyBillExtra(
@@ -1690,11 +1690,11 @@ async function startServer() {
     const byId = new Map<number, any>();
     for (const b of stored) {
       const id = Number(b?.id);
-      if (Number.isFinite(id) && !deletedIds.has(id)) byId.set(id, b);
+      if (Number.isFinite(id) && (b?.status === "cancelled" || !deletedIds.has(id))) byId.set(id, b);
     }
     for (const b of incoming) {
       const id = Number(b?.id);
-      if (!Number.isFinite(id) || deletedIds.has(id)) continue;
+      if (!Number.isFinite(id) || (b?.status !== "cancelled" && deletedIds.has(id))) continue;
       const cur = byId.get(id);
       if (cur && !incomingBillWins(cur, b)) continue; // stored copy is the newer one
       byId.set(id, b);
@@ -1723,6 +1723,21 @@ async function startServer() {
       const deletedIds = new Set<number>(
         (Array.isArray(deletedRaw) ? deletedRaw : []).map((n: any) => Number(n)),
       );
+      // If any incoming bill is explicitly provided (e.g. registered cancelled test bills for series continuity), un-tombstone it
+      const restoredIds: number[] = [];
+      for (const b of rawBills) {
+        const id = Number(b?.id);
+        if (Number.isFinite(id) && deletedIds.has(id)) {
+          deletedIds.delete(id);
+          restoredIds.push(id);
+        }
+      }
+      if (restoredIds.length > 0) {
+        const curDeleted = Array.isArray(deletedRaw) ? deletedRaw : [];
+        const restoredSet = new Set(restoredIds);
+        await setCollectionData("deleted_bill_ids", curDeleted.filter((n: any) => !restoredSet.has(Number(n))));
+      }
+
       const acceptedBills = new Set<any>();
       await setCollectionData(
         "orders",
@@ -3804,7 +3819,7 @@ async function startServer() {
           const detectedVol = volumeFromName(r.name);
           const vol = Number(r.volume) > 0 ? Number(r.volume) : (detectedVol || 150);
           const pack = r.pack && r.pack.trim() !== "" && r.pack !== "pcs" ? r.pack : detectPack(r.name);
-          return {
+          return applyProductExtra({
             id: Number(r.id),
             sku: r.sku || `PRD-${r.id}`,
             name: String(r.name || "").trim().toUpperCase(),
@@ -3827,7 +3842,7 @@ async function startServer() {
                 : 0.18,
             scheme: r.scheme || "",
             updatedAt: r.updated_at || undefined,
-          };
+          }, r.extra);
         });
 
         // Background idempotent sync: normalize lowercase names or zero volumes in Supabase
@@ -3922,9 +3937,21 @@ async function startServer() {
         };
       });
 
-      const { error } = await supabase
+      // Units per crate, brand, returnable, active and rates-include-GST are kept in the `extra` column.
+      // Sent only when a product has some, so a copy without them never blanks what the cloud already holds.
+      let { error } = await supabase
         .from("products")
-        .upsert(payload, { onConflict: "id" });
+        .upsert(
+          payload.map((row: any, i: number) => {
+            const extra = productExtraFields(prodsList[i]);
+            return extra ? { ...row, extra } : row;
+          }),
+          { onConflict: "id" },
+        );
+      if (error) {
+        // `extra` column not added yet (migration 014): save the rest as before
+        ({ error } = await supabase.from("products").upsert(payload, { onConflict: "id" }));
+      }
       if (error) {
         // Fallback in case table has base columns
         const fallback = payload.map(

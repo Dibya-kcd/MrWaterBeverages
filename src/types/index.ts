@@ -566,6 +566,9 @@ export interface TripProductBreakdown {
   sold: number;
   returned: number;
   discrepancy: number;
+  volume?: number;
+  pack?: string;
+  unitsPerCrate?: number;
 }
 
 export interface Warehouse {
@@ -809,6 +812,7 @@ export type TabId =
   | 'dashboard'
   | 'customers'
   | 'payments'
+  | 'expenses'
   | 'grn'
   | 'products'
   | 'inventory'

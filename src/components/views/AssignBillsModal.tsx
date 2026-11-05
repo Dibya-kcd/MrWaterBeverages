@@ -9,6 +9,7 @@ import {
   ShoppingBag,
   Filter,
   CheckCircle2,
+  RotateCcw,
 } from 'lucide-react';
 import { Bill, Product, Trip } from '../../types';
 import { money, attachableBillsForTrip } from '../../utils/billing';
@@ -24,6 +25,7 @@ interface AssignBillsModalProps {
   products: Product[];
   onToggleBill: (tripId: number, billId: number) => string | null | void;
   onAutoAssignDate: (tripId: number) => void;
+  onReopenTrip?: (tripId: number) => void;
   palette: any;
   fz: (size: number, extra?: React.CSSProperties) => React.CSSProperties;
   scale: number;
@@ -38,6 +40,7 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
   products,
   onToggleBill,
   onAutoAssignDate,
+  onReopenTrip,
   palette,
   fz,
   scale,
@@ -144,6 +147,30 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
             <X size={Math.round(20 * scale)} aria-hidden="true" />
           </button>
         </div>
+
+        {/* Closed trip reopen banner */}
+        {trip.status === 'closed' && (
+          <div
+            className="p-3 bg-amber-50 border-b-2 border-amber-200 flex items-center justify-between flex-wrap gap-2 text-xs"
+          >
+            <div className="flex items-center gap-2 text-amber-900 font-semibold">
+              <RotateCcw size={15} className="shrink-0 text-amber-700" />
+              <span>
+                Trip #{trip.id} is completed and reconciled. Reopen it to Active to attach or detach bills freely.
+              </span>
+            </div>
+            {onReopenTrip && (
+              <button
+                type="button"
+                onClick={() => onReopenTrip(Number(trip.id))}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0d4a3a] text-white font-bold cursor-pointer hover:bg-[#0a3d30] shadow-xs active:scale-95 transition-all"
+              >
+                <RotateCcw size={13} />
+                Reopen Trip #{trip.id}
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Quick Auto-Assign Banner if unassigned bills on date exist */}
         {unassignedDateBillsCount > 0 && (

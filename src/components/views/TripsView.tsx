@@ -8,6 +8,7 @@ import { AssignBillsModal } from './AssignBillsModal';
 import { TripEditScreen } from './TripEditScreen';
 import { TripRecordReturnScreen } from './TripRecordReturnScreen';
 import { NewTripSheet, NewTripPayload } from './trips/NewTripSheet';
+import { useCreateTrip } from './trips/useCreateTrip';
 import { TripListCard } from './trips/TripListCard';
 import { SalesmanDuesPanel } from './trips/SalesmanDuesPanel';
 import { useBeats } from '../../hooks/useBeats';
@@ -28,6 +29,7 @@ const fmtDay = (d?: string) => {
 
 export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }) => {
   const { activeBeats } = useBeats();
+  const createTrip = useCreateTrip();
   const {
     trips,
     bills,
@@ -40,6 +42,7 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
     remainingStock,
     getVehicleStock,
     addTrip,
+    reopenTrip,
     toggleBillAssignment,
     autoAssignTripBills,
     saveReturn,
@@ -75,6 +78,14 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 4500);
+  };
+
+  const handleReopenTrip = (target: Trip | number) => {
+    const tripId = typeof target === 'number' ? target : Number(target.id);
+    const t = typeof target === 'number' ? trips.find((x) => Number(x.id) === tripId) : target;
+    reopenTrip(tripId);
+    setTripsTab('active');
+    showToast(`Trip #${tripId}${t?.vehicle ? ` (${t.vehicle})` : ''} reopened and moved back to Active trips. You can now edit its load, returns, and bills.`);
   };
 
   // Editing a completed trip reopens it: the edit form opens as an active trip and is only
@@ -157,6 +168,7 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
         godownLabel={godownLabel(t)}
         personLabel={t.driver || t.salesman || salesmen.find((s) => s.id === t.salesmanId)?.name}
         onSettle={openSettle}
+        onReopen={handleReopenTrip}
         onEdit={openEdit}
         onBills={setManagingBillsTrip}
         onDelete={setTripToDelete}
@@ -165,90 +177,11 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
   };
 
   const handleCreate = (p: NewTripPayload): string | null => {
-    if (!p.vehicle) return 'Enter the vehicle (van) for this trip.';
-    if (p.lines.length === 0) return 'Add at least one product with units to load.';
-
-    // Stock is deducted when a bill is raised, not when the van is loaded, so the load sheet must
-    // itself refuse loads the godown cannot cover (previously this was only a warning).
-    // Bills this trip will pick up by date. Their crates are already out of stock (stock is deducted
-    // at billing) and the load must cover them, or the trip starts with sold > loaded.
-    const attachedBills = p.autoAttachBills
-      ? attachableBillsForTrip({ date: p.date, salesmanId: p.salesmanId || undefined, vehicle: p.vehicle }, bills, trips)
-      : [];
-    const billedByProduct: Record<number, number> = {};
-    for (const b of attachedBills) {
-      for (const it of b.items || []) {
-        const pid = Number(it.productId);
-        billedByProduct[pid] = (billedByProduct[pid] || 0) + (Number(it.qty) || 0);
-      }
-    }
-    const loadByProduct: Record<number, number> = {};
-    for (const l of p.lines) loadByProduct[l.productId] = (loadByProduct[l.productId] || 0) + l.qty;
-    for (const [pidStr, billed] of Object.entries(billedByProduct)) {
-      const pid = Number(pidStr);
-      if (billed > (loadByProduct[pid] || 0)) {
-        const nm = products.find((x) => x.id === pid)?.name || `Product #${pid}`;
-        return `${nm}: ${billed} already billed on the bills this trip would attach, so the load cannot be less than ${billed}. Add the units or untick "Attach today's bills".`;
-      }
-    }
-
-    const wantByWh: Record<string, number> = {};
-    const wantByProduct: Record<number, number> = {};
-    for (const l of p.lines) {
-      const wh = l.warehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
-      wantByWh[`${wh}|${l.productId}`] = (wantByWh[`${wh}|${l.productId}`] || 0) + l.qty;
-      wantByProduct[l.productId] = (wantByProduct[l.productId] || 0) + l.qty;
-    }
-    const nameOf = (id: number) => products.find((x) => x.id === id)?.name || `Product #${id}`;
-    // Billed crates already left the godown, so only the unsold part of the load needs stock.
-    const toCover = { ...billedByProduct };
-    for (const key of Object.keys(wantByWh)) {
-      const pid = Number(key.split('|')[1]);
-      const use = Math.min(toCover[pid] || 0, wantByWh[key]);
-      wantByWh[key] -= use;
-      toCover[pid] = (toCover[pid] || 0) - use;
-    }
-    for (const [key, qty] of Object.entries(wantByWh)) {
-      if (qty <= 0) continue;
-      const [wh, pidStr] = key.split('|');
-      const have = warehouseStock(wh, Number(pidStr));
-      if (qty > have) {
-        const whName = warehouses.find((w) => w.id === wh)?.name || 'Main Godown';
-        return `${nameOf(Number(pidStr))}: loading ${qty} but ${whName} has only ${have}.`;
-      }
-    }
-    // Crates already sitting unsold on other open vans are still counted in the godown balance,
-    // so a second van could be loaded with the same crates. Count them as taken.
-    for (const [pidStr, qty] of Object.entries(wantByProduct)) {
-      const pid = Number(pidStr);
-      const onVans = trips
-        .filter((t) => t.status === 'out')
-        .reduce((sum, t) => sum + getVehicleStock(t, pid).available, 0);
-      const free = remainingStock(pid) - onVans;
-      if (qty - (billedByProduct[pid] || 0) > free) {
-        return `${nameOf(pid)}: only ${Math.max(0, free)} free to load (${onVans} already on other vans).`;
-      }
-    }
-
-    const warehouseLoads: Record<string, Record<number, number>> = {};
-    const loaded: Record<number, number> = {};
-    for (const l of p.lines) {
-      const wh = l.warehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
-      warehouseLoads[wh] = warehouseLoads[wh] || {};
-      warehouseLoads[wh][l.productId] = (warehouseLoads[wh][l.productId] || 0) + l.qty;
-      loaded[l.productId] = (loaded[l.productId] || 0) + l.qty;
-    }
-    const perWh = Object.entries(warehouseLoads).map(([id, m]) => [id, Object.values(m).reduce((s, q) => s + q, 0)] as const);
-    const primary = [...perWh].sort((a, b) => b[1] - a[1])[0]?.[0] || defaultWarehouse?.id || '';
-    const salesman = salesmen.find((s) => s.id === p.salesmanId);
-    const initialBillIds = attachedBills.map((b) => b.id);
-
-    addTrip(p.vehicle, p.date, loaded, primary, initialBillIds, salesman?.name, p.route || undefined, p.salesmanId || undefined, warehouseLoads);
-
-    const total = perWh.reduce((s, [, q]) => s + q, 0);
+    const res = createTrip.create(p);
+    if (res.ok === false) return res.error;
     setShowNewTrip(false);
     setTripsTab('active');
-    showToast(`${p.vehicle} loaded with ${total} cs${perWh.length > 1 ? ` from ${perWh.length} godowns` : ''}.`);
+    showToast(`${p.vehicle} loaded with ${res.total} cs${res.godowns > 1 ? ` from ${res.godowns} godowns` : ''}.`);
     return null;
   };
 
@@ -284,6 +217,11 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
           return null;
         }}
         reopensOnSave={editReopens}
+        onReopenTripNow={(id) => {
+          reopenTrip(id);
+          setEditReopens(false);
+          showToast(`Trip #${id} reopened and moved back to Active trips.`);
+        }}
         onBack={() => {
           setViewMode('list');
           setTripForEdit(null);
@@ -606,9 +544,7 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
           routes={routeOptions}
           defaultWarehouseId={defaultWarehouse?.id || warehouses[0]?.id || ''}
           warehouseStock={warehouseStock}
-          attachableBills={(d, sid, veh) =>
-            attachableBillsForTrip({ date: d, salesmanId: sid || undefined, vehicle: veh }, bills, trips)
-          }
+          attachableBills={createTrip.attachable}
           onSubmit={handleCreate}
           onClose={() => setShowNewTrip(false)}
         />
@@ -629,6 +565,7 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
           onClose={() => setManagingBillsTrip(null)}
           onToggleBill={toggleBillAssignment}
           onAutoAssignDate={autoAssignTripBills}
+          onReopenTrip={handleReopenTrip}
         />
       )}
 

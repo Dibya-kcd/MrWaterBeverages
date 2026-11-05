@@ -106,9 +106,9 @@ export const ProductsView: React.FC = () => {
       specialRate: "0",
       reorderLevel: "0",
       imageUrl: "",
-      ratesIncludeGst: false,
-      returnable: false,
-      active: true,
+      ratesIncludeGst: p.ratesIncludeGst === true,
+      returnable: p.returnable === true,
+      active: p.active !== false,
     });
     setFormError(null);
     setFormOpen(true);
@@ -141,7 +141,7 @@ export const ProductsView: React.FC = () => {
     const payload: Omit<Product, "id"> = {
       name,
       sku: form.sku.trim() || undefined,
-      brand: form.brand.trim() || undefined,
+      brand: form.brand.trim(),
       category: cat,
       hsn: hsnClean,
       gstRate: gstToRate(form.gstPct),
@@ -155,6 +155,7 @@ export const ProductsView: React.FC = () => {
       opening: 0,
       returnable: !!form.returnable,
       active: form.active !== false,
+      ratesIncludeGst: !!form.ratesIncludeGst,
     };
 
     if (editingId != null) {

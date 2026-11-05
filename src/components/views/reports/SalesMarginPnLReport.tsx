@@ -1,7 +1,9 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ArrowDownRight,
+  ArrowLeft,
   ArrowUpRight,
+  ChevronRight,
   Download,
   IndianRupee,
   Package,
@@ -27,12 +29,41 @@ import { billBalance, billNetTotal, returnedQtyByProduct, billReturnCredit, retu
 import { CATS } from '../../../constants/initialData';
 import { writeOffNetForPeriod, schemeCreditsForPeriod } from '../../../utils/pnlBridge';
 import { ProductProfitPricingModal } from './ProductProfitPricingModal';
+import { NetProfitReport } from './NetProfitReport';
 import { InfoTip } from '../../common/InfoTip';
+import { RegisterCard, Pill } from './mobile/ReportCards';
+import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
+import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
+import {
+  ExplainBox,
+  ReportBreakdownLine,
+  ReportChipGroup,
+  ReportExplainModal,
+  ReportFilterPanel,
+  ReportStat,
+  ReportStatGrid,
+  ReportTitleBar,
+} from './ReportKit';
+import {
+  Chips,
+  HeroCard,
+  LegendDot,
+  MiniStat,
+  PhoneDownloadBar,
+  PhoneHeader,
+  PhoneSearch,
+  SplitBar,
+} from './mobile/PhoneKit';
+
+export type MarginSubTab = 'pnl' | 'products' | 'batches' | 'customers' | 'days' | 'netProfit';
+export type ProfitViewBasis = 'exGst' | 'inclGst';
 
 export interface SalesMarginPnLReportProps {
   filteredBills: Bill[];
   products: Product[];
   periodLabel: string;
+  /** Open on a specific sub-tab (e.g. products when deep-linked from old Product profit). */
+  initialSubTab?: MarginSubTab;
   /** True when a yyyy-mm-dd date falls inside the selected report period (used for write-offs). */
   dateInPeriod?: (date: string) => boolean;
   gstTaxSummary?: {
@@ -51,9 +82,6 @@ export interface SalesMarginPnLReportProps {
     totalCessPaid: number;
   };
 }
-
-export type MarginSubTab = 'pnl' | 'products' | 'batches' | 'customers' | 'days';
-export type ProfitViewBasis = 'exGst' | 'inclGst';
 
 export interface ProductMarginRow {
   productId: number;
@@ -475,14 +503,17 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
   filteredBills,
   products,
   periodLabel,
+  initialSubTab = 'pnl',
   dateInPeriod,
   gstTaxSummary,
   purchaseStats,
 }) => {
-  const [subTab, setSubTab] = useState<MarginSubTab>('pnl');
+  const [subTab, setSubTab] = useState<MarginSubTab>(initialSubTab || 'pnl');
+  const [mobileActiveSubPage, setMobileActiveSubPage] = useState<MarginSubTab | null>(null);
   const [viewBasis, setViewBasis] = useState<ProfitViewBasis>('exGst');
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<'profit' | 'margin' | 'sales' | 'cases'>('profit');
+  const [explainOpen, setExplainOpen] = useState(false);
 
   // Modal inspection state
   const [selectedProductForModal, setSelectedProductForModal] = useState<ProductMarginRow | null>(null);
@@ -989,53 +1020,93 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
     return rows;
   }, [filteredBills, productMap, batchMap, search, sortBy, viewBasis, lineCogs]);
 
-  const handleExportCsv = () => {
-    const lines: string[] = [];
-    lines.push(`MrWater — Sales, Margin & Profit/Loss Report (${viewBasis === 'exGst' ? 'Ex-GST Operating Profit' : 'Incl-GST Billed Revenue'})`);
-    lines.push(`Period,${periodLabel}`);
-    lines.push(`Basis,${viewBasis === 'exGst' ? 'Ex-GST (Taxable Turnover - Operating Standard)' : 'Incl-GST (Gross Billed Invoice Collections)'}`);
-    lines.push(
-      `Gross Sales,Discounts,Taxable Sales (Ex-GST),Output GST,Net Invoiced (Incl-GST),COGS,Operating Profit,Margin %,Billed Cases,Free Cases,Total Dispatched,Invoices`
-    );
-    lines.push(
-      `${pnl.grossSales.toFixed(2)},${pnl.totalDiscounts.toFixed(2)},${pnl.taxableSalesNet.toFixed(2)},${pnl.totalOutputGstNet.toFixed(2)},${pnl.billedSalesNet.toFixed(2)},${pnl.cogs.toFixed(2)},${pnl.operatingGrossProfit.toFixed(2)},${pnl.operatingMarginPct.toFixed(2)},${pnl.casesSold},${pnl.freeCases},${pnl.totalDispatchedCases},${pnl.invoiceCount}`
-    );
-    lines.push('');
-    lines.push(
-      `Product Name,Category,Billed Cases,Free Cases,Total Dispatched,Inward Cost / cs,Avg Sell Price (Method 2 - Incl GST),Avg Sell Price (Ex GST),Taxable Sales (Ex-GST),Output GST,Billed Net (Incl-GST),COGS,Operating Profit (Ex-GST),Profit / cs,Operating Margin %`
-    );
-    productRows.forEach((r) => {
-      lines.push(
-        `"${r.productName.replace(/"/g, '""')}","${r.category}",${r.casesSold},${r.freeCases},${r.totalDispatched},${r.costPerCase.toFixed(2)},${r.avgBilledSellRate.toFixed(2)},${r.avgTaxableSellRate.toFixed(2)},${r.taxableSales.toFixed(2)},${r.gstAmount.toFixed(2)},${r.netSales.toFixed(2)},${r.cogs.toFixed(2)},${r.operatingProfit.toFixed(2)},${r.profitPerCase.toFixed(2)},${r.operatingMarginPct.toFixed(2)}%`
-      );
-    });
-    lines.push('');
-    lines.push(`Customer,Invoices,Cases Sold,Taxable Sales,GST,Billed Net,COGS,Gross Profit,Margin %,Outstanding`);
-    customerRows.forEach((r) => {
-      lines.push(
-        `"${r.customerName.replace(/"/g, '""')}",${r.invoices},${r.casesSold},${r.taxableSales.toFixed(2)},${r.gstAmount.toFixed(2)},${r.netSales.toFixed(2)},${r.cogs.toFixed(2)},${r.grossProfit.toFixed(2)},${r.marginPct.toFixed(2)},${r.outstanding.toFixed(2)}`
-      );
-    });
-    lines.push('');
-    lines.push(
-      `Batch Number,Product,Category,Supplier,Inward Date,Expiry,Billed Cases,Free Cases,Cost / cs,Taxable Sales,Billed Net,COGS,Operating Profit,Margin %`
-    );
-    batchRows.forEach((r) => {
-      lines.push(
-        `"${r.batchNumber.replace(/"/g, '""')}","${r.productName.replace(/"/g, '""')}","${r.category}","${r.supplierName.replace(/"/g, '""')}",${r.inwardDate.slice(0, 10)},${r.expiryDate.slice(0, 10)},${r.casesSold.toFixed(2)},${r.freeCases.toFixed(2)},${r.costPerCase.toFixed(2)},${r.taxableSales.toFixed(2)},${r.netSales.toFixed(2)},${r.cogs.toFixed(2)},${r.operatingProfit.toFixed(2)},${r.operatingMarginPct.toFixed(2)}%`
-      );
-    });
+  const basisText = viewBasis === 'exGst' ? 'Ex-GST operating profit' : 'Incl-GST billed value';
+  const pct2 = (n: number) => `${n.toFixed(2)}%`;
 
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `MrWater_Sales_Margin_PnL_${viewBasis}_${periodLabel.replace(/\s+/g, '_')}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
+  const exportExcel = () =>
+    downloadXlsx(`sales-margin-pnl-${viewBasis}-${fileStamp()}.xlsx`, [
+      {
+        name: 'Summary',
+        header: ['Item', 'Value'],
+        rows: [
+          ['Period', periodLabel],
+          ['Basis', basisText],
+          ['Gross sales', pnl.grossSales],
+          ['Discounts', pnl.totalDiscounts],
+          ['Taxable sales (Ex-GST)', pnl.taxableSalesNet],
+          ['Output GST', pnl.totalOutputGstNet],
+          ['Net invoiced (Incl-GST)', pnl.billedSalesNet],
+          ['Cost of goods (COGS)', pnl.cogs],
+          ['Operating profit', pnl.operatingGrossProfit],
+          ['Operating margin %', Number(pnl.operatingMarginPct.toFixed(2))],
+          ['Billed cases', pnl.casesSold],
+          ['Free cases', pnl.freeCases],
+          ['Total dispatched', pnl.totalDispatchedCases],
+          ['Invoices', pnl.invoiceCount],
+        ],
+      },
+      {
+        name: 'Products',
+        header: ['Product', 'Category', 'Billed cs', 'Free cs', 'Dispatched', 'Cost / cs', 'Avg sell (Incl GST)', 'Avg sell (Ex GST)', 'Taxable sales', 'Output GST', 'Billed net', 'COGS', 'Operating profit', 'Profit / cs', 'Margin %'],
+        rows: productRows.map((r) => [r.productName, r.category, r.casesSold, r.freeCases, r.totalDispatched, r.costPerCase, r.avgBilledSellRate, r.avgTaxableSellRate, r.taxableSales, r.gstAmount, r.netSales, r.cogs, r.operatingProfit, r.profitPerCase, Number(r.operatingMarginPct.toFixed(2))]),
+      },
+      {
+        name: 'Customers',
+        header: ['Customer', 'Invoices', 'Cases', 'Taxable sales', 'GST', 'Billed net', 'COGS', 'Profit', 'Margin %', 'Outstanding'],
+        rows: customerRows.map((r) => [r.customerName, r.invoices, r.casesSold, r.taxableSales, r.gstAmount, r.netSales, r.cogs, r.grossProfit, Number(r.marginPct.toFixed(2)), r.outstanding]),
+      },
+      {
+        name: 'Batches',
+        header: ['Batch', 'Product', 'Category', 'Supplier', 'Inward date', 'Expiry', 'Billed cs', 'Free cs', 'Cost / cs', 'Taxable sales', 'Billed net', 'COGS', 'Operating profit', 'Margin %'],
+        rows: batchRows.map((r) => [r.batchNumber, r.productName, r.category, r.supplierName, r.inwardDate.slice(0, 10), r.expiryDate.slice(0, 10), r.casesSold, r.freeCases, r.costPerCase, r.taxableSales, r.netSales, r.cogs, r.operatingProfit, Number(r.operatingMarginPct.toFixed(2))]),
+      },
+      {
+        name: 'By day',
+        header: ['Date', 'Invoices', 'Billed net', 'Taxable sales', 'GST', 'COGS', 'Profit', 'Margin %', 'Discounts'],
+        rows: dayRows.map((r) => [r.date, r.invoices, r.netSales, r.taxableSales, r.gstAmount, r.cogs, r.grossProfit, Number(r.marginPct.toFixed(2)), r.discounts]),
+      },
+    ]);
+
+  const exportPdf = () =>
+    downloadPdf({
+      filename: `sales-margin-pnl-${viewBasis}-${fileStamp()}.pdf`,
+      title: 'Sales, margin & profit / loss',
+      subtitle: ['MrWater Distribution', `Period: ${periodLabel}`, `Basis: ${basisText}`],
+      landscape: true,
+      sections: [
+        {
+          title: 'Summary',
+          header: ['Item', 'Amount (Rs.)'],
+          rows: [
+            ['Taxable sales (Ex-GST)', money(pnl.taxableSalesNet)],
+            ['Output GST', money(pnl.totalOutputGstNet)],
+            ['Net invoiced (Incl-GST)', money(pnl.billedSalesNet)],
+            ['Cost of goods (COGS)', money(pnl.cogs)],
+            ['Operating profit', money(pnl.operatingGrossProfit)],
+            ['Operating margin', pct2(pnl.operatingMarginPct)],
+          ],
+          rightAlign: [1],
+        },
+        {
+          title: 'Products',
+          header: ['Product', 'Billed cs', 'Free cs', 'Taxable sales', 'COGS', 'Profit', 'Margin'],
+          rows: productRows.map((r) => [r.productName, r.casesSold, r.freeCases, money(r.taxableSales), money(r.cogs), money(r.operatingProfit), pct2(r.operatingMarginPct)]),
+          rightAlign: [1, 2, 3, 4, 5, 6],
+        },
+        {
+          title: 'Customers',
+          header: ['Customer', 'Invoices', 'Cases', 'Billed net', 'Profit', 'Margin', 'Outstanding'],
+          rows: customerRows.map((r) => [r.customerName, r.invoices, r.casesSold, money(r.netSales), money(r.grossProfit), pct2(r.marginPct), money(r.outstanding)]),
+          rightAlign: [1, 2, 3, 4, 5, 6],
+        },
+        {
+          title: 'By day',
+          header: ['Date', 'Invoices', 'Billed net', 'Taxable sales', 'Profit', 'Margin'],
+          rows: dayRows.map((r) => [r.date, r.invoices, money(r.netSales), money(r.taxableSales), money(r.grossProfit), pct2(r.marginPct)]),
+          rightAlign: [1, 2, 3, 4, 5],
+        },
+      ],
+    });
 
   const marginColor = (pct: number) =>
     pct >= 25 ? 'text-emerald-700' : pct >= 12 ? 'text-sky-700' : pct >= 0 ? 'text-amber-700' : 'text-rose-700';
@@ -1049,237 +1120,251 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
           ? 'bg-amber-50 border-amber-200 text-amber-900'
           : 'bg-rose-50 border-rose-200 text-rose-800';
 
-  const tabs: { id: MarginSubTab; label: string; icon: React.ReactNode }[] = [
-    { id: 'pnl', label: 'P&L Waterfall & GST Flow', icon: <Layers className="w-3.5 h-3.5" /> },
-    { id: 'products', label: 'Product Margins & Pricing', icon: <Package className="w-3.5 h-3.5" /> },
-    { id: 'batches', label: 'Batch-wise Profit', icon: <Boxes className="w-3.5 h-3.5" /> },
-    { id: 'customers', label: 'Customer Margins', icon: <Users className="w-3.5 h-3.5" /> },
-    { id: 'days', label: 'Day-wise P&L', icon: <TrendingUp className="w-3.5 h-3.5" /> },
+  const tabs: { id: MarginSubTab; label: string; shortLabel: string; icon: React.ReactNode }[] = [
+    { id: 'pnl', label: 'P&L & GST', shortLabel: 'P&L', icon: <Layers className="w-3.5 h-3.5" /> },
+    { id: 'netProfit', label: 'Net Profit & Pay', shortLabel: 'Net / Pay', icon: <Wallet className="w-3.5 h-3.5" /> },
+    { id: 'products', label: 'Products', shortLabel: 'Products', icon: <Package className="w-3.5 h-3.5" /> },
+    { id: 'batches', label: 'Batches', shortLabel: 'Batches', icon: <Boxes className="w-3.5 h-3.5" /> },
+    { id: 'customers', label: 'Customers', shortLabel: 'Customers', icon: <Users className="w-3.5 h-3.5" /> },
+    { id: 'days', label: 'By day', shortLabel: 'Days', icon: <TrendingUp className="w-3.5 h-3.5" /> },
+  ];
+
+  const showControls = subTab !== 'netProfit';
+  const showSearch = subTab === 'products' || subTab === 'customers' || subTab === 'batches';
+  const searchHint =
+    subTab === 'products' ? 'Search product…' : subTab === 'batches' ? 'Search batch, product or supplier…' : 'Search customer…';
+  const tabOptions = tabs.map((t) => ({ id: t.id, label: t.label }));
+  const phoneTabOptions = tabs.map((t) => ({ id: t.id, label: t.shortLabel }));
+  const basisOptions: { id: ProfitViewBasis; label: string }[] = [
+    { id: 'exGst', label: 'Ex-GST (operating profit)' },
+    { id: 'inclGst', label: 'Incl-GST (billed value)' },
+  ];
+  const phoneBasisOptions: { id: ProfitViewBasis; label: string }[] = [
+    { id: 'exGst', label: 'Ex-GST' },
+    { id: 'inclGst', label: 'Incl-GST' },
+  ];
+  const sortOptions: { id: typeof sortBy; label: string }[] = [
+    { id: 'profit', label: 'Profit' },
+    { id: 'margin', label: 'Margin %' },
+    { id: 'sales', label: 'Sales' },
+    { id: 'cases', label: 'Cases' },
+  ];
+  const isFiltered = showSearch && search.trim().length > 0;
+  const profitNeg = pnl.activeGrossProfit < 0;
+  const paidPct = pnl.collected > 0 ? `${((pnl.collected / (pnl.billedSalesNet || 1)) * 100).toFixed(0)}% paid` : '0% paid';
+  const rs = (n: number) => `₹${money(n)}`;
+
+  const mobileMenuCards = [
+    {
+      id: 'pnl' as MarginSubTab,
+      title: 'P&L & GST Summary',
+      summary: `Taxable sales ${rs(pnl.taxableSalesNet)} · Output GST ${rs(pnl.totalOutputGstNet)} · Margin ${pnl.activeMarginPct.toFixed(1)}%`,
+      badge: rs(pnl.activeGrossProfit),
+      badgeTone: profitNeg ? 'text-rose-700 bg-rose-50 border-rose-200' : 'text-emerald-700 bg-emerald-50 border-emerald-200',
+      icon: <Layers className="w-5 h-5 text-indigo-600" />,
+      iconBg: 'bg-indigo-50 border-indigo-100',
+    },
+    {
+      id: 'netProfit' as MarginSubTab,
+      title: 'Net Profit & Staff Pay',
+      summary: 'Commercial net profit after operating expenses, write-downs and staff pay',
+      badge: 'Open report',
+      badgeTone: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+      icon: <Wallet className="w-5 h-5 text-emerald-600" />,
+      iconBg: 'bg-emerald-50 border-emerald-100',
+    },
+    {
+      id: 'products' as MarginSubTab,
+      title: 'Product Margins & Profit',
+      summary: `${productRows.length} product SKUs · landed cost, ASP and ex-GST operating profit`,
+      badge: `${productRows.length} items`,
+      badgeTone: 'text-blue-700 bg-blue-50 border-blue-200',
+      icon: <Package className="w-5 h-5 text-blue-600" />,
+      iconBg: 'bg-blue-50 border-blue-100',
+    },
+    {
+      id: 'batches' as MarginSubTab,
+      title: 'Batch & Lot Margins',
+      summary: `${batchRows.length} batches · purchase batch landed cost versus sold prices`,
+      badge: `${batchRows.length} lots`,
+      badgeTone: 'text-amber-800 bg-amber-50 border-amber-200',
+      icon: <Boxes className="w-5 h-5 text-amber-600" />,
+      iconBg: 'bg-amber-50 border-amber-100',
+    },
+    {
+      id: 'customers' as MarginSubTab,
+      title: 'Customer Account Margins',
+      summary: `${customerRows.length} customers · revenue, cost and true profit per party`,
+      badge: `${customerRows.length} buyers`,
+      badgeTone: 'text-purple-700 bg-purple-50 border-purple-200',
+      icon: <Users className="w-5 h-5 text-purple-600" />,
+      iconBg: 'bg-purple-50 border-purple-100',
+    },
+    {
+      id: 'days' as MarginSubTab,
+      title: 'Daily Sales & Margins',
+      summary: `${dayRows.length} days of activity with daily invoice volume and margin %`,
+      badge: `${dayRows.length} days`,
+      badgeTone: 'text-cyan-700 bg-cyan-50 border-cyan-200',
+      icon: <TrendingUp className="w-5 h-5 text-cyan-600" />,
+      iconBg: 'bg-cyan-50 border-cyan-100',
+    },
   ];
 
   return (
-    <div className="space-y-4 sm:space-y-5 animate-in fade-in duration-200">
-      {/* Top Banner & Basis Switcher */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 p-4 rounded-2xl bg-white border border-slate-200 shadow-xs">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-500 text-white flex items-center justify-center shadow-md shadow-emerald-600/20 shrink-0">
-            <Percent className="w-5 h-5" />
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
-                Sales, Margin &amp; Profit / Loss
-              </h2>
-              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                {periodLabel}
+    <div className="space-y-3 animate-in fade-in duration-200" id="report-sales-margin-pnl">
+      {/* ============================ PHONE ============================ */}
+      <div className="md:hidden space-y-3">
+        <PhoneHeader title="Sales, margin & P&L" sub="Revenue, gross margin and profitability" />
+
+        {mobileActiveSubPage === null ? (
+          <>
+            {showControls && (
+              <HeroCard tone={profitNeg ? 'red' : 'green'} label={viewBasis === 'exGst' ? 'Operating profit' : 'Gross margin'} value={rs(pnl.activeGrossProfit)} negative={profitNeg}>
+                <SplitBar
+                  label="Cost versus profit"
+                  parts={[
+                    { value: pnl.cogs, className: 'bg-amber-300' },
+                    { value: Math.max(0, pnl.activeGrossProfit), className: 'bg-emerald-300' },
+                  ]}
+                />
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-white/90">
+                  <LegendDot dot="bg-amber-300">Cost {rs(pnl.cogs)}</LegendDot>
+                  <LegendDot dot="bg-emerald-300">{pnl.activeMarginPct.toFixed(1)}% margin</LegendDot>
+                </div>
+              </HeroCard>
+            )}
+            {showControls && (
+              <div className="grid grid-cols-3 gap-2">
+                <MiniStat label="You got" value={rs(pnl.activeNetSales)} />
+                <MiniStat label="You spent" value={rs(pnl.cogs)} tone="amber" />
+                <MiniStat label="Invoices" value={pnl.invoiceCount} />
+              </div>
+            )}
+            {showControls && (
+              <button type="button" onClick={() => setExplainOpen(true)} className="px-1 text-xs font-semibold text-sky-700 inline-flex items-center gap-1 cursor-pointer min-h-[36px]">
+                <Info size={13} aria-hidden="true" /> How is this calculated?
+              </button>
+            )}
+
+            {/* List of sub-pages as card rows */}
+            <div className="pt-1 space-y-2.5">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
+                  Detailed Breakdown Pages
+                </span>
+                <span className="text-xs font-semibold text-slate-400">6 sections</span>
+              </div>
+
+              {mobileMenuCards.map((card) => (
+                <button
+                  key={card.id}
+                  type="button"
+                  onClick={() => {
+                    setSubTab(card.id);
+                    setMobileActiveSubPage(card.id);
+                  }}
+                  className="w-full bg-white rounded-2xl border border-blue-100/80 p-3.5 shadow-2xs hover:shadow-xs hover:border-blue-200 active:scale-[0.99] transition-all text-left flex items-center justify-between gap-3 group cursor-pointer"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 ${card.iconBg}`}>
+                      {card.icon}
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-sm font-bold text-slate-900 group-hover:text-blue-600 transition-colors leading-tight">
+                        {card.title}
+                      </h4>
+                      <p className="text-xs text-slate-500 line-clamp-1 mt-0.5 font-medium">
+                        {card.summary}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${card.badgeTone}`}>
+                      {card.badge}
+                    </span>
+                    <ChevronRight size={18} className="text-slate-400 group-hover:text-blue-600 group-hover:translate-x-0.5 transition-all" />
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-2 py-1">
+              <button
+                type="button"
+                onClick={() => setMobileActiveSubPage(null)}
+                className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-blue-100 text-xs font-bold text-slate-700 shadow-2xs hover:bg-slate-50 active:scale-95 transition-all cursor-pointer"
+              >
+                <ArrowLeft size={14} className="text-blue-600" />
+                <span>All Sales & P&L Sections</span>
+              </button>
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-wide">
+                {tabs.find((t) => t.id === mobileActiveSubPage)?.label}
               </span>
             </div>
-            <p className="hidden sm:block text-xs text-slate-500 mt-0.5">
-              Method 2 Average Selling Price (billed cases) · Ex-GST True Operating Profit · GST column side-by-side
-            </p>
-          </div>
-        </div>
 
-        {/* Basis Toggle: Ex-GST vs Incl-GST + Export */}
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Basis Switcher */}
-          <div className="flex items-center p-1 rounded-xl bg-slate-100 border border-slate-200 text-xs font-bold">
-            <button
-              type="button"
-              onClick={() => setViewBasis('exGst')}
-              className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
-                viewBasis === 'exGst'
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-              title="Excludes GST statutory pass-through liability — recommended standard accounting practice"
-            >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Ex-GST (True Operating Profit)</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewBasis('inclGst')}
-              className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
-                viewBasis === 'inclGst'
-                  ? 'bg-sky-600 text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-              title="Gross invoice billed collections including GST"
-            >
-              <IndianRupee className="w-3.5 h-3.5" />
-              <span>Incl-GST (Billed Cash Value)</span>
-            </button>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleExportCsv}
-            className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export CSV</span>
-          </button>
-        </div>
-      </div>
-
-      {/* GST treatment & Method 2 — tap to read */}
-      {viewBasis === 'exGst' ? (
-        <InfoTip title="Ex-GST True Operating Profit" text="How profit is calculated">
-          <p>Revenue is reported as <strong>Net Taxable Turnover (₹{money(pnl.taxableSalesNet)})</strong> after excluding <strong>Output GST (₹{money(pnl.totalOutputGstNet)})</strong> shown side-by-side. <strong>COGS (₹{money(pnl.cogs)})</strong> includes inward cost of all {pnl.totalDispatchedCases} crates dispatched (including {pnl.freeCases} promotional free crates). Cost is taken from the actual stock batch each invoice was issued from (older bills without a batch use the product's average cost), plus the inward freight / labour entered on that batch's GRN. Average Selling Price is calculated using <strong>Method 2 (dividing by {pnl.casesSold} billed cases)</strong>.</p>
-        </InfoTip>
-      ) : (
-        <InfoTip title="Cash Billed Mode (GST inclusive)" text="About GST-inclusive figures">
-          <p>Total Invoiced Revenue is <strong>₹{money(pnl.billedSalesNet)}</strong> (inclusive of ₹{money(pnl.totalOutputGstNet)} Output GST). Note that Output GST collected is owed to the government (minus input tax credit on purchases) and does not represent retainable business profit.</p>
-        </InfoTip>
-      )}
-
-      {/* Executive KPI Strip — business language: You spent / You got / Profit */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
-        {/* You got (Revenue) */}
-        <div className="bg-white rounded-2xl border border-slate-200 p-3.5 sm:p-4 shadow-xs">
-          <div className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center justify-between">
-            <span>You got</span>
-            <IndianRupee className="w-3.5 h-3.5 text-sky-600" />
-          </div>
-          <div className="text-[11px] font-semibold text-sky-700 mt-0.5">
-            {viewBasis === 'exGst' ? 'Taxable sales (Ex-GST)' : 'Net billed sales'}
-          </div>
-          <div className="text-xl sm:text-2xl font-black text-sky-950 tracking-tight mt-1 font-mono tabular-nums">
-            ₹{money(pnl.activeNetSales)}
-          </div>
-          <div className="text-[11px] text-slate-500 mt-1.5 pt-1.5 border-t border-slate-100 flex items-center justify-between">
-            <span>GST: ₹{money(pnl.totalOutputGstNet)}</span>
-            <span>Avg Sell: ₹{money(pnl.avgSellPerCase)} / cs</span>
-          </div>
-        </div>
-
-        {/* You spent (COGS) */}
-        <div className="bg-white rounded-2xl border border-slate-200 p-3.5 sm:p-4 shadow-xs">
-          <div className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center justify-between">
-            <span>You spent</span>
-            <Wallet className="w-3.5 h-3.5 text-amber-600" />
-          </div>
-          <div className="text-[11px] font-semibold text-amber-700 mt-0.5">
-            Cost of goods (COGS)
-          </div>
-          <div className="text-xl sm:text-2xl font-black text-amber-950 tracking-tight mt-1 font-mono tabular-nums">
-            ₹{money(pnl.cogs)}
-          </div>
-          <div className="text-[11px] text-slate-500 mt-1.5 pt-1.5 border-t border-slate-100 flex items-center justify-between">
-            <span>Avg Cost: ₹{money(pnl.avgCostPerCase)} / cs</span>
-            <span>{pnl.totalDispatchedCases} cs ({pnl.freeCases} free)</span>
-          </div>
-        </div>
-
-        {/* Profit */}
-        <div
-          className={`rounded-2xl border p-3.5 sm:p-4 shadow-xs ${
-            pnl.activeGrossProfit >= 0
-              ? 'bg-gradient-to-br from-emerald-600 to-teal-700 border-emerald-700 text-white'
-              : 'bg-gradient-to-br from-rose-600 to-rose-800 border-rose-700 text-white'
-          }`}
-        >
-          <div className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-emerald-100 flex items-center justify-between">
-            <span>Profit</span>
-            {pnl.activeGrossProfit >= 0 ? (
-              <ArrowUpRight className="w-3.5 h-3.5" />
-            ) : (
-              <ArrowDownRight className="w-3.5 h-3.5" />
+            {showControls && <Chips<ProfitViewBasis> label="Profit basis" options={phoneBasisOptions} value={viewBasis} onChange={setViewBasis} />}
+            {showSearch && (
+              <>
+                <PhoneSearch value={search} onChange={setSearch} placeholder={searchHint} />
+                <Chips<typeof sortBy> label="Sort by" options={sortOptions} value={sortBy} onChange={setSortBy} />
+              </>
             )}
-          </div>
-          <div className="text-[11px] font-semibold text-emerald-100/90 mt-0.5">
-            {viewBasis === 'exGst' ? 'Operating profit' : 'Gross margin'}
-          </div>
-          <div className="text-xl sm:text-2xl font-black tracking-tight mt-1 font-mono tabular-nums">
-            ₹{money(pnl.activeGrossProfit)}
-          </div>
-          <div className="text-[11px] text-emerald-100/90 mt-1.5 pt-1.5 border-t border-white/20 flex items-center justify-between">
-            <span>₹{money(pnl.avgProfitPerCase)} / cs profit</span>
-            <span>{pnl.activeMarginPct.toFixed(1)}% margin</span>
-          </div>
-        </div>
-
-        {/* Gross Margin % */}
-        <div className="bg-white rounded-2xl border border-slate-200 p-3.5 sm:p-4 shadow-xs">
-          <div className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500 flex items-center justify-between">
-            <span>Operating Margin %</span>
-            <Percent className="w-3.5 h-3.5 text-teal-600" />
-          </div>
-          <div
-            className={`text-xl sm:text-2xl font-black tracking-tight mt-1 font-mono tabular-nums ${marginColor(
-              pnl.activeMarginPct
-            )}`}
-          >
-            {pnl.activeMarginPct.toFixed(1)}%
-          </div>
-          <div className="text-[11px] text-slate-500 mt-1.5 pt-1.5 border-t border-slate-100 flex items-center justify-between">
-            <span>{pnl.invoiceCount} invoices</span>
-            <span className="text-emerald-700 font-semibold">
-              {pnl.collected > 0
-                ? `${((pnl.collected / (pnl.billedSalesNet || 1)) * 100).toFixed(0)}% Paid`
-                : '0%'}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Sub-tabs bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-        <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 overflow-x-auto no-scrollbar gap-1">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setSubTab(t.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
-                subTab === t.id
-                  ? 'bg-[#0b2540] text-white shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/70'
-              }`}
-            >
-              {t.icon}
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {(subTab === 'products' || subTab === 'customers' || subTab === 'batches') && (
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="relative flex-1 sm:flex-none min-w-[140px]">
-              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={
-                  subTab === 'products'
-                    ? 'Search SKU…'
-                    : subTab === 'batches'
-                      ? 'Search batch / product / supplier…'
-                      : 'Search customer…'
-                }
-                className="w-full sm:w-52 pl-8 pr-3 py-1.5 rounded-xl border border-slate-300 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-sky-500"
-              />
-            </div>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-              className="px-2.5 py-1.5 rounded-xl border border-slate-300 text-xs font-bold bg-white cursor-pointer"
-            >
-              <option value="profit">Sort: Operating Profit</option>
-              <option value="margin">Sort: Margin %</option>
-              <option value="sales">Sort: Sales</option>
-              <option value="cases">Sort: Cases</option>
-            </select>
-          </div>
+          </>
         )}
       </div>
 
-      {/* ===== 1. P&L WATERFALL & GST FLOW ===== */}
-      {subTab === 'pnl' && (
+      {/* ======================= TABLET / DESKTOP ======================= */}
+      <div className="hidden md:block space-y-3">
+        <ReportTitleBar
+          title="Sales, margin & P&L"
+          sub={`${periodLabel} · revenue, cost and margin by product, batch, customer and day`}
+          actions={showControls ? <ReportDownloadButtons onExcel={exportExcel} onPdf={exportPdf} disabled={pnl.invoiceCount === 0} reportTitle="Sales, margin and P&L" /> : undefined}
+        />
+
+        {showControls && (
+          <>
+            <ReportStatGrid>
+              <ReportStat label="You got" value={rs(pnl.activeNetSales)} tone="sky" sub={viewBasis === 'exGst' ? `Taxable sales · GST ${rs(pnl.totalOutputGstNet)}` : `Net billed · GST ${rs(pnl.totalOutputGstNet)}`} />
+              <ReportStat label="You spent" value={rs(pnl.cogs)} tone="amber" sub={`${pnl.totalDispatchedCases} cs (${pnl.freeCases} free) · ${rs(pnl.avgCostPerCase)} / cs`} />
+              <ReportStat label={viewBasis === 'exGst' ? 'Operating profit' : 'Gross margin'} value={rs(pnl.activeGrossProfit)} tone={profitNeg ? 'red' : 'green'} sub={`${rs(pnl.avgProfitPerCase)} / cs profit`} />
+              <ReportStat
+                label="Margin"
+                value={`${pnl.activeMarginPct.toFixed(1)}%`}
+                tone={pnl.activeMarginPct >= 12 ? 'green' : pnl.activeMarginPct >= 0 ? 'amber' : 'red'}
+                sub={`${pnl.invoiceCount} invoices · ${paidPct}`}
+              />
+            </ReportStatGrid>
+            <ReportBreakdownLine onExplain={() => setExplainOpen(true)}>
+              <span>
+                {viewBasis === 'exGst'
+                  ? `Ex-GST view · sales ${rs(pnl.taxableSalesNet)} + GST ${rs(pnl.totalOutputGstNet)} = billed ${rs(pnl.billedSalesNet)}`
+                  : `Incl-GST view · billed ${rs(pnl.billedSalesNet)} includes GST ${rs(pnl.totalOutputGstNet)} owed to the government`}
+              </span>
+            </ReportBreakdownLine>
+          </>
+        )}
+
+        <ReportFilterPanel
+          search={showSearch ? { value: search, onChange: setSearch, placeholder: searchHint } : undefined}
+          isFiltered={isFiltered}
+          onReset={() => setSearch('')}
+        >
+          <ReportChipGroup<MarginSubTab> label="View" options={tabOptions} value={subTab} onChange={setSubTab} />
+          {showControls && <ReportChipGroup<ProfitViewBasis> label="Basis" options={basisOptions} value={viewBasis} onChange={setViewBasis} />}
+          {showSearch && <ReportChipGroup<typeof sortBy> label="Sort" options={sortOptions} value={sortBy} onChange={setSortBy} />}
+        </ReportFilterPanel>
+      </div>
+
+      {/* Subtab views - on mobile only shown when a subpage card is selected */}
+      <div className={mobileActiveSubPage === null ? 'hidden md:block' : ''}>
+        {/* ===== 1. P&L WATERFALL & GST FLOW ===== */}
+        {subTab === 'pnl' && (
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-          <div className="lg:col-span-3 bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-100 bg-slate-50/80 flex items-center justify-between">
+          <div className="lg:col-span-3 bg-white rounded-2xl border border-black/10 overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-100 bg-[#faf8f5] flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Sparkles className="w-4 h-4 text-emerald-600" />
                 <span className="text-xs font-black uppercase tracking-wider text-slate-700">
@@ -1412,7 +1497,7 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
 
           <div className="lg:col-span-2 space-y-3.5">
             {/* GST Tax Settlement Flow */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-4 space-y-3">
+            <div className="bg-white rounded-2xl border border-black/10 p-4 space-y-3">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <span className="text-xs font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
                   <ShieldCheck className="w-4 h-4 text-emerald-600" />
@@ -1449,7 +1534,7 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
             </div>
 
             {/* Unit Economics with Method 2 Average Selling Price */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-4 space-y-3">
+            <div className="bg-white rounded-2xl border border-black/10 p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">
                   Unit Economics (Per Case)
@@ -1492,7 +1577,7 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
             </div>
 
             {/* Cash Position */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-4 space-y-2">
+            <div className="bg-white rounded-2xl border border-black/10 p-4 space-y-2">
               <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">
                 Collections &amp; Receivables
               </div>
@@ -1536,10 +1621,65 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
             </span>
           </div>
 
-          <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-xs">
+          <div className="md:hidden space-y-3" id="margin-product-cards">
+            {productRows.length === 0 ? (
+              <div className="bg-white rounded-2xl border border-black/10 px-4 py-10 text-center text-sm text-slate-500">
+                No product sales matching this period or filter.
+              </div>
+            ) : (
+              productRows.map((r) => (
+                <RegisterCard
+                  key={r.productId}
+                  title={r.productName}
+                  pills={
+                    <>
+                      {r.freeCases > 0 && <Pill tone="amber">Scheme</Pill>}
+                      <span className={`inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(r.operatingMarginPct)}`}>
+                        {r.operatingMarginPct.toFixed(1)}%
+                      </span>
+                    </>
+                  }
+                  subtitle={r.category}
+                  heroLabel="Operating profit"
+                  hero={`₹${money(r.operatingProfit)}`}
+                  heroTone={r.operatingProfit >= 0 ? 'green' : 'red'}
+                  segments={[
+                    { value: r.cogs, className: 'bg-amber-500', label: 'COGS' },
+                    { value: Math.max(0, r.operatingProfit), className: 'bg-emerald-600', label: 'Operating profit' },
+                  ]}
+                  stats={[
+                    { label: 'Billed', value: `${r.casesSold} cs` },
+                    { label: 'Free', value: r.freeCases > 0 ? `+${r.freeCases} cs` : '—', tone: r.freeCases > 0 ? 'amber' : 'muted' },
+                    { label: 'Total', value: `${r.totalDispatched} cs`, tone: 'sky' },
+                    { label: 'Avg sell / cs', value: `₹${money(r.avgBilledSellRate)}` },
+                    { label: 'Billed net', value: `₹${money(r.netSales)}`, tone: 'sky' },
+                    { label: 'COGS', value: `₹${money(r.cogs)}`, tone: 'amber' },
+                  ]}
+                  note={
+                    <div className="text-[11px] text-slate-500 font-mono">
+                      Cost ₹{money(r.costPerCase)} / cs · +₹{money(r.profitPerCase)} profit / cs
+                    </div>
+                  }
+                  actions={
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedProductForModal(r);
+                        setIsPricingModalOpen(true);
+                      }}
+                      className="flex-1 min-h-[44px] rounded-xl border border-slate-200 bg-slate-50 text-[13px] font-bold text-slate-800 flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Calculator className="w-4 h-4" /> Rates &amp; profit guide
+                    </button>
+                  }
+                />
+              ))
+            )}
+          </div>
+          <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-black/10 bg-white">
             <table className="w-full text-left data-table min-w-[980px] text-xs">
               <thead>
-                <tr className="border-b border-slate-200 bg-slate-50/80 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                <tr className="border-b border-slate-200 bg-[#faf8f5] text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500">
                   <th className="px-3 py-2.5">Product SKU</th>
                   <th className="px-2 py-2.5 text-right">Billed cs</th>
                   <th className="px-2 py-2.5 text-right">Free cs</th>
@@ -1695,10 +1835,10 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
           </div>
 
           {/* Desktop table */}
-          <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-xs">
+          <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-black/10 bg-white">
             <table className="w-full text-left data-table min-w-[920px] text-xs">
               <thead>
-                <tr className="border-b border-slate-200 bg-slate-50/80 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                <tr className="border-b border-slate-200 bg-[#faf8f5] text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500">
                   <th className="px-3 py-2.5">Batch / Lot</th>
                   <th className="px-3 py-2.5">Product</th>
                   <th className="px-2 py-2.5 text-right">Billed cs</th>
@@ -1773,82 +1913,40 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
           </div>
 
           {/* Mobile / tablet cards — matches Payments & Customers pattern */}
-          <div className="block md:hidden space-y-2.5">
+          <div className="block md:hidden space-y-3" id="margin-batch-cards">
             {batchRows.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-xs px-4 py-10 text-center text-sm text-slate-500">
+              <div className="bg-white rounded-2xl border border-black/10 px-4 py-10 text-center text-sm text-slate-500">
                 No batch-level sales for this period.
               </div>
             ) : (
               batchRows.map((r) => (
-                <div
+                <RegisterCard
                   key={r.batchKey}
-                  className="bg-white rounded-2xl border border-slate-200 shadow-xs p-3.5 space-y-2.5"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="font-mono text-[11px] font-bold text-slate-900 truncate">
-                        {r.batchNumber}
-                      </div>
-                      <div className="text-sm font-semibold text-slate-800 truncate">
-                        {r.productName}
-                      </div>
-                      <div className="text-[10px] text-slate-500">
+                  title={r.productName}
+                  pills={<span className={`inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(r.marginPct)}`}>{r.marginPct.toFixed(1)}%</span>}
+                  subtitle={
+                    <>
+                      <div className="font-mono font-bold text-slate-900">Lot {r.batchNumber}</div>
+                      <div className="text-slate-500">
                         {r.category}
                         {r.supplierName !== '—' ? ` · ${r.supplierName}` : ''}
                       </div>
-                    </div>
-                    <span
-                      className={`shrink-0 inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(
-                        r.marginPct
-                      )}`}
-                    >
-                      {r.marginPct.toFixed(1)}%
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div className="rounded-xl bg-sky-50 border border-sky-100 p-2">
-                      <div className="text-[10px] font-bold uppercase text-sky-600">You got</div>
-                      <div className="text-xs font-black font-mono text-sky-900 mt-0.5">
-                        ₹{money(viewBasis === 'exGst' ? r.taxableSales : r.netSales)}
-                      </div>
-                    </div>
-                    <div className="rounded-xl bg-amber-50 border border-amber-100 p-2">
-                      <div className="text-[10px] font-bold uppercase text-amber-700">You spent</div>
-                      <div className="text-xs font-black font-mono text-amber-950 mt-0.5">
-                        ₹{money(r.cogs)}
-                      </div>
-                    </div>
-                    <div
-                      className={`rounded-xl border p-2 ${
-                        r.grossProfit >= 0
-                          ? 'bg-emerald-50 border-emerald-100'
-                          : 'bg-rose-50 border-rose-100'
-                      }`}
-                    >
-                      <div
-                        className={`text-[10px] font-bold uppercase ${
-                          r.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'
-                        }`}
-                      >
-                        Profit
-                      </div>
-                      <div
-                        className={`text-xs font-black font-mono mt-0.5 ${
-                          r.grossProfit >= 0 ? 'text-emerald-800' : 'text-rose-800'
-                        }`}
-                      >
-                        ₹{money(r.grossProfit)}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1 border-t border-slate-100">
-                    <span>
-                      {Math.round(r.casesSold * 100) / 100} billed
-                      {r.freeCases > 0 ? ` + ${Math.round(r.freeCases * 100) / 100} free` : ''} cs
-                    </span>
-                    <span className="font-mono">Cost ₹{money(r.costPerCase)} / cs</span>
-                  </div>
-                </div>
+                    </>
+                  }
+                  heroLabel="Profit"
+                  hero={`₹${money(r.grossProfit)}`}
+                  heroTone={r.grossProfit >= 0 ? 'green' : 'red'}
+                  segments={[
+                    { value: r.cogs, className: 'bg-amber-500', label: 'You spent' },
+                    { value: Math.max(0, r.grossProfit), className: 'bg-emerald-600', label: 'Profit' },
+                  ]}
+                  stats={[
+                    { label: 'You got', value: `₹${money(viewBasis === 'exGst' ? r.taxableSales : r.netSales)}`, tone: 'sky' },
+                    { label: 'You spent', value: `₹${money(r.cogs)}`, tone: 'amber' },
+                    { label: 'Cases', value: `${Math.round(r.casesSold * 100) / 100}${r.freeCases > 0 ? ` +${Math.round(r.freeCases * 100) / 100}` : ''} cs` },
+                  ]}
+                  note={<div className="text-[11px] text-slate-500 font-mono">Cost ₹{money(r.costPerCase)} / cs</div>}
+                />
               ))
             )}
           </div>
@@ -1858,10 +1956,10 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
       {/* ===== 3. CUSTOMER MARGINS TABLE ===== */}
       {subTab === 'customers' && (
         <div className="space-y-2">
-          <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-xs">
+          <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-black/10 bg-white">
             <table className="w-full text-left data-table min-w-[760px] text-xs">
               <thead>
-                <tr className="border-b border-slate-200 bg-slate-50/80 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                <tr className="border-b border-slate-200 bg-[#faf8f5] text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500">
                   <th className="px-3 py-2.5">Customer Party</th>
                   <th className="px-3 py-2.5 text-right">Invoices</th>
                   <th className="px-3 py-2.5 text-right">Cases Sold</th>
@@ -1924,70 +2022,31 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
           </div>
 
           {/* Mobile cards */}
-          <div className="block md:hidden space-y-2.5">
+          <div className="block md:hidden space-y-3" id="margin-customer-cards">
             {customerRows.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-xs px-4 py-10 text-center text-sm text-slate-500">
+              <div className="bg-white rounded-2xl border border-black/10 px-4 py-10 text-center text-sm text-slate-500">
                 No customer sales matching this period.
               </div>
             ) : (
               customerRows.map((r) => (
-                <div
+                <RegisterCard
                   key={r.customerKey}
-                  className="bg-white rounded-2xl border border-slate-200 shadow-xs p-3.5 space-y-2.5"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-sm font-bold text-slate-900 truncate">{r.customerName}</div>
-                      <div className="text-[10px] text-slate-500">
-                        {r.invoices} inv · {r.casesSold} cs
-                        {r.outstanding > 0 ? ` · Due ₹${money(r.outstanding)}` : ''}
-                      </div>
-                    </div>
-                    <span
-                      className={`shrink-0 inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(
-                        r.marginPct
-                      )}`}
-                    >
-                      {r.marginPct.toFixed(1)}%
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div className="rounded-xl bg-sky-50 border border-sky-100 p-2">
-                      <div className="text-[10px] font-bold uppercase text-sky-600">You got</div>
-                      <div className="text-xs font-black font-mono text-sky-900 mt-0.5">
-                        ₹{money(viewBasis === 'exGst' ? r.taxableSales : r.netSales)}
-                      </div>
-                    </div>
-                    <div className="rounded-xl bg-amber-50 border border-amber-100 p-2">
-                      <div className="text-[10px] font-bold uppercase text-amber-700">You spent</div>
-                      <div className="text-xs font-black font-mono text-amber-950 mt-0.5">
-                        ₹{money(r.cogs)}
-                      </div>
-                    </div>
-                    <div
-                      className={`rounded-xl border p-2 ${
-                        r.grossProfit >= 0
-                          ? 'bg-emerald-50 border-emerald-100'
-                          : 'bg-rose-50 border-rose-100'
-                      }`}
-                    >
-                      <div
-                        className={`text-[10px] font-bold uppercase ${
-                          r.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'
-                        }`}
-                      >
-                        Profit
-                      </div>
-                      <div
-                        className={`text-xs font-black font-mono mt-0.5 ${
-                          r.grossProfit >= 0 ? 'text-emerald-800' : 'text-rose-800'
-                        }`}
-                      >
-                        ₹{money(r.grossProfit)}
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                  title={r.customerName}
+                  pills={<span className={`inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(r.marginPct)}`}>{r.marginPct.toFixed(1)}%</span>}
+                  subtitle={`${r.invoices} invoice${r.invoices === 1 ? '' : 's'} · ${r.casesSold} cs`}
+                  heroLabel="Profit"
+                  hero={`₹${money(r.grossProfit)}`}
+                  heroTone={r.grossProfit >= 0 ? 'green' : 'red'}
+                  segments={[
+                    { value: r.cogs, className: 'bg-amber-500', label: 'You spent' },
+                    { value: Math.max(0, r.grossProfit), className: 'bg-emerald-600', label: 'Profit' },
+                  ]}
+                  stats={[
+                    { label: 'You got', value: `₹${money(viewBasis === 'exGst' ? r.taxableSales : r.netSales)}`, tone: 'sky' },
+                    { label: 'You spent', value: `₹${money(r.cogs)}`, tone: 'amber' },
+                    { label: 'Due', value: `₹${money(r.outstanding)}`, tone: r.outstanding > 0 ? 'red' : 'muted' },
+                  ]}
+                />
               ))
             )}
           </div>
@@ -1997,10 +2056,10 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
       {/* ===== 4. DAY-WISE P&L TABLE ===== */}
       {subTab === 'days' && (
         <div className="space-y-2">
-          <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-xs">
+          <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-black/10 bg-white">
             <table className="w-full text-left data-table min-w-[650px] text-xs">
               <thead>
-                <tr className="border-b border-slate-200 bg-slate-50/80 text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                <tr className="border-b border-slate-200 bg-[#faf8f5] text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500">
                   <th className="px-3 py-2.5">Date</th>
                   <th className="px-3 py-2.5 text-right">Invoices</th>
                   <th className="px-3 py-2.5 text-right">You got</th>
@@ -2057,71 +2116,45 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
           </div>
 
           {/* Mobile cards */}
-          <div className="block md:hidden space-y-2.5">
+          <div className="block md:hidden space-y-3" id="margin-day-cards">
             {dayRows.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-xs px-4 py-10 text-center text-sm text-slate-500">
+              <div className="bg-white rounded-2xl border border-black/10 px-4 py-10 text-center text-sm text-slate-500">
                 No sales days recorded in this period.
               </div>
             ) : (
               dayRows.map((r) => (
-                <div
+                <RegisterCard
                   key={r.date}
-                  className="bg-white rounded-2xl border border-slate-200 shadow-xs p-3.5 space-y-2.5"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-mono font-bold text-slate-800">{r.date}</div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-slate-500">{r.invoices} inv</span>
-                      <span
-                        className={`inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(
-                          r.marginPct
-                        )}`}
-                      >
-                        {r.marginPct.toFixed(1)}%
-                      </span>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div className="rounded-xl bg-sky-50 border border-sky-100 p-2">
-                      <div className="text-[10px] font-bold uppercase text-sky-600">You got</div>
-                      <div className="text-xs font-black font-mono text-sky-900 mt-0.5">
-                        ₹{money(viewBasis === 'exGst' ? r.taxableSales : r.netSales)}
-                      </div>
-                    </div>
-                    <div className="rounded-xl bg-amber-50 border border-amber-100 p-2">
-                      <div className="text-[10px] font-bold uppercase text-amber-700">You spent</div>
-                      <div className="text-xs font-black font-mono text-amber-950 mt-0.5">
-                        ₹{money(r.cogs)}
-                      </div>
-                    </div>
-                    <div
-                      className={`rounded-xl border p-2 ${
-                        r.grossProfit >= 0
-                          ? 'bg-emerald-50 border-emerald-100'
-                          : 'bg-rose-50 border-rose-100'
-                      }`}
-                    >
-                      <div
-                        className={`text-[10px] font-bold uppercase ${
-                          r.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'
-                        }`}
-                      >
-                        Profit
-                      </div>
-                      <div
-                        className={`text-xs font-black font-mono mt-0.5 ${
-                          r.grossProfit >= 0 ? 'text-emerald-800' : 'text-rose-800'
-                        }`}
-                      >
-                        ₹{money(r.grossProfit)}
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                  title={<span className="font-mono">{r.date}</span>}
+                  pills={<span className={`inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(r.marginPct)}`}>{r.marginPct.toFixed(1)}%</span>}
+                  subtitle={`${r.invoices} invoice${r.invoices === 1 ? '' : 's'}`}
+                  heroLabel="Profit"
+                  hero={`₹${money(r.grossProfit)}`}
+                  heroTone={r.grossProfit >= 0 ? 'green' : 'red'}
+                  segments={[
+                    { value: r.cogs, className: 'bg-amber-500', label: 'You spent' },
+                    { value: Math.max(0, r.grossProfit), className: 'bg-emerald-600', label: 'Profit' },
+                  ]}
+                  stats={[
+                    { label: 'You got', value: `₹${money(viewBasis === 'exGst' ? r.taxableSales : r.netSales)}`, tone: 'sky' },
+                    { label: 'You spent', value: `₹${money(r.cogs)}`, tone: 'amber' },
+                  ]}
+                />
               ))
             )}
           </div>
         </div>
+      )}
+
+      {subTab === 'netProfit' && dateInPeriod && (
+        <NetProfitReport
+          dateInPeriod={dateInPeriod}
+          filteredBills={filteredBills}
+          products={products}
+          gstTaxSummary={gstTaxSummary}
+          purchaseStats={purchaseStats}
+          periodLabel={periodLabel}
+        />
       )}
 
       {/* Interactive Product Profit & Pricing Modal */}
@@ -2134,6 +2167,28 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
         row={selectedProductForModal}
         bills={filteredBills}
       />
+
+      {showControls && <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} disabled={pnl.invoiceCount === 0} />}
+
+      {explainOpen && (
+        <ReportExplainModal ariaLabel="How sales, margin and profit are calculated" onClose={() => setExplainOpen(false)}>
+          <ExplainBox tone="emerald" title={viewBasis === 'exGst' ? `Ex-GST operating profit: ${rs(pnl.operatingGrossProfit)}` : `Incl-GST billed value: ${rs(pnl.billedSalesNet)}`}>
+            {viewBasis === 'exGst' ? (
+              <p>
+                Revenue is taxable turnover ({rs(pnl.taxableSalesNet)}) with output GST ({rs(pnl.totalOutputGstNet)}) shown separately. Cost covers all {pnl.totalDispatchedCases} crates
+                dispatched, including {pnl.freeCases} free scheme crates, from the batch each invoice was issued from plus inward freight and labour.
+              </p>
+            ) : (
+              <p>
+                Invoiced revenue of {rs(pnl.billedSalesNet)} includes {rs(pnl.totalOutputGstNet)} GST. That GST is owed to the government (less input credit) and is not profit you keep.
+              </p>
+            )}
+          </ExplainBox>
+          <ExplainBox tone="slate" title={`Average selling price`}>
+            <p>Sales divided by billed cases only ({pnl.casesSold}). Free scheme crates add cost but no billed sales.</p>
+          </ExplainBox>
+        </ReportExplainModal>
+      )}
     </div>
   );
 };

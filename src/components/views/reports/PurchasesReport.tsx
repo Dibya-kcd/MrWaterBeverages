@@ -1,10 +1,42 @@
-import React, { useState, useMemo } from 'react';
-import { ArrowRight, Layers, IndianRupee, Percent, Calendar, FileText, ChevronDown, ChevronUp } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { ArrowRight, Check, Layers } from 'lucide-react';
 import { Warehouse } from '../../../types';
+import { useLedger } from '../../../context/LedgerContext';
 import { money } from '../../../utils/billing';
 import { summariseSupplierDiscount } from '../../../utils/fefo';
-import { StatCard, Card, Badge, Button } from '../../ui';
-import { todayISO, toLocalISODate } from "../../../utils/dateLocal";
+import { todayISO, toLocalISODate } from '../../../utils/dateLocal';
+import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
+import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
+import {
+  ExplainBox,
+  ReportBreakdownLine,
+  ReportChipGroup,
+  ReportEmpty,
+  ReportExplainModal,
+  ReportFilterPanel,
+  ReportGroupCard,
+  ReportList,
+  ReportListMeta,
+  ReportRow,
+  ReportStat,
+  ReportStatGrid,
+  ReportTitleBar,
+} from './ReportKit';
+import {
+  Chips,
+  EmptyNote,
+  HeroCard,
+  IconTile,
+  MiniStat,
+  PhoneDownloadBar,
+  PhoneHeader,
+  PhoneSearch,
+  RowCard,
+  Tag,
+  UnifiedPhoneFilterBar,
+  PhoneFilterBottomSheet,
+  rs,
+} from './mobile/PhoneKit';
 
 interface PurchasesReportProps {
   purchaseStats: {
@@ -16,18 +48,76 @@ interface PurchasesReportProps {
   filteredGrns: any[];
   warehouses: Warehouse[];
   period: string;
+  /** Label of the period chosen at the top of Reports (e.g. "November 2026"). Falls back to `period`. */
+  periodLabel?: string;
   onNavigateInventory: () => void;
 }
 
+type ViewMode = 'daywise' | 'log';
+
+interface GrnLine {
+  g: any;
+  date: string;
+  supplier: string;
+  invoiceNo: string;
+  godown: string;
+  crates: number;
+  net: number;
+  tax: number;
+  total: number;
+}
+
+interface PurchaseDay {
+  date: string;
+  dateLabel: string;
+  crates: number;
+  net: number;
+  tax: number;
+  total: number;
+  lines: GrnLine[];
+}
+
+const VIEW_OPTIONS: { id: ViewMode; label: string }[] = [
+  { id: 'daywise', label: 'By day' },
+  { id: 'log', label: 'Consignments' },
+];
+
+const formatDateHuman = (d: string): string => {
+  const dt = new Date(`${d}T12:00:00`);
+  return isNaN(dt.getTime())
+    ? d
+    : dt.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+};
+
+const grnCrates = (g: any): number =>
+  g.totalReceivedQty ||
+  g.items?.reduce(
+    (s: number, i: any) => s + (i.totalReceivedQty ?? (i.schemeMode === 'additive' ? (i.qty || 0) + (i.freeQty || 0) : i.qty || 0)),
+    0,
+  ) ||
+  0;
+
+/**
+ * Inward & purchases, laid out like "Daily collection": totals on top, always-visible search + filters,
+ * then one collapsed card per day (open it to see every consignment). Uses the period chosen at the top of Reports.
+ */
 export const PurchasesReport: React.FC<PurchasesReportProps> = ({
   purchaseStats,
   filteredGrns,
   warehouses,
   period,
+  periodLabel,
   onNavigateInventory,
 }) => {
-  const [viewMode, setViewMode] = useState<'daywise' | 'log'>('daywise');
-  const [expandedDay, setExpandedDay] = useState<string | null>(null);
+  const { orgProfile } = useLedger();
+  const label = periodLabel || period;
+
+  const [viewMode, setViewMode] = useState<ViewMode>('daywise');
+  const [godown, setGodown] = useState<string>('all');
+  const [search, setSearch] = useState('');
+  const [openDays, setOpenDays] = useState<Set<string>>(new Set());
+  const [explainOpen, setExplainOpen] = useState(false);
+  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
 
   const todayStr = useMemo(() => todayISO(), []);
   const yesterdayStr = useMemo(() => {
@@ -35,23 +125,8 @@ export const PurchasesReport: React.FC<PurchasesReportProps> = ({
     d.setDate(d.getDate() - 1);
     return toLocalISODate(d);
   }, []);
-
-  const formatFriendlyDate = (dateStr: string) => {
-    if (!dateStr) return 'Unknown Date';
-    try {
-      const [y, m, d] = dateStr.split('-').map(Number);
-      const dt = new Date(y, m - 1, d);
-      return dt.toLocaleDateString('en-IN', {
-        weekday: 'short',
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-      });
-    } catch {
-      return dateStr;
-    }
-  };
-
+  const dayLabel = (d: string) =>
+    d === todayStr ? `Today · ${formatDateHuman(d)}` : d === yesterdayStr ? `Yesterday · ${formatDateHuman(d)}` : formatDateHuman(d);
 
   const discountTotals = useMemo(() => {
     let line = 0;
@@ -64,398 +139,460 @@ export const PurchasesReport: React.FC<PurchasesReportProps> = ({
     return { line, bill, total: line + bill };
   }, [filteredGrns]);
 
-  // Day-wise aggregated inward purchases breakdown (Sorted Day-wise, Latest on top)
-  const dayWisePurchases = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        date: string;
-        grnCount: number;
-        cratesReceived: number;
-        netTaxable: number;
-        taxPaid: number;
-        grandTotal: number;
-        warehouses: Set<string>;
-        grns: any[];
-      }
-    >();
+  const allLines = useMemo<GrnLine[]>(
+    () =>
+      filteredGrns
+        .map((g) => ({
+          g,
+          date: (g.inwardDate || '').slice(0, 10) || 'Unknown date',
+          supplier: g.supplierName || 'Supplier',
+          invoiceNo: g.invoiceNo || '',
+          godown: warehouses.find((w) => w.id === g.warehouseId)?.name || 'Godown',
+          crates: grnCrates(g),
+          net: g.totalTaxable || g.grandTotal || 0,
+          tax: g.totalTax || (g.totalCgst || 0) + (g.totalSgst || 0) || 0,
+          total: g.grandTotal || 0,
+        }))
+        .sort((a, b) => {
+          const dCmp = b.date.localeCompare(a.date);
+          return dCmp !== 0 ? dCmp : String(b.g.id).localeCompare(String(a.g.id));
+        }),
+    [filteredGrns, warehouses],
+  );
 
-    filteredGrns.forEach((g) => {
-      const d = (g.inwardDate || '').slice(0, 10) || 'Unknown Date';
-      const crates = g.totalReceivedQty || g.items?.reduce((s: number, i: any) => s + (i.totalReceivedQty ?? (i.schemeMode === 'additive' ? (i.qty || 0) + (i.freeQty || 0) : (i.qty || 0))), 0) || 0;
-      const net = g.totalTaxable || g.grandTotal || 0;
-      const tax = g.totalTax || ((g.totalCgst || 0) + (g.totalSgst || 0)) || 0;
-      const total = g.grandTotal || 0;
-      const whName = warehouses.find((w) => w.id === g.warehouseId)?.name || 'Godown';
+  const godownOptions = useMemo(() => {
+    const names = Array.from(new Set(allLines.map((l) => l.godown)));
+    return [{ id: 'all', label: 'All godowns' }, ...names.map((n) => ({ id: n, label: n }))];
+  }, [allLines]);
+  const showGodownFilter = godownOptions.length > 2;
 
-      const existing = map.get(d);
-      if (!existing) {
-        map.set(d, {
-          date: d,
-          grnCount: 1,
-          cratesReceived: crates,
-          netTaxable: net,
-          taxPaid: tax,
-          grandTotal: total,
-          warehouses: new Set([whName]),
-          grns: [g],
-        });
-      } else {
-        existing.grnCount += 1;
-        existing.cratesReceived += crates;
-        existing.netTaxable += net;
-        existing.taxPaid += tax;
-        existing.grandTotal += total;
-        existing.warehouses.add(whName);
-        existing.grns.push(g);
+  const q = search.toLowerCase().trim();
+  const isFiltered = godown !== 'all' || q.length > 0;
+
+  const shownLines = useMemo(
+    () =>
+      allLines.filter((l) => {
+        if (godown !== 'all' && l.godown !== godown) return false;
+        if (q) {
+          const hay = `${l.supplier} ${l.invoiceNo} ${l.g.id}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      }),
+    [allLines, godown, q],
+  );
+
+  const dayGroups = useMemo<PurchaseDay[]>(() => {
+    const map = new Map<string, PurchaseDay>();
+    shownLines.forEach((l) => {
+      let d = map.get(l.date);
+      if (!d) {
+        d = { date: l.date, dateLabel: dayLabel(l.date), crates: 0, net: 0, tax: 0, total: 0, lines: [] };
+        map.set(l.date, d);
       }
+      d.crates += l.crates;
+      d.net += l.net;
+      d.tax += l.tax;
+      d.total += l.total;
+      d.lines.push(l);
     });
-
-    // Sort strictly day-wise: Latest day on top
     return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
-  }, [filteredGrns, warehouses]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownLines, todayStr, yesterdayStr]);
 
-  // Inward consignments sorted latest on top
-  const sortedGrns = useMemo(() => {
-    return [...filteredGrns].sort((a, b) => {
-      const dCmp = (b.inwardDate || '').localeCompare(a.inwardDate || '');
-      if (dCmp !== 0) return dCmp;
-      return String(b.id).localeCompare(String(a.id));
+  const shownTotals = useMemo(
+    () => ({
+      net: shownLines.reduce((s, l) => s + l.net, 0),
+      tax: shownLines.reduce((s, l) => s + l.tax, 0),
+      total: shownLines.reduce((s, l) => s + l.total, 0),
+      crates: shownLines.reduce((s, l) => s + l.crates, 0),
+    }),
+    [shownLines],
+  );
+
+  const resetFilters = () => {
+    setGodown('all');
+    setSearch('');
+  };
+
+  const forceOpen = q.length > 0;
+  const isOpen = (d: string) => forceOpen || openDays.has(d);
+  const toggleDay = (d: string) =>
+    setOpenDays((prev) => {
+      const next = new Set(prev);
+      if (next.has(d)) next.delete(d);
+      else next.add(d);
+      return next;
     });
-  }, [filteredGrns]);
+  const allOpen = dayGroups.length > 0 && dayGroups.every((g) => openDays.has(g.date));
+  const toggleAll = () => setOpenDays(allOpen ? new Set() : new Set(dayGroups.map((g) => g.date)));
+
+  // ---- downloads ---------------------------------------------------------------------------------
+  const shop = orgProfile?.name || 'MrWater Distribution';
+  const filterText = [godown !== 'all' ? godown : '', q ? `Search "${search.trim()}"` : ''].filter(Boolean).join(' · ');
+
+  const exportExcel = () =>
+    downloadXlsx(`inward-purchases-${fileStamp()}.xlsx`, [
+      {
+        name: 'Day-wise summary',
+        header: ['Date', 'Consignments', 'Crates', 'Taxable (Rs)', 'GST (Rs)', 'Invoice total (Rs)'],
+        rows: dayGroups.map((d) => [d.date, d.lines.length, d.crates, d.net, d.tax, d.total]),
+        total: ['Total', shownLines.length, shownTotals.crates, shownTotals.net, shownTotals.tax, shownTotals.total],
+      },
+      {
+        name: 'Consignments',
+        header: ['GRN', 'Date', 'Supplier', 'Invoice no', 'Godown', 'Crates', 'Taxable (Rs)', 'GST (Rs)', 'Invoice total (Rs)'],
+        rows: shownLines.map((l) => [String(l.g.id), l.date, l.supplier, l.invoiceNo, l.godown, l.crates, l.net, l.tax, l.total]),
+      },
+    ]);
+
+  const exportPdf = () =>
+    downloadPdf({
+      filename: `inward-purchases-${fileStamp()}.pdf`,
+      title: 'Inward & purchases',
+      subtitle: [shop, `Period: ${label}`, ...(filterText ? [`Filtered: ${filterText}`] : [])],
+      landscape: true,
+      sections: [
+        {
+          title: 'Day-wise summary',
+          header: ['Date', 'Consignments', 'Crates', 'Taxable (Rs.)', 'GST (Rs.)', 'Invoice total (Rs.)'],
+          rows: dayGroups.map((d) => [formatDateHuman(d.date), d.lines.length, d.crates, money(d.net), money(d.tax), money(d.total)]),
+          total: ['Total', shownLines.length, shownTotals.crates, money(shownTotals.net), money(shownTotals.tax), money(shownTotals.total)],
+          rightAlign: [1, 2, 3, 4, 5],
+        },
+        {
+          title: 'Consignments',
+          header: ['GRN', 'Date', 'Supplier', 'Invoice no', 'Godown', 'Crates', 'Taxable (Rs.)', 'Invoice total (Rs.)'],
+          rows: shownLines.map((l) => [String(l.g.id), l.date, l.supplier, l.invoiceNo || '-', l.godown, l.crates, money(l.net), money(l.total)]),
+          rightAlign: [5, 6, 7],
+        },
+      ],
+    });
+
+  const hasAny = allLines.length > 0;
+  const emptyText =
+    hasAny && isFiltered ? 'Nothing matches these filters' : 'No inward invoices in this period. Receive a consignment in Inventory to see it here.';
+
+  const lineTitle = (l: GrnLine) => l.supplier;
+  const lineSub = (l: GrnLine, withDate: boolean) =>
+    `${l.g.id}${withDate ? ` · ${formatDateHuman(l.date)}` : ''}${l.invoiceNo ? ` · Inv ${l.invoiceNo}` : ''} · ${l.godown} · ${l.crates} cs`;
 
   return (
-    <div className="space-y-6">
-      {/* Metrics Row: 2-col mobile -> 4-col desktop */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        
-      {(discountTotals.total > 0) && (
-        <div className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-white p-3.5 shadow-sm flex flex-wrap items-center gap-4 text-xs">
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-800">Supplier discounts (period)</div>
-            <div className="text-lg font-black text-emerald-950 font-mono tabular-nums mt-0.5">₹{money(discountTotals.total)}</div>
+    <>
+      {/* ============================ PHONE ============================ */}
+      <div className="md:hidden space-y-3" id="report-inward-phone">
+        <PhoneHeader title="Inward & purchases" sub="Consignments and inward stock" />
+
+        <HeroCard tone="navy" label="Purchases (net of GST)" value={rs(purchaseStats.netPurchaseVal)}>
+          <div className="text-[12.5px] text-white/90">
+            {filteredGrns.length} consignment{filteredGrns.length === 1 ? '' : 's'} · {purchaseStats.totalCratesInward} crates received
           </div>
-          <div className="h-8 w-px bg-emerald-200 hidden sm:block" />
-          <div>
-            <div className="text-[10px] text-slate-500 font-semibold">Line schemes / free</div>
-            <div className="font-mono font-bold text-slate-800">₹{money(discountTotals.line)}</div>
-          </div>
-          <div>
-            <div className="text-[10px] text-slate-500 font-semibold">Bill-level discount</div>
-            <div className="font-mono font-bold text-slate-800">₹{money(discountTotals.bill)}</div>
-          </div>
-          <p className="hidden sm:block text-[10px] text-slate-500 max-w-md leading-relaxed">
-            Bill discounts (e.g. ₹15,467 on supplier invoice) are allocated into batch effective cost on inward (FEFO cost base).
-          </p>
+        </HeroCard>
+
+        <div className="grid grid-cols-3 gap-2">
+          <MiniStat label="Input GST (ITC)" value={rs(purchaseStats.totalGstPaid)} tone="green" />
+          <MiniStat label="Cess paid" value={rs(purchaseStats.totalCessPaid)} />
+          <MiniStat label="Supplier discount" value={rs(discountTotals.total)} tone={discountTotals.total > 0 ? 'green' : 'ink'} />
         </div>
-      )}
 
-<StatCard
-          title="Total Purchases (Net)"
-          value={`₹${money(purchaseStats.netPurchaseVal)}`}
-          icon={IndianRupee}
-          subtitle={`Across ${filteredGrns.length} consignments`}
-          variant="default"
+        <UnifiedPhoneFilterBar
+          search={search}
+          onSearch={setSearch}
+          placeholder="Search supplier or invoice no…"
+          onOpenFilter={() => setIsFilterSheetOpen(true)}
+          activeFilterCount={(viewMode !== 'daywise' ? 1 : 0) + (godown !== 'all' ? 1 : 0)}
         />
 
-        <StatCard
-          title="Inward Crates Received"
-          value={`${purchaseStats.totalCratesInward} crates`}
-          icon={Layers}
-          subtitle="Supplied to godowns"
-          variant="accent"
-        />
+        <PhoneFilterBottomSheet
+          isOpen={isFilterSheetOpen}
+          onClose={() => setIsFilterSheetOpen(false)}
+          title="Filter Inward & Purchases"
+          activeCount={(viewMode !== 'daywise' ? 1 : 0) + (godown !== 'all' ? 1 : 0)}
+          onReset={resetFilters}
+        >
+          {/* View Mode */}
+          <div className="space-y-2">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              View Grouping
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {VIEW_OPTIONS.map((opt) => {
+                const isSelected = viewMode === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setViewMode(opt.id)}
+                    className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer ${
+                      isSelected
+                        ? 'border-blue-600 bg-blue-50/70 text-blue-900 shadow-xs'
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span>{opt.label}</span>
+                    {isSelected && <Check size={14} className="text-blue-600 shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-        <StatCard
-          title="Input GST Tax Paid (ITC)"
-          value={`₹${money(purchaseStats.totalGstPaid)}`}
-          icon={Percent}
-          subtitle="Available to offset output GST"
-          variant="accent"
-        />
+          {/* Godowns */}
+          {showGodownFilter && (
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Godown / Warehouse
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {godownOptions.map((opt) => {
+                  const isSelected = godown === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setGodown(opt.id)}
+                      className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer ${
+                        isSelected
+                          ? 'border-blue-600 bg-blue-50/70 text-blue-900 shadow-xs'
+                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className="truncate">{opt.label}</span>
+                      {isSelected && <Check size={14} className="text-blue-600 shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </PhoneFilterBottomSheet>
 
-        <StatCard
-          title="Compensation Cess Paid"
-          value={`₹${money(purchaseStats.totalCessPaid)}`}
-          icon={Percent}
-          subtitle="On carbonated drinks"
-          variant="warning"
-        />
+        {(viewMode === 'daywise' && dayGroups.length > 1 && !forceOpen) || isFiltered ? (
+          <div className="flex items-center justify-between px-1 text-xs text-slate-500">
+            <span>
+              {shownLines.length} consignment{shownLines.length === 1 ? '' : 's'}
+              {isFiltered && (
+                <>
+                  {' · '}
+                  <button type="button" onClick={resetFilters} className="font-bold text-rose-600 cursor-pointer">
+                    Clear filters
+                  </button>
+                </>
+              )}
+            </span>
+            {viewMode === 'daywise' && dayGroups.length > 1 && !forceOpen && (
+              <button type="button" onClick={toggleAll} className="font-bold text-slate-700 cursor-pointer min-h-[36px]">
+                {allOpen ? 'Collapse all' : 'Expand all'}
+              </button>
+            )}
+          </div>
+        ) : null}
+
+        {shownLines.length === 0 && <EmptyNote>{emptyText}</EmptyNote>}
+
+        {viewMode === 'daywise' &&
+          dayGroups.map((d) => {
+            const open = isOpen(d.date);
+            return (
+              <RowCard key={d.date}>
+                <button
+                  type="button"
+                  onClick={() => toggleDay(d.date)}
+                  aria-expanded={open}
+                  disabled={forceOpen}
+                  className="w-full text-left p-3 cursor-pointer active:bg-slate-50 disabled:cursor-default"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[15px] font-extrabold text-slate-900 leading-snug break-words">{d.dateLabel}</div>
+                      <div className="text-xs text-slate-500">
+                        {d.lines.length} consignment{d.lines.length === 1 ? '' : 's'} · {d.crates} cs
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-[17px] font-extrabold text-slate-900 tabular-nums leading-tight">{rs(d.total)}</div>
+                      <div className="text-[11px] text-slate-500">invoiced</div>
+                    </div>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-x-3 text-[12px] font-semibold tabular-nums text-slate-600">
+                    <span>Taxable {rs(d.net)}</span>
+                    <span className="text-emerald-700">GST {rs(d.tax)}</span>
+                  </div>
+                </button>
+                {open && (
+                  <ul className="divide-y divide-slate-100 border-t border-slate-100">
+                    {d.lines.map((l) => (
+                      <PhoneGrnRow key={String(l.g.id)} title={lineTitle(l)} sub={lineSub(l, false)} total={l.total} godown={l.godown} />
+                    ))}
+                  </ul>
+                )}
+              </RowCard>
+            );
+          })}
+
+        {viewMode === 'log' && shownLines.length > 0 && (
+          <RowCard>
+            <ul className="divide-y divide-slate-100">
+              {shownLines.map((l) => (
+                <PhoneGrnRow key={String(l.g.id)} title={lineTitle(l)} sub={lineSub(l, true)} total={l.total} godown={l.godown} />
+              ))}
+            </ul>
+          </RowCard>
+        )}
+
+        <button
+          type="button"
+          onClick={onNavigateInventory}
+          className="w-full min-h-[48px] rounded-2xl border border-slate-200 bg-white text-[14px] font-bold text-slate-800 inline-flex items-center justify-center gap-2 cursor-pointer active:bg-slate-100"
+        >
+          Open Inward workspace <ArrowRight size={16} aria-hidden="true" />
+        </button>
+
+        <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} disabled={!hasAny} />
       </div>
 
-      {/* Main Content Card with Day-wise View Toggle */}
-      <Card noPadding>
-        <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-base font-extrabold text-slate-900">Inward & Purchases Report</h3>
-              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-sky-50 text-sky-700 border border-sky-200">
-                Sorted: Day-wise, Latest on Top ↓
-              </span>
-            </div>
-            <p className="hidden sm:block text-xs text-slate-500 mt-0.5">
-              Goods received vouchers from manufacturers & super-stockists.
-            </p>
-          </div>
-
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* View Mode Toggle */}
-            <div className="flex rounded-lg border border-slate-300 p-0.5 bg-slate-100">
+      {/* ======================= TABLET / DESKTOP ======================= */}
+      <div className="hidden md:block space-y-3" id="report-inward">
+        <ReportTitleBar
+          title="Inward & purchases"
+          sub={`${label} · day by day: goods received from suppliers, with GST`}
+          actions={
+            <>
               <button
                 type="button"
-                onClick={() => setViewMode('daywise')}
-                className={`px-3 py-1.5 text-xs font-bold rounded-md flex items-center gap-1.5 cursor-pointer transition-colors ${
-                  viewMode === 'daywise'
-                    ? 'bg-sky-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
+                onClick={onNavigateInventory}
+                className="h-9 px-3 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
               >
-                <Calendar className="w-3.5 h-3.5" />
-                <span>Day-Wise Summary ({dayWisePurchases.length})</span>
+                Open Inward workspace <ArrowRight size={13} aria-hidden="true" />
               </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('log')}
-                className={`px-3 py-1.5 text-xs font-bold rounded-md flex items-center gap-1.5 cursor-pointer transition-colors ${
-                  viewMode === 'log'
-                    ? 'bg-sky-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <FileText className="w-3.5 h-3.5" />
-                <span>Consignments Log ({filteredGrns.length})</span>
-              </button>
-            </div>
+              <ReportDownloadButtons onExcel={exportExcel} onPdf={exportPdf} disabled={!hasAny} reportTitle="Inward & purchases" />
+            </>
+          }
+        />
 
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={onNavigateInventory}
-              rightIcon={<ArrowRight className="w-3.5 h-3.5" />}
-            >
-              Open Inward Workspace
-            </Button>
-          </div>
-        </div>
+        <ReportStatGrid>
+          <ReportStat label="Purchases (net)" value={`₹${money(purchaseStats.netPurchaseVal)}`} sub={`${filteredGrns.length} consignment${filteredGrns.length === 1 ? '' : 's'}`} />
+          <ReportStat label="Crates received" value={`${purchaseStats.totalCratesInward} cs`} tone="sky" sub="supplied to godowns" />
+          <ReportStat label="Input GST (ITC)" value={`₹${money(purchaseStats.totalGstPaid)}`} tone="green" sub="offsets output GST" />
+          <ReportStat label="Cess paid" value={`₹${money(purchaseStats.totalCessPaid)}`} tone="amber" sub="on carbonated drinks" />
+        </ReportStatGrid>
+        <ReportBreakdownLine onExplain={() => setExplainOpen(true)}>
+          {discountTotals.total > 0 ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Layers size={13} aria-hidden="true" /> Supplier discounts ₹{money(discountTotals.total)} (line schemes ₹{money(discountTotals.line)} · bill discount ₹
+              {money(discountTotals.bill)})
+            </span>
+          ) : (
+            <span>No supplier discounts in this period</span>
+          )}
+        </ReportBreakdownLine>
 
-        {filteredGrns.length === 0 ? (
-          <div className="text-center py-12 text-slate-500 text-sm">
-            No inward invoices recorded for {period}. Receive a consignment in Inventory to view purchase history.
-          </div>
-        ) : viewMode === 'daywise' ? (
-          /* ======================================================== */
-          /* DAY-WISE PURCHASES SUMMARY (LATEST DAY ON TOP)           */
-          /* ======================================================== */
-          <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <table className="w-full text-left data-table text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50 text-[11px] uppercase tracking-wider text-slate-600 font-bold">
-                  <th className="px-4 py-3">Inward Date</th>
-                  <th className="px-3 py-3 text-center">GRNs</th>
-                  <th className="px-3 py-3">Godown / Depot</th>
-                  <th className="px-3 py-3 text-right">Crates Received</th>
-                  <th className="px-3 py-3 text-right">Taxable Net (₹)</th>
-                  <th className="px-3 py-3 text-right">Tax & Cess (₹)</th>
-                  <th className="px-3 py-3 text-right">Gross Invoiced (₹)</th>
-                  <th className="px-3 py-3 text-center">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {dayWisePurchases.map((day) => {
-                  const isExpanded = expandedDay === day.date;
-                  const isToday = day.date === todayStr;
-                  const isYesterday = day.date === yesterdayStr;
+        <ReportFilterPanel
+          search={{ value: search, onChange: setSearch, placeholder: 'Search supplier, GRN or invoice no' }}
+          isFiltered={isFiltered}
+          onReset={resetFilters}
+        >
+          <ReportChipGroup<ViewMode> label="View" options={VIEW_OPTIONS} value={viewMode} onChange={setViewMode} />
+          {showGodownFilter && <ReportChipGroup<string> label="Godown" options={godownOptions} value={godown} onChange={setGodown} />}
+        </ReportFilterPanel>
 
-                  return (
-                    <React.Fragment key={day.date}>
-                      <tr className={`hover:bg-slate-50/75 transition-colors ${isExpanded ? 'bg-sky-50/40' : ''}`}>
-                        <td className="px-4 py-3 font-semibold text-slate-900">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="font-mono">{day.date}</span>
-                            {isToday && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-black uppercase bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                Today
-                              </span>
-                            )}
-                            {isYesterday && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-black uppercase bg-blue-100 text-blue-800 border border-sky-200">
-                                Yesterday
-                              </span>
-                            )}
-                          </div>
-                          <span className="text-[11px] text-slate-500 font-normal block mt-0.5">
-                            {formatFriendlyDate(day.date)}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-800 border">
-                            {day.grnCount}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-slate-600 max-w-[150px] truncate">
-                          {Array.from(day.warehouses).join(', ')}
-                        </td>
-                        <td className="px-3 py-3 text-right font-black text-sky-700 tabular-nums">
-                          {day.cratesReceived} cs
-                        </td>
-                        <td className="px-3 py-3 text-right text-slate-700 font-mono">
-                          ₹{money(day.netTaxable)}
-                        </td>
-                        <td className="px-3 py-3 text-right text-amber-700 font-mono">
-                          ₹{money(day.taxPaid)}
-                        </td>
-                        <td className="px-3 py-3 text-right font-black text-slate-900 font-mono text-sm">
-                          ₹{money(day.grandTotal)}
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          <button
-                            type="button"
-                            onClick={() => setExpandedDay(isExpanded ? null : day.date)}
-                            className="px-2.5 py-1 text-xs font-bold border rounded bg-white hover:bg-slate-50 text-sky-700 flex items-center gap-1 mx-auto cursor-pointer transition-colors shadow-sm"
-                          >
-                            <span>{isExpanded ? 'Hide' : 'View GRNs'}</span>
-                            {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                          </button>
-                        </td>
-                      </tr>
-
-                      {/* Expanded Sub-Table showing individual GRNs of this day */}
-                      {isExpanded && (
-                        <tr className="bg-slate-50/80">
-                          <td colSpan={8} className="p-3 sm:p-4">
-                            <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2 shadow-inner">
-                              <div className="flex items-center justify-between text-xs font-bold text-slate-700 border-b pb-2">
-                                <span>Inward Consignments on {formatFriendlyDate(day.date)}</span>
-                                <span className="text-slate-500 font-medium">{day.grns.length} GRN Vouchers</span>
-                              </div>
-                              <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
-                                <table className="w-full text-xs">
-                                  <thead>
-                                    <tr className="border-b text-[10.5px] uppercase font-bold text-slate-500 bg-slate-50">
-                                      <th className="px-3 py-1.5 text-left">GRN #</th>
-                                      <th className="px-3 py-1.5 text-left">Supplier</th>
-                                      <th className="px-3 py-1.5 text-left">Supplier Invoice #</th>
-                                      <th className="px-3 py-1.5 text-left">Godown</th>
-                                      <th className="px-3 py-1.5 text-right">Crates</th>
-                                      <th className="px-3 py-1.5 text-right">Net Taxable</th>
-                                      <th className="px-3 py-1.5 text-right">Tax (ITC)</th>
-                                      <th className="px-3 py-1.5 text-right">Total Invoiced</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-slate-100">
-                                    {day.grns.map((g) => {
-                                      const wh = warehouses.find((w) => w.id === g.warehouseId);
-                                      const crates = g.totalReceivedQty || g.items?.reduce((s: number, i: any) => s + (i.totalReceivedQty ?? (i.schemeMode === 'additive' ? (i.qty || 0) + (i.freeQty || 0) : (i.qty || 0))), 0) || 0;
-                                      return (
-                                        <tr key={g.id} className="hover:bg-slate-50">
-                                          <td className="px-3 py-2 font-mono font-bold text-sky-700">{g.id}</td>
-                                          <td className="px-3 py-2 font-semibold text-slate-900">{g.supplierName}</td>
-                                          <td className="px-3 py-2 font-mono text-slate-600">{g.invoiceNo || '—'}</td>
-                                          <td className="px-3 py-2 text-slate-600">{wh?.name || 'Godown'}</td>
-                                          <td className="px-3 py-2 text-right font-medium">{crates} cs</td>
-                                          <td className="px-3 py-2 text-right text-slate-700 font-mono">₹{money(g.totalTaxable || g.grandTotal)}</td>
-                                          <td className="px-3 py-2 text-right text-emerald-700 font-mono">₹{money(g.totalTax || 0)}</td>
-                                          <td className="px-3 py-2 text-right font-black text-slate-900 font-mono">₹{money(g.grandTotal)}</td>
-                                        </tr>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 border-slate-300 bg-slate-100 font-black text-xs text-slate-900">
-                  <td className="px-4 py-3" colSpan={3}>
-                    TOTAL PURCHASES ({dayWisePurchases.length} Active Days)
-                  </td>
-                  <td className="px-3 py-3 text-right text-blue-950 text-sm">
-                    {purchaseStats.totalCratesInward} cs
-                  </td>
-                  <td className="px-3 py-3 text-right">
-                    ₹{money(purchaseStats.netPurchaseVal)}
-                  </td>
-                  <td className="px-3 py-3 text-right text-emerald-800">
-                    ₹{money(purchaseStats.totalGstPaid + purchaseStats.totalCessPaid)}
-                  </td>
-                  <td className="px-3 py-3 text-right text-slate-950 text-sm font-mono">
-                    ₹{money(dayWisePurchases.reduce((s, d) => s + d.grandTotal, 0))}
-                  </td>
-                  <td className="px-3 py-3"></td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-        ) : (
-          /* ======================================================== */
-          /* DETAILED CONSIGNMENTS LOG (SORTED LATEST ON TOP)         */
-          /* ======================================================== */
-          <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <table className="w-full text-left data-table text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50 text-[11px] uppercase tracking-wider text-slate-600 font-bold">
-                  <th className="px-4 py-3">GRN #</th>
-                  <th className="px-3 py-3">Inward Date</th>
-                  <th className="px-3 py-3">Supplier</th>
-                  <th className="px-3 py-3">Invoice Ref</th>
-                  <th className="px-3 py-3">Godown</th>
-                  <th className="px-3 py-3 text-right">Crates</th>
-                  <th className="px-3 py-3 text-right">Supplier disc.</th>
-                  <th className="px-3 py-3 text-right">Total Invoiced</th>
-                  <th className="px-3 py-3 text-center">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {sortedGrns.map((g) => {
-                  const wh = warehouses.find((w) => w.id === g.warehouseId);
-                  const crates = g.totalReceivedQty || g.items?.reduce((s: number, i: any) => s + (i.totalReceivedQty ?? (i.schemeMode === 'additive' ? (i.qty || 0) + (i.freeQty || 0) : (i.qty || 0))), 0) || 0;
-                  return (
-                    <tr key={g.id} className="hover:bg-slate-50/75 transition-colors">
-                      <td className="px-4 py-3 font-mono font-bold text-sky-700">{g.id}</td>
-                      <td className="px-3 py-3 text-slate-600 font-mono">{g.inwardDate || '—'}</td>
-                      <td className="px-3 py-3 font-semibold text-slate-900">{g.supplierName}</td>
-                      <td className="px-3 py-3 font-mono text-slate-700">{g.invoiceNo || '—'}</td>
-                      <td className="px-3 py-3 text-slate-600">{wh?.name || 'Godown'}</td>
-                      <td className="px-3 py-3 text-right font-medium tabular-nums">{crates} cs</td>
-                      <td className="px-3 py-3 text-right font-mono text-emerald-800">
-                        ₹{money(summariseSupplierDiscount(g).totalDiscount)}
-                      </td>
-                      <td className="px-3 py-3 text-right font-bold text-slate-900 font-mono">
-                        ₹{money(g.grandTotal)}
-                      </td>
-                      <td className="px-3 py-3 text-center">
-                        <Badge variant="success" size="sm">
-                          Received
-                        </Badge>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 border-slate-300 bg-slate-100 font-black text-xs text-slate-900">
-                  <td className="px-4 py-3" colSpan={5}>
-                    TOTAL CONSIGNMENTS ({sortedGrns.length} Records)
-                  </td>
-                  <td className="px-3 py-3 text-right text-blue-950 text-sm">
-                    {purchaseStats.totalCratesInward} cs
-                  </td>
-                  <td className="px-3 py-3 text-right text-slate-950 text-sm font-mono">
-                    ₹{money(sortedGrns.reduce((s, g) => s + (g.grandTotal || 0), 0))}
-                  </td>
-                  <td className="px-3 py-3"></td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
+        {viewMode === 'daywise' && dayGroups.length > 1 && !forceOpen && (
+          <ReportListMeta allOpen={allOpen} onToggleAll={toggleAll}>
+            {dayGroups.length} days · {shownLines.length} consignment{shownLines.length === 1 ? '' : 's'}
+            {isFiltered ? ' match' : ''}
+          </ReportListMeta>
         )}
-      </Card>
-    </div>
+
+        {shownLines.length === 0 && <ReportEmpty>{emptyText}</ReportEmpty>}
+
+        {viewMode === 'daywise' &&
+          dayGroups.map((d) => (
+            <ReportGroupCard
+              key={d.date}
+              title={d.dateLabel}
+              sub={`${d.lines.length} consignment${d.lines.length === 1 ? '' : 's'} · ${d.crates} cs`}
+              inline={
+                <>
+                  <span>Taxable ₹{money(d.net)}</span>
+                  <span className="text-emerald-700 font-semibold">GST ₹{money(d.tax)}</span>
+                </>
+              }
+              headLabel="Invoiced"
+              head={`₹${money(d.total)}`}
+              headTone="ink"
+              open={isOpen(d.date)}
+              locked={forceOpen}
+              onToggle={() => toggleDay(d.date)}
+            >
+              <ReportList>
+                {d.lines.map((l) => (
+                  <ReportRow
+                    key={String(l.g.id)}
+                    title={lineTitle(l)}
+                    sub={lineSub(l, false)}
+                    amount={`₹${money(l.total)}`}
+                    status={`GST ₹${money(l.tax)}`}
+                    statusTone="green"
+                  />
+                ))}
+              </ReportList>
+            </ReportGroupCard>
+          ))}
+
+        {viewMode === 'log' && shownLines.length > 0 && (
+          <section className="rounded-2xl border border-black/10 bg-white overflow-hidden">
+            <ReportList>
+              {shownLines.map((l) => (
+                <ReportRow
+                  key={String(l.g.id)}
+                  title={lineTitle(l)}
+                  sub={lineSub(l, true)}
+                  amount={`₹${money(l.total)}`}
+                  status={`GST ₹${money(l.tax)}`}
+                  statusTone="green"
+                />
+              ))}
+            </ReportList>
+          </section>
+        )}
+      </div>
+
+      {explainOpen && (
+        <ReportExplainModal ariaLabel="How inward and purchases are calculated" onClose={() => setExplainOpen(false)}>
+          <ExplainBox tone="slate" title={`Purchases (net): ₹${money(purchaseStats.netPurchaseVal)}`}>
+            <p>Taxable value of every goods-received voucher dated in this period, before GST.</p>
+          </ExplainBox>
+          <ExplainBox tone="emerald" title={`Input GST (ITC): ₹${money(purchaseStats.totalGstPaid)}`}>
+            <p>GST charged by suppliers on those vouchers. It is set off against the GST you collect on sales.</p>
+          </ExplainBox>
+          <ExplainBox tone="amber" title={`Supplier discounts: ₹${money(discountTotals.total)}`}>
+            <p>
+              Line schemes and free crates (₹{money(discountTotals.line)}) plus bill-level discount (₹{money(discountTotals.bill)}).
+              Bill discounts are spread into each batch&apos;s cost when stock is received.
+            </p>
+          </ExplainBox>
+        </ReportExplainModal>
+      )}
+    </>
   );
 };
+
+/** One consignment line on the phone. */
+const PhoneGrnRow: React.FC<{ title: string; sub: string; total: number; godown: string }> = ({ title, sub, total, godown }) => (
+  <li className="p-3 flex items-start gap-3">
+    <IconTile tone="blue">
+      <Layers size={20} />
+    </IconTile>
+    <div className="min-w-0 flex-1">
+      <div className="text-[15px] font-bold text-slate-900 leading-snug break-words">{title}</div>
+      <div className="text-xs text-slate-500 leading-snug break-words">{sub}</div>
+      <div className="mt-1.5">
+        <Tag tone="grey">{godown}</Tag>
+      </div>
+    </div>
+    <div className="text-right shrink-0">
+      <div className="text-[17px] font-extrabold tabular-nums leading-tight text-slate-900">{rs(total)}</div>
+      <div className="text-[11px] text-slate-400">invoice</div>
+    </div>
+  </li>
+);

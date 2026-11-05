@@ -12,7 +12,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { Bill, Product, Trip, PaletteTokens } from '../../types';
-import { money } from '../../utils/billing';
+import { money, formatProductVolPack } from '../../utils/billing';
 import { TripProductReconciliationRow, TripReconciliationCards } from './TripReconciliationCards';
 
 interface TripCardItemProps {
@@ -363,7 +363,8 @@ export const TripCardItem: React.FC<TripCardItemProps> = ({
                               {b.items
                                 .map((it) => {
                                   const p = products.find((x) => x.id === it.productId);
-                                  return `${it.qty} cs ${p?.name || 'Beverage'}`;
+                                  const volPack = p ? formatProductVolPack(p.volume, p.pack, p.name) : '';
+                                  return `${it.qty} cs ${p?.name || 'Beverage'}${volPack ? ` (${volPack})` : ''}`;
                                 })
                                 .join(', ')}
                             </div>

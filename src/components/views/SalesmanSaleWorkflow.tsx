@@ -1285,31 +1285,42 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
       {/* ===================================================================== */}
       {/* 3. CART REVIEW TRIGGER BAR (Fixed at bottom above nav)                */}
       {/* ===================================================================== */}
-      {/* Sticky cart bar only in low-vision mode; normal mode uses cart icon beside customer name */}
+      {/* Bottom bar: always visible while the cart has items — Cancel on the left, running total in the
+          middle, Review & Finalise on the right (big buttons, plain words, for first-time users). */}
       <div
-        className={`${isLowVision ? 'flex' : 'hidden'} sticky bottom-16 z-30 rounded-2xl border-2 shadow-2xl items-center justify-between gap-3 flex-wrap ${
+        id="salesman-cart-bottom-bar"
+        className={`${cart.items.length > 0 ? 'flex' : 'hidden'} sticky bottom-16 z-30 rounded-2xl border-2 shadow-2xl items-center gap-2 ${
           isLowVision
-            ? 'p-4 border-4 border-black bg-yellow-300 text-black'
-            : 'p-3 sm:p-4 border-slate-200 bg-white/95 backdrop-blur-sm'
+            ? 'p-3 border-4 border-black bg-yellow-300 text-black'
+            : 'p-2.5 border-slate-200 bg-white/95 backdrop-blur-sm'
         }`}
         style={isLowVision ? undefined : { borderColor: palette.line }}
         role="region"
         aria-label="Running cart total"
       >
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="min-w-0">
-            <div className={`font-bold ${isLowVision ? 'text-sm text-black' : 'text-xs text-slate-500'}`}>
-              Cart: {cartItemCount} cs ({cart.items.length} beverage{cart.items.length !== 1 ? 's' : ''})
-            </div>
-            <div
-              className={`font-black tracking-tight leading-none ${
-                isLowVision ? 'text-3xl text-black' : 'text-xl sm:text-2xl text-blue-950'
-              }`}
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              ₹{money(finalCartTotal)}
-            </div>
+        <button
+          type="button"
+          id="btn-bottom-cancel-sale"
+          onClick={() => setShowCancelConfirm(true)}
+          className={`shrink-0 min-h-[56px] px-3 rounded-xl font-black text-xs flex flex-col items-center justify-center gap-0.5 cursor-pointer border-2 ${
+            isLowVision ? 'border-black bg-white text-black' : 'border-rose-300 bg-rose-50 text-rose-700 active:bg-rose-100'
+          }`}
+          aria-label="Cancel this sale and clear the cart"
+        >
+          <X size={18} />
+          <span>Cancel</span>
+        </button>
+
+        <div className="min-w-0 flex-1 text-center">
+          <div className={`font-bold leading-tight ${isLowVision ? 'text-sm text-black' : 'text-[11px] text-slate-500'}`}>
+            {cartItemCount} cs · {cart.items.length} item{cart.items.length !== 1 ? 's' : ''}
+          </div>
+          <div
+            className={`font-black tracking-tight leading-none ${isLowVision ? 'text-2xl text-black' : 'text-xl text-blue-950'}`}
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            ₹{money(finalCartTotal)}
           </div>
         </div>
 
@@ -1318,15 +1329,13 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           id="btn-bottom-review-cart"
           disabled={cart.items.length === 0}
           onClick={onOpenCart}
-          aria-label={`Review cart, ${cart.items.length} items, total rupees ${money(finalCartTotal)}`}
-          className={`min-h-[52px] px-5 py-2.5 rounded-xl font-black flex items-center gap-2 cursor-pointer shadow-lg transition-transform hover:scale-[1.01] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black disabled:opacity-40 disabled:cursor-not-allowed ${
-            isLowVision
-              ? 'text-base sm:text-lg bg-black text-yellow-300 border-4 border-black'
-              : 'text-sm sm:text-base bg-sky-600 hover:bg-sky-700 text-white'
+          aria-label={`Review and finalise, ${cart.items.length} items, total rupees ${money(finalCartTotal)}`}
+          className={`shrink-0 min-h-[56px] px-4 rounded-xl font-black flex flex-col items-center justify-center gap-0.5 cursor-pointer shadow-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black disabled:opacity-40 disabled:cursor-not-allowed ${
+            isLowVision ? 'bg-black text-yellow-300 border-4 border-black' : 'bg-emerald-600 active:bg-emerald-700 text-white'
           }`}
         >
-          <span>Cart Review ({cart.items.length})</span>
-          <ArrowRight size={18} />
+          <CheckCircle2 size={18} />
+          <span>Review &amp; Finalise</span>
         </button>
       </div>
 

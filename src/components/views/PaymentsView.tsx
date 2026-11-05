@@ -32,11 +32,9 @@ import { TaxInvoiceModal } from "../common/TaxInvoiceModal";
 import { ConfirmModal, Badge } from "../ui";
 import { billBalance } from "../../utils/salesReturns";
 import { todayISO, toLocalISODate } from "../../utils/dateLocal";
-import { isAdvanceRow } from "../../utils/paymentAllocation";
 import { PaymentAuditModal } from "../common/PaymentAuditModal";
-import { PeriodFilter, periodLabel as periodRangeLabel, rangeForPreset, type PeriodRange } from "../common/PeriodFilter";
-import { BeatSalesDueReport } from "./reports/BeatSalesDueReport";
-import { CustomerReceiptsReport } from "./reports/CustomerReceiptsReport";
+import { PartySearchSelect, type PartyOption } from "../common/PartySearchSelect";
+import { PaymentReportsPanel } from "./payments/PaymentReportsPanel";
 import { formatPaymentId } from "../../utils/beatReports";
 
 /** Formats a date string into "14 May" or "02 Oct" format */
@@ -91,7 +89,6 @@ export const PaymentsView: React.FC = () => {
   const {
     payments,
     recordCustomerPayment,
-    repairPaymentLinks,
     paymentAudit,
     updatePayment,
     deletePayment,
@@ -126,20 +123,10 @@ export const PaymentsView: React.FC = () => {
   // Search State matching Image 3
   const [searchTerm, setSearchTerm] = useState<string>("");
 
-  // Tab: 'receipts' (default, matches screenshots) or 'due' (Due/Credit Invoices)
-  const [activeTab, setActiveTab] = useState<"receipts" | "due" | "daywise" | "beats">("receipts");
-
-  // Period for the Day-wise and Beat-wise tabs (default: last 7 days)
-  const [reportRange, setReportRange] = useState<PeriodRange>(() => ({
-    preset: "7days",
-    ...rangeForPreset("7days"),
-  }));
-  const reportInPeriod = useCallback(
-    (d: string) =>
-      (!reportRange.startDate || d >= reportRange.startDate) && (!reportRange.endDate || d <= reportRange.endDate),
-    [reportRange],
-  );
-  const reportPeriodText = useMemo(() => periodRangeLabel(reportRange), [reportRange]);
+  // Tabs: Recent (today), Due invoices, History (older receipts), Reports (downloadable)
+  const [activeTab, setActiveTab] = useState<"recent" | "due" | "history" | "reports">("recent");
+  const HISTORY_PAGE = 50;
+  const [historyVisible, setHistoryVisible] = useState<number>(HISTORY_PAGE);
 
   // Selection state for Item Detail View (user requested: clicking on the items should open the detail view)
   const [selectedPaymentForDetails, setSelectedPaymentForDetails] = useState<PaymentRecord | null>(null);
@@ -199,9 +186,9 @@ export const PaymentsView: React.FC = () => {
     [allPayments],
   );
 
-  // List of parties for the PARTY dropdown (from existingCustomers + bills)
+  // Parties for the searchable PARTY picker (from existingCustomers + bills)
   const partyOptions = useMemo(() => {
-    const list: { key: string; name: string; label: string; due: number }[] = [];
+    const list: PartyOption[] = [];
     const seen = new Set<string>();
 
     existingCustomers.forEach((c) => {
@@ -209,15 +196,11 @@ export const PaymentsView: React.FC = () => {
       if (!trimmed || seen.has(trimmed.toLowerCase())) return;
       seen.add(trimmed.toLowerCase());
       list.push({
-        key: `cust_${c.id || c.name || Math.random()}`,
+        key: `cust_${c.id || c.name}`,
         name: trimmed,
-        label:
-          c.balanceDue > 0
-            ? `${trimmed} (Due: ₹${money(c.balanceDue)})`
-            : (c.advance || 0) > 0.004
-              ? `${trimmed} (Advance: ₹${money(c.advance || 0)})`
-              : trimmed,
+        phone: c.phone,
         due: c.balanceDue,
+        advance: c.advance || 0,
       });
     });
 
@@ -225,12 +208,12 @@ export const PaymentsView: React.FC = () => {
       const trimmed = (b.retailer || "").trim();
       if (!trimmed || seen.has(trimmed.toLowerCase())) return;
       seen.add(trimmed.toLowerCase());
-      const due = getEffectiveBillBalance(b);
       list.push({
         key: `bill_${b.id}`,
         name: trimmed,
-        label: due > 0 ? `${trimmed} (Due: ₹${money(due)})` : trimmed,
-        due,
+        phone: b.phone,
+        due: getEffectiveBillBalance(b),
+        advance: 0,
       });
     });
 
@@ -241,19 +224,54 @@ export const PaymentsView: React.FC = () => {
     });
   }, [existingCustomers, bills, getEffectiveBillBalance]);
 
-  // Filtered payments by search term
-  const filteredPayments = useMemo(() => {
-    const q = searchTerm.trim().toLowerCase();
-    if (!q) return allPayments;
-    return allPayments.filter((p) => {
+  // Search across receipts (used by Recent and History)
+  const matchesSearch = useCallback(
+    (p: PaymentRecord) => {
+      const q = searchTerm.trim().toLowerCase();
+      if (!q) return true;
       const name = (p.customerName || "").toLowerCase();
       const ref = (p.referenceNote || "").toLowerCase();
       const mode = (p.mode || "").toLowerCase();
       const pId = formatPaymentId(p.id).toLowerCase();
       const rawId = (p.id || "").toLowerCase();
       return name.includes(q) || ref.includes(q) || mode.includes(q) || pId.includes(q) || rawId.includes(q);
-    });
-  }, [allPayments, searchTerm]);
+    },
+    [searchTerm],
+  );
+
+  // Recent = receipts dated today or recorded today. Everything older is History.
+  const isRecent = useCallback(
+    (p: PaymentRecord) => {
+      const d = String(p.paymentDate || p.createdAt || "").slice(0, 10);
+      const rec = toLocalISODate(new Date(p.createdAt || Date.now()));
+      return d >= todayStr || rec === todayStr;
+    },
+    [todayStr],
+  );
+  const recentAll = useMemo(() => allPayments.filter(isRecent), [allPayments, isRecent]);
+  const historyAll = useMemo(
+    () =>
+      allPayments
+        .filter((p) => !isRecent(p))
+        .sort((a, b) => String(b.paymentDate || b.createdAt).localeCompare(String(a.paymentDate || a.createdAt))),
+    [allPayments, isRecent],
+  );
+  const filteredRecent = useMemo(() => recentAll.filter(matchesSearch), [recentAll, matchesSearch]);
+  const filteredHistory = useMemo(() => historyAll.filter(matchesSearch), [historyAll, matchesSearch]);
+  const historyGroups = useMemo(() => {
+    const groups: { date: string; rows: PaymentRecord[]; total: number }[] = [];
+    for (const p of filteredHistory.slice(0, historyVisible)) {
+      const d = String(p.paymentDate || p.createdAt || "").slice(0, 10);
+      let g = groups[groups.length - 1];
+      if (!g || g.date !== d) {
+        g = { date: d, rows: [], total: 0 };
+        groups.push(g);
+      }
+      g.rows.push(p);
+      g.total += Number(p.amount) || 0;
+    }
+    return groups;
+  }, [filteredHistory, historyVisible]);
 
   // Due / Credit Invoices
   const dueBills = useMemo(() => {
@@ -343,6 +361,76 @@ export const PaymentsView: React.FC = () => {
       default:
         return <Badge variant="neutral" size="sm">{(mode as string).toUpperCase()}</Badge>;
     }
+  };
+
+  // One list of receipts, shared by Recent and History: table on desktop, compact rows on mobile
+  const renderPaymentList = (rows: PaymentRecord[], emptyText: string) => {
+    if (rows.length === 0) {
+      return emptyText ? (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs py-8 text-center text-xs text-slate-400 italic">
+          {emptyText}
+        </div>
+      ) : null;
+    }
+    return (
+      <>
+        <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-slate-200/90 bg-slate-50/70">
+                {["ITEM", "DETAILS", "VALUE", "STATUS"].map((h) => (
+                  <th key={h} className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows.map((p, idx) => (
+                <tr
+                  key={p.id || idx}
+                  onClick={() => setSelectedPaymentForDetails(p)}
+                  className="hover:bg-slate-50/80 cursor-pointer transition-colors"
+                  title="Click to view payment details"
+                >
+                  <td className="py-3.5 px-4 font-bold text-slate-800 text-sm">{formatPaymentId(p.id, idx)}</td>
+                  <td className="py-3.5 px-4 text-slate-500 text-sm">
+                    {p.customerName} · {formatItemDate(p.paymentDate || p.createdAt)}
+                  </td>
+                  <td className="py-3.5 px-4 font-bold text-slate-800 text-sm">
+                    {p.amount < 0 ? "−" : ""}₹{money(Math.abs(p.amount))}
+                  </td>
+                  <td className="py-3.5 px-4 text-teal-600 font-medium text-sm">{p.isRefund ? "Refunded" : "Received"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="block md:hidden bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden divide-y divide-slate-100">
+          {rows.map((p, idx) => (
+            <div
+              key={p.id || idx}
+              onClick={() => setSelectedPaymentForDetails(p)}
+              className="px-4 py-3 flex items-start justify-between gap-3 hover:bg-slate-50 active:bg-slate-100 cursor-pointer transition-colors"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="font-bold text-slate-800 text-sm truncate">{p.customerName}</div>
+                <div className="text-slate-500 text-xs mt-0.5 truncate">
+                  {formatPaymentId(p.id, idx)} · {formatItemDate(p.paymentDate || p.createdAt)} · {String(p.mode || "").toUpperCase()}
+                </div>
+              </div>
+              <div className="text-right shrink-0">
+                <div className={`font-extrabold text-sm tabular-nums ${p.amount < 0 ? "text-rose-700" : "text-slate-900"}`}>
+                  {p.amount < 0 ? "−" : ""}₹{money(Math.abs(p.amount))}
+                </div>
+                <div className="text-teal-600 font-medium text-[11px]">{p.isRefund ? "Refunded" : "Received"}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </>
+    );
   };
 
   return (
@@ -640,7 +728,7 @@ export const PaymentsView: React.FC = () => {
               onClick={() => setShowAuditLog(true)}
               className="self-start sm:self-auto px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer shadow-2xs"
             >
-              Payment history log
+              Audit log
             </button>
           </div>
           {showAuditLog && (
@@ -702,30 +790,6 @@ export const PaymentsView: React.FC = () => {
             </div>
           </div>
 
-          {/* One-click repair for receipts saved earlier without an invoice (advances are not old receipts) */}
-          {payments.some((p) => !p.billId && !isAdvanceRow(p)) && (
-            <div className="p-3 rounded-xl text-xs border border-amber-200 bg-amber-50 text-amber-900 flex items-center justify-between gap-3">
-              <span>
-                Some older receipts are not linked to an invoice, so ledger and invoice dues can differ.
-                Linking splits them by invoice (oldest first). Totals do not change.
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  const n = repairPaymentLinks();
-                  setFormFeedback({
-                    type: "success",
-                    text: n > 0 ? `Linked ${n} receipt(s) to their invoices.` : "Nothing to link: remaining unlinked receipts are advances.",
-                  });
-                  setTimeout(() => setFormFeedback(null), 5000);
-                }}
-                className="shrink-0 px-3 py-1.5 rounded-lg bg-amber-600 text-white font-bold hover:bg-amber-700 cursor-pointer"
-              >
-                Link receipts
-              </button>
-            </div>
-          )}
-
           {/* Feedback Alert if any */}
           {formFeedback && (
             <div
@@ -784,31 +848,14 @@ export const PaymentsView: React.FC = () => {
                     className="w-full px-3.5 py-2.5 sm:py-3 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700"
                   />
                 ) : (
-                  <div className="relative">
-                    <select
-                      value={selectedParty}
-                      onChange={(e) => {
-                        setSelectedParty(e.target.value);
-                        const match = partyOptions.find((p) => p.name === e.target.value);
-                        if (match && match.due > 0 && !amount) {
-                          setAmount(String(match.due));
-                        }
-                      }}
-                      className="w-full px-3.5 py-2.5 sm:py-3 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700 appearance-none pr-10 cursor-pointer"
-                    >
-                      <option value="" disabled>
-                        Choose...
-                      </option>
-                      {partyOptions.map((opt) => (
-                        <option key={opt.key} value={opt.name}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
-                      <ChevronDown className="w-4 h-4" />
-                    </div>
-                  </div>
+                  <PartySearchSelect
+                    options={partyOptions}
+                    value={selectedParty}
+                    onSelect={(name, opt) => {
+                      setSelectedParty(name);
+                      if (opt && opt.due > 0 && !amount) setAmount(String(opt.due));
+                    }}
+                  />
                 )}
               </div>
 
@@ -935,185 +982,104 @@ export const PaymentsView: React.FC = () => {
             </form>
           </div>
 
-          {/* 3. Recent Section Header + Tab switch */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
-            <h2 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
-              Recent
-            </h2>
-
-            {/* Tab switch: Receipts, Due Invoices, Day-wise receipts (with due remaining), Beat-wise */}
-            <div
-              role="tablist"
-              aria-label="Payment views"
-              className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl border border-slate-200 text-xs font-semibold overflow-x-auto no-scrollbar max-w-full"
-            >
-              {(
-                [
-                  { id: "receipts", label: `Receipts (${allPayments.length})`, tone: "text-slate-900" },
-                  { id: "due", label: `Due Invoices (${dueBills.length})`, tone: "text-rose-700" },
-                  { id: "daywise", label: "Day-wise", tone: "text-slate-900" },
-                  { id: "beats", label: "Beat-wise", tone: "text-slate-900" },
-                ] as const
-              ).map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === t.id}
-                  onClick={() => setActiveTab(t.id)}
-                  className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-                    activeTab === t.id
-                      ? `bg-white ${t.tone} shadow-xs font-bold`
-                      : "text-slate-500 hover:text-slate-900"
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
-            </div>
+          {/* 3. Tabs: Recent (today) · Due invoices · History · Reports */}
+          <div
+            role="tablist"
+            aria-label="Payment views"
+            className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl border border-slate-200 text-xs font-semibold overflow-x-auto no-scrollbar max-w-full"
+          >
+            {(
+              [
+                { id: "recent", label: `Recent (${recentAll.length})`, tone: "text-slate-900" },
+                { id: "due", label: `Due (${dueBills.length})`, tone: "text-rose-700" },
+                { id: "history", label: `History (${historyAll.length})`, tone: "text-slate-900" },
+                { id: "reports", label: "Reports", tone: "text-emerald-800" },
+              ] as const
+            ).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === t.id}
+                onClick={() => setActiveTab(t.id)}
+                className={`flex-1 px-3 py-2 rounded-lg transition-all cursor-pointer whitespace-nowrap ${
+                  activeTab === t.id ? `bg-white ${t.tone} shadow-xs font-bold` : "text-slate-500 hover:text-slate-900"
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
 
-          {/* 4. Tab 1: Receipts View (EXACT MATCH TO IMAGE 2 on Desktop & IMAGE 3 on Mobile) */}
-          {activeTab === "receipts" && (
+          {/* Search (Recent, Due and History) */}
+          {activeTab !== "reports" && (
+            <div className="relative md:max-w-xs md:ml-auto">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                enterKeyHint="search"
+                type="text"
+                value={searchTerm}
+                onChange={(e) => {
+                  setSearchTerm(e.target.value);
+                  setHistoryVisible(HISTORY_PAGE);
+                }}
+                placeholder={activeTab === "due" ? "Search customer or invoice" : "Search payments"}
+                className="w-full pl-9 pr-8 py-2 text-sm rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700 placeholder:text-slate-400"
+              />
+              {searchTerm && (
+                <button
+                  aria-label="Clear search"
+                  type="button"
+                  onClick={() => setSearchTerm("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Recent: today's receipts */}
+          {activeTab === "recent" && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between px-1 text-xs text-slate-500">
+                <span className="font-semibold text-slate-700">Today · {formatItemDate(todayStr)}</span>
+                <span>
+                  {recentAll.length} receipt{recentAll.length === 1 ? "" : "s"} · ₹
+                  {money(recentAll.reduce((sum, p) => sum + (Number(p.amount) || 0), 0))}
+                </span>
+              </div>
+              {renderPaymentList(filteredRecent, recentAll.length === 0 ? "No receipts today yet. Older ones are in History." : "No payment receipts match your search")}
+            </div>
+          )}
+
+          {/* History: everything before today */}
+          {activeTab === "history" && (
             <div className="space-y-3">
-              {/* Mobile Search Bar (EXACT MATCH TO IMAGE 3) */}
-              <div className="block md:hidden">
-                <div className="relative">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input enterKeyHint="search"
-                    type="text"
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    placeholder="Search payments"
-                    className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700 placeholder:text-slate-400"
-                  />
-                  {searchTerm && (
-                    <button aria-label="Close"
-                      type="button"
-                      onClick={() => setSearchTerm("")}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Desktop Search Bar */}
-              <div className="hidden md:flex justify-end">
-                <div className="relative w-64">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input enterKeyHint="search"
-                    type="text"
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    placeholder="Search payments..."
-                    className="w-full pl-9 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700 placeholder:text-slate-400"
-                  />
-                  {searchTerm && (
-                    <button aria-label="Close"
-                      type="button"
-                      onClick={() => setSearchTerm("")}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* DESKTOP TABLE VIEW (EXACT MATCH TO IMAGE 2) */}
-              <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-slate-200/90 bg-slate-50/70">
-                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                        ITEM
-                      </th>
-                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                        DETAILS
-                      </th>
-                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                        VALUE
-                      </th>
-                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                        STATUS
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filteredPayments.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="py-8 text-center text-xs text-slate-400 italic">
-                          No payment receipts match your search
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredPayments.map((p, idx) => (
-                        <tr
-                          key={p.id || idx}
-                          onClick={() => setSelectedPaymentForDetails(p)}
-                          className="hover:bg-slate-50/80 cursor-pointer transition-colors"
-                          title="Click to view payment details"
-                        >
-                          <td className="py-3.5 px-4 font-bold text-slate-800 text-sm">
-                            {formatPaymentId(p.id, idx)}
-                          </td>
-                          <td className="py-3.5 px-4 text-slate-500 text-sm">
-                            {p.customerName} · {formatItemDate(p.paymentDate || p.createdAt)}
-                          </td>
-                          <td className="py-3.5 px-4 font-bold text-slate-800 text-sm">
-                            {p.amount < 0 ? "−" : ""}₹{money(Math.abs(p.amount))}
-                          </td>
-                          <td className="py-3.5 px-4 text-teal-600 font-medium text-sm">
-                            Received
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* MOBILE LIST VIEW (EXACT MATCH TO IMAGE 3) */}
-              <div className="block md:hidden bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-                <div className="bg-slate-50/70 border-b border-slate-200/90 px-4 py-2.5 flex items-center justify-between">
-                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                    ITEM
-                  </span>
-                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                    STATUS
-                  </span>
-                </div>
-                <div className="divide-y divide-slate-100">
-                  {filteredPayments.length === 0 ? (
-                    <div className="py-8 text-center text-xs text-slate-400 italic">
-                      No payment receipts match your search
+              {historyGroups.length === 0 ? (
+                renderPaymentList([], historyAll.length === 0 ? "No older receipts yet." : "No payment receipts match your search")
+              ) : (
+                historyGroups.map((g) => (
+                  <div key={g.date} className="space-y-1.5">
+                    <div className="flex items-center justify-between px-1 text-xs">
+                      <span className="font-bold text-slate-800">{formatItemDate(g.date)} · {g.date}</span>
+                      <span className="text-slate-500">
+                        {g.rows.length} · ₹{money(g.total)}
+                      </span>
                     </div>
-                  ) : (
-                    filteredPayments.map((p, idx) => (
-                      <div
-                        key={p.id || idx}
-                        onClick={() => setSelectedPaymentForDetails(p)}
-                        className="px-4 py-3 flex items-start justify-between gap-3 hover:bg-slate-50 active:bg-slate-100 cursor-pointer transition-colors"
-                        title="Click to view details"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="font-bold text-slate-800 text-sm">
-                            {formatPaymentId(p.id, idx)}
-                          </div>
-                          <div className="text-slate-500 text-xs mt-0.5 truncate">
-                            {p.customerName} · {formatItemDate(p.paymentDate || p.createdAt)} · ₹{money(p.amount)}
-                          </div>
-                        </div>
-                        <div className="text-teal-600 font-medium text-xs whitespace-nowrap pt-0.5">
-                          Received
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
+                    {renderPaymentList(g.rows, "")}
+                  </div>
+                ))
+              )}
+              {filteredHistory.length > historyVisible && (
+                <button
+                  type="button"
+                  onClick={() => setHistoryVisible((v) => v + HISTORY_PAGE)}
+                  className="w-full py-2.5 rounded-xl border border-slate-300 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+                >
+                  Show more ({filteredHistory.length - historyVisible} left)
+                </button>
+              )}
             </div>
           )}
 
@@ -1235,20 +1201,8 @@ export const PaymentsView: React.FC = () => {
             </div>
           )}
 
-          {/* 6. Tab 3 / 4: Day-wise customer receipts and Beat-wise sales & due (downloadable) */}
-          {(activeTab === "daywise" || activeTab === "beats") && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-slate-500">Period</span>
-                <PeriodFilter compact value={reportRange} onChange={setReportRange} />
-              </div>
-              {activeTab === "daywise" ? (
-                <CustomerReceiptsReport periodLabel={reportPeriodText} inPeriod={reportInPeriod} />
-              ) : (
-                <BeatSalesDueReport periodLabel={reportPeriodText} inPeriod={reportInPeriod} />
-              )}
-            </div>
-          )}
+          {/* Reports: total, day-wise, beat-wise, customer-wise (each downloadable) */}
+          {activeTab === "reports" && <PaymentReportsPanel />}
         </div>
       )}
 

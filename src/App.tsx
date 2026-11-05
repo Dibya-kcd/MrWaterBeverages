@@ -68,6 +68,7 @@ const BillingView = lazyWithRetry(() => import("./components/views/BillingView")
 const CustomersView = lazyWithRetry(() => import("./components/views/CustomersView"), "CustomersView");
 const InventoryView = lazyWithRetry(() => import("./components/views/InventoryView"), "InventoryView");
 const PaymentsView = lazyWithRetry(() => import("./components/views/PaymentsView"), "PaymentsView");
+const ExpensesView = lazyWithRetry(() => import("./components/views/ExpensesView"), "ExpensesView");
 const ProductsView = lazyWithRetry(() => import("./components/views/ProductsView"), "ProductsView");
 const PromotionsView = lazyWithRetry(() => import("./components/views/PromotionsView"), "PromotionsView");
 const SupplierSchemesView = lazyWithRetry(() => import("./components/views/SupplierSchemesView"), "SupplierSchemesView");
@@ -357,6 +358,7 @@ export const App: React.FC = () => {
                 {tab === "dashboard" && <DashboardView />}
                 {tab === "customers" && <CustomersView />}
                 {tab === "payments" && <PaymentsView />}
+                {tab === "expenses" && <ExpensesView />}
                 {tab === "grn" && (
                   <InventoryView initialSubTab="consignments" />
                 )}

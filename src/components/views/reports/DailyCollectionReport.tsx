@@ -6,17 +6,23 @@ import { money } from '../../../utils/billing';
 import { billNetTotal, round2 } from '../../../utils/salesReturns';
 import { isAdvanceAdjustmentRow, isAdvanceRow } from '../../../utils/paymentAllocation';
 import { EXPENSE_LABELS } from '../../../utils/netProfit';
+import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
+import type { PeriodRange } from '../../common/PeriodFilter';
+import { DailyCollectionPhone, filterDailyDays, type DailyFilter } from './mobile/DailyCollectionPhone';
 
 export interface DailyCollectionReportProps {
   periodLabel: string;
   dateInPeriod: (date: string) => boolean;
   onRecordPayment: () => void;
   onEditPayment: (p: PaymentRecord) => void;
+  /** Phone only: current period and a way to change it from the Today / Yesterday / 7 days / Month chips. */
+  period?: PeriodRange;
+  onPeriodChange?: (r: PeriodRange) => void;
 }
 
-type LineKind = 'sale' | 'collection' | 'advance' | 'refund' | 'expense';
+export type LineKind = 'sale' | 'collection' | 'advance' | 'refund' | 'expense';
 
-interface Line {
+export interface Line {
   key: string;
   kind: LineKind;
   title: string; // customer / expense type
@@ -29,7 +35,7 @@ interface Line {
   payment?: PaymentRecord;
 }
 
-interface DayGroup {
+export interface DayGroup {
   date: string;
   lines: Line[];
   cashIn: number;
@@ -69,9 +75,12 @@ export const DailyCollectionReport: React.FC<DailyCollectionReportProps> = ({
   dateInPeriod,
   onRecordPayment,
   onEditPayment,
+  period,
+  onPeriodChange,
 }) => {
-  const { bills, payments, expenses, deletePayment } = useLedger();
+  const { bills, payments, expenses, deletePayment, orgProfile } = useLedger();
   const [openOnlyDue, setOpenOnlyDue] = useState(false);
+  const [phoneFilter, setPhoneFilter] = useState<DailyFilter>('all');
 
   const { days, totals } = useMemo(() => {
     const live = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
@@ -243,8 +252,75 @@ export const DailyCollectionReport: React.FC<DailyCollectionReportProps> = ({
   const inHand = received - totals.out;
   const card = 'rounded-2xl border border-black/10 bg-white';
 
+  const confirmDelete = (p: PaymentRecord) => {
+    const reason = window.prompt(
+      `Delete payment of ₹${money(Math.abs(p.amount))} for ${p.customerName}?\n\nEnter a reason (e.g. wrong amount, duplicate):`,
+      '',
+    );
+    if (reason !== null) deletePayment(p.id, reason);
+  };
+
+  const KIND_LABEL: Record<LineKind, string> = {
+    sale: 'Sale',
+    collection: 'Payment received',
+    advance: 'Advance',
+    refund: 'Refund paid',
+    expense: 'Expense paid',
+  };
+
+  // Excel / PDF follow the chip chosen on the phone (Everything, Sales with due, ...).
+  const exportDays = filterDailyDays(days, phoneFilter);
+  const exportExcel = () =>
+    downloadXlsx(`daily-collection-${fileStamp()}.xlsx`, [
+      {
+        name: 'Transactions',
+        header: ['Date', 'Type', 'Customer / item', 'Details', 'Bill amount', 'Paid on day', 'Due on day', 'Cash in', 'UPI / other in', 'Paid out'],
+        rows: exportDays.flatMap((g) =>
+          g.lines.map((l) => {
+            const out = l.kind === 'refund' || l.kind === 'expense' ? l.amount : 0;
+            return [g.date, KIND_LABEL[l.kind], l.title, l.sub, l.kind === 'sale' ? l.amount : '', l.paid ?? '', l.due ?? '', l.cash || '', l.digital || '', out || ''];
+          }),
+        ),
+      },
+      {
+        name: 'Daily totals',
+        header: ['Date', 'Billed', 'Cash in', 'UPI / other in', 'Paid out', 'Net in hand', 'New due'],
+        rows: exportDays.map((g) => [g.date, g.billed, g.cashIn, g.digitalIn, g.out, g.cashIn + g.digitalIn - g.out, g.dueCreated]),
+        total: ['Total', totals.billed, totals.cash, totals.digital, totals.out, inHand, totals.due],
+      },
+    ]);
+
+  const exportPdf = () =>
+    downloadPdf({
+      filename: `daily-collection-${fileStamp()}.pdf`,
+      title: 'Daily collection',
+      subtitle: [orgProfile?.name || 'MrWater Distribution', `Period: ${periodLabel}`],
+      landscape: true,
+      sections: exportDays.map((g) => ({
+        title: `${fmtDay(g.date)}  -  In hand Rs. ${money(g.cashIn + g.digitalIn - g.out)}  |  New due Rs. ${money(g.dueCreated)}`,
+        header: ['Type', 'Customer / item', 'Details', 'Amount (Rs.)', 'Paid on day (Rs.)', 'Due on day (Rs.)'],
+        rows: g.lines.map((l) => [KIND_LABEL[l.kind], l.title, l.sub, money(l.amount), l.paid !== undefined ? money(l.paid) : '', l.due !== undefined ? money(l.due) : '']),
+        rightAlign: [3, 4, 5],
+      })),
+    });
+
   return (
-    <div className="space-y-3" id="report-daily-collection">
+    <>
+      <DailyCollectionPhone
+        periodLabel={periodLabel}
+        days={days}
+        totals={totals}
+        filter={phoneFilter}
+        onFilter={setPhoneFilter}
+        period={period}
+        onPeriod={onPeriodChange}
+        onRecordPayment={onRecordPayment}
+        onEditPayment={onEditPayment}
+        onDeletePayment={confirmDelete}
+        onExcel={exportExcel}
+        onPdf={exportPdf}
+      />
+    <div className="hidden md:block space-y-3" id="report-daily-collection">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <h2 className="text-base font-bold text-slate-900">Daily collection</h2>
@@ -361,5 +437,6 @@ export const DailyCollectionReport: React.FC<DailyCollectionReportProps> = ({
         );
       })}
     </div>
+    </>
   );
 };

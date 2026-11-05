@@ -6,6 +6,15 @@ import { money, normalizeGstFraction, resolveProductGstRate, scaledTaxSplit } fr
 import { returnedQtyByProduct } from '../../../utils/salesReturns';
 import { CATS } from '../../../constants/initialData';
 import { InfoTip } from '../../common/InfoTip';
+import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
+import { ReportShareMenu } from './ReportShareMenu';
+import { ProductProfitPhone } from './mobile/ProductProfitPhone';
+import { Bill } from '../../../types';
+
+export interface SupplierProductProfitReportProps {
+  filteredBills?: Bill[];
+  periodLabel?: string;
+}
 
 /**
  * Product Profit report (spec §17) — one row per product, folding in Supplier Scheme /
@@ -15,8 +24,12 @@ import { InfoTip } from '../../common/InfoTip';
  * minus COGS at adjusted landed cost, properly separating GST liability from commercial profit.
  * Average Selling Price is calculated via Method 2 (dividing by billed cases).
  */
-export const SupplierProductProfitReport: React.FC = () => {
-  const { products, bills, inventoryBatches, supplierCreditNotes, warehouses } = useLedger();
+export const SupplierProductProfitReport: React.FC<SupplierProductProfitReportProps> = ({
+  filteredBills,
+  periodLabel = 'This month',
+}) => {
+  const { products, bills, inventoryBatches, supplierCreditNotes, warehouses, orgProfile } = useLedger();
+  const activeBills = filteredBills || bills;
   const [search, setSearch] = useState('');
   const [warehouseFilter, setWarehouseFilter] = useState('all');
 
@@ -56,7 +69,7 @@ export const SupplierProductProfitReport: React.FC = () => {
         let salesTaxableValue = 0;
         let salesGst = 0;
 
-        for (const bill of bills) {
+        for (const bill of activeBills) {
           if (bill.status === 'cancelled') continue;
           if (warehouseFilter !== 'all' && bill.warehouseId !== warehouseFilter) continue;
 
@@ -171,8 +184,74 @@ export const SupplierProductProfitReport: React.FC = () => {
   const totalCreditReceived = rows.reduce((s, r) => s + r.creditReceived, 0);
   const totalCreditOutstanding = rows.reduce((s, r) => s + r.creditOutstanding, 0);
 
+  const godownName = warehouseFilter === 'all' ? 'All godowns' : warehouses.find((w) => w.id === warehouseFilter)?.name || 'Godown';
+
+  const exportExcel = () =>
+    downloadXlsx(`product-profit-${fileStamp()}.xlsx`, [
+      {
+        name: 'Product profit',
+        header: ['Product', 'Category', 'Billed cs', 'Free cs', 'Adj. cost / cs', 'Avg selling price', 'Taxable sales (ex-GST)', 'GST collected', 'Billed net', 'Operating profit', 'Margin %', 'Profit / cs'],
+        rows: rows.map((r) => [
+          r.product.name,
+          r.product.category || 'general',
+          r.salesQty,
+          r.salesFreeQty,
+          r.adjustedCostConfirmed,
+          r.avgBilledSellingPrice,
+          r.salesTaxableValue,
+          r.salesGst,
+          r.salesValue,
+          r.grossProfitConfirmed,
+          Math.round(r.marginConfirmed * 10) / 10,
+          r.profitPerCase,
+        ]),
+        total: ['Total', '', '', '', '', '', totalTaxable, totalGst, '', totalProfit, '', ''],
+      },
+    ]);
+
+  const exportPdf = () =>
+    downloadPdf({
+      filename: `product-profit-${fileStamp()}.pdf`,
+      title: 'Product profit (after GST)',
+      subtitle: [orgProfile?.name || 'MrWater Distribution', `Godown: ${godownName}`, 'Profit = sales without GST minus cost of cases sold'],
+      landscape: true,
+      sections: [
+        {
+          header: ['Product', 'Billed cs', 'Free cs', 'Cost / cs (Rs.)', 'Avg price (Rs.)', 'Sales ex-GST (Rs.)', 'GST (Rs.)', 'Profit (Rs.)', 'Margin'],
+          rows: rows.map((r) => [
+            r.product.name,
+            r.salesQty,
+            r.salesFreeQty,
+            money(r.adjustedCostConfirmed),
+            money(r.avgBilledSellingPrice),
+            money(r.salesTaxableValue),
+            money(r.salesGst),
+            money(r.grossProfitConfirmed),
+            `${r.marginConfirmed.toFixed(1)}%`,
+          ]),
+          total: ['Total', '', '', '', '', money(totalTaxable), money(totalGst), money(totalProfit), ''],
+          rightAlign: [1, 2, 3, 4, 5, 6, 7, 8],
+        },
+      ],
+    });
+
   return (
-    <div className="space-y-4">
+    <>
+      <ProductProfitPhone
+        rows={rows}
+        totalProfit={totalProfit}
+        totalGst={totalGst}
+        creditReceived={totalCreditReceived}
+        creditOutstanding={totalCreditOutstanding}
+        search={search}
+        onSearch={setSearch}
+        warehouseId={warehouseFilter}
+        onWarehouse={setWarehouseFilter}
+        warehouses={warehouses}
+        onExcel={exportExcel}
+        onPdf={exportPdf}
+      />
+    <div className="hidden md:block space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
         <StatCard icon={TrendingUp} title="Confirmed Operating Profit" value={`₹${money(totalProfit)}`} />
         <StatCard icon={ShieldCheck} title="Total Output GST" value={`₹${money(totalGst)}`} />
@@ -206,6 +285,52 @@ export const SupplierProductProfitReport: React.FC = () => {
             </option>
           ))}
         </select>
+        <ReportShareMenu
+          reportTitle="Product Profit Report"
+          periodLabel={periodLabel}
+          orgName={orgProfile?.name || "Hydrate Hub"}
+          align="right"
+          summaryMetrics={[
+            { label: 'Confirmed Operating Profit', value: `₹${money(totalProfit)}` },
+            { label: 'Total Output GST', value: `₹${money(totalGst)}` },
+            { label: 'Supplier Credit Recv.', value: `₹${money(totalCreditReceived)}` },
+            { label: 'Credit Outstanding', value: `₹${money(totalCreditOutstanding)}` },
+          ]}
+          sheets={[
+            {
+              name: 'Product Profit',
+              header: ['Product', 'Category', 'Billed cases', 'Free cases', 'Total cases', 'Cost (Rs)', 'Avg Sell (Rs)', 'Taxable Sales (Rs)', 'Operating Profit (Rs)', 'Margin %'],
+              rows: rows.map((r) => [
+                r.product.name,
+                r.product.category,
+                r.salesQty,
+                r.salesFreeQty,
+                r.salesQty + r.salesFreeQty,
+                r.adjustedCostConfirmed,
+                r.avgBilledSellingPrice,
+                r.salesTaxableValue,
+                r.grossProfitConfirmed,
+                `${r.marginConfirmed.toFixed(1)}%`,
+              ]),
+            },
+          ]}
+          pdfSections={[
+            {
+              title: `Product Profit Summary (${periodLabel})`,
+              header: ['Product', 'Total cs', 'Cost', 'Sell', 'Taxable', 'Profit', 'Margin %'],
+              rows: rows.map((r) => [
+                r.product.name,
+                r.salesQty + r.salesFreeQty,
+                money(r.adjustedCostConfirmed),
+                money(r.avgBilledSellingPrice),
+                money(r.salesTaxableValue),
+                money(r.grossProfitConfirmed),
+                `${r.marginConfirmed.toFixed(1)}%`,
+              ]),
+              rightAlign: [1, 2, 3, 4, 5, 6],
+            },
+          ]}
+        />
       </div>
 
       {rows.length === 0 ? (
@@ -348,5 +473,6 @@ export const SupplierProductProfitReport: React.FC = () => {
         </>
       )}
     </div>
+    </>
   );
 };

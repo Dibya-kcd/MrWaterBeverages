@@ -34,6 +34,15 @@ const UNKNOWN: Omit<SizeTheme, 'label'> = {
   chip: 'bg-slate-100 text-slate-700 border-slate-300',
 };
 
+/** Left stripe in the size colour. Spread into a row's `style` so every list uses the same stripe. */
+export function sizeStripe(volume?: number | null, name?: string | null): {
+  borderLeftWidth: number;
+  borderLeftStyle: 'solid';
+  borderLeftColor: string;
+} {
+  return { borderLeftWidth: 6, borderLeftStyle: 'solid', borderLeftColor: sizeTheme(volume, name).hex };
+}
+
 export function sizeTheme(volume?: number | null, name?: string | null): SizeTheme {
   const vol = (Number(volume) > 0 ? Number(volume) : name ? volumeFromName(name) : null) || 0;
   if (vol <= 0) return { label: '', ...UNKNOWN };
@@ -55,11 +64,11 @@ export function packTheme(pack?: string | null, name?: string | null): PackTheme
   const raw = pack && pack.trim() && pack !== 'pcs' ? pack.trim() : name ? detectPack(name) : '';
   const k = raw.toLowerCase();
   if (!k) return { label: '', chip: '' };
-  if (k.includes('can') || k.includes('tin')) return { label: 'Can', chip: 'bg-zinc-700 text-white border-zinc-900' };
+  if (k.includes('can') || k.includes('tin')) return { label: 'Can', chip: 'bg-blue-600 text-white border-blue-800 shadow-2xs font-black' };
   if (k.includes('pet') || k.includes('plastic') || k.includes('bottle'))
-    return { label: 'PET', chip: 'bg-sky-600 text-white border-sky-800' };
-  if (k.includes('glass') || k.includes('rgb')) return { label: raw, chip: 'bg-emerald-700 text-white border-emerald-900' };
+    return { label: 'PET', chip: 'bg-red-600 text-white border-red-800 shadow-2xs font-black' };
+  if (k.includes('glass') || k.includes('rgb')) return { label: raw, chip: 'bg-emerald-700 text-white border-emerald-900 shadow-2xs font-black' };
   if (k.includes('tetra') || k.includes('pouch') || k.includes('brick'))
-    return { label: raw, chip: 'bg-amber-600 text-white border-amber-800' };
-  return { label: raw, chip: 'bg-slate-600 text-white border-slate-800' };
+    return { label: raw, chip: 'bg-amber-600 text-white border-amber-800 shadow-2xs font-black' };
+  return { label: raw, chip: 'bg-slate-600 text-white border-slate-800 shadow-2xs font-black' };
 }

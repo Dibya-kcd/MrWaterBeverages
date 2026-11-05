@@ -4,6 +4,11 @@ import type { BusinessExpenseRecord } from '../../../utils/storage';
 import { useLedger } from '../../../context/LedgerContext';
 import { money } from '../../../utils/billing';
 import { useSalesMarginPnl } from './SalesMarginPnLReport';
+import { RegisterCard } from './mobile/ReportCards';
+import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
+import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
+import { ReportBreakdownLine, ReportStat, ReportStatGrid, ReportTitleBar, reportCard } from './ReportKit';
+import { HeroCard, LegendDot, MiniStat, PhoneDownloadBar, PhoneHeader, SplitBar } from './mobile/PhoneKit';
 import {
   EXPENSE_LABELS,
   PAY_CATEGORIES,
@@ -30,16 +35,28 @@ const Row: React.FC<{ label: string; value: number; hint?: string; bold?: boolea
   bold,
   sign,
 }) => (
-  <div className={`flex items-start justify-between gap-3 py-2 border-b border-slate-100 ${bold ? 'font-black' : ''}`}>
-    <div>
-      <div className={`text-sm ${bold ? 'text-slate-900' : 'text-slate-700'}`}>{label}</div>
-      {hint ? <div className="text-[11px] text-slate-500 font-normal">{hint}</div> : null}
+  <div className="flex items-start justify-between gap-3 px-3.5 py-2.5 border-t border-black/5 first:border-t-0">
+    <div className="min-w-0">
+      <div className={`text-[14px] leading-snug ${bold ? 'font-extrabold text-slate-900' : 'font-semibold text-slate-800'}`}>{label}</div>
+      {hint ? <div className="text-xs text-slate-500 leading-snug">{hint}</div> : null}
     </div>
-    <div className={`font-mono text-sm whitespace-nowrap ${value < 0 ? 'text-rose-700' : bold ? 'text-slate-900' : 'text-slate-800'}`}>
+    <div
+      className={`text-[14px] font-extrabold tabular-nums whitespace-nowrap ${
+        value < 0 ? 'text-rose-700' : sign === 'plus' ? 'text-emerald-700' : bold ? 'text-slate-900' : 'text-slate-700'
+      }`}
+    >
       {sign === 'minus' ? '− ' : sign === 'plus' ? '+ ' : ''}₹{money(Math.abs(value))}
       {value < 0 && !sign ? ' (loss)' : ''}
     </div>
   </div>
+);
+
+/** White card with the same shaded heading strip as the day cards in the other reports. */
+const Panel: React.FC<{ title: string; tone?: 'default' | 'amber'; children: React.ReactNode }> = ({ title, tone = 'default', children }) => (
+  <section className={`${reportCard} overflow-hidden ${tone === 'amber' ? 'border-amber-200' : ''}`}>
+    <div className={`px-3.5 py-2.5 text-[13px] font-bold ${tone === 'amber' ? 'bg-amber-50 text-amber-900' : 'bg-[#faf8f5] text-slate-900'}`}>{title}</div>
+    <div className="border-t border-black/5">{children}</div>
+  </section>
 );
 
 export const NetProfitReport: React.FC<NetProfitReportProps> = ({
@@ -134,20 +151,93 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
 
   const cashShort = pnl.outstanding > 0;
 
+  const rs = (n: number) => `₹${money(n)}`;
+  const runningCosts = Math.max(0, pnl.operatingGrossProfit - np.profitBeforePay);
+  const netNeg = np.netProfit < 0;
+
+  const workedOut: [string, number][] = [
+    ['Sales revenue (ex-GST)', pnl.taxableSalesNet],
+    ['Cost of cases delivered', -pnl.cogs],
+    ['Stock written off / given free (net of supplier credit)', -pnl.writeOffNet],
+    ...(credits > 0 ? ([['Supplier scheme credits received', credits]] as [string, number][]) : []),
+    ['Gross profit', pnl.operatingGrossProfit],
+    ...CATS_ORDER.filter((c) => !PAY_CATEGORIES.includes(c) && np.byCategory[c] > 0).map((c) => [EXPENSE_LABELS[c], -np.byCategory[c]] as [string, number]),
+    ['Profit available for pay', np.profitBeforePay],
+    ...PAY_CATEGORIES.filter((c) => np.byCategory[c] > 0).map((c) => [`${EXPENSE_LABELS[c]} already paid`, -np.byCategory[c]] as [string, number]),
+    ['Net profit', np.netProfit],
+  ];
+  const sortedExpenses = [...periodExpenses].sort((a: BusinessExpenseRecord, b: BusinessExpenseRecord) => b.date.localeCompare(a.date));
+
+  const exportExcel = () =>
+    downloadXlsx(`net-profit-${fileStamp()}.xlsx`, [
+      { name: 'Net profit', header: ['Item', 'Amount'], rows: workedOut.map(([l, v]) => [l, Number(v.toFixed(2))]) },
+      {
+        name: 'Expenses',
+        header: ['Date', 'Type', 'Paid to', 'Trip / note', 'Amount'],
+        rows: sortedExpenses.map((e) => [e.date, EXPENSE_LABELS[e.category] || e.category, e.paidTo || '', [e.tripLabel, e.note].filter(Boolean).join(' — '), e.amount]),
+        total: ['Total', '', '', '', sortedExpenses.reduce((t, e) => t + (Number(e.amount) || 0), 0)],
+      },
+    ]);
+  const exportPdf = () =>
+    downloadPdf({
+      filename: `net-profit-${fileStamp()}.pdf`,
+      title: 'Net profit',
+      subtitle: ['MrWater Distribution', `Period: ${periodLabel}`],
+      sections: [
+        { header: ['Item', 'Amount (Rs.)'], rows: workedOut.map(([l, v]) => [l, `${v < 0 ? '-' : ''}${money(Math.abs(v))}`]), rightAlign: [1] },
+        {
+          title: 'Expenses',
+          header: ['Date', 'Type', 'Paid to', 'Amount (Rs.)'],
+          rows: sortedExpenses.map((e) => [e.date, EXPENSE_LABELS[e.category] || e.category, e.paidTo || '-', money(e.amount)]),
+          rightAlign: [3],
+        },
+      ],
+    });
+
   return (
-    <div className="space-y-5">
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="text-xs font-black uppercase tracking-wider text-slate-500">Net profit · {periodLabel}</div>
-        <div className={`text-3xl font-black font-mono mt-1 ${np.netProfit < 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
-          ₹{money(np.netProfit)}
+    <div className="space-y-3" id="report-net-profit">
+      {/* ============================ PHONE ============================ */}
+      <div className="md:hidden space-y-3">
+        <PhoneHeader title="Net profit" sub="Gross margin minus operating expenses" />
+        <HeroCard tone={netNeg ? 'red' : 'green'} label="Net profit" value={rs(np.netProfit)} negative={netNeg}>
+          <SplitBar
+            label="Running costs, pay and net profit"
+            parts={[
+              { value: runningCosts, className: 'bg-amber-300' },
+              { value: np.payPaid, className: 'bg-sky-300' },
+              { value: Math.max(0, np.netProfit), className: 'bg-emerald-300' },
+            ]}
+          />
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-white/90">
+            <LegendDot dot="bg-amber-300">Costs {rs(runningCosts)}</LegendDot>
+            <LegendDot dot="bg-sky-300">Pay {rs(np.payPaid)}</LegendDot>
+          </div>
+        </HeroCard>
+        <div className="grid grid-cols-3 gap-2">
+          <MiniStat label="Gross profit" value={rs(pnl.operatingGrossProfit)} />
+          <MiniStat label="For pay" value={rs(np.profitBeforePay)} tone={np.profitBeforePay < 0 ? 'red' : 'ink'} />
+          <MiniStat label="Pay given" value={rs(np.payPaid)} tone="amber" />
         </div>
-        <div className="text-xs text-slate-600 mt-1">
-          After stock costs, write-offs, running costs and pay already given. GST collected is not profit and is left out.
-        </div>
+        <p className="px-1 text-xs text-slate-500">After stock costs, write-offs, running costs and pay already given. GST collected is not profit.</p>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <h3 className="text-sm font-black uppercase tracking-wider text-slate-700 mb-1">How it is worked out</h3>
+      {/* ======================= TABLET / DESKTOP ======================= */}
+      <div className="hidden md:block space-y-3">
+        <ReportTitleBar
+          title="Net profit"
+          sub={`${periodLabel} · after stock costs, write-offs, running costs and pay already given`}
+          actions={<ReportDownloadButtons onExcel={exportExcel} onPdf={exportPdf} reportTitle="Net profit" />}
+        />
+        <ReportStatGrid>
+          <ReportStat label="Gross profit" value={rs(pnl.operatingGrossProfit)} tone={pnl.operatingGrossProfit < 0 ? 'red' : 'ink'} sub="after write-offs and credits" />
+          <ReportStat label="Running costs" value={rs(runningCosts)} tone="amber" sub="fuel, rent, toll, repairs…" />
+          <ReportStat label="Pay already given" value={rs(np.payPaid)} tone="sky" sub="salary, driver, commission" />
+          <ReportStat label="Net profit" value={rs(np.netProfit)} tone={netNeg ? 'red' : 'green'} sub="what is really left" />
+        </ReportStatGrid>
+        <ReportBreakdownLine>GST collected is not profit and is left out of every figure here.</ReportBreakdownLine>
+      </div>
+
+      <Panel title="How it is worked out">
         <Row label="Sales revenue (ex-GST)" value={pnl.taxableSalesNet} hint="Bill value with GST taken out, less returns" />
         <Row
           label="Cost of cases delivered"
@@ -168,7 +258,7 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
           <Row key={c} label={`${EXPENSE_LABELS[c]} already paid`} value={np.byCategory[c]} sign="minus" />
         ))}
         <Row label="Net profit" value={np.netProfit} bold />
-      </div>
+      </Panel>
 
       {(() => {
         const c = pnl.costChecks;
@@ -213,8 +303,8 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
         if (items.length === 0)
           items.push({ tone: 'info', text: 'No gaps found for this period: every sold case has a cost and expenses are recorded.' });
         return (
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-2">
-            <h3 className="text-sm font-black uppercase tracking-wider text-slate-700">Check my numbers</h3>
+          <Panel title="Check my numbers">
+           <div className="p-3 space-y-2">
             {items.map((it, i) => (
               <div
                 key={i}
@@ -229,13 +319,13 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
                 {it.text}
               </div>
             ))}
-          </div>
+           </div>
+          </Panel>
         );
       })()}
 
-      <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4 shadow-sm space-y-3">
-        <h3 className="text-sm font-black uppercase tracking-wider text-amber-900">Salary budget</h3>
-        <div className="flex flex-wrap items-center gap-2 text-sm">
+      <Panel title="Salary budget" tone="amber">
+        <div className="flex flex-wrap items-center gap-2 text-sm px-3.5 py-3">
           <span>Share of available profit for pay:</span>
           <input
             type="number" inputMode="decimal"
@@ -267,18 +357,18 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
           bold
         />
         {np.profitBeforePay <= 0 && (
-          <div className="text-xs font-bold text-rose-700">
+          <div className="px-3.5 py-2.5 text-xs font-bold text-rose-700">
             There is no profit available for pay in this period, so the budget is ₹0.
           </div>
         )}
         {cashShort && (
-          <div className="text-xs text-amber-900">
+          <div className="px-3.5 py-2.5 text-xs text-amber-900">
             Profit counts sales you have billed. Customers still owe ₹{money(pnl.outstanding)} of this period's bills
             and you have collected ₹{money(pnl.collected)}. Pay out of cash you actually hold.
           </div>
         )}
         {paidByPerson.length > 0 && (
-          <div className="text-xs text-slate-700">
+          <div className="px-3.5 py-2.5 text-xs text-slate-700">
             <div className="font-bold mb-1">Paid so far</div>
             {paidByPerson.map(([name, amt]) => (
               <div key={name} className="flex justify-between border-t border-amber-200/70 py-1">
@@ -288,11 +378,11 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
             ))}
           </div>
         )}
-      </div>
+      </Panel>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm space-y-3">
-        <h3 className="text-sm font-black uppercase tracking-wider text-slate-700">Add an expense</h3>
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-2 text-sm">
+      <Panel title="Add an expense">
+       <div className="p-3 space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 text-sm">
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1.5" />
           <select value={category} onChange={(e) => setCategory(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1.5">
             {CATS_ORDER.map((c) => (
@@ -318,15 +408,57 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
           </select>
           <input placeholder="Note" value={note} onChange={(e) => setNote(e.target.value)} className="border border-slate-300 rounded-lg px-2 py-1.5" />
         </div>
-        <button type="button" onClick={submit} className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-bold">
+        <button type="button" onClick={submit} className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm font-bold cursor-pointer">
           Save expense
         </button>
 
-        <div className="overflow-x-auto">
+        <div className="md:hidden space-y-3" id="expense-cards">
+          {periodExpenses.length === 0 ? (
+            <div className="py-3 text-center text-sm text-slate-500">No expenses recorded for this period yet.</div>
+          ) : (
+            [...periodExpenses]
+              .sort((a: BusinessExpenseRecord, b: BusinessExpenseRecord) => b.date.localeCompare(a.date))
+              .map((e) => (
+                <RegisterCard
+                  key={e.id}
+                  title={EXPENSE_LABELS[e.category] || e.category}
+                  subtitle={
+                    <>
+                      <div className="font-mono">{e.date}</div>
+                      <div className="text-slate-500">
+                        {e.paidTo ? `Paid to ${e.paidTo}` : ''}
+                        {e.paidTo && [e.tripLabel, e.note].filter(Boolean).length ? ' · ' : ''}
+                        {[e.tripLabel, e.note].filter(Boolean).join(' — ')}
+                      </div>
+                    </>
+                  }
+                  heroLabel="Amount"
+                  hero={`₹${money(e.amount)}`}
+                  heroTone="amber"
+                  actions={
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const reason = window.prompt(
+                          `Delete this ₹${money(e.amount)} ${EXPENSE_LABELS[e.category] || e.category} entry?\nWrite the reason (kept in the audit log):`,
+                        );
+                        if (reason === null) return;
+                        deleteExpense(e.id, reason.trim() || undefined);
+                      }}
+                      className="min-h-[44px] px-4 rounded-xl border border-rose-200 bg-rose-50 text-[13px] font-bold text-rose-700 cursor-pointer"
+                    >
+                      Delete
+                    </button>
+                  }
+                />
+              ))
+          )}
+        </div>
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-left text-slate-500">
-                <th className="py-1 pr-3">Date</th>
+              <tr className="text-left text-[11px] font-bold uppercase tracking-wide text-slate-500 border-b border-black/5">
+                <th className="py-1.5 pr-3">Date</th>
                 <th className="py-1 pr-3">Type</th>
                 <th className="py-1 pr-3">Paid to</th>
                 <th className="py-1 pr-3">Note</th>
@@ -371,7 +503,10 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
             </tbody>
           </table>
         </div>
-      </div>
+       </div>
+      </Panel>
+
+      <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} />
     </div>
   );
 };

@@ -9,6 +9,7 @@ import {
   Share2,
   X,
   Edit,
+  ArrowRight,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { Bill } from '../../types';
@@ -42,6 +43,8 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
   const { orgProfile, billingSettings, palette, fz, scale } = useLedger();
   const [downloading, setDownloading] = useState(false);
   const [copiedUpi, setCopiedUpi] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [copiedInvoiceText, setCopiedInvoiceText] = useState(false);
 
   // Invoice Format state: 'gst' (B2B Tax Invoice) vs 'non_gst' (B2C Retail Bill / Bill of Supply)
   const [invoiceFormat, setInvoiceFormat] = useState<'gst' | 'non_gst'>(() => {
@@ -131,19 +134,19 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
         style={{ borderColor: palette.line }}
       >
         {/* =====================================================================
-            TOP MINIMAL HEADER (Clean & Uncluttered: Invoice #, Status, Close)
+            TOP HEADER (Invoice #, Status, Edit & Share Controls, Close)
             ===================================================================== */}
         <div
-          className="px-3.5 sm:px-6 py-2.5 sm:py-3 border-b flex items-center justify-between gap-3 bg-slate-50/90 print:hidden select-none shrink-0"
+          className="px-3 sm:px-5 py-2.5 border-b flex items-center justify-between gap-2 bg-slate-50 print:hidden select-none shrink-0"
           style={{ borderColor: palette.line }}
         >
-          <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
             <FileText size={Math.round(18 * scale)} className="text-slate-700 shrink-0" aria-hidden="true" />
-            <span className="font-bold text-sm sm:text-base text-slate-900 font-mono truncate">
+            <span className="font-extrabold text-xs sm:text-base text-slate-900 font-mono truncate">
               #{invoiceNo}
             </span>
             <span
-              className="px-2 py-0.5 text-[10px] sm:text-xs font-bold uppercase rounded border shrink-0"
+              className="px-1.5 py-0.5 text-[10px] sm:text-xs font-bold uppercase rounded border shrink-0"
               style={{
                 backgroundColor:
                   status.balance <= 0 ? '#10804315' : status.balance === bill.total ? '#B4282815' : '#D9770615',
@@ -157,15 +160,44 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
             </span>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close invoice preview"
-            className="p-1.5 rounded-lg border text-slate-500 hover:text-slate-900 hover:bg-slate-200/60 transition-colors cursor-pointer shrink-0"
-            style={{ borderColor: palette.line }}
-          >
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Edit Button on Top */}
+            {onEditBill && (
+              <button
+                type="button"
+                onClick={() => onEditBill(bill)}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 font-bold bg-white hover:bg-slate-100 text-slate-800 text-xs cursor-pointer shadow-2xs transition-colors"
+                title="Edit this invoice"
+                id="invoice-modal-top-edit-btn"
+              >
+                <Edit size={13} className="text-amber-600" />
+                <span className="hidden sm:inline">Edit</span>
+              </button>
+            )}
+
+            {/* Share Button on Top (opens WhatsApp, Print, Download PDF) */}
+            <button
+              type="button"
+              onClick={() => setShowShareModal(true)}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg font-bold text-xs text-white bg-emerald-600 hover:bg-emerald-700 active:scale-95 shadow-xs cursor-pointer transition-transform"
+              title="Share, print or download invoice"
+              id="invoice-modal-top-share-btn"
+            >
+              <Share2 size={13} />
+              <span>Share</span>
+            </button>
+
+            {/* Close Button */}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close invoice preview"
+              className="p-1.5 rounded-lg border border-slate-300 text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
+              style={{ borderColor: palette.line }}
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
         {/* =====================================================================
@@ -685,121 +717,194 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
             </div>
           </div>
         </div>
-
         {/* =====================================================================
-            SMART STICKY BOTTOM BAR (Format Tabs & Action Controls at the Bottom!)
+            BOTTOM BAR (GST Toggle Switch & Share Action)
             ===================================================================== */}
         <div
-          className="p-3 sm:p-4 bg-slate-50/95 backdrop-blur-md border-t-2 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0 print:hidden shadow-lg select-none"
+          className="px-4 py-3 bg-slate-50 border-t-2 flex items-center justify-between gap-3 shrink-0 print:hidden select-none"
           style={{ borderColor: palette.line }}
         >
-          {/* Format Switcher Tabs: Placed at the bottom */}
-          <div className="inline-flex p-1 bg-slate-200/80 rounded-xl border border-slate-300/70 w-full sm:w-auto shadow-2xs">
-            <button
-              type="button"
-              id="btn-format-gst"
-              onClick={() => setInvoiceFormat('gst')}
-              className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+          {/* Single GST / Non-GST Toggle Switch */}
+          <div className="flex items-center gap-2.5">
+            <div
+              className={`w-7 h-7 rounded-lg flex items-center justify-center font-black text-[10px] border shrink-0 ${
                 isGst
-                  ? 'bg-amber-600 text-white shadow-xs'
-                  : 'text-slate-700 hover:text-slate-900 hover:bg-white/60'
+                  ? 'bg-amber-100 text-amber-800 border-amber-300'
+                  : 'bg-emerald-100 text-emerald-800 border-emerald-300'
               }`}
-              title="Official GST Tax Invoice with HSN code & CGST/SGST breakdown"
             >
-              <span>🏢 GST (B2B Tax Invoice)</span>
-            </button>
-
-            <button
-              type="button"
-              id="btn-format-nongst"
-              onClick={() => setInvoiceFormat('non_gst')}
-              className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                !isGst
-                  ? 'bg-emerald-700 text-white shadow-xs'
-                  : 'text-slate-700 hover:text-slate-900 hover:bg-white/60'
-              }`}
-              title="Clean Non-GST Retail Bill of Supply for general consumer sales"
-            >
-              <span>🛒 Non-GST (Retail Bill)</span>
-            </button>
-          </div>
-
-          {/* Action Buttons: Download PDF, Print, WhatsApp, Edit */}
-          <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto justify-end">
-            {/* Edit Bill Button */}
-            {onEditBill && (
+              {isGst ? 'GST' : 'CASH'}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-slate-800">
+                {isGst ? 'GST Tax Invoice' : 'Non-GST Retail Bill'}
+              </span>
               <button
                 type="button"
-                onClick={() => onEditBill(bill)}
-                className="inline-flex items-center gap-1 px-3 py-2 rounded-xl border border-slate-300 font-bold bg-white hover:bg-slate-100 text-slate-800 text-xs cursor-pointer shadow-2xs transition-colors"
-                title="Edit this sale / invoice"
+                role="switch"
+                aria-checked={isGst}
+                onClick={() => setInvoiceFormat(isGst ? 'non_gst' : 'gst')}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  isGst ? 'bg-amber-600' : 'bg-emerald-700'
+                }`}
+                id="invoice-modal-bottom-gst-toggle"
+                title={`Switch to ${isGst ? 'Non-GST Retail' : 'GST Invoice'}`}
               >
-                <Edit size={14} />
-                <span>Edit</span>
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                    isGst ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
               </button>
-            )}
-
-            {/* WhatsApp Quick Share */}
-            <a
-              id="btn-invoice-modal-whatsapp"
-              href={whatsappLink(bill.phone, buildBillText(bill, orgProfile, billingSettings, invoiceFormat))}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-bold text-xs text-white bg-[#25D366] hover:bg-[#20ba59] active:scale-95 shadow-xs cursor-pointer transition-transform"
-              title="Send bill on WhatsApp"
-            >
-              <MessageCircle size={15} />
-              <span>WhatsApp</span>
-            </a>
-
-            {/* Print Button */}
-            <button
-              type="button"
-              id="btn-invoice-modal-print"
-              onClick={handlePrint}
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-300 font-bold bg-white hover:bg-slate-100 text-slate-800 text-xs cursor-pointer shadow-2xs transition-colors"
-              title="Print invoice"
-            >
-              <Printer size={15} />
-              <span>Print</span>
-            </button>
-
-            {/* Native Mobile Share if available */}
-            {'share' in navigator && (
-              <button
-                type="button"
-                onClick={handleNativeShare}
-                className="inline-flex items-center gap-1.5 px-2.5 py-2 rounded-xl border border-slate-300 font-bold bg-white hover:bg-slate-100 text-slate-800 text-xs cursor-pointer"
-                title="Share"
-              >
-                <Share2 size={15} />
-              </button>
-            )}
-
-            {/* Download PDF Button (Primary) */}
-            <button
-              type="button"
-              id="btn-invoice-modal-download"
-              onClick={handleDownload}
-              disabled={downloading}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold text-xs text-white bg-[#0d4a3a] hover:bg-[#0a382c] active:scale-95 shadow-sm cursor-pointer transition-all disabled:opacity-50"
-              title="Download PDF"
-            >
-              {downloading ? (
-                <>
-                  <Check size={15} />
-                  <span>Saved!</span>
-                </>
-              ) : (
-                <>
-                  <Download size={15} />
-                  <span>Download PDF</span>
-                </>
-              )}
-            </button>
+            </div>
           </div>
+
+          {/* Quick Share action button */}
+          <button
+            type="button"
+            onClick={() => setShowShareModal(true)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl font-bold text-xs text-white bg-emerald-600 hover:bg-emerald-700 active:scale-95 shadow-xs cursor-pointer transition-transform shrink-0"
+            id="invoice-modal-bottom-share-btn"
+          >
+            <Share2 size={14} />
+            <span>Share &amp; Print</span>
+          </button>
         </div>
       </div>
+
+      {/* =====================================================================
+          SHARE & EXPORT MODAL (WhatsApp, Download PDF, Print, Copy Text)
+          ===================================================================== */}
+      {showShareModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs select-none"
+          onClick={() => setShowShareModal(false)}
+        >
+          <div
+            className="bg-white rounded-2xl border-2 shadow-2xl w-full max-w-sm overflow-hidden p-4 space-y-3 animate-fadeIn"
+            style={{ borderColor: palette.line }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Share2 size={18} className="text-emerald-600" />
+                <h3 className="font-extrabold text-sm text-slate-900">
+                  Share &amp; Export Invoice
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowShareModal(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 cursor-pointer"
+                aria-label="Close share sheet"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              {/* WhatsApp Button */}
+              <a
+                href={whatsappLink(bill.phone, buildBillText(bill, orgProfile, billingSettings, invoiceFormat))}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setShowShareModal(false)}
+                className="w-full py-2.5 px-3 rounded-xl border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 font-bold text-xs sm:text-sm flex items-center justify-between cursor-pointer transition-colors shadow-2xs"
+                id="share-modal-whatsapp-link"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-[#25D366] text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <MessageCircle size={18} />
+                  </div>
+                  <div className="text-left">
+                    <div className="font-bold text-slate-900">Send via WhatsApp</div>
+                    <div className="text-[10px] text-slate-500 font-normal">
+                      {bill.phone ? `To ${bill.retailer} (${bill.phone})` : 'Send to contact / number'}
+                    </div>
+                  </div>
+                </div>
+                <ArrowRight size={15} className="text-emerald-700" />
+              </a>
+
+              {/* Download PDF Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  handleDownload();
+                  setShowShareModal(false);
+                }}
+                disabled={downloading}
+                className="w-full py-2.5 px-3 rounded-xl border border-blue-200 bg-sky-50 hover:bg-sky-100 text-sky-950 font-bold text-xs sm:text-sm flex items-center justify-between cursor-pointer transition-colors shadow-2xs disabled:opacity-50"
+                id="share-modal-pdf-btn"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-sky-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <Download size={18} />
+                  </div>
+                  <div className="text-left">
+                    <div className="font-bold text-slate-900">Download PDF</div>
+                    <div className="text-[10px] text-slate-500 font-normal">
+                      {isGst ? 'Official GST Tax Invoice' : 'Retail Bill of Supply'} PDF
+                    </div>
+                  </div>
+                </div>
+                <ArrowRight size={15} className="text-sky-700" />
+              </button>
+
+              {/* Print Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowShareModal(false);
+                  setTimeout(() => handlePrint(), 250);
+                }}
+                className="w-full py-2.5 px-3 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-900 font-bold text-xs sm:text-sm flex items-center justify-between cursor-pointer transition-colors shadow-2xs"
+                id="share-modal-print-btn"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-slate-800 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <Printer size={18} />
+                  </div>
+                  <div className="text-left">
+                    <div className="font-bold text-slate-900">Print Invoice</div>
+                    <div className="text-[10px] text-slate-500 font-normal">
+                      Send to printer or save thermal slip
+                    </div>
+                  </div>
+                </div>
+                <ArrowRight size={15} className="text-slate-600" />
+              </button>
+
+              {/* Copy Text / Native Share */}
+              <button
+                type="button"
+                onClick={() => {
+                  const text = buildBillText(bill, orgProfile, billingSettings, invoiceFormat);
+                  navigator.clipboard.writeText(text);
+                  setCopiedInvoiceText(true);
+                  setTimeout(() => setCopiedInvoiceText(false), 2000);
+                }}
+                className="w-full py-2 px-3 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                id="share-modal-copy-btn"
+              >
+                {copiedInvoiceText ? (
+                  <>
+                    <Check size={14} className="text-emerald-600" />
+                    <span className="text-emerald-700">Copied to Clipboard!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy size={14} />
+                    <span>Copy Invoice Summary Text</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

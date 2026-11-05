@@ -1,19 +1,41 @@
 import React, { useMemo, useState } from 'react';
-import {
-  AlertTriangle,
-  Download,
-  FileWarning,
-  Gift,
-  HandCoins,
-  Package,
-  Search,
-  Trash2,
-  TrendingDown,
-} from 'lucide-react';
+import { Gift } from 'lucide-react';
 import { useLedger } from '../../../context/LedgerContext';
 import { InventoryDisposition, InventoryDispositionType, SupplierCreditNote } from '../../../types';
 import { money } from '../../../utils/billing';
 import { trackedStage } from '../ExpiryReturnsTracker';
+import { RegisterCard, Pill } from './mobile/ReportCards';
+import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
+import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
+import {
+  ExplainBox,
+  ReportBreakdownLine,
+  ReportChipGroup,
+  ReportEmpty,
+  ReportExplainModal,
+  ReportFilterPanel,
+  ReportGroupCard,
+  ReportList,
+  ReportListMeta,
+  ReportRow,
+  ReportStat,
+  ReportStatGrid,
+  ReportTitleBar,
+  reportCard,
+  type StatTone,
+} from './ReportKit';
+import {
+  Chips,
+  EmptyNote,
+  HeroCard,
+  LegendDot,
+  MiniStat,
+  PhoneDownloadBar,
+  PhoneHeader,
+  PhoneSearch,
+  RowCard,
+  SplitBar,
+} from './mobile/PhoneKit';
 
 const STAGE_LABEL = {
   held: 'In godown',
@@ -319,401 +341,535 @@ export const DispositionsReport: React.FC<Props> = ({
     );
   };
 
-  const exportCsv = () => {
-    const lines: string[] = [
-      'MrWater — Dispositions, Free Issues, Write-offs & Supplier Claims',
-      `Period,${periodLabel}`,
-      '',
-      'KPI,Value',
-      `Free issue cost,${kpis.freeCost.toFixed(2)}`,
-      `Free issue cases,${kpis.freeQty}`,
-      `Write-off cost,${kpis.writeoffCost.toFixed(2)}`,
-      `Write-off cases,${kpis.writeoffQty}`,
-      `Return cost (claims base),${kpis.returnCost.toFixed(2)}`,
-      `Open claims count,${kpis.openClaims}`,
-      `Pending claim value,${kpis.claimedPending.toFixed(2)}`,
-      `Settled from dispositions CN,${kpis.claimedSettled.toFixed(2)}`,
-      `Scheme credit notes (count),${kpis.scnCount}`,
-      `Scheme CN expected,${kpis.scnExpected.toFixed(2)}`,
-      `Scheme CN actual,${kpis.scnActual.toFixed(2)}`,
-      '',
-      'Event Date,Type,Product,Batch,Warehouse,Qty,Cost,Supplier,Invoice,CN No,CN Total,Compensation,Recipient',
-    ];
-    filtered.forEach((r) => {
-      lines.push(
-        [
-          r.eventDate,
-          TYPE_LABEL[r.dispositionType] || r.dispositionType,
-          `"${(r.productName || '').replace(/"/g, '""')}"`,
-          r.batchNumber || '',
-          r.warehouseName || r.warehouseId,
-          r.quantity,
-          (r.costValue || 0).toFixed(2),
-          `"${(r.supplierName || '').replace(/"/g, '""')}"`,
-          r.supplierInvoiceNo || '',
-          r.creditNoteNumber || '',
-          (r.cnTotal || 0).toFixed(2),
-          r.compensationStatus,
-          `"${(r.distributedToName || '').replace(/"/g, '""')}"`,
-        ].join(',')
-      );
-    });
-    lines.push('');
-    lines.push('Supplier scheme credit notes in period');
-    lines.push('Supplier,CN No,CN Date,Expected,Actual,Status,ProductId,Period');
-    kpis.scnInPeriod.forEach((n: SupplierCreditNote) => {
-      lines.push(
-        [
-          `"${(n.supplierName || '').replace(/"/g, '""')}"`,
-          n.creditNoteNumber || '',
-          n.creditNoteDate || '',
-          (n.expectedAmount || 0).toFixed(2),
-          (n.actualAmount || 0).toFixed(2),
-          n.status,
-          n.productId ?? '',
-          n.period || '',
-        ].join(',')
-      );
-    });
+  const [explainOpen, setExplainOpen] = useState(false);
+  const [openDays, setOpenDays] = useState<Set<string>>(new Set());
 
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `MrWater_Dispositions_${periodLabel.replace(/\s+/g, '_')}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const tabs: { id: SubTab; label: string; icon: React.ReactNode }[] = [
-    { id: 'summary', label: 'Summary', icon: <FileWarning className="w-3.5 h-3.5" /> },
-    { id: 'free', label: 'Free issues', icon: <Gift className="w-3.5 h-3.5" /> },
-    { id: 'writeoffs', label: 'Write-offs', icon: <Trash2 className="w-3.5 h-3.5" /> },
-    { id: 'claims', label: 'Supplier claims', icon: <HandCoins className="w-3.5 h-3.5" /> },
-    { id: 'batches', label: 'Batch tracking', icon: <Package className="w-3.5 h-3.5" /> },
-    { id: 'creditnotes', label: 'Scheme credit notes', icon: <TrendingDown className="w-3.5 h-3.5" /> },
+  const TABS: { id: SubTab; label: string }[] = [
+    { id: 'summary', label: 'Summary' },
+    { id: 'free', label: 'Free issues' },
+    { id: 'writeoffs', label: 'Write-offs' },
+    { id: 'claims', label: 'Supplier claims' },
+    { id: 'batches', label: 'Batch tracking' },
+    { id: 'creditnotes', label: 'Scheme credit notes' },
   ];
 
-  const renderTable = (rows: InventoryDisposition[]) => (
-    <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <table className="w-full text-left data-table min-w-[640px]">
-        <thead>
-          <tr className="border-b border-slate-200 bg-slate-50">
-            <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Date</th>
-            <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Type</th>
-            <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Product / Batch</th>
-            <th className="px-2.5 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-slate-500">Qty</th>
-            <th className="px-2.5 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-slate-500">Cost</th>
-            <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Supplier / CN</th>
-            <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Status</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={7} className="text-center py-10 text-slate-500 text-sm">
-                No records in this period
-              </td>
-            </tr>
-          ) : (
-            matchRows(rows).map((r) => (
-              <tr key={r.id} className="hover:bg-sky-50/40">
-                <td className="px-2.5 py-2.5 font-mono text-xs whitespace-nowrap">{r.eventDate}</td>
-                <td className="px-2.5 py-2.5 text-xs font-semibold">{TYPE_LABEL[r.dispositionType]}</td>
-                <td className="px-2.5 py-2.5">
-                  <div className="font-bold text-xs text-slate-900">{r.productName || `#${r.productId}`}</div>
-                  <div className="text-[10px] text-slate-500">
-                    {r.warehouseName || r.warehouseId}
-                    {r.batchNumber ? ` · Lot ${r.batchNumber}` : ''}
-                    {r.expiryDate ? ` · Exp ${r.expiryDate}` : ''}
-                    {r.distributedToName ? ` · To ${r.distributedToName}` : ''}
-                  </div>
-                </td>
-                <td className="px-2.5 py-2.5 text-right font-mono font-bold text-xs">{r.quantity}</td>
-                <td className="px-2.5 py-2.5 text-right font-mono font-bold text-xs text-amber-900">
-                  ₹{money(r.costValue)}
-                </td>
-                <td className="px-2.5 py-2.5 text-xs">
-                  <div className="font-semibold text-slate-800">{r.supplierName || '—'}</div>
-                  <div className="text-[10px] text-slate-500 font-mono">
-                    {r.supplierInvoiceNo ? `Inv ${r.supplierInvoiceNo}` : ''}
-                    {r.creditNoteNumber ? ` · CN ${r.creditNoteNumber}` : ''}
-                    {r.cnTotal ? ` · ₹${money(r.cnTotal)}` : ''}
-                  </div>
-                </td>
-                <td className="px-2.5 py-2.5 text-xs font-bold capitalize text-slate-600">
-                  {r.returnTracking ? STAGE_LABEL[trackedStage(r)] : r.compensationStatus.replace('_', ' ')}
-                  {r.returnTracking && (
-                    <div className="text-[10px] font-normal normal-case text-slate-500">
-                      Customer return · {r.returnTracking.customerName}
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+  const statusOf = (r: InventoryDisposition) =>
+    r.returnTracking ? STAGE_LABEL[trackedStage(r)] : r.compensationStatus.replace('_', ' ');
+  const money0 = (n: number) => `₹${money(n)}`;
+
+  const shop = 'MrWater Distribution';
+  const activeRows =
+    subTab === 'free' ? matchRows(freeRows) : subTab === 'writeoffs' ? matchRows(writeoffRows) : subTab === 'claims' ? matchRows(claimRows) : [];
+
+  /** Free / write-off / claim rows grouped by event day, newest first. */
+  const dayGroups = useMemo(() => {
+    const map = new Map<string, InventoryDisposition[]>();
+    activeRows.forEach((r) => {
+      const d = (r.eventDate || '').slice(0, 10) || 'Unknown date';
+      map.set(d, [...(map.get(d) || []), r]);
+    });
+    return Array.from(map.entries())
+      .map(([date, rows]) => ({ date, rows, cost: rows.reduce((t, r) => t + (r.costValue || 0), 0), qty: rows.reduce((t, r) => t + (r.quantity || 0), 0) }))
+      .sort((a, b) => b.date.localeCompare(a.date));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subTab, search, filtered]);
+
+  const q = search.trim();
+  const forceOpen = q.length > 0;
+  const isOpen = (d: string) => forceOpen || openDays.has(d);
+  const toggleDay = (d: string) =>
+    setOpenDays((prev) => {
+      const next = new Set(prev);
+      if (next.has(d)) next.delete(d);
+      else next.add(d);
+      return next;
+    });
+  const allOpen = dayGroups.length > 0 && dayGroups.every((g) => openDays.has(g.date));
+  const toggleAll = () => setOpenDays(allOpen ? new Set() : new Set(dayGroups.map((g) => g.date)));
+
+  const fmtDayLong = (d: string) => {
+    const dt = new Date(`${d}T12:00:00`);
+    return isNaN(dt.getTime()) ? d : dt.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+  };
+
+  // ---- downloads (what is on screen: every record in the period + batches + scheme CNs) ----------
+  const recordHeader = ['Date', 'Type', 'Product', 'Batch', 'Warehouse', 'Qty', 'Cost', 'Supplier', 'Invoice', 'CN no', 'CN total', 'Status', 'Recipient'];
+  const recordRow = (r: InventoryDisposition): (string | number)[] => [
+    r.eventDate,
+    TYPE_LABEL[r.dispositionType] || r.dispositionType,
+    r.productName || `#${r.productId}`,
+    r.batchNumber || '',
+    r.warehouseName || r.warehouseId,
+    r.quantity,
+    Number((r.costValue || 0).toFixed(2)),
+    r.supplierName || '',
+    r.supplierInvoiceNo || '',
+    r.creditNoteNumber || '',
+    Number((r.cnTotal || 0).toFixed(2)),
+    statusOf(r),
+    r.distributedToName || '',
+  ];
+  const cnRows = (): (string | number)[][] =>
+    kpis.scnInPeriod.map((n: SupplierCreditNote) => [
+      n.supplierName || '',
+      n.creditNoteNumber || '',
+      n.creditNoteDate || '',
+      n.expectedAmount || 0,
+      n.actualAmount || 0,
+      Math.max(0, (n.expectedAmount || 0) - (n.actualAmount || 0)),
+      n.status.replace('_', ' '),
+      n.period || '',
+    ]);
+  const batchRows = (): (string | number)[][] =>
+    batchTracking.map((b) => [b.batchNumber, b.productName, b.warehouseName, b.expiryDate, b.disposedQty, Number(b.disposedCost.toFixed(2)), b.remainingQty, b.supplierInvoiceNo]);
+
+  const exportExcel = () =>
+    downloadXlsx(`returns-free-claims-${fileStamp()}.xlsx`, [
+      {
+        name: 'Summary',
+        header: ['Item', 'Value'],
+        rows: [
+          ['Free issue cost', kpis.freeCost],
+          ['Free issue cases', kpis.freeQty],
+          ['Write-off cost', kpis.writeoffCost],
+          ['Write-off cases', kpis.writeoffQty],
+          ['Return cost (claims base)', kpis.returnCost],
+          ['Open claims', kpis.openClaims],
+          ['Pending claim value', kpis.claimedPending],
+          ['Settled from disposition CNs', kpis.claimedSettled],
+          ['Scheme CN expected', kpis.scnExpected],
+          ['Scheme CN received', kpis.scnActual],
+        ],
+      },
+      { name: 'Records', header: recordHeader, rows: filtered.map(recordRow) },
+      { name: 'Batches', header: ['Batch', 'Product', 'Warehouse', 'Expiry', 'Disposed', 'Cost out', 'Still in stock', 'Supplier inv'], rows: batchRows() },
+      { name: 'Scheme CNs', header: ['Supplier', 'CN no', 'CN date', 'Expected', 'Received', 'Outstanding', 'Status', 'Period'], rows: cnRows() },
+    ]);
+
+  const exportPdf = () =>
+    downloadPdf({
+      filename: `returns-free-claims-${fileStamp()}.pdf`,
+      title: 'Returns, free issues & claims',
+      subtitle: [shop, `Period: ${periodLabel}`],
+      landscape: true,
+      sections: [
+        {
+          title: 'Summary',
+          header: ['Item', 'Amount (Rs.)'],
+          rows: [
+            ['Free issue cost', money(kpis.freeCost)],
+            ['Write-off cost', money(kpis.writeoffCost)],
+            ['Trading loss (free + write-off)', money(kpis.totalLossCost)],
+            ['Returns - claim base at cost', money(kpis.returnCost)],
+            ['Pending supplier claims', money(kpis.claimedPending)],
+            ['Settled from disposition CNs', money(kpis.claimedSettled)],
+            ['Scheme CN expected', money(kpis.scnExpected)],
+            ['Scheme CN received', money(kpis.scnActual)],
+          ],
+          rightAlign: [1],
+        },
+        {
+          title: 'Records',
+          header: ['Date', 'Type', 'Product', 'Batch', 'Qty', 'Cost (Rs.)', 'Supplier', 'Status'],
+          rows: filtered.map((r) => [
+            r.eventDate,
+            TYPE_LABEL[r.dispositionType] || r.dispositionType,
+            r.productName || `#${r.productId}`,
+            r.batchNumber || '-',
+            r.quantity,
+            money(r.costValue),
+            r.supplierName || '-',
+            statusOf(r),
+          ]),
+          rightAlign: [4, 5],
+        },
+        {
+          title: 'Scheme credit notes',
+          header: ['Supplier', 'CN no', 'Date', 'Expected (Rs.)', 'Received (Rs.)', 'Outstanding (Rs.)', 'Status'],
+          rows: kpis.scnInPeriod.map((n: SupplierCreditNote) => [
+            n.supplierName || '',
+            n.creditNoteNumber || '-',
+            n.creditNoteDate || '-',
+            money(n.expectedAmount),
+            money(n.actualAmount),
+            money(Math.max(0, n.expectedAmount - n.actualAmount)),
+            n.status.replace('_', ' '),
+          ]),
+          rightAlign: [3, 4, 5],
+        },
+      ],
+    });
+
+  const hasAny = filtered.length > 0 || kpis.scnCount > 0;
+  const isFiltered = q.length > 0;
+  const tabOptions = TABS;
+  const countFor = (id: SubTab) =>
+    id === 'free' ? freeRows.length : id === 'writeoffs' ? writeoffRows.length : id === 'claims' ? claimRows.length : id === 'batches' ? batchTracking.length : id === 'creditnotes' ? kpis.scnCount : undefined;
+  const tabOptionsWithCount = tabOptions.map((t) => ({ ...t, count: countFor(t.id) }));
+  const phoneTabs = tabOptions.map((t) => {
+    const c = countFor(t.id);
+    return { id: t.id, label: c !== undefined && c > 0 ? `${t.label} ${c}` : t.label };
+  });
+
+  const emptyTextFor = (tab: SubTab) =>
+    isFiltered
+      ? 'Nothing matches this search'
+      : tab === 'batches'
+        ? 'No batch-linked dispositions in this period. Pick a lot when you post returns so it shows here.'
+        : tab === 'creditnotes'
+          ? 'No scheme-linked supplier credit notes in this period'
+          : 'No records in this period';
+
+  const rowSub = (r: InventoryDisposition) =>
+    `${r.warehouseName || r.warehouseId}${r.batchNumber ? ` · Lot ${r.batchNumber}` : ''}${r.expiryDate ? ` · Exp ${r.expiryDate}` : ''}${r.distributedToName ? ` · To ${r.distributedToName}` : ''}`;
+  const rowSupplier = (r: InventoryDisposition) =>
+    [r.supplierName, r.supplierInvoiceNo ? `Inv ${r.supplierInvoiceNo}` : '', r.creditNoteNumber ? `CN ${r.creditNoteNumber}` : '', r.cnTotal ? `₹${money(r.cnTotal)}` : '']
+      .filter(Boolean)
+      .join(' · ');
+  const statusTone = (r: InventoryDisposition): StatTone | 'muted' =>
+    r.compensationStatus === 'settled' ? 'green' : r.compensationStatus === 'pending' || r.compensationStatus === 'partial' ? 'amber' : 'muted';
+
+  const DispositionRow: React.FC<{ r: InventoryDisposition }> = ({ r }) => (
+    <ReportRow
+      title={
+        <>
+          {r.productName || `#${r.productId}`} <span className="text-xs font-semibold text-slate-400">× {r.quantity}</span>
+        </>
+      }
+      sub={
+        <>
+          <span className="font-semibold text-slate-600">{TYPE_LABEL[r.dispositionType]}</span> · {rowSub(r)}
+          {rowSupplier(r) && <span className="block">{rowSupplier(r)}</span>}
+          {r.returnTracking && <span className="block">Customer return · {r.returnTracking.customerName}</span>}
+        </>
+      }
+      amount={money0(r.costValue)}
+      amountTone="amber"
+      status={<span className="capitalize">{statusOf(r)}</span>}
+      statusTone={statusTone(r)}
+    />
+  );
+
+  const phoneRegisterCard = (r: InventoryDisposition) => (
+    <RegisterCard
+      key={r.id}
+      title={r.productName || `#${r.productId}`}
+      pills={<Pill tone="amber">{TYPE_LABEL[r.dispositionType]}</Pill>}
+      subtitle={
+        <>
+          <div className="font-mono">{r.eventDate}</div>
+          <div className="text-slate-500">{rowSub(r)}</div>
+        </>
+      }
+      heroLabel="Cost"
+      hero={money0(r.costValue)}
+      heroTone="amber"
+      stats={[
+        { label: 'Qty', value: r.quantity },
+        { label: 'Status', value: <span className="capitalize text-[13px]">{statusOf(r)}</span>, tone: 'muted' },
+      ]}
+      note={
+        rowSupplier(r) || r.returnTracking ? (
+          <div className="text-[11px] text-slate-600 space-y-0.5">
+            {rowSupplier(r) && <div className="text-slate-700">{rowSupplier(r)}</div>}
+            {r.returnTracking && <div>Customer return · {r.returnTracking.customerName}</div>}
+          </div>
+        ) : null
+      }
+    />
+  );
+
+  const batchRowsUi = batchTracking;
+  const cnList = kpis.scnInPeriod as SupplierCreditNote[];
+  const showSearch = subTab !== 'summary' && subTab !== 'creditnotes';
+  const showBody = (tab: SubTab) => subTab === tab;
+
+  const summaryCards = (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+      <section className={`${reportCard} overflow-hidden`}>
+        <div className="px-3.5 py-2.5 bg-[#faf8f5] text-[13px] font-bold text-slate-900">Cost breakdown</div>
+        <ReportList>
+          <ReportRow title="Free near-expiry / scheme free" amount={money0(kpis.freeCost)} amountTone="sky" />
+          <ReportRow title="Write-offs (expiry / damage)" amount={money0(kpis.writeoffCost)} amountTone="red" />
+          <ReportRow title="Returns (claim base at cost)" amount={money0(kpis.returnCost)} amountTone="amber" />
+          <ReportRow title="Trading loss (free + write-off)" sub="Hits gross margin" amount={money0(kpis.totalLossCost)} />
+        </ReportList>
+      </section>
+      <section className={`${reportCard} overflow-hidden`}>
+        <div className="px-3.5 py-2.5 bg-[#faf8f5] text-[13px] font-bold text-slate-900">Supplier money trail</div>
+        <ReportList>
+          <ReportRow title="Disposition CN settled" amount={money0(kpis.claimedSettled)} amountTone="green" />
+          <ReportRow title="Disposition claims still open" amount={money0(kpis.claimedPending)} amountTone="amber" />
+          <ReportRow title="Scheme CN actual received" amount={money0(kpis.scnActual)} amountTone="green" />
+          <ReportRow title="Scheme CN expected − actual" amount={money0(Math.max(0, kpis.scnExpected - kpis.scnActual))} />
+        </ReportList>
+      </section>
     </div>
   );
 
   return (
-    <div className="space-y-5 animate-in fade-in duration-200">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-600 to-orange-400 text-white flex items-center justify-center shadow-md shadow-amber-600/20 shrink-0">
-            <AlertTriangle className="w-4.5 h-4.5" />
-          </div>
-          <div className="min-w-0">
-            <h2 className="text-base sm:text-lg font-black text-slate-900 tracking-tight truncate">
-              Dispositions, Claims & Batch Impact
-            </h2>
-            <p className="text-[11px] text-slate-500 font-medium">
-              Period: <span className="font-bold text-slate-700">{periodLabel}</span>
-              {' · '}Free issues, write-offs, supplier returns, batch trail, scheme CNs
-            </p>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={exportCsv}
-          className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm cursor-pointer self-start sm:self-auto"
-        >
-          <Download className="w-3.5 h-3.5" />
-          Export CSV
-        </button>
-      </div>
+    <>
+      {/* ============================ PHONE ============================ */}
+      <div className="md:hidden space-y-3" id="report-dispositions-phone">
+        <PhoneHeader title="Returns, free & claims" sub="Returns, samples & write-offs summary" />
 
-      {/* KPI cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
-        <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-sm">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Free issue cost</div>
-          <div className="text-xl font-black text-sky-950 mt-1 font-mono tabular-nums">₹{money(kpis.freeCost)}</div>
-          <div className="text-[11px] text-slate-500 mt-1.5 pt-1.5 border-t border-slate-100">
-            {kpis.freeQty} cases given free
+        <HeroCard tone="navy" label="Trading loss (free + write-off)" value={money0(kpis.totalLossCost)}>
+          <SplitBar
+            label="Free issues versus write-offs"
+            parts={[
+              { value: kpis.freeCost, className: 'bg-sky-400' },
+              { value: kpis.writeoffCost, className: 'bg-rose-400' },
+            ]}
+          />
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-white/90">
+            <LegendDot dot="bg-sky-400">Free {money0(kpis.freeCost)}</LegendDot>
+            <LegendDot dot="bg-rose-400">Write-off {money0(kpis.writeoffCost)}</LegendDot>
           </div>
-        </div>
-        <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-sm">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Write-off cost</div>
-          <div className="text-xl font-black text-rose-800 mt-1 font-mono tabular-nums">₹{money(kpis.writeoffCost)}</div>
-          <div className="text-[11px] text-slate-500 mt-1.5 pt-1.5 border-t border-slate-100">
-            {kpis.writeoffQty} cases written off
-          </div>
-        </div>
-        <div className="bg-white rounded-2xl border border-amber-200 p-3.5 shadow-sm bg-gradient-to-br from-amber-50 to-white">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-amber-800">Open supplier claims</div>
-          <div className="text-xl font-black text-amber-950 mt-1 font-mono tabular-nums">
-            {kpis.openClaims}
-          </div>
-          <div className="text-[11px] text-amber-900/80 mt-1.5 pt-1.5 border-t border-amber-100">
-            Pending value ₹{money(kpis.claimedPending)}
-          </div>
-        </div>
-        <div className="bg-white rounded-2xl border border-slate-200 p-3.5 shadow-sm">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Scheme CNs (period)</div>
-          <div className="text-xl font-black text-emerald-800 mt-1 font-mono tabular-nums">
-            ₹{money(kpis.scnActual)}
-          </div>
-          <div className="text-[11px] text-slate-500 mt-1.5 pt-1.5 border-t border-slate-100">
-            Expected ₹{money(kpis.scnExpected)} · {kpis.scnOpen} open
-          </div>
-        </div>
-      </div>
+        </HeroCard>
 
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-        <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 overflow-x-auto no-scrollbar gap-0.5">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setSubTab(t.id)}
-              className={`px-2.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-bold flex items-center gap-1.5 whitespace-nowrap transition-all cursor-pointer ${
-                subTab === t.id
-                  ? 'bg-sky-600 text-white shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/70'
-              }`}
-            >
-              {t.icon}
-              {t.label}
-            </button>
+        <div className="grid grid-cols-3 gap-2">
+          <MiniStat label="Open claims" value={kpis.openClaims} tone={kpis.openClaims > 0 ? 'amber' : 'green'} />
+          <MiniStat label="Claim value" value={money0(kpis.claimedPending)} tone={kpis.claimedPending > 0 ? 'amber' : 'green'} />
+          <MiniStat label="Scheme CNs" value={money0(kpis.scnActual)} tone="green" />
+        </div>
+
+        <Chips<SubTab> label="Returns, free and claims views" options={phoneTabs} value={subTab} onChange={setSubTab} />
+        {showSearch && <PhoneSearch value={search} onChange={setSearch} placeholder="Search product, lot or supplier…" />}
+
+        {subTab === 'summary' && (
+          <RowCard>
+            <div className="p-3 space-y-2 text-[13px]">
+              {[
+                ['Free near-expiry / scheme free', kpis.freeCost, 'text-sky-800'],
+                ['Write-offs (expiry / damage)', kpis.writeoffCost, 'text-rose-700'],
+                ['Returns (claim base at cost)', kpis.returnCost, 'text-amber-700'],
+                ['Disposition CN settled', kpis.claimedSettled, 'text-emerald-700'],
+                ['Claims still open', kpis.claimedPending, 'text-amber-700'],
+                ['Scheme CN expected', kpis.scnExpected, 'text-slate-900'],
+                ['Scheme CN received', kpis.scnActual, 'text-emerald-700'],
+              ].map(([label, value, tone]) => (
+                <div key={label as string} className="flex justify-between gap-3">
+                  <span className="text-slate-600">{label as string}</span>
+                  <span className={`font-extrabold tabular-nums ${tone}`}>{money0(value as number)}</span>
+                </div>
+              ))}
+            </div>
+          </RowCard>
+        )}
+
+        {(subTab === 'free' || subTab === 'writeoffs' || subTab === 'claims') &&
+          (activeRows.length === 0 ? <EmptyNote>{emptyTextFor(subTab)}</EmptyNote> : activeRows.map(phoneRegisterCard))}
+
+        {subTab === 'batches' &&
+          (batchRowsUi.length === 0 ? (
+            <EmptyNote>{emptyTextFor('batches')}</EmptyNote>
+          ) : (
+            batchRowsUi.map((r) => (
+              <RegisterCard
+                key={r.batchId}
+                title={r.productName}
+                subtitle={
+                  <>
+                    <div className="font-mono font-bold text-slate-900">Lot {r.batchNumber}</div>
+                    <div className="text-slate-500">
+                      {r.warehouseName} · {r.expiryDate ? `Exp ${r.expiryDate}` : 'No expiry'} · {r.events} event(s)
+                    </div>
+                  </>
+                }
+                heroLabel="Cost out"
+                hero={money0(r.disposedCost)}
+                heroTone="amber"
+                stats={[
+                  { label: 'Disposed', value: r.disposedQty },
+                  { label: 'Still in stock', value: r.remainingQty, tone: 'sky' },
+                  { label: 'Supplier inv', value: r.supplierInvoiceNo || '—', tone: 'muted' },
+                ]}
+              />
+            ))
           ))}
-        </div>
-        {subTab !== 'summary' && (
-          <div className="relative">
-            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search…"
-              className="w-full sm:w-48 pl-8 pr-3 py-1.5 rounded-xl border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-sky-500"
-            />
-          </div>
+
+        {subTab === 'creditnotes' &&
+          (cnList.length === 0 ? (
+            <EmptyNote>{emptyTextFor('creditnotes')}</EmptyNote>
+          ) : (
+            cnList.map((n) => {
+              const outstanding = Math.max(0, n.expectedAmount - n.actualAmount);
+              return (
+                <RegisterCard
+                  key={n.id}
+                  title={n.supplierName}
+                  pills={<Pill tone={outstanding > 0 ? 'amber' : 'green'}>{n.status.replace('_', ' ')}</Pill>}
+                  subtitle={
+                    <>
+                      <div className="font-mono font-bold text-slate-900">{n.creditNoteNumber || '—'}</div>
+                      <div className="text-slate-500">
+                        {n.creditNoteDate || n.createdAt?.slice(0, 10)} · {n.period || n.grnId || '—'}
+                      </div>
+                    </>
+                  }
+                  heroLabel="Expected"
+                  hero={money0(n.expectedAmount)}
+                  split={{ a: n.actualAmount, b: outstanding, label: 'Received versus outstanding' }}
+                  stats={[
+                    { label: 'Received', value: money0(n.actualAmount), tone: 'green' },
+                    { label: 'Outstanding', value: money0(outstanding), tone: outstanding > 0 ? 'amber' : 'muted' },
+                  ]}
+                />
+              );
+            })
+          ))}
+
+        <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} disabled={!hasAny} />
+      </div>
+
+      {/* ======================= TABLET / DESKTOP ======================= */}
+      <div className="hidden md:block space-y-3" id="report-dispositions">
+        <ReportTitleBar
+          title="Returns, free & claims"
+          sub={`${periodLabel} · free issues, write-offs, supplier returns, batch trail and scheme credit notes`}
+          actions={<ReportDownloadButtons onExcel={exportExcel} onPdf={exportPdf} disabled={!hasAny} reportTitle="Returns, free and claims" />}
+        />
+
+        <ReportStatGrid>
+          <ReportStat label="Free issue cost" value={money0(kpis.freeCost)} tone="sky" sub={`${kpis.freeQty} cases given free`} />
+          <ReportStat label="Write-off cost" value={money0(kpis.writeoffCost)} tone="red" sub={`${kpis.writeoffQty} cases written off`} />
+          <ReportStat label="Open supplier claims" value={kpis.openClaims} tone="amber" sub={`Pending value ${money0(kpis.claimedPending)}`} />
+          <ReportStat label="Scheme CNs received" value={money0(kpis.scnActual)} tone="green" sub={`Expected ${money0(kpis.scnExpected)} · ${kpis.scnOpen} open`} />
+        </ReportStatGrid>
+        <ReportBreakdownLine onExplain={() => setExplainOpen(true)}>
+          <span className="inline-flex items-center gap-1.5">
+            <Gift size={13} aria-hidden="true" /> Trading loss {money0(kpis.totalLossCost)} (free + write-off) · Returns at cost {money0(kpis.returnCost)}
+          </span>
+        </ReportBreakdownLine>
+
+        <ReportFilterPanel
+          search={showSearch ? { value: search, onChange: setSearch, placeholder: 'Search product, lot, supplier or CN no' } : undefined}
+          isFiltered={isFiltered}
+          onReset={() => setSearch('')}
+        >
+          <ReportChipGroup<SubTab> label="View" options={tabOptionsWithCount} value={subTab} onChange={setSubTab} />
+        </ReportFilterPanel>
+
+        {subTab === 'summary' && summaryCards}
+
+        {(subTab === 'free' || subTab === 'writeoffs' || subTab === 'claims') && (
+          <>
+            {dayGroups.length > 1 && !forceOpen && (
+              <ReportListMeta allOpen={allOpen} onToggleAll={toggleAll}>
+                {dayGroups.length} days · {activeRows.length} record{activeRows.length === 1 ? '' : 's'}
+                {isFiltered ? ' match' : ''}
+              </ReportListMeta>
+            )}
+            {dayGroups.length === 0 && <ReportEmpty>{emptyTextFor(subTab)}</ReportEmpty>}
+            {dayGroups.map((g) => (
+              <ReportGroupCard
+                key={g.date}
+                title={fmtDayLong(g.date)}
+                sub={`${g.rows.length} record${g.rows.length === 1 ? '' : 's'} · ${g.qty} cases`}
+                headLabel="Cost"
+                head={money0(g.cost)}
+                headTone="amber"
+                open={isOpen(g.date)}
+                locked={forceOpen}
+                onToggle={() => toggleDay(g.date)}
+              >
+                <ReportList>
+                  {g.rows.map((r) => (
+                    <DispositionRow key={r.id} r={r} />
+                  ))}
+                </ReportList>
+              </ReportGroupCard>
+            ))}
+          </>
+        )}
+
+        {showBody('batches') && (
+          <>
+            {batchRowsUi.length > 0 && (
+              <ReportListMeta>
+                {batchRowsUi.length} batch{batchRowsUi.length === 1 ? '' : 'es'}
+                {isFiltered ? ' match' : ''}
+              </ReportListMeta>
+            )}
+            {batchRowsUi.length === 0 ? (
+              <ReportEmpty>{emptyTextFor('batches')}</ReportEmpty>
+            ) : (
+              <section className={`${reportCard} overflow-hidden`}>
+                <ReportList>
+                  {batchRowsUi.map((r) => (
+                    <ReportRow
+                      key={r.batchId}
+                      title={
+                        <>
+                          {r.productName} <span className="font-mono text-sky-700">· Lot {r.batchNumber}</span>
+                        </>
+                      }
+                      sub={`${r.warehouseName} · ${r.expiryDate ? `Exp ${r.expiryDate}` : 'No expiry'} · ${r.events} event${r.events === 1 ? '' : 's'}${r.supplierInvoiceNo ? ` · Inv ${r.supplierInvoiceNo}` : ''}`}
+                      amount={money0(r.disposedCost)}
+                      amountTone="amber"
+                      status={`Disposed ${r.disposedQty} · ${r.remainingQty} still in stock`}
+                      statusTone="muted"
+                    />
+                  ))}
+                </ReportList>
+              </section>
+            )}
+          </>
+        )}
+
+        {showBody('creditnotes') && (
+          <>
+            {cnList.length > 0 && (
+              <ReportListMeta>
+                {cnList.length} credit note{cnList.length === 1 ? '' : 's'}
+              </ReportListMeta>
+            )}
+            {cnList.length === 0 ? (
+              <ReportEmpty>{emptyTextFor('creditnotes')}</ReportEmpty>
+            ) : (
+              <section className={`${reportCard} overflow-hidden`}>
+                <ReportList>
+                  {cnList.map((n) => {
+                    const outstanding = Math.max(0, n.expectedAmount - n.actualAmount);
+                    return (
+                      <ReportRow
+                        key={n.id}
+                        title={
+                          <>
+                            {n.supplierName} <span className="font-mono text-sky-700">· {n.creditNoteNumber || 'No CN no'}</span>
+                          </>
+                        }
+                        sub={`${n.creditNoteDate || n.createdAt?.slice(0, 10) || '—'} · ${n.period || n.grnId || '—'} · Expected ${money0(n.expectedAmount)} · Received ${money0(n.actualAmount)}`}
+                        amount={money0(outstanding)}
+                        amountTone={outstanding > 0 ? 'amber' : 'green'}
+                        status={<span className="capitalize">{outstanding > 0 ? `Outstanding · ${n.status.replace('_', ' ')}` : n.status.replace('_', ' ')}</span>}
+                        statusTone={outstanding > 0 ? 'amber' : 'green'}
+                      />
+                    );
+                  })}
+                </ReportList>
+              </section>
+            )}
+          </>
         )}
       </div>
 
-      {subTab === 'summary' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
-            <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">Cost breakdown</div>
-            {[
-              { label: 'Free near-expiry / scheme free', value: kpis.freeCost, tone: 'sky' },
-              { label: 'Write-offs (expiry / damage)', value: kpis.writeoffCost, tone: 'rose' },
-              { label: 'Returns (claim base at cost)', value: kpis.returnCost, tone: 'amber' },
-              { label: 'Trading loss (free + write-off)', value: kpis.totalLossCost, tone: 'dark' },
-            ].map((row) => (
-              <div key={row.label} className="flex justify-between text-xs gap-2">
-                <span className="text-slate-600 font-medium">{row.label}</span>
-                <span
-                  className={`font-mono font-black tabular-nums ${
-                    row.tone === 'rose'
-                      ? 'text-rose-700'
-                      : row.tone === 'sky'
-                        ? 'text-sky-800'
-                        : row.tone === 'amber'
-                          ? 'text-amber-800'
-                          : 'text-slate-900'
-                  }`}
-                >
-                  ₹{money(row.value)}
-                </span>
-              </div>
-            ))}
-            <div className="text-[10px] text-slate-400 pt-2 border-t border-slate-100 leading-relaxed">
-              Free issues and write-offs reduce stock at cost and hit gross margin. Returns stay as open claims until
-              supplier credit notes are recorded. Scheme CNs (Type B/C) are listed separately under “Scheme credit notes”.
-            </div>
-          </div>
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-3">
-            <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">
-              Supplier money trail
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-600 font-medium">Disposition CN settled</span>
-              <span className="font-mono font-bold text-emerald-700">₹{money(kpis.claimedSettled)}</span>
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-600 font-medium">Disposition claims still open</span>
-              <span className="font-mono font-bold text-amber-800">₹{money(kpis.claimedPending)}</span>
-            </div>
-            <div className="flex justify-between text-xs pt-2 border-t border-slate-100">
-              <span className="text-slate-600 font-medium">Scheme CN actual received</span>
-              <span className="font-mono font-bold text-emerald-700">₹{money(kpis.scnActual)}</span>
-            </div>
-            <div className="flex justify-between text-xs">
-              <span className="text-slate-600 font-medium">Scheme CN expected − actual</span>
-              <span className="font-mono font-bold text-slate-800">
-                ₹{money(Math.max(0, kpis.scnExpected - kpis.scnActual))}
-              </span>
-            </div>
-          </div>
-        </div>
+      {explainOpen && (
+        <ReportExplainModal ariaLabel="How returns, free issues and claims are calculated" onClose={() => setExplainOpen(false)}>
+          <ExplainBox tone="slate" title={`Free issues: ${money0(kpis.freeCost)}`}>
+            <p>Near-expiry stock given away and scheme free issues, valued at cost. They reduce stock and gross margin.</p>
+          </ExplainBox>
+          <ExplainBox tone="rose" title={`Write-offs: ${money0(kpis.writeoffCost)}`}>
+            <p>Expired or damaged stock thrown out, valued at cost.</p>
+          </ExplainBox>
+          <ExplainBox tone="amber" title={`Supplier claims: ${money0(kpis.claimedPending)} open`}>
+            <p>Returns stay as open claims until the supplier credit note is recorded. Settled amounts come from those credit notes.</p>
+          </ExplainBox>
+          <ExplainBox tone="emerald" title={`Scheme credit notes: ${money0(kpis.scnActual)} received`}>
+            <p>Scheme-linked credit notes are listed on their own. Return credit notes are not counted twice.</p>
+          </ExplainBox>
+        </ReportExplainModal>
       )}
-
-      {subTab === 'free' && renderTable(freeRows)}
-      {subTab === 'writeoffs' && renderTable(writeoffRows)}
-      {subTab === 'claims' && renderTable(claimRows)}
-
-      {subTab === 'batches' && (
-        <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <table className="w-full text-left data-table min-w-[640px]">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50">
-                <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Batch / Lot</th>
-                <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Product</th>
-                <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Warehouse</th>
-                <th className="px-2.5 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-slate-500">Disposed</th>
-                <th className="px-2.5 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-slate-500">Cost out</th>
-                <th className="px-2.5 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-slate-500">Still in stock</th>
-                <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Supplier inv</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {batchTracking.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="text-center py-10 text-slate-500 text-sm">
-                    No batch-linked dispositions in this period. Prefer selecting a lot when posting returns.
-                  </td>
-                </tr>
-              ) : (
-                batchTracking.map((r) => (
-                  <tr key={r.batchId} className="hover:bg-sky-50/40">
-                    <td className="px-2.5 py-2.5">
-                      <div className="font-mono font-bold text-xs text-slate-900">{r.batchNumber}</div>
-                      <div className="text-[10px] text-slate-500">
-                        {r.expiryDate ? `Exp ${r.expiryDate}` : '—'} · {r.events} event(s)
-                      </div>
-                    </td>
-                    <td className="px-2.5 py-2.5 text-xs font-bold text-slate-800">{r.productName}</td>
-                    <td className="px-2.5 py-2.5 text-xs text-slate-600">{r.warehouseName}</td>
-                    <td className="px-2.5 py-2.5 text-right font-mono font-bold text-xs">{r.disposedQty}</td>
-                    <td className="px-2.5 py-2.5 text-right font-mono font-bold text-xs text-amber-900">
-                      ₹{money(r.disposedCost)}
-                    </td>
-                    <td className="px-2.5 py-2.5 text-right font-mono font-bold text-xs text-sky-800">
-                      {r.remainingQty}
-                    </td>
-                    <td className="px-2.5 py-2.5 font-mono text-[10px] text-slate-500">
-                      {r.supplierInvoiceNo || '—'}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {subTab === 'creditnotes' && (
-        <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <table className="w-full text-left data-table min-w-[600px]">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50">
-                <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Supplier</th>
-                <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">CN No / Date</th>
-                <th className="px-2.5 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-slate-500">Expected</th>
-                <th className="px-2.5 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-slate-500">Actual</th>
-                <th className="px-2.5 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-slate-500">Outstanding</th>
-                <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Status</th>
-                <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Period / GRN</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {kpis.scnInPeriod.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="text-center py-10 text-slate-500 text-sm">
-                    No scheme-linked supplier credit notes in this period
-                  </td>
-                </tr>
-              ) : (
-                kpis.scnInPeriod.map((n) => (
-                  <tr key={n.id} className="hover:bg-sky-50/40">
-                    <td className="px-2.5 py-2.5 text-xs font-bold text-slate-900">{n.supplierName}</td>
-                    <td className="px-2.5 py-2.5 text-xs font-mono">
-                      <div>{n.creditNoteNumber || '—'}</div>
-                      <div className="text-[10px] text-slate-500">{n.creditNoteDate || n.createdAt?.slice(0, 10)}</div>
-                    </td>
-                    <td className="px-2.5 py-2.5 text-right font-mono text-xs font-bold">
-                      ₹{money(n.expectedAmount)}
-                    </td>
-                    <td className="px-2.5 py-2.5 text-right font-mono text-xs font-bold text-emerald-700">
-                      ₹{money(n.actualAmount)}
-                    </td>
-                    <td className="px-2.5 py-2.5 text-right font-mono text-xs font-bold text-amber-800">
-                      ₹{money(Math.max(0, n.expectedAmount - n.actualAmount))}
-                    </td>
-                    <td className="px-2.5 py-2.5 text-xs font-bold capitalize">{n.status.replace('_', ' ')}</td>
-                    <td className="px-2.5 py-2.5 text-[10px] text-slate-500 font-mono">
-                      {n.period || n.grnId || '—'}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
+    </>
   );
 };

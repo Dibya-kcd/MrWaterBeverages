@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import { billExtraFields, applyBillExtra, grnExtraFields, applyGrnExtra } from "../utils/billExtra";
+import { billExtraFields, applyBillExtra, grnExtraFields, applyGrnExtra, productExtraFields, applyProductExtra } from "../utils/billExtra";
 import {
   Audit,
   Bill,
@@ -744,9 +744,20 @@ export async function pushLedgerToSupabase(data: {
       scheme: p.scheme || "",
       updated_at: p.updatedAt || new Date().toISOString(),
     }));
-    const { error } = await client
+    // Product-master fields (units per crate, brand, returnable, active, rates-include-GST) go in `extra`.
+    // If the column is not there yet (migration 014 not run) retry without it, then fall back to the base columns.
+    const productPayloadWithExtra = productPayload.map((row, i) => ({
+      ...row,
+      extra: productExtraFields(data.products[i]),
+    }));
+    let { error } = await client
       .from("products")
-      .upsert(productPayload, { onConflict: "id" });
+      .upsert(productPayloadWithExtra, { onConflict: "id" });
+    if (error) {
+      ({ error } = await client
+        .from("products")
+        .upsert(productPayload, { onConflict: "id" }));
+    }
     if (error) {
       // Fallback in case schema does not yet have newly added columns
       const fallbackPayload = data.products.map((p) => ({
@@ -1254,9 +1265,18 @@ export async function pushInwardInvoiceToSupabase(params: {
         scheme: p.scheme || "",
         updated_at: new Date().toISOString(),
       }));
-      const { error: prodErr } = await client
+      let { error: prodErr } = await client
         .from("products")
-        .upsert(productPayload, { onConflict: "id" });
+        .upsert(
+          productPayload.map((row, i) => ({ ...row, extra: productExtraFields(params.products[i]) })),
+          { onConflict: "id" },
+        );
+      if (prodErr) {
+        // `extra` column not added yet (migration 014): save the rest as before
+        ({ error: prodErr } = await client
+          .from("products")
+          .upsert(productPayload, { onConflict: "id" }));
+      }
       if (prodErr) {
         // Fallback for older schema
         const fallbackPayload = params.products.map((p) => ({
@@ -1938,9 +1958,15 @@ export async function pushProductToSupabase(p: Product): Promise<void> {
       scheme: p.scheme || "",
       updated_at: p.updatedAt || new Date().toISOString(),
     };
-    const { error } = await client
+    // Only send `extra` when this product has something in it, so a device that has none never blanks the cloud's.
+    const extra = productExtraFields(p);
+    let { error } = await client
       .from("products")
-      .upsert(payload, { onConflict: "id" });
+      .upsert(extra ? { ...payload, extra } : { ...payload }, { onConflict: "id" });
+    if (error && extra) {
+      // `extra` column not added yet (migration 014): save the rest as before
+      ({ error } = await client.from("products").upsert(payload, { onConflict: "id" }));
+    }
     if (error) {
       // Base schema fallback
       const fallback = {
@@ -3481,7 +3507,7 @@ export async function pullLedgerFromSupabase(): Promise<{
           landedCost = Math.round(cost * (1 + gst) * 100) / 100;
         }
 
-        return {
+        return applyProductExtra({
           id: Number(r.id),
           updatedAt: r.updated_at || undefined,
           sku: r.sku || generateSkuId(r.name, r.category, Number(r.id)),
@@ -3502,7 +3528,7 @@ export async function pullLedgerFromSupabase(): Promise<{
           hsn: normalizeTo8DigitHsn(r.hsn || catDef?.hsn, r.category, r.name),
           gstRate: gst,
           scheme: r.scheme || "",
-        };
+        }, r.extra);
       });
     }
 
@@ -4514,6 +4540,7 @@ ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS discount NUMERIC(12, 2) NOT NU
 ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS amount_paid NUMERIC(12, 2) NOT NULL DEFAULT 0;
 ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS extra JSONB;
 ALTER TABLE public.grns ADD COLUMN IF NOT EXISTS extra JSONB;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS extra JSONB;
 ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS warehouse_id TEXT DEFAULT '';
 ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS items JSONB NOT NULL DEFAULT '[]'::JSONB;
 ALTER TABLE public.bills ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();

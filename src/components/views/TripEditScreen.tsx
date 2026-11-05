@@ -1,23 +1,26 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { SizeChip } from "../common/SizeChip";
-import { ProductPicker } from "../common/ProductPicker";
-import { sizeTheme } from "../../utils/sizeColor";
 import {
-  ArrowLeft,
-  Calendar,
-  CheckCircle2,
-  Package,
-  Plus,
-  RotateCcw,
-  Save,
-  Trash2,
-  Truck,
-  User,
-  Building2,
   AlertTriangle,
-  Receipt,
+  ArrowLeft,
+  CheckCircle2,
   FileCheck,
+  Plus,
+  Receipt,
+  RotateCcw,
+  Search,
+  X,
 } from 'lucide-react';
+import {
+  ActionBar,
+  AddProductsSheet,
+  DiscardSheet,
+  LoadLineCard,
+  LockedBanner,
+  ReviewSheet,
+  StatsStrip,
+  fieldBox,
+  fieldLabel,
+} from './trips/LoadSheetParts';
 import { Bill, Product, Trip, TripStatus, Warehouse, Salesman } from '../../types';
 import { money, billBelongsToTrip, attachableBillsForTrip } from '../../utils/billing';
 import { todayISO, toLocalISODate } from "../../utils/dateLocal";
@@ -39,6 +42,13 @@ interface TripEditScreenProps {
   onManageBills?: (trip: Trip) => void;
   /** Trip was completed: saving this edit reopens it (moves it back to Active). */
   reopensOnSave?: boolean;
+  /** Instant 1-click reopen of a completed trip directly from the edit banner. */
+  onReopenTripNow?: (tripId: number) => void;
+  /**
+   * View-only: same screen, fields and steppers locked, no add / save. Used for the salesman, because
+   * only the owner may change a trip once it is saved. Return & settle stays available.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -116,6 +126,8 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
   onRecordReturn,
   onManageBills,
   reopensOnSave = false,
+  onReopenTripNow,
+  readOnly = false,
 }) => {
   const [vehicle, setVehicle] = useState(trip.vehicle || '');
   const [warehouseId, setWarehouseId] = useState(trip.warehouseId || (warehouses[0]?.id ?? ''));
@@ -125,12 +137,17 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
   const [status, setStatus] = useState<TripStatus>(trip.status || 'out');
   const [loaded, setLoaded] = useState<Record<number, string>>({});
   const [returned, setReturned] = useState<Record<number, string>>({});
-  const [selectedAddProductId, setSelectedAddProductId] = useState<number | ''>('');
-  const [addQty, setAddQty] = useState<string>('10');
   const [searchTerm, setSearchTerm] = useState('');
-  const [addSearchFilter, setAddSearchFilter] = useState('');
-  const [showOutOfStock, setShowOutOfStock] = useState(false);
+  const [filter, setFilter] = useState<'all' | 'billed' | 'unbilled' | 'low'>('all');
   const [error, setError] = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [reviewTrip, setReviewTrip] = useState<Trip | null>(null);
+  const [askDiscard, setAskDiscard] = useState(false);
+
+  // What the screen looked like when it opened, to know whether Cancel needs a "lose changes?" question.
+  const snapshot = (v: string, w: string, d: string, sm: string, st: string, l: Record<number, string>) =>
+    JSON.stringify([v.trim(), w, d, sm, st, Object.entries(l).filter(([, q]) => Number(q) > 0).sort(([a], [b]) => Number(a) - Number(b)).map(([k, q]) => [k, Number(q)])]);
+  const baseSnap = useRef<string>('');
 
   // Initialize from trip props ONLY when a different trip is opened.
   // Previously this depended on [trip, warehouses]; the background cloud sync (every ~25s, on
@@ -140,9 +157,11 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
   useEffect(() => {
     if (initializedTripId.current === trip.id) return;
     initializedTripId.current = trip.id;
+    const wh = trip.warehouseId || (warehouses[0]?.id ?? '');
+    const dt = toStandardIsoDate(trip.date);
     setVehicle(trip.vehicle || '');
-    setWarehouseId(trip.warehouseId || (warehouses[0]?.id ?? ''));
-    setDate(toStandardIsoDate(trip.date));
+    setWarehouseId(wh);
+    setDate(dt);
     setSalesmanId(trip.salesmanId || '');
     setStatus(trip.status || 'out');
 
@@ -158,6 +177,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
     }
     setReturned(initReturned);
     setError(null);
+    baseSnap.current = snapshot(trip.vehicle || '', wh, dt, trip.salesmanId || '', trip.status || 'out', initLoaded);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trip.id]);
 
@@ -165,6 +185,8 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
   useEffect(() => {
     if (!warehouseId && warehouses[0]?.id) setWarehouseId(warehouses[0].id);
   }, [warehouses, warehouseId]);
+
+  const dirty = !readOnly && baseSnap.current !== '' && snapshot(vehicle, warehouseId, date, salesmanId, status, loaded) !== baseSnap.current;
 
   // Bills that will be attached when this edit is saved (same date / salesman / van, not on any
   // other trip). Computed once so the Billed column, the load check and the save all agree.
@@ -203,7 +225,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
 
   const activeProductIds = useMemo(() => Object.keys(loaded).map(Number), [loaded]);
 
-  // One definition of stock, used by the dropdown, the table and the add check, so the numbers
+  // One definition of stock, used by the add sheet, the cards and the add check, so the numbers
   // always agree: stock in the selected godown, and stock in all godowns (same rule as New Trip).
   const stockHere = useCallback(
     (pid: number) => (typeof warehouseStock === 'function' && warehouseId ? warehouseStock(warehouseId, pid) : 0),
@@ -217,78 +239,26 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
     [warehouseStock, warehouses],
   );
 
-  // Products available to add:
-  // - Once added to the trip (present in activeProductIds), NEVER show in the filter/dropdown
-  // - Only show in-stock products by default (stock > 0)
-  // - Filterable by search text
-  const availableToAdd = useMemo(() => {
-    return products.filter((p) => {
-      if (activeProductIds.includes(p.id)) return false;
-      if (!showOutOfStock && stockAll(p.id) <= 0) {
-        return false;
-      }
-      if (addSearchFilter.trim()) {
-        const query = addSearchFilter.toLowerCase();
-        const matchesName = p.name.toLowerCase().includes(query);
-        const matchesCategory = (p.category || '').toLowerCase().includes(query);
-        const matchesPack = (p.pack || '').toLowerCase().includes(query);
-        if (!matchesName && !matchesCategory && !matchesPack) return false;
-      }
-      return true;
-    });
-  }, [products, activeProductIds, stockAll, showOutOfStock, addSearchFilter]);
+  const nameOf = (pid: number) => products.find((x) => x.id === pid)?.name || `Product #${pid}`;
 
   // Same free-stock rule that Save applies, run at the moment a load goes up, so a bad quantity
   // is caught on Add / "+" instead of only after the whole sheet is filled in.
-  const checkLoadChange = (pid: number, newQty: number): string | null => {
+  const checkLoadChange = (pid: number, newQty: number, base: Record<number, string> = loaded): string | null => {
     const before = Number(trip.loaded?.[pid]) || 0;
     if (newQty <= before) return null;
     const next: Record<number, number> = {};
-    for (const [k, v] of Object.entries(loaded)) {
+    for (const [k, v] of Object.entries(base)) {
       const n = Number(v);
       if (n > 0) next[Number(k)] = n;
     }
     next[pid] = newQty;
     if (validateLoad) return validateLoad(trip, next, billedAfterSave);
-    const name = products.find((x) => x.id === pid)?.name || `Product #${pid}`;
     const avail = stockAll(pid);
-    return newQty - before > avail ? `${name}: only ${avail} in stock.` : null;
-  };
-
-  const handleSelectProduct = (val: string) => {
-    if (!val) {
-      setSelectedAddProductId('');
-      return;
-    }
-    const pid = Number(val);
-    setSelectedAddProductId(pid);
-    const stock = stockHere(pid) || stockAll(pid);
-    if (stock > 0) {
-      setAddQty(String(Math.min(10, stock)));
-    } else {
-      setAddQty('1');
-    }
-  };
-
-  const handleAddProduct = () => {
-    if (!selectedAddProductId) return;
-    const pid = Number(selectedAddProductId);
-    const prod = products.find((p) => p.id === pid);
-    if (!prod) return;
-    const qtyNum = Math.max(1, parseInt(addQty, 10) || 1);
-    const problem = checkLoadChange(pid, qtyNum);
-    if (problem) {
-      setError(problem);
-      return;
-    }
-    setLoaded((prev) => ({ ...prev, [pid]: String(qtyNum) }));
-    setSelectedAddProductId('');
-    setAddSearchFilter('');
-    setAddQty('10');
-    setError(null);
+    return newQty - before > avail ? `${nameOf(pid)}: only ${avail} in stock.` : null;
   };
 
   const handleUpdateQty = (pid: number, delta: number) => {
+    if (readOnly) return;
     if (delta > 0) {
       const problem = checkLoadChange(pid, (Number(loaded[pid]) || 0) + delta);
       if (problem) {
@@ -310,14 +280,14 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
   };
 
   const handleSetQtyDirect = (pid: number, val: string) => {
+    if (readOnly) return;
     setLoaded((prev) => ({ ...prev, [pid]: val }));
   };
 
   const handleRemoveProduct = (pid: number) => {
     const billed = billedAfterSave[pid] || 0;
     if (billed > 0) {
-      const name = products.find((x) => x.id === pid)?.name || `Product #${pid}`;
-      setError(`${name}: ${billed} already billed on this trip, so it cannot be removed from the load sheet.`);
+      setError(`${nameOf(pid)}: ${billed} already billed on this trip, so it cannot be removed from the load sheet.`);
       return;
     }
     setLoaded((prev) => {
@@ -332,53 +302,48 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
     });
   };
 
+  // Add several products at once from the sheet. Each is checked with the same rule as "+".
+  const handleAddPicks = (picks: Record<number, number>): string | null => {
+    const merged: Record<number, string> = { ...loaded };
+    for (const [pidStr, qty] of Object.entries(picks)) {
+      const pid = Number(pidStr);
+      if (qty <= 0) continue;
+      const problem = checkLoadChange(pid, qty, merged);
+      if (problem) return problem;
+      merged[pid] = String(qty);
+    }
+    setLoaded(merged);
+    setError(null);
+    setShowAdd(false);
+    return null;
+  };
+
   // Totals calculations
-  const totalLoaded = useMemo(() => {
-    return Object.values(loaded).reduce((acc, q) => acc + (Number(q) || 0), 0);
-  }, [loaded]);
-
-  const totalSold = useMemo(() => {
-    return Object.values(billedAfterSave).reduce((acc, q) => acc + q, 0);
-  }, [billedAfterSave]);
-
+  const totalLoaded = useMemo(() => Object.values(loaded).reduce((acc, q) => acc + (Number(q) || 0), 0), [loaded]);
+  const totalSold = useMemo(() => Object.values(billedAfterSave).reduce((acc, q) => acc + q, 0), [billedAfterSave]);
   const totalValue = useMemo(() => {
     let sum = 0;
     for (const [pidStr, qStr] of Object.entries(loaded)) {
-      const pid = Number(pidStr);
-      const q = Number(qStr) || 0;
-      const prod = products.find((p) => p.id === pid);
-      if (prod) {
-        sum += q * (prod.wholesale || prod.retail || 0);
-      }
+      const prod = products.find((p) => p.id === Number(pidStr));
+      if (prod) sum += (Number(qStr) || 0) * (prod.wholesale || prod.retail || 0);
     }
     return sum;
   }, [loaded, products]);
 
-  const handleSave = (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
+  const shortValue = (n: number) => (n >= 100000 ? `₹${(n / 100000).toFixed(1)}L` : n >= 1000 ? `₹${(n / 1000).toFixed(1)}k` : `₹${Math.round(n)}`);
 
-    if (!vehicle.trim()) {
-      setError('Please enter a vehicle name or registration number.');
-      return;
-    }
-
-    if (!date) {
-      setError('Please select a valid trip date.');
-      return;
-    }
+  /** Runs every save check. Returns an error message, or the trip ready to save. */
+  const buildUpdatedTrip = (): { error: string } | { trip: Trip } => {
+    if (!vehicle.trim()) return { error: 'Please enter a vehicle name or registration number.' };
+    if (!date) return { error: 'Please select a valid trip date.' };
 
     const cleanLoaded: Record<number, number> = {};
     for (const [pid, val] of Object.entries(loaded)) {
       const num = Number(val);
-      if (num > 0) {
-        cleanLoaded[Number(pid)] = num;
-      }
+      if (num > 0) cleanLoaded[Number(pid)] = num;
     }
-
     if (Object.keys(cleanLoaded).length === 0) {
-      setError('Load sheet must contain at least one beverage with quantity > 0.');
-      return;
+      return { error: 'Load sheet must contain at least one beverage with quantity > 0.' };
     }
 
     // The load can never be cut below what is billed on this trip, counting the bills this save
@@ -386,17 +351,12 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
     for (const [pidStr, billed] of Object.entries(billedAfterSave)) {
       const pid = Number(pidStr);
       if (billed > (cleanLoaded[pid] || 0)) {
-        const name = products.find((x) => x.id === pid)?.name || `Product #${pid}`;
-        setError(`${name}: ${billed} billed on this trip, so the load cannot be less than ${billed}.`);
-        return;
+        return { error: `${nameOf(pid)}: ${billed} billed on this trip, so the load cannot be less than ${billed}.` };
       }
     }
 
     const stockError = validateLoad ? validateLoad(trip, cleanLoaded, billedAfterSave) : null;
-    if (stockError) {
-      setError(stockError);
-      return;
-    }
+    if (stockError) return { error: stockError };
 
     // Clean returned map, preserving existing counts
     const cleanReturned: Record<number, number> = {};
@@ -408,551 +368,435 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
         cleanReturned[numPid] = Number(trip.returned[numPid]);
       }
     }
-
     for (const [pidStr, r] of Object.entries(cleanReturned)) {
       const pid = Number(pidStr);
       if (r > (cleanLoaded[pid] || 0)) {
-        const name = products.find((x) => x.id === pid)?.name || `Product #${pid}`;
-        setError(`${name}: ${r} returned is more than the ${cleanLoaded[pid] || 0} loaded.`);
-        return;
+        return { error: `${nameOf(pid)}: ${r} returned is more than the ${cleanLoaded[pid] || 0} loaded.` };
       }
     }
 
     const matchedSalesman = salesmen.find((s) => s.id === salesmanId);
-
     const finalBillIds = Array.from(
       new Set([...(trip.billIds || []).map(Number), ...pendingBills.map((b) => Number(b.id))]),
     );
 
-    const updatedTrip: Trip = {
-      ...trip,
-      vehicle: vehicle.trim(),
-      date,
-      status,
-      salesmanId: salesmanId || undefined,
-      salesman: matchedSalesman ? matchedSalesman.name : trip.salesman,
-      warehouseId: warehouseId || undefined,
-      warehouseLoads: rebalanceWarehouseLoads(trip.warehouseLoads, cleanLoaded, warehouseId),
-      loaded: cleanLoaded,
-      returned: cleanReturned,
-      billIds: finalBillIds,
+    return {
+      trip: {
+        ...trip,
+        vehicle: vehicle.trim(),
+        date,
+        status,
+        salesmanId: salesmanId || undefined,
+        salesman: matchedSalesman ? matchedSalesman.name : trip.salesman,
+        warehouseId: warehouseId || undefined,
+        warehouseLoads: rebalanceWarehouseLoads(trip.warehouseLoads, cleanLoaded, warehouseId),
+        loaded: cleanLoaded,
+        returned: cleanReturned,
+        billIds: finalBillIds,
+      },
     };
-
-    onSave(updatedTrip);
   };
 
+  const openReview = () => {
+    setError(null);
+    const res = buildUpdatedTrip();
+    if ('error' in res) {
+      setError(res.error);
+      document.getElementById('trip-edit-scroll')?.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    setReviewTrip(res.trip);
+  };
+
+  const handleCancel = () => (dirty ? setAskDiscard(true) : onBack());
+
   const selectedWarehouse = warehouses.find((w) => w.id === warehouseId);
+  const salesmanName = salesmen.find((s) => s.id === salesmanId)?.name || trip.salesman || '';
+
+  // ---- list filtering ----
+  const q = searchTerm.trim().toLowerCase();
+  const counts = {
+    billed: activeProductIds.filter((pid) => (billedAfterSave[pid] || 0) > 0).length,
+    unbilled: activeProductIds.filter((pid) => !(billedAfterSave[pid] > 0)).length,
+    low: activeProductIds.filter((pid) => (billedAfterSave[pid] || 0) > (Number(loaded[pid]) || 0)).length,
+  };
+  const shownIds = activeProductIds
+    .filter((pid) => {
+      if (q && !nameOf(pid).toLowerCase().includes(q)) return false;
+      const billed = billedAfterSave[pid] || 0;
+      if (filter === 'billed') return billed > 0;
+      if (filter === 'unbilled') return billed <= 0;
+      if (filter === 'low') return billed > (Number(loaded[pid]) || 0);
+      return true;
+    })
+    .sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+
+  const chip = (on: boolean) =>
+    `shrink-0 min-h-[36px] px-3 rounded-full border text-[12px] font-bold whitespace-nowrap cursor-pointer ${
+      on ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-700 border-black/15'
+    }`;
+
+  const reviewRows = reviewTrip
+    ? Object.entries(reviewTrip.loaded || {})
+        .map(([pidStr, qty]) => {
+          const pid = Number(pidStr);
+          const before = Number(trip.loaded?.[pid]) || 0;
+          const billed = billedAfterSave[pid] || 0;
+          const changed = before !== qty;
+          return {
+            key: pidStr,
+            name: nameOf(pid),
+            product: products.find((p) => p.id === pid),
+            qty,
+            note: changed ? (before === 0 ? 'New on this trip' : `was ${before} → now ${qty}`) : billed > 0 ? `Billed ${billed} cs` : undefined,
+            noteTone: changed ? ('changed' as const) : ('normal' as const),
+          };
+        })
+        .sort((a, b) => a.name.localeCompare(b.name))
+    : [];
+
+  const statusPill =
+    status === 'closed'
+      ? 'bg-slate-100 text-slate-700 border-slate-200'
+      : 'bg-emerald-50 text-emerald-800 border-emerald-200';
 
   return (
-    <div className="max-w-none lg:max-w-5xl mx-auto space-y-6 pb-20 animate-in fade-in duration-200">
-      {reopensOnSave && (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          <strong>Completed trip.</strong> Saving your changes reopens it and moves it back to Active.
-          Press back to leave it as it is.
-        </div>
-      )}
-      {/* Top Navigation & Status Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-slate-200">
-        <div className="flex items-center gap-3">
+    <div className="fixed inset-0 z-50 flex flex-col bg-[#faf8f5] animate-in fade-in duration-150" id="trip-edit-screen">
+      {/* Header */}
+      <div className="shrink-0 border-b border-black/10 bg-[#faf8f5] pt-[env(safe-area-inset-top,0px)]">
+        <div className="mx-auto max-w-xl px-3 py-2 flex items-center gap-2.5">
           <button
             type="button"
-            onClick={onBack}
-            className="p-2 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 transition-colors cursor-pointer shadow-2xs"
-            title="Back to trips list"
+            onClick={readOnly ? onBack : handleCancel}
+            className="size-11 shrink-0 rounded-xl border border-black/15 bg-white flex items-center justify-center text-slate-700 cursor-pointer"
+            aria-label="Back"
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft size={20} />
           </button>
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
-                Edit Trip #{trip.id}
-              </h1>
-              <span
-                className={`text-xs font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full ${
-                  status === 'closed'
-                    ? 'bg-slate-100 text-slate-700 border border-slate-200'
-                    : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                }`}
-              >
-                {status === 'closed' ? 'Completed (Closed)' : 'Active (On Road)'}
-              </span>
-            </div>
-            <p className="hidden sm:block text-xs text-slate-500 mt-0.5">
-              Modify vehicle route, load sheet quantities, assigned driver & godown
+          <div className="min-w-0 flex-1">
+            <h1 className="text-[17px] font-black text-slate-900 leading-tight truncate">{readOnly ? 'Load sheet' : 'Edit load sheet'}</h1>
+            <p className="text-xs text-slate-500 truncate">
+              Trip #{trip.id} · {vehicle || trip.vehicle}
             </p>
           </div>
+          <span className={`text-[10.5px] font-black px-2.5 py-1 rounded-full border ${statusPill}`}>{status === 'closed' ? 'Completed' : 'Active'}</span>
         </div>
-
-        {onRecordReturn && (
-          <button
-            type="button"
-            onClick={() => onRecordReturn(trip)}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300 text-xs font-bold transition-colors cursor-pointer shadow-2xs self-start sm:self-auto"
-          >
-            <RotateCcw className="w-4 h-4 text-emerald-700" />
-            <span>Record Return & Reconcile</span>
-          </button>
-        )}
       </div>
 
-      {error && (
-        <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-bold flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
-          <span>{error}</span>
-        </div>
-      )}
+      {/* Scrolling body */}
+      <div id="trip-edit-scroll" className="flex-1 overflow-y-auto overscroll-contain">
+        <div className="mx-auto max-w-xl px-3 pt-3 pb-6 space-y-3">
+          {(reopensOnSave || status === 'closed' || trip.status === 'closed') && !readOnly && (
+            <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3.5 flex items-center justify-between flex-wrap gap-2 text-[13px] text-amber-950 shadow-xs">
+              <div className="min-w-0 flex-1">
+                <div className="font-extrabold flex items-center gap-1.5 text-amber-900">
+                  <RotateCcw size={15} /> Completed / Closed Trip
+                </div>
+                <div className="text-xs text-amber-800 mt-0.5 leading-relaxed">
+                  {status === 'out'
+                    ? 'Reopen pending: saving this trip will reactivate it so vehicle stock and attached bills can be edited.'
+                    : 'This trip is completed and reconciled. Reopen it to Active to allow modifying crates or attached bills.'}
+                </div>
+              </div>
+              {status === 'closed' && onReopenTripNow && (
+                <button
+                  type="button"
+                  id="btn-instant-reopen-trip-screen"
+                  onClick={() => {
+                    onReopenTripNow(Number(trip.id));
+                    setStatus('out');
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0d4a3a] hover:bg-[#0a3d30] text-white font-bold text-xs cursor-pointer shadow-sm active:scale-95 transition-all"
+                >
+                  <RotateCcw size={14} /> Reopen Trip Now
+                </button>
+              )}
+            </div>
+          )}
+          {readOnly && <LockedBanner>Only the owner can change this load once it is saved. You can look at it and record returns.</LockedBanner>}
 
-      <form onSubmit={handleSave} className="space-y-6">
-        {/* Card 1: Core Trip Settings */}
-        <div className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-5 shadow-xs space-y-4">
-          <div className="flex items-center gap-2 pb-3 border-b border-slate-100 text-sm font-extrabold text-slate-900">
-            <Truck className="w-4 h-4 text-emerald-700" />
-            <span>Trip & Route Details</span>
-          </div>
+          {error && (
+            <div role="alert" className="flex items-start gap-2 p-3 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 text-[13px] font-bold">
+              <AlertTriangle size={17} className="shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* Vehicle identifier */}
-            <div>
-              <label htmlFor="edit-vehicle" className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
-                Vehicle / Van Identifier *
-              </label>
-              <input
-                id="edit-vehicle"
-                type="text"
-                required
-                value={vehicle}
-                onChange={(e) => setVehicle(e.target.value)}
-                placeholder="e.g. OD15-EV-Van, Piaggio Ape"
-                className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700"
-              />
+          {/* Trip details: every field in one place */}
+          <section className="rounded-2xl border border-black/10 bg-white p-3">
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label htmlFor="edit-vehicle" className={fieldLabel}>Vehicle *</label>
+                <input
+                  id="edit-vehicle"
+                  type="text"
+                  value={vehicle}
+                  disabled={readOnly}
+                  onChange={(e) => setVehicle(e.target.value)}
+                  placeholder="e.g. EV"
+                  className={fieldBox}
+                />
+              </div>
+              <div>
+                <label htmlFor="edit-trip-date" className={fieldLabel}>Trip date *</label>
+                <input
+                  id="edit-trip-date"
+                  type="date"
+                  value={date}
+                  disabled={readOnly}
+                  onChange={(e) => setDate(e.target.value)}
+                  className={fieldBox}
+                />
+              </div>
+              <div>
+                <label htmlFor="edit-salesman" className={fieldLabel}>Salesman</label>
+                <select id="edit-salesman" value={salesmanId} disabled={readOnly} onChange={(e) => setSalesmanId(e.target.value)} className={fieldBox}>
+                  <option value="">{salesmanName && !salesmanId ? salesmanName : 'Choose…'}</option>
+                  {salesmen.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="edit-warehouse" className={fieldLabel}>Source godown *</label>
+                <select id="edit-warehouse" value={warehouseId} disabled={readOnly} onChange={(e) => setWarehouseId(e.target.value)} className={fieldBox}>
+                  {warehouses.length === 0 && <option value="">Main Godown</option>}
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
-            {/* Trip Date */}
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label htmlFor="edit-trip-date" className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
-                  Trip Date *
-                </label>
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setDate(todayISO())}
-                    className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 transition-colors cursor-pointer"
-                    title="Set to today's date"
-                  >
-                    Today
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const y = toLocalISODate(new Date(Date.now() - 86400000));
-                      setDate(y);
-                    }}
-                    className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
-                    title="Set to yesterday's date"
-                  >
+            {!readOnly && (
+              <div className="mt-3 pt-3 border-t border-black/5 flex items-center justify-between flex-wrap gap-2.5">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mr-1">Date:</span>
+                  <button type="button" onClick={() => setDate(todayISO())} className={chip(date === todayISO())}>Today</button>
+                  <button type="button" onClick={() => setDate(toLocalISODate(new Date(Date.now() - 86400000)))} className={chip(date === toLocalISODate(new Date(Date.now() - 86400000)))}>
                     Yesterday
                   </button>
                 </div>
-              </div>
-              <input
-                id="edit-trip-date"
-                type="date"
-                required
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700 cursor-pointer"
-              />
-              <div className="flex items-center justify-between mt-1.5 text-[11px] text-slate-500 flex-wrap gap-1">
-                <span className="font-semibold text-emerald-800">
-                  {(() => {
-                    try {
-                      if (!date) return '';
-                      const [y, m, d] = date.split('-').map(Number);
-                      return new Date(y, m - 1, d).toLocaleDateString('en-IN', {
-                        weekday: 'short',
-                        day: 'numeric',
-                        month: 'short',
-                        year: 'numeric',
-                      });
-                    } catch {
-                      return date;
-                    }
-                  })()}
-                </span>
-                <label className="inline-flex items-center gap-1 cursor-pointer select-none text-[10.5px] text-slate-600 font-medium">
-                  <input
-                    type="checkbox"
-                    checked={autoAttachBills}
-                    onChange={(e) => setAutoAttachBills(e.target.checked)}
-                    className="rounded text-emerald-700 w-3 h-3 cursor-pointer"
-                  />
-                  <span>Auto-attach bills for date</span>
-                </label>
-              </div>
-            </div>
 
-            {/* Assigned Salesman / Driver */}
-            <div>
-              <label htmlFor="edit-salesman" className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
-                Salesman / Driver
-              </label>
-              <select
-                id="edit-salesman"
-                value={salesmanId}
-                onChange={(e) => setSalesmanId(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700 cursor-pointer"
-              >
-                <option value="">Choose registered salesman...</option>
-                {salesmen.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({s.phone})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Sourcing Godown */}
-            <div>
-              <label htmlFor="edit-warehouse" className="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1.5">
-                Sourcing Godown *
-              </label>
-              <select
-                id="edit-warehouse"
-                value={warehouseId}
-                onChange={(e) => setWarehouseId(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700 cursor-pointer"
-              >
-                {warehouses.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name} {w.code ? `(${w.code})` : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Status Switcher */}
-          <div className="pt-2 flex items-center justify-between flex-wrap gap-2">
-            <span className="text-xs font-bold text-slate-700">Trip Current Status:</span>
-            <div className="inline-flex rounded-xl p-1 bg-slate-100 border border-slate-200 text-xs font-bold">
-              <button
-                type="button"
-                onClick={() => setStatus('out')}
-                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
-                  status === 'out'
-                    ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Active · Out on Road
-              </button>
-              <button
-                type="button"
-                onClick={() => setStatus('closed')}
-                className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
-                  status === 'closed'
-                    ? 'bg-slate-800 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Completed · Closed
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Card 2: Load Sheet Table & Add Beverages */}
-        <div className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-5 shadow-xs space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-slate-100">
-            <div>
-              <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900">
-                <Package className="w-4 h-4 text-emerald-700" />
-                <span>Loaded Beverages & Crates</span>
-              </div>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Quantities dispatched from {selectedWarehouse?.name || 'Godown'}
-              </p>
-            </div>
-
-            {/* Quick Summary Pill */}
-            <div className="flex items-center gap-3 text-xs font-bold text-slate-700 bg-slate-50 px-3.5 py-1.5 rounded-xl border border-slate-200 self-start sm:self-auto">
-              <span>
-                Total Loaded: <strong className="text-emerald-800">{totalLoaded}</strong> crates
-              </span>
-              <span>·</span>
-              <span>
-                Est. Value: <strong className="text-slate-900">₹{money(totalValue)}</strong>
-              </span>
-            </div>
-          </div>
-
-          {/* Add Beverage Bar */}
-          <div className="p-3.5 rounded-2xl bg-emerald-50/70 border border-emerald-200/80 space-y-2.5">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <span className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
-                <Plus className="w-4 h-4 text-emerald-700" /> Add beverage to load sheet:
-              </span>
-              <div className="flex items-center gap-3 text-[11px]">
-                <label className="inline-flex items-center gap-1.5 text-slate-600 font-medium cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={showOutOfStock}
-                    onChange={(e) => setShowOutOfStock(e.target.checked)}
-                    className="rounded text-emerald-700 w-3.5 h-3.5 cursor-pointer"
-                  />
-                  <span>Show 0-stock items</span>
-                </label>
-              </div>
-            </div>
-
-            {products.length > 0 && products.length === activeProductIds.length ? (
-              <div className="p-2.5 rounded-xl bg-white/80 border border-emerald-200 text-xs font-semibold text-emerald-800 flex items-center gap-2">
-                <span className="text-emerald-700 font-bold">✓</span> All {products.length} beverages in the catalog are already added to this trip's load sheet.
-              </div>
-            ) : availableToAdd.length === 0 ? (
-              <div className="p-2.5 rounded-xl bg-white/80 border border-amber-200 text-xs font-semibold text-amber-900 flex items-center justify-between flex-wrap gap-2">
-                <span>
-                  No remaining in-stock beverages to add from this godown.
-                </span>
-                {!showOutOfStock && (
-                  <button
-                    type="button"
-                    onClick={() => setShowOutOfStock(true)}
-                    className="text-emerald-800 underline font-bold cursor-pointer hover:text-emerald-950"
-                  >
-                    Show 0-stock items to add anyway
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                {products.length > 4 && (
-                  <input
-                    type="text"
-                    value={addSearchFilter}
-                    onChange={(e) => setAddSearchFilter(e.target.value)}
-                    placeholder="Search beverage..."
-                    className="w-full sm:w-44 px-2.5 py-1.5 rounded-lg border border-emerald-300 bg-white text-xs placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-emerald-700"
-                  />
-                )}
-                <ProductPicker
-                  className="flex-1"
-                  buttonClassName="px-3 py-1.5 rounded-lg border border-emerald-300 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-700"
-                  value={selectedAddProductId}
-                  onChange={(id) => handleSelectProduct(String(id))}
-                  placeholder={`Select beverage from catalog (${availableToAdd.length} available)...`}
-                  options={availableToAdd.map((p) => {
-                    const here = stockHere(p.id);
-                    const other = stockAll(p.id) - here;
-                    return { product: p, note: `${here} cs${other > 0 ? ` (+${other} other)` : ''}` };
-                  })}
-                />
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <div className="relative flex items-center">
-                    <input
-                      type="number" inputMode="numeric"
-                      min="1"
-                      value={addQty}
-                      onChange={(e) => setAddQty(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          handleAddProduct();
-                        }
-                      }}
-                      placeholder="Qty"
-                      className="w-20 px-2.5 py-1.5 rounded-lg border border-emerald-300 bg-white text-xs font-bold text-center focus:outline-none focus:ring-1 focus:ring-emerald-700"
-                    />
-                    <span className="text-[11px] font-bold text-slate-500 ml-1">cs</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Status:</span>
+                  <div className="inline-flex rounded-full p-0.5 bg-slate-100 border border-slate-200 text-xs font-bold">
+                    <button
+                      type="button"
+                      id="btn-edit-status-out"
+                      onClick={() => setStatus('out')}
+                      className={`px-3 py-1.5 rounded-full cursor-pointer transition-all ${
+                        status === 'out' ? 'bg-[#0d4a3a] text-white shadow-xs font-black' : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                      title="Set trip to Active / Out on road"
+                    >
+                      Out on road (Active)
+                    </button>
+                    <button
+                      type="button"
+                      id="btn-edit-status-closed"
+                      onClick={() => setStatus('closed')}
+                      className={`px-3 py-1.5 rounded-full cursor-pointer transition-all ${
+                        status === 'closed' ? 'bg-slate-800 text-white shadow-xs font-black' : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                      title="Set trip to Completed / Closed"
+                    >
+                      Completed
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleAddProduct}
-                    disabled={!selectedAddProductId}
-                    className="px-4 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-bold cursor-pointer transition-colors shadow-2xs"
-                  >
-                    + Add
-                  </button>
                 </div>
               </div>
             )}
-          </div>
 
-          {/* Search within loaded items */}
-          {activeProductIds.length > 5 && (
-            <input enterKeyHint="search"
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Filter loaded items by name..."
-              className="w-full px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-medium focus:outline-none focus:ring-1 focus:ring-emerald-700"
-            />
+            <label className={`mt-3 flex items-center gap-2.5 text-[13px] font-semibold text-slate-700 select-none ${readOnly ? 'opacity-60' : 'cursor-pointer'}`}>
+              <input
+                type="checkbox"
+                checked={autoAttachBills}
+                disabled={readOnly}
+                onChange={(e) => setAutoAttachBills(e.target.checked)}
+                className="size-5 rounded accent-[#0d4a3a]"
+              />
+              <span>Attach bills of this date</span>
+              {pendingBills.length > 0 && (
+                <span className="text-[11px] font-black text-[#0d4a3a] bg-[#ebe8e1] px-2 py-0.5 rounded-full">{pendingBills.length} ready</span>
+              )}
+            </label>
+          </section>
+
+          <StatsStrip
+            items={[
+              { label: 'Loaded', value: String(totalLoaded), tone: 'green' },
+              { label: 'Billed', value: String(totalSold) },
+              { label: 'On van', value: String(Math.max(0, totalLoaded - totalSold)), tone: 'amber' },
+              { label: 'Value', value: shortValue(totalValue) },
+            ]}
+          />
+
+          {/* Search + filters */}
+          {activeProductIds.length > 4 && (
+            <div className="space-y-2">
+              <div className="relative">
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  enterKeyHint="search"
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search loaded items…"
+                  className="w-full min-h-[46px] pl-9 pr-9 rounded-xl border border-black/15 bg-white text-[15px] focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                />
+                {searchTerm && (
+                  <button type="button" onClick={() => setSearchTerm('')} aria-label="Clear search" className="absolute right-1.5 top-1/2 -translate-y-1/2 size-9 flex items-center justify-center text-slate-400 cursor-pointer">
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+              <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+                <button type="button" onClick={() => setFilter('all')} className={chip(filter === 'all')}>All {activeProductIds.length}</button>
+                <button type="button" onClick={() => setFilter('billed')} className={chip(filter === 'billed')}>Billed {counts.billed}</button>
+                <button type="button" onClick={() => setFilter('unbilled')} className={chip(filter === 'unbilled')}>Not billed {counts.unbilled}</button>
+                {counts.low > 0 && (
+                  <button type="button" onClick={() => setFilter('low')} className={chip(filter === 'low')}>Low ⚠ {counts.low}</button>
+                )}
+              </div>
+            </div>
           )}
 
-          {/* Loaded Products Table */}
-          <div className="overflow-x-auto rounded-xl border border-slate-200">
-            <table className="w-full text-left border-collapse text-xs">
-              <thead>
-                <tr className="bg-slate-50 text-slate-600 font-bold uppercase tracking-wider text-[10.5px] border-b border-slate-200">
-                  <th className="py-2.5 px-3">Beverage Product</th>
-                  <th className="py-2.5 px-3 text-center">Godown Stock</th>
-                  <th className="py-2.5 px-3 text-center">Billed (Sold)</th>
-                  <th className="py-2.5 px-3 text-center">Loaded Crates</th>
-                  <th className="py-2.5 px-3 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 font-medium">
-                {activeProductIds
-                  .filter((pid) => {
-                    if (!searchTerm.trim()) return true;
-                    const prod = products.find((p) => p.id === pid);
-                    return prod?.name.toLowerCase().includes(searchTerm.toLowerCase());
-                  })
-                  .map((pid) => {
-                    const prod = products.find((p) => p.id === pid);
-                    const currentLoaded = Number(loaded[pid]) || 0;
-                    const sold = soldByProduct[pid] || 0;
-                    const pending = pendingByProduct[pid] || 0;
-                    const tooLow = sold + pending > currentLoaded;
-                    const godownStock = stockHere(pid);
-                    const otherStock = stockAll(pid) - godownStock;
-
-                    return (
-                      <tr key={pid} className={`transition-colors ${tooLow ? 'bg-rose-50/70' : 'hover:bg-slate-50/70'}`}>
-                        <td
-                          className="py-2.5 px-3"
-                          style={{ borderLeftWidth: 6, borderLeftStyle: 'solid', borderLeftColor: sizeTheme(prod?.volume, prod?.name).hex }}
-                        >
-                          <div className="font-bold text-slate-900">{prod?.name || `Product #${pid}`}</div>
-                          <div className="text-[11px] text-slate-500 flex items-center gap-1.5 flex-wrap mt-0.5">
-                            <SizeChip volume={prod?.volume} name={prod?.name} pack={prod?.pack} />
-                            <span>{prod?.category || 'General'}</span>
-                          </div>
-                        </td>
-                        <td className="py-2.5 px-3 text-center font-semibold text-slate-600">
-                          {godownStock} cs
-                          {otherStock > 0 && (
-                            <div className="text-[10px] font-medium text-slate-400">+{otherStock} other godowns</div>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 text-center">
-                          <span
-                            className={`px-2 py-0.5 rounded font-bold ${
-                              sold > 0 ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'text-slate-400'
-                            }`}
-                          >
-                            {sold} cs
-                          </span>
-                          {tooLow && (
-                            <div className="text-[10px] font-bold text-rose-700 mt-0.5">Load below billed</div>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 text-center">
-                          <div className="inline-flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateQty(pid, -1)}
-                              className="size-7 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 flex items-center justify-center font-bold text-slate-700 cursor-pointer shadow-2xs"
-                              title="Decrease 1 crate"
-                            >
-                              −
-                            </button>
-                            <input
-                              type="number" inputMode="numeric"
-                              min="0"
-                              value={loaded[pid] || ''}
-                              onChange={(e) => handleSetQtyDirect(pid, e.target.value)}
-                              className="w-16 px-2 py-1 rounded-lg border border-slate-300 font-bold text-center text-sm text-slate-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateQty(pid, 1)}
-                              className="size-7 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 flex items-center justify-center font-bold text-slate-700 cursor-pointer shadow-2xs"
-                              title="Increase 1 crate"
-                            >
-                              +
-                            </button>
-                          </div>
-                        </td>
-                        <td className="py-2.5 px-3 text-right">
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveProduct(pid)}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                            title="Remove from load sheet"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Card 3: Route Stops & Customer Invoices */}
-        <div className="bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-5 shadow-xs space-y-3">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-100 flex-wrap gap-2">
-            <div className="flex items-center gap-2 text-sm font-extrabold text-slate-900">
-              <Receipt className="w-4 h-4 text-emerald-700" />
-              <span>Assigned Customer Bills ({trip.billIds?.length || 0})</span>
-            </div>
-            {onManageBills && (
-              <button
-                type="button"
-                onClick={() => onManageBills(trip)}
-                className="text-xs font-bold text-emerald-800 hover:text-emerald-950 underline cursor-pointer"
-              >
-                Manage attached invoices →
-              </button>
+          {/* Product cards */}
+          <section className="space-y-2" aria-label="Loaded beverages">
+            {activeProductIds.length === 0 && (
+              <div className="rounded-2xl border border-dashed border-black/20 bg-white px-4 py-8 text-center text-sm text-slate-500">
+                Nothing loaded yet. {readOnly ? '' : 'Tap “Add products” below.'}
+              </div>
             )}
-          </div>
+            {activeProductIds.length > 0 && shownIds.length === 0 && (
+              <div className="rounded-2xl border border-black/10 bg-white px-4 py-6 text-center text-sm text-slate-500">No items match.</div>
+            )}
+            {shownIds.map((pid) => {
+              const prod = products.find((p) => p.id === pid);
+              const cur = Number(loaded[pid]) || 0;
+              const sold = soldByProduct[pid] || 0;
+              const pending = pendingByProduct[pid] || 0;
+              const tooLow = sold + pending > cur;
+              const here = stockHere(pid);
+              const other = stockAll(pid) - here;
+              return (
+                <LoadLineCard
+                  key={pid}
+                  product={prod}
+                  fallbackName={`Product #${pid}`}
+                  qty={loaded[pid] ?? ''}
+                  onQty={(v) => handleSetQtyDirect(pid, v)}
+                  onMinus={() => handleUpdateQty(pid, -1)}
+                  onPlus={() => handleUpdateQty(pid, 1)}
+                  onRemove={() => handleRemoveProduct(pid)}
+                  readOnly={readOnly}
+                  problem={tooLow}
+                  facts={[
+                    { label: 'Godown', value: `${here} cs${other > 0 ? ` (+${other} other)` : ''}` },
+                    { label: 'Billed', value: `${sold + pending} cs`, bad: tooLow },
+                  ]}
+                  warning={tooLow ? 'Load is less than billed' : undefined}
+                />
+              );
+            })}
+          </section>
 
-          <div className="text-xs text-slate-600">
+          {/* Bills on this trip */}
+          <section className="rounded-2xl border border-black/10 bg-white p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-[13px] font-black text-slate-900">
+                <Receipt size={16} className="text-[#0d4a3a]" />
+                Bills on this trip ({trip.billIds?.length || 0})
+              </div>
+              {onManageBills && !readOnly && (
+                <button type="button" onClick={() => onManageBills(trip)} className="min-h-[40px] px-2 text-xs font-black text-[#0d4a3a] underline cursor-pointer">
+                  Manage →
+                </button>
+              )}
+            </div>
             {trip.billIds && trip.billIds.length > 0 ? (
-              <div className="flex flex-wrap gap-2 pt-1">
+              <div className="mt-2 flex flex-wrap gap-1.5">
                 {trip.billIds.map((bid) => {
                   const bill = bills.find((b) => b.id === bid);
                   return (
-                    <span
-                      key={bid}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-800 font-semibold text-xs"
-                    >
-                      <FileCheck className="w-3.5 h-3.5 text-emerald-700" />
-                      <span>
-                        #{bid} {bill ? `· ${bill.retailer}` : ''} ({bill?.items?.reduce((s, i) => s + i.qty, 0) || 0} cs)
-                      </span>
+                    <span key={bid} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-800 font-semibold text-xs">
+                      <FileCheck size={13} className="text-[#0d4a3a]" />
+                      #{bid} {bill ? `· ${bill.retailer}` : ''} ({bill?.items?.reduce((s, i) => s + i.qty, 0) || 0} cs)
                     </span>
                   );
                 })}
               </div>
             ) : (
-              <p className="text-slate-400 italic">No invoices currently attached to this vehicle trip.</p>
+              <p className="mt-1.5 text-xs text-slate-400 italic">No bills attached yet.</p>
             )}
-          </div>
+          </section>
         </div>
+      </div>
 
-        {/* Action Buttons */}
-        <div className="sticky bottom-4 z-20 flex items-center justify-end gap-3 p-3.5 bg-white/95 backdrop-blur-md rounded-2xl border border-slate-200 shadow-lg">
-          <button
-            type="button"
-            onClick={onBack}
-            className="px-4 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-bold text-xs sm:text-sm hover:bg-slate-50 transition-colors cursor-pointer"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs sm:text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer"
-          >
-            <Save className="w-4 h-4" />
-            <span>Save Trip Changes</span>
-          </button>
-        </div>
-      </form>
+      {/* Bottom bar */}
+      {readOnly ? (
+        <ActionBar
+          actions={[
+            { key: 'back', label: 'Back', icon: <ArrowLeft size={20} />, tone: 'neutral', onClick: onBack, id: 'btn-trip-view-back' },
+            ...(onRecordReturn
+              ? [{ key: 'settle', label: 'Return & Settle', icon: <RotateCcw size={20} />, tone: 'primary' as const, onClick: () => onRecordReturn(trip), grow: 2, id: 'btn-trip-view-settle' }]
+              : []),
+          ]}
+        />
+      ) : (
+        <ActionBar
+          actions={[
+            { key: 'cancel', label: 'Cancel', icon: <X size={20} />, tone: 'cancel', onClick: handleCancel, id: 'btn-trip-edit-cancel' },
+            { key: 'add', label: 'Add products', icon: <Plus size={20} />, tone: 'add', onClick: () => setShowAdd(true), grow: 1.3, id: 'btn-trip-edit-add' },
+            { key: 'review', label: `Review · ${totalLoaded} cs`, icon: <CheckCircle2 size={20} />, tone: 'primary', onClick: openReview, grow: 1.5, id: 'btn-trip-edit-review' },
+          ]}
+        />
+      )}
+
+      {showAdd && !readOnly && (
+        <AddProductsSheet
+          products={products}
+          added={Object.fromEntries(Object.entries(loaded).filter(([, v]) => Number(v) > 0).map(([k, v]) => [Number(k), Number(v)]))}
+          stockOf={(pid) => stockAll(pid)}
+          stockText={(pid) => {
+            const here = stockHere(pid);
+            const other = stockAll(pid) - here;
+            return `${here} cs in ${selectedWarehouse?.name || 'godown'}${other > 0 ? ` (+${other} other)` : ''}`;
+          }}
+          onConfirm={handleAddPicks}
+          onCancel={() => setShowAdd(false)}
+        />
+      )}
+
+      {reviewTrip && (
+        <ReviewSheet
+          title={`Review trip #${trip.id}`}
+          facts={[
+            { label: 'Vehicle', value: reviewTrip.vehicle },
+            { label: 'Date', value: reviewTrip.date },
+            { label: 'Salesman', value: salesmanName },
+            { label: 'Godown', value: selectedWarehouse?.name || 'Main Godown' },
+            { label: 'Bills attaching', value: pendingBills.length > 0 ? `${pendingBills.length} new` : 'none new' },
+            { label: 'Status', value: status === 'closed' ? 'Completed' : 'Active' },
+          ]}
+          rows={reviewRows}
+          totalCases={Object.values(reviewTrip.loaded || {}).reduce((s, n) => s + n, 0)}
+          confirmLabel="Confirm & Save"
+          onBack={() => setReviewTrip(null)}
+          onCancel={() => {
+            setReviewTrip(null);
+            handleCancel();
+          }}
+          onConfirm={() => onSave(reviewTrip)}
+        />
+      )}
+
+      {askDiscard && <DiscardSheet onKeep={() => setAskDiscard(false)} onDiscard={onBack} />}
     </div>
   );
 };

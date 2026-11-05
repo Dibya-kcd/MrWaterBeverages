@@ -21,6 +21,10 @@ export interface ConfirmModalProps {
   confirmationPrompt?: string;
   rectificationPrompt?: string;
   rectificationPlaceholder?: string;
+  /** Starting text for the comment box (lets a caller keep what was typed if the action fails). */
+  initialComment?: string;
+  /** When set, the confirm button stays disabled until the comment has at least this many characters. */
+  commentMinLength?: number;
   confirmButtonLabel?: string;
   cancelButtonLabel?: string;
   requiresCheckbox?: boolean;
@@ -49,13 +53,16 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
   isLoading = false,
   variant = 'danger',
   confirmIcon,
+  initialComment = '',
+  commentMinLength = 0,
 }) => {
   const [isChecked, setIsChecked] = useState(false);
-  const [comment, setComment] = useState('');
+  const [comment, setComment] = useState(initialComment);
 
   if (!isOpen) return null;
 
-  const isConfirmDisabled = (requiresCheckbox && !isChecked) || isLoading;
+  const commentTooShort = Boolean(rectificationPrompt) && commentMinLength > 0 && comment.trim().length < commentMinLength;
+  const isConfirmDisabled = (requiresCheckbox && !isChecked) || isLoading || commentTooShort;
 
   const handleConfirm = async () => {
     if (isConfirmDisabled) return;
@@ -162,8 +169,11 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 placeholder={rectificationPlaceholder}
-                className="w-full text-xs p-2.5 rounded-xl border border-slate-300 bg-white text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all resize-none font-sans"
+                className="w-full text-sm p-2.5 rounded-xl border border-slate-300 bg-white text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all resize-none font-sans"
               />
+              {commentTooShort && (
+                <p className="text-[11px] text-slate-500">Write a short reason (at least {commentMinLength} characters) to save.</p>
+              )}
             </div>
           )}
 

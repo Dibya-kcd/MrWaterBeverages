@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { notify } from "../../utils/toast";
 import { SizeChip } from "../common/SizeChip";
-import { sizeTheme } from "../../utils/sizeColor";
+import { sizeTheme, packTheme } from "../../utils/sizeColor";
 import {
   ArrowLeft,
   Calendar,
@@ -177,6 +177,16 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   // Search inside "Select Beverages & Crates" modal
   const [beverageSearch, setBeverageSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedPackFilter, setSelectedPackFilter] = useState<'all' | 'can' | 'pet' | 'glass' | 'tetra'>('all');
+
+  const nameCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of products) {
+      const clean = p.name.trim().toLowerCase();
+      counts.set(clean, (counts.get(clean) || 0) + 1);
+    }
+    return counts;
+  }, [products]);
 
   // Success message after save
   const [savedBill, setSavedBill] = useState<Bill | null>(null);
@@ -366,10 +376,28 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   // Filtered products inside "Select Beverages & Crates"
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
+      if (selectedPackFilter !== 'all') {
+        const pTheme = packTheme(p.pack, p.name);
+        const pLabel = pTheme.label.toLowerCase();
+        if (selectedPackFilter === 'can' && !pLabel.includes('can') && !pLabel.includes('tin')) return false;
+        if (selectedPackFilter === 'pet' && !pLabel.includes('pet') && !pLabel.includes('bottle')) return false;
+        if (selectedPackFilter === 'glass' && !pLabel.includes('glass') && !pLabel.includes('rgb')) return false;
+        if (selectedPackFilter === 'tetra' && !pLabel.includes('tetra') && !pLabel.includes('pouch')) return false;
+      }
+
+      const q = beverageSearch.toLowerCase().trim();
+      const sTheme = sizeTheme(p.volume, p.name);
+      const pTheme = packTheme(p.pack, p.name);
       const matchesSearch =
-        !beverageSearch ||
-        p.name.toLowerCase().includes(beverageSearch.toLowerCase()) ||
-        (p.sku && p.sku.toLowerCase().includes(beverageSearch.toLowerCase()));
+        !q ||
+        p.name.toLowerCase().includes(q) ||
+        (p.sku && p.sku.toLowerCase().includes(q)) ||
+        sTheme.label.toLowerCase().includes(q) ||
+        pTheme.label.toLowerCase().includes(q) ||
+        (p.pack && p.pack.toLowerCase().includes(q)) ||
+        (p.volume && String(p.volume).includes(q)) ||
+        (p.category && p.category.toLowerCase().includes(q));
+
       const matchesCategory = selectedCategory === 'all' || p.category === selectedCategory;
       if (!matchesSearch || !matchesCategory) return false;
 
@@ -381,7 +409,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
       }
       return true;
     });
-  }, [products, beverageSearch, selectedCategory, inStockOnly, getProductStock, selectedItems]);
+  }, [products, beverageSearch, selectedCategory, selectedPackFilter, inStockOnly, getProductStock, selectedItems]);
 
   // Set custom price per case
   const handleSetProductRate = (productId: number, rate: number) => {
@@ -891,6 +919,66 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                   <span>{inStockOnly ? `In Stock (${inStockCount})` : `All Catalog (${products.length})`}</span>
                 </button>
               </div>
+
+              {/* Packaging Container Type Pills: All, Can (Blue), PET (Red), Glass, Tetra */}
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 border-t border-slate-100 pt-2">
+                <span className="text-[11px] font-black text-slate-500 uppercase px-1 shrink-0">Pack:</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPackFilter('all')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer transition-colors ${
+                    selectedPackFilter === 'all'
+                      ? 'bg-slate-900 text-white shadow-2xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  All Packaging
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPackFilter('can')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-black whitespace-nowrap cursor-pointer transition-colors ${
+                    selectedPackFilter === 'can'
+                      ? 'bg-blue-600 text-white shadow-2xs'
+                      : 'bg-blue-50 text-blue-700 border border-blue-300 hover:bg-blue-100'
+                  }`}
+                >
+                  🥫 Can / Tin (Blue)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPackFilter('pet')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-black whitespace-nowrap cursor-pointer transition-colors ${
+                    selectedPackFilter === 'pet'
+                      ? 'bg-red-600 text-white shadow-2xs'
+                      : 'bg-red-50 text-red-700 border border-red-300 hover:bg-red-100'
+                  }`}
+                >
+                  🍾 PET Bottle (Red)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPackFilter('glass')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer transition-colors ${
+                    selectedPackFilter === 'glass'
+                      ? 'bg-emerald-700 text-white shadow-2xs'
+                      : 'bg-emerald-50 text-emerald-800 border border-emerald-300 hover:bg-emerald-100'
+                  }`}
+                >
+                  🍶 Glass RGB
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPackFilter('tetra')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer transition-colors ${
+                    selectedPackFilter === 'tetra'
+                      ? 'bg-amber-600 text-white shadow-2xs'
+                      : 'bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100'
+                  }`}
+                >
+                  🧃 Tetra
+                </button>
+              </div>
             </div>
 
             {/* Beverage Cards Grid (Smart Quantity Card, Custom Rate & Scheme Selector) */}
@@ -972,12 +1060,22 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                                 <span className="font-extrabold text-slate-900 text-sm sm:text-base leading-snug break-words">
                                   {prod.name}
                                 </span>
+                                {(nameCounts.get(prod.name.trim().toLowerCase()) || 0) > 1 && (
+                                  <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 shrink-0">
+                                    ⚠️ Check Size/Pack
+                                  </span>
+                                )}
                                 {prod.category && (
                                   <span className="text-[10.5px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
                                     {prod.category}
                                   </span>
                                 )}
                                 <SizeChip volume={prod.volume} pack={prod.pack} name={prod.name} />
+                                {prod.unitsPerCrate && (
+                                  <span className="text-[10.5px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 shrink-0">
+                                    {prod.unitsPerCrate} pcs/case
+                                  </span>
+                                )}
                               </div>
 
                               {/* Stock status indicator */}
@@ -1396,6 +1494,14 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-bold text-slate-900">{item.productName}</span>
                         <SizeChip volume={products.find((p) => p.id === item.productId)?.volume} pack={products.find((p) => p.id === item.productId)?.pack} name={item.productName} />
+                        {(() => {
+                          const p = products.find((prod) => prod.id === item.productId);
+                          return p?.unitsPerCrate ? (
+                            <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                              {p.unitsPerCrate} pcs/cs
+                            </span>
+                          ) : null;
+                        })()}
                         {item.appliedPromo && (
                           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 inline-flex items-center gap-1">
                             <span>{item.promoLabel || 'Scheme'}</span>

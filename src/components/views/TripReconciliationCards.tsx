@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { LayoutGrid, List } from 'lucide-react';
 import { PaletteTokens } from '../../types';
+import { SizeChip } from '../common/SizeChip';
+import { sizeTheme } from '../../utils/sizeColor';
 
 export interface TripProductReconciliationRow {
   productId: number;
@@ -9,6 +11,9 @@ export interface TripProductReconciliationRow {
   sold: number;
   returned: number;
   discrepancy: number;
+  volume?: number | null;
+  pack?: string | null;
+  unitsPerCrate?: number | null;
 }
 
 export interface CustomerDeliveryItem {
@@ -81,19 +86,33 @@ export const TripReconciliationCards: React.FC<TripReconciliationCardsProps> = (
             const deliveries = customerDeliveriesByProduct[r.productId] || [];
             const remainingOnVan = Math.max(0, r.loaded - r.sold);
 
+            const sTheme = sizeTheme(r.volume, r.name);
+
             return (
               <div
                 key={r.productId}
                 className="border-2 rounded-lg p-3 bg-white shadow-xs flex flex-col justify-between transition-all hover:border-slate-400"
                 style={{
                   borderColor: bad ? `${palette.bad}70` : palette.line,
+                  borderLeftWidth: 6,
+                  borderLeftColor: sTheme.hex,
                 }}
               >
                 <div>
                   {/* Card Header: Product Name & Status Badge */}
                   <div className="flex items-start justify-between gap-2">
-                    <div className="font-extrabold text-slate-900 text-sm leading-tight">
-                      {r.name}
+                    <div>
+                      <div className="font-extrabold text-slate-900 text-sm leading-tight">
+                        {r.name}
+                      </div>
+                      <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                        <SizeChip volume={r.volume} name={r.name} pack={r.pack} />
+                        {r.unitsPerCrate && (
+                          <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1 py-0.2 rounded border border-slate-200">
+                            {r.unitsPerCrate} pcs/cs
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <span
                       className="text-[11px] font-bold px-2 py-0.5 rounded border shrink-0"
@@ -193,14 +212,27 @@ export const TripReconciliationCards: React.FC<TripReconciliationCardsProps> = (
                 const deliveries = customerDeliveriesByProduct[r.productId] || [];
                 const remainingOnVan = Math.max(0, r.loaded - r.sold);
 
+                const sTheme = sizeTheme(r.volume, r.name);
+
                 return (
                   <tr
                     key={r.productId}
                     className="border-t hover:bg-slate-50/60"
                     style={{ borderColor: palette.line }}
                   >
-                    <td className="px-3 py-2">
+                    <td
+                      className="px-3 py-2"
+                      style={{ borderLeftWidth: 6, borderLeftStyle: 'solid', borderLeftColor: sTheme.hex }}
+                    >
                       <div className="font-bold text-slate-900">{r.name}</div>
+                      <div className="mt-0.5 flex items-center gap-1.5 flex-wrap">
+                        <SizeChip volume={r.volume} name={r.name} pack={r.pack} />
+                        {r.unitsPerCrate && (
+                          <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1 py-0.2 rounded border border-slate-200">
+                            {r.unitsPerCrate} pcs/cs
+                          </span>
+                        )}
+                      </div>
                       {deliveries.length > 0 && (
                         <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
                           <span className="font-bold text-slate-600">↳ Retailers:</span>

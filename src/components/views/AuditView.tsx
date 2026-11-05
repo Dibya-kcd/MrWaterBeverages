@@ -24,6 +24,8 @@ import { IconButton } from '../common/IconButton';
 import { SmartReconciliationView } from './SmartReconciliationView';
 import { InfoTip } from "../common/InfoTip";
 import { todayISO, toLocalISODate } from "../../utils/dateLocal";
+import { SizeChip } from '../common/SizeChip';
+import { sizeStripe } from '../../utils/sizeColor';
 
 export interface AuditViewProps {
   embedded?: boolean;
@@ -709,7 +711,17 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                                       className="border-t hover:bg-slate-50/60"
                                       style={{ borderColor: palette.line }}
                                     >
-                                      <td className="px-3 py-1.5 font-medium text-slate-900">{e.name}</td>
+                                      <td
+                                        className="px-3 py-1.5 font-medium text-slate-900"
+                                        style={sizeStripe(products.find((p) => p.id === e.productId)?.volume, e.name)}
+                                      >
+                                        <span className="break-words">{e.name}</span>{' '}
+                                        <SizeChip
+                                          volume={products.find((p) => p.id === e.productId)?.volume}
+                                          pack={products.find((p) => p.id === e.productId)?.pack}
+                                          name={e.name}
+                                        />
+                                      </td>
                                       <td className="px-3 py-1.5 text-right text-slate-600">{e.system} cs</td>
                                       <td className="px-3 py-1.5 text-right font-bold text-slate-800">{e.counted} cs</td>
                                       <td

@@ -1,8 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { makeSalesmanMatcher } from "../../utils/salesmanMatch";
 import { SalesmanTripScreens, SalesmanTripScreenMode } from "./trips/SalesmanTripScreens";
+import { NewTripSheet } from "./trips/NewTripSheet";
+import { useCreateTrip } from "./trips/useCreateTrip";
 import { SizeChip } from "../common/SizeChip";
-import { sizeTheme } from "../../utils/sizeColor";
+import { sizeTheme, sizeStripe } from "../../utils/sizeColor";
 import {
   AlertTriangle,
   ArrowRight,
@@ -68,6 +70,7 @@ import { todayISO } from "../../utils/dateLocal";
 
 export const SalesmanView: React.FC = () => {
   const { activeBeats } = useBeats();
+  const createTrip = useCreateTrip();
   const {
     trips,
     bills,
@@ -646,44 +649,6 @@ export const SalesmanView: React.FC = () => {
     setShowNewVanModal(true);
   };
 
-  // Handle Quick Load of a Van Trip
-  const handleCreateVanTrip = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const vehicle = newVehicleName.trim();
-    const salesman = (userSalesmanName || newSalesmanName).trim() || 'Salesman';
-    const date = newTripDate || todayISO();
-    if (!vehicle) {
-      triggerFeedback('Please enter the vehicle registration / model.', 'warn');
-      return;
-    }
-    const whId = selectedLoadWarehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
-
-    // Only load items where qty > 0, capped to warehouse stock
-    const finalLoad: Record<number, number> = {};
-    for (const p of products) {
-      const entered = loadQuantities[p.id] ?? 0;
-      const whAvail = typeof warehouseStock === 'function' ? warehouseStock(whId, p.id) : (p.opening || 0);
-      const safeQty = Math.min(Math.max(0, entered), Math.max(0, whAvail));
-      if (safeQty > 0) {
-        finalLoad[p.id] = safeQty;
-      }
-    }
-
-    const totalLoaded = Object.values(finalLoad).reduce((a, b) => a + b, 0);
-    if (totalLoaded === 0) {
-      triggerFeedback('Please enter at least 1 case quantity to load into the vehicle.', 'warn');
-      return;
-    }
-
-    const newT = addTrip(vehicle, date, finalLoad, whId, [], salesman, newRouteName.trim());
-    setSelectedTripId(newT.id);
-    setShowNewVanModal(false);
-    setLoadQuantities({});
-    setLoadQuantityWarnings({});
-    const whName = warehouses.find((w) => w.id === whId)?.name || 'warehouse';
-    triggerFeedback(`Vehicle ${vehicle} loaded with ${totalLoaded} cases from ${whName}!`, 'success');
-  };
-
   // Add line item to cart
   const handleAddItemToCart = () => {
     if (!selectedProduct) {
@@ -1249,7 +1214,7 @@ export const SalesmanView: React.FC = () => {
                 </div>
                 <div className="min-w-0">
                   <div className="text-[11px] font-black uppercase tracking-wider text-amber-500">
-                    FIELD ROUTE DASHBOARD
+                    ROUTE DASHBOARD
                   </div>
                   <h1 className="text-xl sm:text-2xl font-black text-slate-900 truncate leading-tight">
                     {currentUser?.name || userSalesmanName || activeSalesman?.name || 'Sales Staff'}
@@ -1300,11 +1265,11 @@ export const SalesmanView: React.FC = () => {
                       className="truncate text-base sm:text-lg font-black tracking-tight"
                       style={{ color: palette.ink }}
                     >
-                      {salesmanTab === 'sell' && 'New Sale / Customer Billing'}
+                      {salesmanTab === 'sell' && 'New Sale'}
                       {salesmanTab === 'vanStock' && 'Van Stock'}
-                      {salesmanTab === 'bills' && 'My Bills & Invoices'}
-                      {salesmanTab === 'customerDue' && 'Customer Payment Due Lookup'}
-                      {salesmanTab === 'trips' && 'Vehicle Dispatches & Trips'}
+                      {salesmanTab === 'bills' && 'My Bills'}
+                      {salesmanTab === 'customerDue' && 'Payments'}
+                      {salesmanTab === 'trips' && 'Trips'}
                     </span>
                     {activeTrip && (
                       <span className="px-2.5 py-0.5 text-[11px] font-black rounded-full bg-emerald-600 text-white shrink-0 flex items-center gap-1">
@@ -1539,17 +1504,17 @@ export const SalesmanView: React.FC = () => {
                     </div>
                     <div className="min-w-0">
                       <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-amber-600 transition-colors">
-                        1. New Bill / Sale
+                        1. New Sale
                       </div>
                       <div className="text-xs text-slate-500 truncate mt-0.5">
-                        Select retailer or add new customer
+                        Create bill for retailer
                       </div>
                     </div>
                   </div>
                   <ArrowRight size={20} className="text-slate-400 group-hover:translate-x-1 group-hover:text-slate-700 transition-all shrink-0" />
                 </button>
 
-                {/* Action 2: Record Payment */}
+                {/* Action 2: Payments */}
                 <button
                   type="button"
                   id="home-action-payment"
@@ -1566,17 +1531,17 @@ export const SalesmanView: React.FC = () => {
                     </div>
                     <div className="min-w-0">
                       <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-emerald-600 transition-colors">
-                        2. Record Payment
+                        2. Payments
                       </div>
                       <div className="text-xs text-slate-500 truncate mt-0.5">
-                        Look up retailer dues & collect cash/UPI
+                        Collect dues & receipts
                       </div>
                     </div>
                   </div>
                   <ArrowRight size={20} className="text-slate-400 group-hover:translate-x-1 group-hover:text-slate-700 transition-all shrink-0" />
                 </button>
 
-                {/* Action 3: Record Trip */}
+                {/* Action 3: Trips */}
                 <button
                   type="button"
                   id="home-action-trip"
@@ -1593,10 +1558,10 @@ export const SalesmanView: React.FC = () => {
                     </div>
                     <div className="min-w-0">
                       <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-amber-600 transition-colors">
-                        3. Record Trip
+                        3. Trips
                       </div>
                       <div className="text-xs text-slate-500 truncate mt-0.5">
-                        Load vehicle run, manage route runs
+                        Manage vehicle runs & loads
                       </div>
                     </div>
                   </div>
@@ -1623,14 +1588,14 @@ export const SalesmanView: React.FC = () => {
                         4. Van Stock
                       </div>
                       <div className="text-xs text-slate-500 truncate mt-0.5">
-                        Check remaining stock & empty crates
+                        Check remaining stock & crates
                       </div>
                     </div>
                   </div>
                   <ArrowRight size={20} className="text-slate-400 group-hover:translate-x-1 group-hover:text-slate-700 transition-all shrink-0" />
                 </button>
 
-                {/* Action 5: Add New Customer */}
+                {/* Action 5: Add Customer */}
                 <button
                   type="button"
                   id="home-action-add-customer"
@@ -1647,13 +1612,10 @@ export const SalesmanView: React.FC = () => {
                     </div>
                     <div className="min-w-0">
                       <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-emerald-700 transition-colors flex items-center gap-2">
-                        <span>5. Add New Customer</span>
-                        <span className="text-[10px] uppercase font-black px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
-                          Route Master
-                        </span>
+                        <span>5. Add Customer</span>
                       </div>
                       <div className="text-xs text-slate-500 truncate mt-0.5">
-                        Register new shop / retailer on this route & start billing immediately
+                        Register new retailer on route
                       </div>
                     </div>
                   </div>
@@ -1819,12 +1781,12 @@ export const SalesmanView: React.FC = () => {
                   </div>
                   <div>
                     <h2 style={fz(18, { fontWeight: 900 })} className="text-slate-900">
-                      {activeTrip ? `Van On-Board Stock · ${activeTrip.vehicle}` : 'Van On-Board Stock'}
+                      {activeTrip ? `Van Stock · ${activeTrip.vehicle}` : 'Van Stock'}
                     </h2>
                     <p className="text-xs font-semibold text-slate-500 mt-0.5">
                       {activeTrip
-                        ? `Route: ${activeTrip.route || 'Delivery Route'} · Godown: ${warehouses.find((w) => w.id === activeTrip.warehouseId)?.name || 'Main Godown'}`
-                        : 'No vehicle currently assigned to an active route.'}
+                        ? `${activeTrip.route || 'Route'} · ${warehouses.find((w) => w.id === activeTrip.warehouseId)?.name || 'Main Godown'}`
+                        : 'No vehicle currently assigned.'}
                     </p>
                   </div>
                 </div>
@@ -2051,10 +2013,10 @@ export const SalesmanView: React.FC = () => {
                 <div>
                   <h2 style={fz(18, { fontWeight: 900 })} className="text-slate-900 flex items-center gap-2">
                     <FileText size={20} className="text-sky-700" />
-                    <span>My Invoices & Delivery Bills</span>
+                    <span>My Bills</span>
                   </h2>
                   <p className="text-xs font-semibold text-slate-500 mt-0.5">
-                    Scoped strictly to your assigned vehicle dispatches and sales receipts
+                    {displayedMyBills.length} invoices on route
                   </p>
                 </div>
 
@@ -2291,10 +2253,10 @@ export const SalesmanView: React.FC = () => {
                 <div>
                   <h2 style={fz(18, { fontWeight: 900 })} className="text-slate-900 flex items-center gap-2">
                     <Truck size={20} className="text-sky-700" />
-                    <span>My Vehicle Dispatches & Delivery Runs</span>
+                    <span>Trips</span>
                   </h2>
                   <p className="text-xs font-semibold text-slate-500 mt-0.5">
-                    Viewing {relevantTrips.length} assigned trip runs for {userSalesmanName || 'your account'}
+                    {relevantTrips.length} assigned trip{relevantTrips.length === 1 ? '' : 's'}
                   </p>
                 </div>
 
@@ -2305,7 +2267,7 @@ export const SalesmanView: React.FC = () => {
                   className="min-h-[40px] px-4 py-2 rounded-xl border-2 border-sky-600 bg-sky-600 hover:bg-sky-700 text-white font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors shrink-0"
                 >
                   <Plus size={15} />
-                  <span>Load Vehicle Run</span>
+                  <span>Load Trip</span>
                 </button>
               </div>
 
@@ -2321,7 +2283,7 @@ export const SalesmanView: React.FC = () => {
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="px-2 py-0.5 rounded bg-blue-600 text-white text-[10px] font-black uppercase tracking-wider">
-                        Active Vehicle Run
+                        Active Trip
                       </span>
                       <span className="font-mono text-xs font-bold text-sky-700">
                         Date: {activeTrip.date}
@@ -2331,7 +2293,7 @@ export const SalesmanView: React.FC = () => {
                       {activeTrip.vehicle}
                     </div>
                     <div className="text-xs font-bold text-slate-600 mt-0.5">
-                      Route: {activeTrip.route || 'Standard City Route'} • Driver/Sales: {activeTrip.salesman} • Godown: <strong>{warehouses.find((w) => w.id === activeTrip.warehouseId)?.name || 'Main Godown'}</strong>
+                      Route: {activeTrip.route || 'Standard Route'} • Driver/Sales: {activeTrip.salesman} • Godown: <strong>{warehouses.find((w) => w.id === activeTrip.warehouseId)?.name || 'Main Godown'}</strong>
                     </div>
                   </div>
 
@@ -2352,7 +2314,7 @@ export const SalesmanView: React.FC = () => {
                       onClick={() => setTripScreen({ mode: 'settle', trip: activeTrip })}
                       className="min-h-[40px] px-3.5 py-2 rounded-xl border-2 border-amber-500 bg-amber-100 text-amber-900 font-black text-xs flex items-center gap-1 hover:bg-amber-200 cursor-pointer"
                     >
-                      <span>End Trip &amp; Return Stock</span>
+                      <span>End Trip</span>
                     </button>
                     <button
                       type="button"
@@ -2489,7 +2451,7 @@ export const SalesmanView: React.FC = () => {
                                 onClick={() => setTripScreen({ mode: 'edit', trip })}
                                 className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-slate-300 bg-white hover:bg-slate-50 text-slate-800 font-black text-xs cursor-pointer"
                               >
-                                Edit Load
+                                View Load
                               </button>
                               <button
                                 type="button"
@@ -2544,243 +2506,32 @@ export const SalesmanView: React.FC = () => {
       </main>
       </div>
 
-      {/* QUICK MODAL: LOAD VAN TRIP */}
+      {/* LOAD VAN TRIP: the same load sheet the owner uses (per-product godown, add-products sheet, review) */}
       {showNewVanModal && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-0 sm:p-4 backdrop-blur-xs"
-        >
-          <div
-            className="w-full max-w-lg max-h-[94dvh] flex flex-col rounded-t-2xl sm:rounded-2xl border-2 shadow-2xl p-4 sm:p-6 overflow-hidden"
-            style={{
-              backgroundColor: palette.panel,
-              borderColor: palette.line,
-              color: palette.ink,
-            }}
-          >
-            <div className="flex items-center justify-between pb-3 border-b-2 shrink-0" style={{ borderColor: palette.line }}>
-              <div className="flex items-center gap-2">
-                <Truck size={22} className="text-sky-700" />
-                <h3 className="font-black text-lg">Load Vehicle Run & Assign Salesman</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowNewVanModal(false)}
-                className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl hover:bg-black/10 cursor-pointer"
-                aria-label="Close dialog"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateVanTrip} className="space-y-4 mt-3 overflow-y-auto pr-1 flex-1">
-              <div>
-                <label className="block text-xs font-bold mb-1">Vehicle Registration / Model *</label>
-                <input
-                  type="text"
-                  required
-                  value={newVehicleName}
-                  onChange={(e) => setNewVehicleName(e.target.value)}
-                  placeholder="e.g. Tata Ace - MH-14-GH-1234"
-                  autoCapitalize="characters"
-                  className="w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
-                  style={{ borderColor: palette.line }}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold mb-1">
-                    Salesman {userSalesmanName ? '(signed in)' : '*'}
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    readOnly={Boolean(userSalesmanName)}
-                    value={userSalesmanName || newSalesmanName}
-                    onChange={(e) => setNewSalesmanName(e.target.value)}
-                    placeholder="e.g. Ramesh Kumar"
-                    className={`w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:outline-none ${
-                      userSalesmanName ? 'bg-slate-100 text-slate-700 cursor-not-allowed' : 'focus:border-sky-600'
-                    }`}
-                    style={{ borderColor: palette.line }}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold mb-1">Trip Date *</label>
-                  <input
-                    type="date"
-                    required
-                    value={newTripDate}
-                    onChange={(e) => setNewTripDate(e.target.value || todayISO())}
-                    className="w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none bg-white"
-                    style={{ borderColor: palette.line }}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold mb-1">Source Warehouse / Godown *</label>
-                <select
-                  value={selectedLoadWarehouseId}
-                  onChange={(e) => setSelectedLoadWarehouseId(e.target.value)}
-                  className="w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none bg-white"
-                  style={{ borderColor: palette.line }}
-                >
-                  {warehouses.length === 0 ? (
-                    <option value="">Main Godown</option>
-                  ) : (
-                    warehouses.map((w) => (
-                      <option key={w.id} value={w.id}>
-                        {w.name} {w.code ? `(${w.code})` : ''}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold mb-1">Beat route (optional)</label>
-                {activeBeats.length > 0 ? (
-                  <select
-                    value={newRouteName}
-                    onChange={(e) => setNewRouteName(e.target.value)}
-                    className="w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none bg-white"
-                    style={{ borderColor: palette.line }}
-                  >
-                    <option value="">— Select beat —</option>
-                    {activeBeats.map((b) => (
-                      <option key={b.id} value={b.name}>
-                        {beatLabel(b)}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={newRouteName}
-                    onChange={(e) => setNewRouteName(e.target.value)}
-                    placeholder="Type route / beat name (none set in Settings)"
-                    className="w-full min-h-[44px] p-2.5 text-base sm:text-sm font-bold border-2 rounded-xl focus:border-sky-600 focus:outline-none"
-                    style={{ borderColor: palette.line }}
-                  />
-                )}
-                {(() => {
-                  const sel = activeBeats.find((b) => b.name === newRouteName);
-                  return sel ? (
-                    <p className="mt-1.5 text-[11px] font-semibold text-slate-500 leading-snug">
-                      Hub: <strong>{sel.hub || '—'}</strong> · Beat: {formatBeatStops(sel)}
-                    </p>
-                  ) : null;
-                })()}
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
-                  <label className="text-xs font-bold">
-                    Initial Load (Cases loaded into vehicle):
-                  </label>
-                  <span className="text-[11px] font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-200">
-                    From: {warehouses.find((w) => w.id === selectedLoadWarehouseId)?.name || 'Main Godown'}
-                  </span>
-                </div>
-                <div className="max-h-56 overflow-y-auto space-y-2 border-2 p-3 rounded-xl bg-slate-50 divide-y divide-slate-200">
-                  {products.filter((p) => {
-                    const whId = selectedLoadWarehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
-                    const availableInWh = typeof warehouseStock === 'function' ? warehouseStock(whId, p.id) : (p.opening || 0);
-                    return availableInWh > 0;
-                  }).length === 0 ? (
-                    <div className="py-6 text-center text-xs font-semibold text-slate-500">
-                      No beverage products currently in stock in this warehouse.
-                    </div>
-                  ) : (
-                    products
-                      .filter((p) => {
-                        const whId = selectedLoadWarehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
-                        const availableInWh = typeof warehouseStock === 'function' ? warehouseStock(whId, p.id) : (p.opening || 0);
-                        return availableInWh > 0;
-                      })
-                      .map((p) => {
-                        const whId = selectedLoadWarehouseId || defaultWarehouse?.id || warehouses[0]?.id || '';
-                        const whName = warehouses.find((w) => w.id === whId)?.name || 'warehouse';
-                        const availableInWh = typeof warehouseStock === 'function' ? warehouseStock(whId, p.id) : (p.opening || 0);
-                        const qtyVal = loadQuantities[p.id] ?? 0;
-                        const warning = loadQuantityWarnings[p.id];
-
-                    return (
-                      <div key={p.id} className="pt-2 first:pt-0 space-y-1">
-                        <div className="flex items-center justify-between gap-3 text-xs">
-                          <div className="min-w-0 flex-1">
-                            <span className="font-bold text-slate-900 break-words leading-snug block text-sm">
-                              {p.name}{(() => {
-                                const v = (Number(p.volume) > 0 ? Number(p.volume) : volumeFromName(p.name)) || 0;
-                                return v > 0 ? ` (${v >= 1000 && v % 1000 === 0 ? `${v / 1000}L` : `${v}ml`})` : '';
-                              })()}
-                            </span>
-                            <span className="text-xs font-semibold text-sky-700 block">
-                              {availableInWh} cs available in {whName}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <input
-                              type="number" inputMode="numeric"
-                              min={0}
-                              max={availableInWh}
-                              value={qtyVal}
-                              onChange={(e) => {
-                                const raw = Math.max(0, parseInt(e.target.value, 10) || 0);
-                                const capped = Math.min(raw, Math.max(0, availableInWh));
-                                setLoadQuantities((prev) => ({ ...prev, [p.id]: capped }));
-                                if (raw > availableInWh) {
-                                  setLoadQuantityWarnings((prev) => ({
-                                    ...prev,
-                                    [p.id]: `Cannot exceed available warehouse stock (${availableInWh} cs available)`,
-                                  }));
-                                } else {
-                                  setLoadQuantityWarnings((prev) => {
-                                    const next = { ...prev };
-                                    delete next[p.id];
-                                    return next;
-                                  });
-                                }
-                              }}
-                              className="w-20 min-h-[44px] p-1 text-center font-black border-2 rounded-lg bg-white focus:border-sky-600 focus:outline-none text-base"
-                            />
-                            <span className="font-bold text-gray-500">cs</span>
-                          </div>
-                        </div>
-
-                        {warning && (
-                          <div className="text-[11px] font-black text-rose-600">
-                            ⚠️ {warning}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-2.5 pt-3 pb-[env(safe-area-inset-bottom)] border-t sticky bottom-0 bg-inherit shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setShowNewVanModal(false)}
-                  className="min-h-[48px] px-5 py-2 text-sm font-bold rounded-xl border-2 cursor-pointer hover:bg-slate-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="min-h-[48px] flex-1 sm:flex-none px-6 py-2 text-sm font-black rounded-xl text-white bg-sky-600 hover:bg-sky-700 cursor-pointer shadow-sm"
-                >
-                  Start Trip & Enable Selling
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <NewTripSheet
+          products={products}
+          warehouses={warehouses}
+          salesmen={salesmen}
+          vehicles={Array.from(new Set(trips.map((t) => (t.vehicle || '').trim()).filter(Boolean))).sort((x, y) => x.localeCompare(y))}
+          routes={activeBeats.map((b) => b.name)}
+          defaultWarehouseId={defaultWarehouse?.id || warehouses[0]?.id || ''}
+          warehouseStock={warehouseStock}
+          attachableBills={createTrip.attachable}
+          lockedSalesman={userSalesmanId ? { id: userSalesmanId, name: userSalesmanName || 'Salesman' } : undefined}
+          initialVehicle={newVehicleName}
+          onSubmit={(payload) => {
+            const res = createTrip.create(payload);
+            if (res.ok === false) return res.error;
+            setSelectedTripId(res.trip.id);
+            setShowNewVanModal(false);
+            triggerFeedback(
+              `Vehicle ${payload.vehicle} loaded with ${res.total} cases${res.godowns > 1 ? ` from ${res.godowns} godowns` : ''}!`,
+              'success',
+            );
+            return null;
+          }}
+          onClose={() => setShowNewVanModal(false)}
+        />
       )}
 
       {/* ALL RETAILERS SEARCH MODAL */}

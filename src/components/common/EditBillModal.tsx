@@ -15,6 +15,13 @@ import {
   AlertCircle,
   Clock,
   ArrowRight,
+  ShoppingCart,
+  Truck,
+  FileText,
+  ChevronDown,
+  ChevronUp,
+  Search,
+  RotateCcw,
 } from 'lucide-react';
 import { Bill, BillItem, ExistingCustomer, PriceType, Product, Promotion, Trip, Warehouse } from '../../types';
 import type { BillEditPreview } from '../../context/LedgerContext';
@@ -22,6 +29,8 @@ import { CATS } from '../../constants/initialData';
 import { billTotals, issuedGstMode, isWholeRupee, computeLine,
   normalizeGstFraction, money, schemeLabel, statusOf, resolveProductGstRate, resolveProductHsn } from '../../utils/billing';
 import { CustomerSelector } from './CustomerSelector';
+import { SizeChip } from './SizeChip';
+import { sizeStripe } from '../../utils/sizeColor';
 import { ConfirmModal } from '../ui/ConfirmModal';
 import { todayISO } from "../../utils/dateLocal";
 
@@ -81,7 +90,8 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
   // The finished edit waiting for the user's "yes, save" (stock and payment effects are shown first).
   const [pendingBill, setPendingBill] = useState<Bill | null>(null);
 
-  // New item draft inside the modal
+  // New item draft inside the modal (collapsed link by default to save mobile space)
+  const [isAddingProduct, setIsAddingProduct] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState<number>(products[0]?.id || 0);
   const [draftPriceType, setDraftPriceType] = useState<PriceType>('Retail');
   const [draftQty, setDraftQty] = useState<number>(1);
@@ -127,6 +137,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       setTransportDistanceKm(bill.transportDistanceKm ? String(bill.transportDistanceKm) : '');
       setEditComment('');
       setSaveError('');
+      setIsAddingProduct(false);
     }
   }, [bill?.id]);
 
@@ -312,10 +323,6 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       return;
     }
 
-    if (editComment.trim().length < 3) {
-      setSaveError('Please write a short comment explaining why this bill is being edited.');
-      return;
-    }
     if (preview && preview.problems.length > 0) {
       setSaveError(preview.problems.join('\n'));
       return;
@@ -345,18 +352,22 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       transportDistanceKm: Number(transportDistanceKm) > 0 ? Math.round(Number(transportDistanceKm)) : undefined,
     };
 
-    // Show what this save does to stock and money and wait for a yes before saving anything.
+    // Show what this save does to stock and money, and ask for the reason, before saving anything.
+    setSaveError('');
     setPendingBill(updatedBill);
   };
 
-  const confirmSave = () => {
+  const confirmSave = (reason: string) => {
     if (!pendingBill) return;
+    const comment = reason.trim();
+    if (comment.length < 3) return;
+    setEditComment(comment); // kept, so it is still there if the save is refused
     const toSave = pendingBill;
     setPendingBill(null);
     // `requestedPaid` is what was typed before it was capped at the new total, so money received
     // above a lowered total is kept as an advance instead of being dropped.
     // Close only when the save really happened; otherwise keep the form so no edit is lost.
-    const ok = onSave(toSave, { comment: editComment.trim(), requestedPaid: Math.max(0, amountPaid) });
+    const ok = onSave(toSave, { comment, requestedPaid: Math.max(0, amountPaid) });
     if (ok === false) {
       setSaveError('Not saved. Read the message shown on screen, fix it and press Save again. Your changes are still here.');
       return;
@@ -423,56 +434,33 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
+        {/* Header - Clean & Non-Redundant for Mobile */}
         <div
-          className="px-5 py-3.5 flex items-center justify-between border-b shrink-0"
-          style={{ borderColor: palette.border, backgroundColor: palette.bg }}
+          className="px-4 py-3 flex items-center justify-between border-b shrink-0 bg-stone-50"
+          style={{ borderColor: palette.border }}
         >
-          <div className="flex items-center gap-3">
-            <div
-              className="w-9 h-9 rounded-lg flex items-center justify-center font-bold text-white shadow-sm"
-              style={{ backgroundColor: palette.accent }}
+          <div className="flex items-center gap-2 min-w-0">
+            <FileText size={18} className="text-amber-600 shrink-0" />
+            <h2 className="font-extrabold text-sm sm:text-base text-stone-900 truncate tracking-tight">
+              Edit Bill #{invoicePrefix || ''}{bill.id}
+            </h2>
+            <span
+              className="text-[10px] sm:text-xs px-2 py-0.5 rounded-full font-bold uppercase tracking-wider text-white shrink-0"
+              style={{ backgroundColor: palette[status.balanceKey] }}
             >
-              #{bill.id}
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="font-bold text-base sm:text-lg tracking-tight">
-                  Edit Bill #{invoicePrefix}{bill.id}
-                </h2>
-                <span
-                  className="text-xs px-2 py-0.5 rounded-full font-bold uppercase tracking-wider text-white"
-                  style={{ backgroundColor: palette[status.balanceKey] }}
-                >
-                  {status.label}
-                </span>
-              </div>
-              <p className="hidden sm:block text-xs opacity-70">
-                Direct in-place bill editor with live product price and quantity adjustment
-              </p>
-            </div>
+              {status.label}
+            </span>
           </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => onRequestDelete(bill)}
-              className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-colors flex items-center gap-1"
-              title="Delete this bill"
-              id="edit-modal-delete-btn"
-            >
-              <Trash2 size={14} />
-              <span className="hidden sm:inline">Delete Bill</span>
-            </button>
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded-lg transition-colors hover:bg-stone-200/60 focus:outline-none"
-              style={{ color: palette.muted }}
-              title="Close"
-              id="edit-modal-close-x"
-            >
-              <X size={18} />
-            </button>
-          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg border border-stone-200 text-stone-500 hover:text-stone-900 hover:bg-stone-100 transition-colors cursor-pointer shrink-0"
+            style={{ color: palette.muted }}
+            title="Close"
+            id="edit-modal-close-x"
+          >
+            <X size={18} />
+          </button>
         </div>
 
         {/* Scrollable Body */}
@@ -590,91 +578,136 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
               </div>
             </div>
 
-            {/* Document Format Option (GST vs Non-GST) */}
-            <div className="pt-2 border-t flex flex-wrap items-center justify-between gap-3" style={{ borderColor: palette.border }}>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold uppercase opacity-80">Document Format:</span>
-                <div className="inline-flex items-center rounded-lg border p-0.5 bg-stone-100" style={{ borderColor: palette.border }}>
-                  <button
-                    type="button"
-                    onClick={() => setInvoiceFormat('non_gst')}
-                    className={`px-2.5 py-1 text-xs font-bold rounded cursor-pointer transition-all ${
-                      invoiceFormat === 'non_gst'
-                        ? 'bg-emerald-600 text-white shadow-xs'
-                        : 'text-stone-700 hover:text-stone-900'
-                    }`}
-                  >
-                    🛒 Non-GST Retail Bill
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setInvoiceFormat('gst')}
-                    className={`px-2.5 py-1 text-xs font-bold rounded cursor-pointer transition-all ${
+            {/* Document Format Option - Compact GST / Non-GST Toggle Button */}
+            <div
+              className="p-3 rounded-xl border bg-stone-50/80 space-y-2.5"
+              style={{ borderColor: palette.border }}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div
+                    className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-[11px] shrink-0 border ${
                       invoiceFormat === 'gst'
-                        ? 'bg-amber-600 text-white shadow-xs'
-                        : 'text-stone-700 hover:text-stone-900'
+                        ? 'bg-amber-100 text-amber-800 border-amber-300'
+                        : 'bg-emerald-100 text-emerald-800 border-emerald-300'
                     }`}
                   >
-                    🏢 GST Tax Invoice
-                  </button>
+                    {invoiceFormat === 'gst' ? 'GST' : 'CASH'}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs font-black text-stone-900 truncate">
+                      {invoiceFormat === 'gst' ? 'GST Tax Invoice' : 'Non-GST Retail Bill'}
+                    </div>
+                    <div className="text-[10.5px] text-stone-500 font-semibold truncate">
+                      {invoiceFormat === 'gst' ? 'Official tax invoice with B2B GSTIN' : 'Standard retail cash memo'}
+                    </div>
+                  </div>
                 </div>
+
+                {/* Single Toggle Switch */}
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={invoiceFormat === 'gst'}
+                  onClick={() => setInvoiceFormat(invoiceFormat === 'gst' ? 'non_gst' : 'gst')}
+                  className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    invoiceFormat === 'gst' ? 'bg-amber-600' : 'bg-emerald-600'
+                  }`}
+                  id="edit-modal-gst-toggle"
+                  title={`Toggle between Non-GST and GST (Currently: ${invoiceFormat === 'gst' ? 'GST' : 'Non-GST'})`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                      invoiceFormat === 'gst' ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
               </div>
 
               {invoiceFormat === 'gst' && (
-                <div className="flex items-center gap-2">
-                  <label className="text-xs font-bold opacity-80">Buyer GSTIN:</label>
-                  <input autoCapitalize="characters" autoComplete="off" autoCorrect="off" spellCheck={false}
+                <div className="pt-2 border-t border-stone-200">
+                  <label className="block text-[11px] font-bold text-stone-700 uppercase tracking-wider mb-1">
+                    Buyer GSTIN (15 Digits)
+                  </label>
+                  <input
+                    autoCapitalize="characters"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    spellCheck={false}
                     type="text"
                     value={customerGstin}
                     onChange={(e) => setCustomerGstin(e.target.value.toUpperCase())}
-                    placeholder="15-character GSTIN"
+                    placeholder="e.g. 21AAAAA0000A1Z5"
                     maxLength={15}
-                    className="px-2.5 py-1 text-xs font-mono font-bold uppercase border rounded focus:outline-none"
-                    style={{ borderColor: palette.border, backgroundColor: '#ffffff' }}
+                    className="w-full px-3 py-2 text-xs font-mono font-bold uppercase border rounded-xl bg-white focus:outline-none focus:ring-1 focus:border-amber-600"
+                    style={{ borderColor: palette.border }}
                   />
                 </div>
               )}
 
-              {/* Transport / e-way bill (needed when goods worth more than Rs 50,000 are moved) */}
-              <div className="flex flex-wrap items-center gap-2 pt-1">
-                <label className="text-xs font-bold opacity-80">E-way bill no.:</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={ewayBillNo}
-                  onChange={(e) => setEwayBillNo(e.target.value.replace(/\D/g, '').slice(0, 12))}
-                  placeholder="12 digits"
-                  className="px-2.5 py-1 text-xs font-mono font-bold border rounded focus:outline-none w-32"
-                  style={{ borderColor: palette.border, backgroundColor: '#ffffff' }}
-                />
-                <label className="text-xs font-bold opacity-80">Transporter:</label>
-                <input
-                  type="text"
-                  value={transporterName}
-                  onChange={(e) => setTransporterName(e.target.value)}
-                  placeholder="optional"
-                  className="px-2.5 py-1 text-xs border rounded focus:outline-none w-36"
-                  style={{ borderColor: palette.border, backgroundColor: '#ffffff' }}
-                />
-                <label className="text-xs font-bold opacity-80">IRN (e-invoice):</label>
-                <input
-                  type="text"
-                  value={irn}
-                  onChange={(e) => setIrn(e.target.value.trim().slice(0, 64))}
-                  placeholder="only if e-invoicing applies"
-                  className="px-2.5 py-1 text-xs font-mono border rounded focus:outline-none w-44"
-                  style={{ borderColor: palette.border, backgroundColor: '#ffffff' }}
-                />
-                <label className="text-xs font-bold opacity-80">Distance (km):</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={transportDistanceKm}
-                  onChange={(e) => setTransportDistanceKm(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                  className="px-2.5 py-1 text-xs border rounded focus:outline-none w-16"
-                  style={{ borderColor: palette.border, backgroundColor: '#ffffff' }}
-                />
-              </div>
+              {/* Optional Collapsible E-Way & Transport Details to save mobile space */}
+              <details className="pt-1 text-[11px] text-stone-500">
+                <summary className="cursor-pointer font-bold text-[10.5px] uppercase tracking-wider hover:text-stone-700 flex items-center gap-1">
+                  <Truck size={12} className="text-stone-400" />
+                  <span>Optional: E-Way Bill &amp; Transport Details</span>
+                </summary>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 pt-2 border-t border-stone-200">
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-0.5">
+                      E-way bill no.
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={ewayBillNo}
+                      onChange={(e) => setEwayBillNo(e.target.value.replace(/\D/g, '').slice(0, 12))}
+                      placeholder="12 digits"
+                      className="w-full px-2 py-1 text-xs font-mono font-bold border rounded-lg bg-white focus:outline-none"
+                      style={{ borderColor: palette.border }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-0.5">
+                      Transporter
+                    </label>
+                    <input
+                      type="text"
+                      value={transporterName}
+                      onChange={(e) => setTransporterName(e.target.value)}
+                      placeholder="Vehicle / Name"
+                      className="w-full px-2 py-1 text-xs font-bold border rounded-lg bg-white focus:outline-none"
+                      style={{ borderColor: palette.border }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-0.5">
+                      IRN (e-invoice)
+                    </label>
+                    <input
+                      type="text"
+                      value={irn}
+                      onChange={(e) => setIrn(e.target.value.trim().slice(0, 64))}
+                      placeholder="64-char IRN"
+                      className="w-full px-2 py-1 text-xs font-mono font-bold border rounded-lg bg-white focus:outline-none"
+                      style={{ borderColor: palette.border }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-0.5">
+                      Distance (km)
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={transportDistanceKm}
+                      onChange={(e) => setTransportDistanceKm(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                      placeholder="km"
+                      className="w-full px-2 py-1 text-xs font-bold border rounded-lg bg-white focus:outline-none"
+                      style={{ borderColor: palette.border }}
+                    />
+                  </div>
+                </div>
+              </details>
             </div>
           </div>
 
@@ -706,36 +739,54 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      if (window.confirm(`Reopen trip #${preview.source.tripId}? Its sales stay as they are; you can then change quantities on this bill and close the trip again.`)) {
-                        onReopenTrip(preview.source.tripId as number);
-                      }
+                      onReopenTrip(preview.source.tripId as number);
+                      setSaveError('');
+                      notify(`Trip #${preview.source.tripId} reopened to Active. You can now adjust crate quantities.`);
                     }}
-                    className="text-xs font-bold px-2.5 py-1 rounded-md border shadow-sm"
-                    style={{ borderColor: palette.accent, color: palette.accent }}
+                    className="inline-flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border shadow-sm bg-white hover:bg-slate-50 text-emerald-800 border-emerald-300 cursor-pointer active:scale-95 transition-transform"
                     id="edit-modal-reopen-trip-btn"
+                    title="Reopen trip to active status to allow stock adjustments"
                   >
-                    Reopen trip to change stock
+                    <RotateCcw size={13} className="shrink-0" />
+                    <span>Reopen trip #{preview.source.tripId} to edit stock</span>
                   </button>
                 )}
               </div>
 
-              {!preview.stockChanged ? (
-                <div className="text-xs rounded-lg px-3 py-2 bg-emerald-50 text-emerald-800 border border-emerald-200">
-                  ✔ Stock is <b>not</b> affected by this edit (same crates, same products, same source). Price, customer, date and payment
-                  changes are saved without any stock check and the batch trail of this bill is kept as it is.
+              {blockedByStock ? (
+                <div className="text-xs rounded-lg p-3 bg-red-50 text-red-900 border border-red-200 space-y-2">
+                  <div className="font-bold flex items-center gap-1.5 text-rose-800">
+                    <AlertCircle size={15} className="shrink-0" />
+                    <span>This edit changes crates / products, which moves live stock, and cannot be saved yet:</span>
+                  </div>
+                  <div className="pl-5 text-slate-700 whitespace-pre-line leading-relaxed font-medium">
+                    {preview.problems.map((m) => `• ${m}`).join('\n')}
+                  </div>
+                  {preview.source.kind === 'trip' && preview.source.tripStatus === 'closed' && onReopenTrip && preview.source.tripId != null && (
+                    <div className="pt-1 pl-5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onReopenTrip(preview.source.tripId as number);
+                          setSaveError('');
+                          notify(`Trip #${preview.source.tripId} reopened to Active. You can now adjust crate quantities.`);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs cursor-pointer shadow-sm active:scale-95 transition-all"
+                      >
+                        <RotateCcw size={14} className="shrink-0" />
+                        Reopen Trip #{preview.source.tripId} to Active Now
+                      </button>
+                    </div>
+                  )}
+                  <div className="text-[11px] text-slate-500 pl-5 pt-0.5">
+                    Tip: You can still save price, customer, or payment edits without reopening by keeping crates at original quantities.
+                  </div>
                 </div>
-              ) : blockedByStock ? (
-                <div className="text-xs rounded-lg px-3 py-2 bg-red-50 text-red-800 border border-red-200 whitespace-pre-line">
-                  ⚠ This edit changes crates / products, which moves live stock, and it cannot be saved yet:
-                  {'\n'}
-                  {preview.problems.map((m) => `• ${m}`).join('\n')}
-                  {'\n'}You can still save price / customer / payment changes by putting the crates back to what they were.
-                </div>
-              ) : (
+              ) : preview.stockChanged ? (
                 <div className="text-xs rounded-lg px-3 py-2 bg-amber-50 text-amber-900 border border-amber-200">
                   ℹ This edit changes crates / products, so live stock will be adjusted only for the products whose crates changed.
                 </div>
-              )}
+              ) : null}
 
               {(preview.payment.keptAsAdvance > 0 || preview.payment.removedAsCorrection > 0 || preview.payment.movedToCustomer) && (
                 <div className="text-xs rounded-lg px-3 py-2 bg-sky-50 text-sky-900 border border-sky-200">
@@ -769,11 +820,8 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
           {/* Line Items Table with Inline Quantity & Price Editing */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <h3 className="font-bold text-sm tracking-tight flex items-center gap-2">
-                <span>Billed Products ({items.length})</span>
-                <span className="text-xs font-normal opacity-60">
-                  Directly adjust quantity (+/-) or unit price without deleting
-                </span>
+              <h3 className="font-bold text-sm tracking-tight text-stone-900">
+                Billed Products ({items.length})
               </h3>
             </div>
 
@@ -786,8 +834,163 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                 <p className="text-xs opacity-75 mt-1">Use the form below to add products.</p>
               </div>
             ) : (
+              <>
+              {/* Mobile: one card per product (the wide table below is for tablet / desktop) */}
+              <div className="md:hidden space-y-3">
+                {items.map((it, idx) => {
+                  const product = products.find((p) => p.id === it.productId);
+                  const promo = activePromoForProduct(it.productId);
+                  const isPromoActive = !it.schemeSkipped && Boolean(it.promoLabel || promo);
+                  const priceType = it.priceType || 'Retail';
+                  return (
+                    <div
+                      key={`m-${it.productId}-${idx}`}
+                      className="rounded-2xl border bg-white shadow-sm overflow-hidden"
+                      style={{ borderColor: palette.border, ...sizeStripe(product?.volume, it.productName) }}
+                    >
+                      <div className="p-3 space-y-3">
+                        {/* Name + remove */}
+                        <div className="flex items-start gap-2">
+                          <span className="mt-0.5 shrink-0 size-6 rounded-full bg-stone-100 text-[11px] font-bold text-stone-500 flex items-center justify-center">
+                            {idx + 1}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-bold text-stone-900 leading-snug break-words">
+                              {it.productName}{' '}
+                              <SizeChip volume={product?.volume} pack={product?.pack} name={it.productName} />
+                            </div>
+                            {product && (
+                              <div className="text-[11px] text-stone-500 mt-0.5">
+                                Default: ₹{product.retail} Ret · ₹{product.wholesale} Whls
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeLineItem(idx)}
+                            className="shrink-0 size-9 -mr-1 -mt-1 rounded-full text-red-500 hover:bg-red-50 active:bg-red-100 flex items-center justify-center"
+                            title="Remove line item"
+                            aria-label={`Remove ${it.productName}`}
+                            id={`m-remove-line-${idx}`}
+                          >
+                            <Trash2 size={17} />
+                          </button>
+                        </div>
+
+                        {/* Sale type: segmented toggle */}
+                        <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-stone-100">
+                          {(['Retail', 'Wholesale'] as const).map((t) => (
+                            <button
+                              key={t}
+                              type="button"
+                              onClick={() => updateLineItem(idx, { priceType: t as PriceType })}
+                              className={`py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                                priceType === t ? 'bg-white shadow-sm text-stone-900' : 'text-stone-500'
+                              }`}
+                              id={`m-edit-line-type-${idx}-${t}`}
+                            >
+                              {t}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Qty stepper + Rate */}
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-1">Qty (Cases)</div>
+                            <div className="flex items-stretch rounded-xl border overflow-hidden bg-white" style={{ borderColor: palette.border }}>
+                              <button
+                                type="button"
+                                onClick={() => updateLineItem(idx, { qty: it.qty - 1 })}
+                                disabled={it.qty <= 1}
+                                className="w-11 h-11 text-lg font-bold bg-stone-100 active:bg-stone-200 disabled:opacity-30"
+                                aria-label="Decrease quantity"
+                                id={`m-edit-qty-minus-${idx}`}
+                              >
+                                −
+                              </button>
+                              <input
+                                type="number"
+                                inputMode="numeric"
+                                min="1"
+                                value={it.qty}
+                                onChange={(e) =>
+                                  updateLineItem(idx, { qty: Math.max(1, parseInt(e.target.value) || 1) })
+                                }
+                                className="min-w-0 flex-1 text-center text-base font-bold focus:outline-none"
+                                id={`m-edit-qty-input-${idx}`}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => updateLineItem(idx, { qty: it.qty + 1 })}
+                                className="w-11 h-11 text-lg font-bold bg-stone-100 active:bg-stone-200"
+                                aria-label="Increase quantity"
+                                id={`m-edit-qty-plus-${idx}`}
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-1">Rate (₹)</div>
+                            <div className="relative">
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 font-bold">₹</span>
+                              <input
+                                type="number"
+                                inputMode="decimal"
+                                step="0.01"
+                                min="0"
+                                value={it.rate}
+                                onChange={(e) =>
+                                  updateLineItem(idx, { rate: Math.max(0, parseFloat(e.target.value) || 0) })
+                                }
+                                className="w-full h-11 pl-7 pr-2 text-base font-bold border rounded-xl focus:outline-none focus:ring-1 bg-white"
+                                style={{ borderColor: palette.border }}
+                                id={`m-edit-rate-input-${idx}`}
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Scheme */}
+                        {promo && (
+                          <label className="flex items-start gap-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={isPromoActive}
+                              onChange={(e) => updateLineItem(idx, { toggleScheme: e.target.checked })}
+                              className="mt-0.5 size-4 rounded"
+                            />
+                            <span className="text-xs">
+                              <span className="font-bold text-amber-800">{promo.name}</span>
+                              {isPromoActive && it.freeQty > 0 && (
+                                <span className="block text-green-700 font-bold">
+                                  {it.freeQty} Free Case{it.freeQty !== 1 ? 's' : ''} (incl.)
+                                </span>
+                              )}
+                              {isPromoActive && it.discount > 0 && (
+                                <span className="block text-stone-600">Save ₹{money(it.discount)}</span>
+                              )}
+                            </span>
+                          </label>
+                        )}
+                      </div>
+
+                      {/* Line total */}
+                      <div
+                        className="flex items-center justify-between px-3 py-2 border-t"
+                        style={{ backgroundColor: palette.bg, borderColor: palette.border }}
+                      >
+                        <span className="text-[11px] font-bold uppercase tracking-wider opacity-70">Line total</span>
+                        <span className="text-base font-extrabold">₹{money(it.amount)}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
               <div
-                className="border-2 rounded-xl overflow-hidden shadow-sm"
+                className="hidden md:block border-2 rounded-xl overflow-hidden shadow-sm"
                 style={{ borderColor: palette.border }}
               >
                 <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -822,8 +1025,11 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                             className="hover:bg-stone-50/50 transition-colors"
                           >
                             <td className="px-3 py-2.5 font-bold opacity-50">{idx + 1}</td>
-                            <td className="px-3 py-2.5 font-semibold text-stone-900">
-                              <div>{it.productName}</div>
+                            <td className="px-3 py-2.5 font-semibold text-stone-900" style={sizeStripe(product?.volume, it.productName)}>
+                              <div>
+                                {it.productName}{' '}
+                                <SizeChip volume={product?.volume} pack={product?.pack} name={it.productName} />
+                              </div>
                               {product && (
                                 <div className="text-[10px] opacity-60">
                                   Default: ₹{product.retail} Ret / ₹{product.wholesale} Whls
@@ -970,27 +1176,50 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   </table>
                 </div>
               </div>
+              </>
             )}
 
-            {/* Quick Add Product Inline Form inside the Modal */}
-            <div
-              className="p-3.5 rounded-xl border space-y-2"
-              style={{
-                borderColor: palette.border,
-                backgroundColor: `${palette.accent}06`,
-              }}
-            >
-              <span className="text-xs font-bold uppercase tracking-wider opacity-80 flex items-center gap-1.5">
-                <Plus size={13} /> Add Another Product to this Bill
-              </span>
+            {/* Space-Saving Link to Add Product (Collapsed by default per mobile-first request) */}
+            {!isAddingProduct ? (
+              <button
+                type="button"
+                onClick={() => setIsAddingProduct(true)}
+                className="w-full py-2.5 px-3 rounded-xl border-2 border-dashed border-sky-400 bg-sky-50/70 hover:bg-sky-100 text-sky-800 text-xs sm:text-sm font-black flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-[0.99] shadow-xs"
+                id="edit-modal-show-add-product-btn"
+              >
+                <Plus size={16} className="text-sky-600" />
+                <span>+ Add Another Product to this Bill</span>
+              </button>
+            ) : (
+              <div
+                className="p-3.5 sm:p-4 rounded-xl border-2 space-y-3 bg-sky-50/50 shadow-sm"
+                style={{
+                  borderColor: palette.border,
+                }}
+              >
+                <div className="flex items-center justify-between pb-2 border-b border-sky-200">
+                  <span className="text-xs font-black uppercase tracking-wider text-sky-950 flex items-center gap-1.5">
+                    <Plus size={14} className="text-sky-600" />
+                    <span>Add Product to Bill</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddingProduct(false)}
+                    className="text-xs font-bold text-stone-500 hover:text-stone-800 px-2 py-0.5 rounded cursor-pointer"
+                  >
+                    ✕ Cancel
+                  </button>
+                </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
-                {/* Product Select */}
-                <div className="sm:col-span-5">
+                {/* Available Products Selector */}
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600">
+                    Select Product ({products.length} Available)
+                  </label>
                   <select
                     value={selectedProductId}
                     onChange={(e) => setSelectedProductId(Number(e.target.value))}
-                    className="w-full px-3 py-1.5 text-xs font-semibold border rounded-lg bg-white"
+                    className="w-full px-3 py-2 text-xs font-semibold border rounded-lg bg-white text-stone-900 focus:outline-none focus:ring-1 focus:border-sky-600"
                     style={{ borderColor: palette.border }}
                     id="edit-modal-add-product-select"
                   >
@@ -1005,64 +1234,112 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   </select>
                 </div>
 
-                {/* Price Type */}
-                <div className="sm:col-span-2">
-                  <select
-                    value={draftPriceType}
-                    onChange={(e) => setDraftPriceType(e.target.value as PriceType)}
-                    className="w-full px-2 py-1.5 text-xs border rounded-lg bg-white font-medium"
-                    style={{ borderColor: palette.border }}
-                    id="edit-modal-draft-type"
-                  >
-                    <option value="Retail">Retail</option>
-                    <option value="Wholesale">Wholesale</option>
-                  </select>
+                {/* Price Type, Qty & Rate - Mobile Friendly Responsive Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
+                  {/* Price Type Segmented */}
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-stone-600 mb-1">
+                      Sale Type
+                    </label>
+                    <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-stone-100 border border-stone-200">
+                      {(['Retail', 'Wholesale'] as const).map((t) => (
+                        <button
+                          key={t}
+                          type="button"
+                          onClick={() => setDraftPriceType(t)}
+                          className={`py-1 rounded text-xs font-bold transition-colors cursor-pointer ${
+                            draftPriceType === t ? 'bg-white shadow-xs text-stone-900' : 'text-stone-500'
+                          }`}
+                        >
+                          {t}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Qty with Stepper */}
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-stone-600 mb-1">
+                      Quantity (Cases)
+                    </label>
+                    <div className="flex items-stretch rounded-lg border overflow-hidden bg-white" style={{ borderColor: palette.border }}>
+                      <button
+                        type="button"
+                        onClick={() => setDraftQty((q) => Math.max(1, q - 1))}
+                        disabled={draftQty <= 1}
+                        className="w-10 h-9 font-bold text-sm bg-stone-100 active:bg-stone-200 disabled:opacity-30 cursor-pointer"
+                        aria-label="Decrease draft quantity"
+                      >
+                        −
+                      </button>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        min="1"
+                        value={draftQty}
+                        onChange={(e) => setDraftQty(Math.max(1, parseInt(e.target.value) || 1))}
+                        className="min-w-0 flex-1 text-center text-xs font-bold focus:outline-none"
+                        id="edit-modal-draft-qty"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setDraftQty((q) => q + 1)}
+                        className="w-10 h-9 font-bold text-sm bg-stone-100 active:bg-stone-200 cursor-pointer"
+                        aria-label="Increase draft quantity"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Rate */}
+                  <div>
+                    <label className="block text-[10.5px] font-bold uppercase tracking-wider text-stone-600 mb-1">
+                      Rate (₹ / Case)
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-400 font-bold text-xs">₹</span>
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        step="0.01"
+                        placeholder="Rate ₹"
+                        value={draftCustomRate}
+                        onChange={(e) => setDraftCustomRate(e.target.value)}
+                        className="w-full h-9 pl-6 pr-2 text-xs font-bold border rounded-lg bg-white focus:outline-none focus:ring-1"
+                        style={{ borderColor: palette.border }}
+                        id="edit-modal-draft-rate"
+                        title="Rate per case"
+                      />
+                    </div>
+                  </div>
                 </div>
 
-                {/* Qty */}
-                <div className="sm:col-span-2">
-                  <input
-                    type="number" inputMode="numeric"
-                    min="1"
-                    placeholder="Qty"
-                    value={draftQty}
-                    onChange={(e) => setDraftQty(Math.max(1, parseInt(e.target.value) || 1))}
-                    className="w-full px-2 py-1.5 text-xs font-bold border rounded-lg bg-white"
-                    style={{ borderColor: palette.border }}
-                    id="edit-modal-draft-qty"
-                  />
-                </div>
-
-                {/* Custom Rate (Optional Override) */}
-                <div className="sm:col-span-2">
-                  <input
-                    type="number" inputMode="decimal"
-                    step="0.01"
-                    placeholder="Custom Rate ₹"
-                    value={draftCustomRate}
-                    onChange={(e) => setDraftCustomRate(e.target.value)}
-                    className="w-full px-2 py-1.5 text-xs border rounded-lg bg-white"
-                    style={{ borderColor: palette.border }}
-                    id="edit-modal-draft-rate"
-                    title="Custom rate per case"
-                  />
-                </div>
-
-                {/* Add Button */}
-                <div className="sm:col-span-1">
+                {/* Add to Bill Button */}
+                <div className="pt-1 flex gap-2">
                   <button
                     type="button"
-                    onClick={addDraftItem}
-                    className="w-full py-1.5 rounded-lg text-xs font-bold text-white shadow-sm transition-all hover:opacity-90 flex items-center justify-center"
+                    onClick={() => {
+                      addDraftItem();
+                      notify(`Added ${draftProduct?.name || 'item'} to bill!`, 'success');
+                    }}
+                    className="flex-1 py-2.5 px-4 rounded-xl text-xs font-black text-white shadow-sm transition-all hover:opacity-90 flex items-center justify-center gap-1.5 cursor-pointer"
                     style={{ backgroundColor: palette.accent }}
-                    title="Add to line items"
                     id="edit-modal-add-item-btn"
                   >
                     <Plus size={16} />
+                    <span>Add Item to Bill</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsAddingProduct(false)}
+                    className="px-4 py-2.5 rounded-xl text-xs font-bold border border-stone-300 bg-white hover:bg-stone-50 text-stone-700 cursor-pointer"
+                  >
+                    Done
                   </button>
                 </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Financial Summary & Payment Settlement */}
@@ -1192,36 +1469,14 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
               </div>
             </div>
           </div>
-        </div>
 
-        {/* Edit comment + history */}
-        <div className="px-5 py-3 border-t shrink-0 space-y-2" style={{ borderColor: palette.border, backgroundColor: palette.cardBg || '#ffffff' }}>
-          <label className="block text-xs font-bold opacity-80">
-            Reason / comment for this edit * <span className="font-normal opacity-60">(saved in the bill's edit history)</span>
-          </label>
-          <textarea
-            value={editComment}
-            onChange={(e) => {
-              setEditComment(e.target.value);
-              if (saveError) setSaveError('');
-            }}
-            rows={2}
-            placeholder="e.g. Rate corrected as agreed with customer / wrong quantity entered"
-            className="w-full px-3 py-2 text-sm border-2 rounded-lg focus:outline-none"
-            style={{ borderColor: palette.border, backgroundColor: palette.cardBg || '#ffffff', color: palette.text }}
-            id="edit-modal-comment-input"
-          />
-          {saveError && (
-            <p className="text-xs text-red-600 font-semibold whitespace-pre-line" id="edit-modal-save-error">
-              {saveError}
-            </p>
-          )}
+          {/* Edit history (scrolls with the bill; the reason for a NEW edit is asked in the save popup) */}
           {bill.editHistory && bill.editHistory.length > 0 && (
-            <details className="text-[11px]">
+            <details className="text-[11px] rounded-xl border px-3 py-2" style={{ borderColor: palette.border }}>
               <summary className="cursor-pointer font-bold opacity-75">
                 Edit history ({bill.editHistory.length})
               </summary>
-              <ul className="mt-1 space-y-1 max-h-28 overflow-y-auto">
+              <ul className="mt-2 space-y-1.5">
                 {[...bill.editHistory].reverse().map((h, i) => (
                   <li key={i} className="border-l-2 pl-2" style={{ borderColor: palette.border }}>
                     <b>{new Date(h.at).toLocaleString('en-IN')}</b> · {h.by} · “{h.comment}”
@@ -1234,31 +1489,42 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
           )}
         </div>
 
-        {/* Footer Actions */}
+        {saveError && (
+          <p
+            className="px-5 py-2 border-t shrink-0 text-xs text-red-600 font-semibold whitespace-pre-line max-h-24 overflow-y-auto"
+            style={{ borderColor: palette.border }}
+            id="edit-modal-save-error"
+          >
+            {saveError}
+          </p>
+        )}
+
+        {/* Footer Actions - Cancel replaced with Delete Bill per mobile-first request */}
         <div
-          className="px-5 py-3.5 bg-stone-50 border-t flex items-center justify-between gap-3 shrink-0"
+          className="px-4 sm:px-5 py-3 bg-stone-50 border-t flex items-center justify-between gap-2.5 shrink-0"
           style={{ borderColor: palette.border, backgroundColor: palette.bg }}
         >
           <button
             type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg text-sm font-semibold border hover:bg-stone-200 transition-colors"
-            style={{ borderColor: palette.border }}
-            id="edit-modal-cancel-btn"
+            onClick={() => onRequestDelete(bill)}
+            className="px-3.5 py-2.5 rounded-xl border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs sm:text-sm flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs shrink-0"
+            id="edit-modal-footer-delete-btn"
+            title="Delete this bill"
           >
-            Cancel
+            <Trash2 size={16} className="text-rose-600" />
+            <span>Delete</span>
           </button>
 
           <button
             type="button"
             onClick={handleSave}
             disabled={blockedByStock}
-            className="px-6 py-2 rounded-lg text-sm font-bold text-white shadow-md hover:opacity-90 transition-all flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex-1 py-2.5 px-4 rounded-xl text-xs sm:text-sm font-black text-white shadow-md hover:opacity-90 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
             style={{ backgroundColor: palette.good }}
             id="edit-modal-save-btn"
           >
             <Save size={16} />
-            Save Changes & Update Bill
+            <span>Save Changes &amp; Update Bill</span>
           </button>
         </div>
       </div>
@@ -1283,17 +1549,22 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       <ConfirmModal
         isOpen
         title={`Save changes to Bill #${invoicePrefix}${bill.id}?`}
-        subtitle="Check what this edit does to stock and payments"
+        subtitle="Check the impact, then add a reason. It is saved in the bill's edit history."
         warningNote={
           preview?.payment.keptAsAdvance || preview?.payment.removedAsCorrection || preview?.stockChanged
-            ? 'This edit moves stock and/or money. It is saved in the bill\'s edit history with your comment.'
+            ? 'This edit moves stock and/or money.'
             : undefined
         }
         impactItems={confirmImpact}
-        confirmButtonLabel="Yes, Save Changes"
+        confirmButtonLabel="Save Changes"
         variant="warning"
         confirmIcon={<Save className="w-3.5 h-3.5" />}
-        onConfirm={confirmSave}
+        rectificationPrompt="Reason / comment for this edit *"
+        rectificationPlaceholder="e.g. Rate corrected as agreed with customer / wrong quantity entered"
+        initialComment={editComment}
+        commentMinLength={3}
+        onConfirm={() => {}}
+        onConfirmWithComment={confirmSave}
         onClose={() => setPendingBill(null)}
       />
     )}

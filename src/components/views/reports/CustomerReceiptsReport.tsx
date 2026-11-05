@@ -7,6 +7,7 @@ import { buildReceiptRegister } from '../../../utils/beatReports';
 import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
 import { BeatFilterBar } from '../../common/BeatFilterBar';
+import { CustomerReceiptsPhone } from './mobile/CustomerReceiptsPhone';
 
 export interface CustomerReceiptsReportProps {
   periodLabel: string;
@@ -127,7 +128,23 @@ export const CustomerReceiptsReport: React.FC<CustomerReceiptsReportProps> = ({ 
   );
 
   return (
-    <div className="space-y-3" id="report-customer-receipts">
+    <>
+      <CustomerReceiptsPhone
+        reg={reg}
+        periodLabel={periodLabel}
+        view={view}
+        onView={setView}
+        beat={beat}
+        onBeat={setBeat}
+        activeBeats={activeBeats}
+        search={search}
+        onSearch={setSearch}
+        includeUnpaid={includeUnpaid}
+        onIncludeUnpaid={setIncludeUnpaid}
+        onExcel={exportExcel}
+        onPdf={exportPdf}
+      />
+    <div className="hidden md:block space-y-3" id="report-customer-receipts">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h2 className="text-base font-bold text-slate-900">Customer receipts &amp; due remaining</h2>
@@ -271,5 +288,6 @@ export const CustomerReceiptsReport: React.FC<CustomerReceiptsReportProps> = ({ 
         </>
       )}
     </div>
+    </>
   );
 };

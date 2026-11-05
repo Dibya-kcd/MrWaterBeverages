@@ -53,6 +53,7 @@ ALTER TABLE public.products ADD COLUMN IF NOT EXISTS hsn TEXT DEFAULT '2202';
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS gst_rate NUMERIC(5, 4) DEFAULT 0.18;
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS scheme TEXT DEFAULT '';
 ALTER TABLE public.products ADD COLUMN IF NOT EXISTS effective_cost NUMERIC(10, 2) DEFAULT 0;
+ALTER TABLE public.products ADD COLUMN IF NOT EXISTS extra JSONB;
 ALTER TABLE public.inventory_batches ADD COLUMN IF NOT EXISTS sku TEXT DEFAULT '';
 
 -- 3. INVENTORY BATCHES TABLE (Multi-batch stock by warehouse)

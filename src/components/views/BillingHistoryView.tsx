@@ -3,30 +3,18 @@ import {
   Calendar,
   ChevronDown,
   ChevronUp,
-  CreditCard,
-  Eye,
-  FileText,
-  Filter,
-  MessageCircle,
-  Pencil,
-  Phone,
-  RefreshCw,
-  Search,
-  Trash2,
-  User,
-  Users,
-  Check,
   LayoutList,
+  Pencil,
+  Search,
+  Share2,
+  Trash2,
+  Users,
   X,
 } from 'lucide-react';
-import { Bill, ExistingCustomer } from '../../types';
-import { money, statusOf } from '../../utils/billing';
-import { StatusBadge } from '../common/StatusBadge';
-import { WhatsAppButton } from '../common/WhatsAppButton';
-import { RecordPaymentModal } from '../common/RecordPaymentModal';
+import { Bill } from '../../types';
+import { money } from '../../utils/billing';
 import { useLedger } from '../../context/LedgerContext';
-import { billBalance, billNetTotal, billRefundDue, billReturnCredit } from '../../utils/salesReturns';
-import { todayISO } from '../../utils/dateLocal';
+import { billBalance } from '../../utils/salesReturns';
 
 interface BillingHistoryViewProps {
   onViewInvoice: (bill: Bill, defaultFormat?: 'gst' | 'non_gst') => void;
@@ -43,20 +31,12 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
   onViewInvoice,
   onEditBill,
   onDeleteBill,
-  onCancelBill,
+  onCancelBill: _onCancelBill,
   onNewInvoiceClick,
 }) => {
   const {
     bills,
-    cancelledBills,
     salesmen,
-    recordPayment,
-    recordCustomerPayment,
-    payments,
-    syncBillsToCloud,
-    palette,
-    fz,
-    scale,
     billingSettings,
   } = useLedger();
 
@@ -65,12 +45,6 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
   const [salesmanFilter, setSalesmanFilter] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
-  const [paymentDraft, setPaymentDraft] = useState<Record<number, string>>({});
-  const [paymentModalBill, setPaymentModalBill] = useState<Bill | null>(null);
-  const [isSyncingBills, setIsSyncingBills] = useState(false);
-  const [syncBillsMsg, setSyncBillsMsg] = useState<string | null>(null);
-
-  const prefix = billingSettings?.invoicePrefix ? `${billingSettings.invoicePrefix}-` : '';
 
   // Filter bills based on search and payment status
   const filteredBills = useMemo(() => {
@@ -140,16 +114,6 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
     return { all, pending, paid };
   }, [bills, salesmen, searchQuery, salesmanFilter]);
 
-  // Unique customer list for payment modal
-  // One source of truth for customer balances: the ledger's own list (opening balance, every
-  // receipt, advances and returns included). A private list built from bills alone showed
-  // "0 due / settled" for a customer who had paid in advance.
-  const { existingCustomers: ledgerCustomers } = useLedger();
-  const existingCustomers: ExistingCustomer[] = useMemo(
-    () => ledgerCustomers,
-    [ledgerCustomers],
-  );
-
   // Group by Date (Latest date on top)
   const dateGroups = useMemo(() => {
     const map = new Map<string, Bill[]>();
@@ -160,19 +124,22 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
       map.set(dateKey, arr);
     }
 
-    // Sort dates in descending order (latest on top)
     const sortedDates = Array.from(map.keys()).sort((a, b) => b.localeCompare(a));
 
     return sortedDates.map((date) => {
-      // Sort bills inside each date in sequence (latest on top)
       const groupBills = (map.get(date) || []).sort((a, b) => b.id - a.id);
       const totalBilled = groupBills.reduce((s, b) => s + b.total, 0);
       const totalPaid = groupBills.reduce((s, b) => s + b.amountPaid, 0);
       const totalDue = Math.max(0, totalBilled - totalPaid);
+      const totalItems = groupBills.reduce(
+        (sum, b) => sum + (b.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0),
+        0
+      );
       return {
         key: `date-${date}`,
         label: date,
         bills: groupBills,
+        totalItems,
         totalBilled,
         totalPaid,
         totalDue,
@@ -182,21 +149,19 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
 
   // Group by Customer (Latest activity on top)
   const customerGroups = useMemo(() => {
-    const map = new Map<string, { name: string; phone: string; bills: Bill[] }>();
+    const map = new Map<string, { name: string; bills: Bill[] }>();
     for (const b of filteredBills) {
       const norm = (b.retailer || 'Unknown Party').trim();
       const key = norm.toLowerCase();
       const existing = map.get(key);
       if (!existing) {
-        map.set(key, { name: norm, phone: b.phone || '', bills: [b] });
+        map.set(key, { name: norm, bills: [b] });
       } else {
         existing.bills.push(b);
-        if (!existing.phone && b.phone) existing.phone = b.phone;
       }
     }
 
     const groups = Array.from(map.entries()).map(([key, data]) => {
-      // Sort bills for each customer with latest on top
       const sortedBills = data.bills.sort((a, b) => {
         if (b.date !== a.date) return b.date.localeCompare(a.date);
         return b.id - a.id;
@@ -205,19 +170,22 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
       const totalBilled = sortedBills.reduce((s, b) => s + b.total, 0);
       const totalPaid = sortedBills.reduce((s, b) => s + b.amountPaid, 0);
       const totalDue = Math.max(0, totalBilled - totalPaid);
+      const totalItems = sortedBills.reduce(
+        (sum, b) => sum + (b.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0),
+        0
+      );
       return {
         key: `cust-${key}`,
         name: data.name,
-        phone: data.phone,
         latestDate,
         bills: sortedBills,
+        totalItems,
         totalBilled,
         totalPaid,
         totalDue,
       };
     });
 
-    // Sequence manner: customer with latest bill on top
     return groups.sort((a, b) => b.latestDate.localeCompare(a.latestDate));
   }, [filteredBills]);
 
@@ -225,82 +193,20 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
   const toggleExpand = (key: string) => {
     setExpandedKeys((prev) => ({
       ...prev,
-      [key]: prev[key] === undefined ? false : !prev[key], // Default is expanded (undefined => true)
+      [key]: prev[key] === undefined ? false : !prev[key],
     }));
   };
 
   const isExpanded = (key: string, isFirst: boolean) => {
     if (expandedKeys[key] !== undefined) return expandedKeys[key];
-    return isFirst; // Expand top group by default
-  };
-
-  const handleExpandAll = () => {
-    const allKeys: Record<string, boolean> = {};
-    if (grouping === 'date') {
-      dateGroups.forEach((g) => {
-        allKeys[g.key] = true;
-      });
-    } else {
-      customerGroups.forEach((g) => {
-        allKeys[g.key] = true;
-      });
-    }
-    setExpandedKeys(allKeys);
-  };
-
-  const handleCollapseAll = () => {
-    const allKeys: Record<string, boolean> = {};
-    if (grouping === 'date') {
-      dateGroups.forEach((g) => {
-        allKeys[g.key] = false;
-      });
-    } else {
-      customerGroups.forEach((g) => {
-        allKeys[g.key] = false;
-      });
-    }
-    setExpandedKeys(allKeys);
-  };
-
-  const handleRecordPayment = (billId: number) => {
-    const amount = Number(paymentDraft[billId]);
-    if (!amount || amount <= 0) return;
-    const bill = bills.find((b) => b.id === billId);
-    // recordPayment only applies what is still due on this invoice, so anything typed above that
-    // used to vanish with no trace. Send a larger amount through the receipt flow instead: this
-    // invoice is paid first, the rest goes to the customer's oldest unpaid invoices, and whatever
-    // is left is kept as an advance on account.
-    if (bill && amount > billBalance(bill) + 0.004) {
-      recordCustomerPayment(bill.retailer, amount, todayISO(), 'cash', undefined, billId, bill.customerId);
-    } else {
-      recordPayment(billId, amount);
-    }
-    setPaymentDraft((pd) => ({ ...pd, [billId]: '' }));
-  };
-
-  const handleFullClear = (bill: Bill) => {
-    const due = billBalance(bill);
-    if (due > 0) {
-      recordPayment(bill.id, due);
-    }
-  };
-
-  const cardStyle = {
-    backgroundColor: palette.panel,
-    borderColor: palette.line,
+    return isFirst;
   };
 
   return (
     <div id="view-billing-history" className="space-y-4">
-      {/* =========================================================================
-          MODERN SMART CONTROL BAR (Search + View Modes + Payment Status Filters)
-          ========================================================================= */}
-      {/* =========================================================================
-          SMART MODERN CONTROL BAR (Interactive Metric Cards + Sleek View Mode Tabs)
-          ========================================================================= */}
-      {/* 1. Interactive KPI Summary Cards (Double as Fast Payment Status Filters) */}
+      {/* 1. Interactive KPI Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
-        {/* All Bills Card */}
+        {/* All Invoices Card */}
         <button
           type="button"
           id="filter-all-bills"
@@ -331,65 +237,61 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
           </div>
         </button>
 
-        {/* Pending Due Card */}
+        {/* Pending Due Card (Red) */}
         <button
           type="button"
           id="filter-pending-bills"
           onClick={() => setPaymentFilter('pending')}
           className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden group select-none ${
             paymentFilter === 'pending'
-              ? 'bg-amber-50/70 border-amber-600 shadow-md ring-2 ring-amber-600/20'
-              : 'bg-white/80 border-slate-200 hover:border-amber-300 hover:bg-amber-50/30 shadow-2xs'
+              ? 'bg-red-50/70 border-red-600 shadow-md ring-2 ring-red-600/20'
+              : 'bg-white/80 border-slate-200 hover:border-red-300 hover:bg-red-50/30 shadow-2xs'
           }`}
         >
           <div className="flex items-center justify-between mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-red-700">
               Pending Due
             </span>
             <span
               className={`text-xs font-bold px-2 py-0.5 rounded-full font-mono transition-colors ${
-                paymentFilter === 'pending'
-                  ? 'bg-amber-600 text-white'
-                  : 'bg-amber-100 text-amber-800'
+                paymentFilter === 'pending' ? 'bg-red-600 text-white' : 'bg-red-100 text-red-700'
               }`}
             >
               {statusCounts.pending}
             </span>
           </div>
-          <div className="font-mono text-base sm:text-lg font-black text-amber-950">
+          <div className="font-mono text-base sm:text-lg font-black text-red-600">
             ₹{money(stats.totalDue)}
           </div>
-          <div className="text-[11px] text-amber-700/80 mt-0.5">
-            Outstanding balance to collect
+          <div className="text-[11px] text-red-600/80 mt-0.5">
+            Pending customer collections
           </div>
         </button>
 
-        {/* Paid / Cleared Card */}
+        {/* Settled / Paid Card (Green) */}
         <button
           type="button"
           id="filter-paid-bills"
           onClick={() => setPaymentFilter('paid')}
           className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden group select-none ${
             paymentFilter === 'paid'
-              ? 'bg-emerald-50/70 border-emerald-700 shadow-md ring-2 ring-emerald-700/20'
+              ? 'bg-emerald-50/70 border-emerald-600 shadow-md ring-2 ring-emerald-600/20'
               : 'bg-white/80 border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/30 shadow-2xs'
           }`}
         >
           <div className="flex items-center justify-between mb-1">
             <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-800">
-              Paid in Full
+              Settled
             </span>
             <span
               className={`text-xs font-bold px-2 py-0.5 rounded-full font-mono transition-colors ${
-                paymentFilter === 'paid'
-                  ? 'bg-emerald-700 text-white'
-                  : 'bg-emerald-100 text-emerald-800'
+                paymentFilter === 'paid' ? 'bg-emerald-600 text-white' : 'bg-emerald-100/70 text-emerald-800'
               }`}
             >
               {statusCounts.paid}
             </span>
           </div>
-          <div className="font-mono text-base sm:text-lg font-black text-emerald-950">
+          <div className="font-mono text-base sm:text-lg font-black text-emerald-700">
             ₹{money(stats.totalPaid)}
           </div>
           <div className="text-[11px] text-emerald-700/80 mt-0.5">
@@ -398,96 +300,75 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
         </button>
       </div>
 
-      {/* 2. Unified Modern Smart Toolbar (View Mode Tabs + Search + Secondary Actions) */}
+      {/* 2. Unified Toolbar (Compact single-word tabs: Invoices | Dates | Customer + Full-width Search) */}
       <div className="bg-white rounded-2xl border border-slate-200/90 p-3 sm:p-3.5 shadow-xs space-y-3">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          {/* Main View Mode Segmented Tabs: Table (default) | Date-wise | By Customer */}
-          <div className="inline-flex p-1 bg-slate-100/90 rounded-xl border border-slate-200/80 shrink-0 self-stretch sm:self-auto shadow-2xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          {/* Main View Mode Tabs (Short single-word names: Invoices | Dates | Customer to fit mobile) */}
+          <div className="grid grid-cols-3 p-1 bg-slate-100/90 rounded-xl border border-slate-200/80 shrink-0 self-stretch sm:self-auto sm:inline-flex shadow-2xs">
             <button
               type="button"
               id="tab-view-table"
               onClick={() => setGrouping('table')}
-              className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none ${
+              className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap ${
                 grouping === 'table'
                   ? 'bg-[#0d4a3a] text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
               }`}
             >
-              <LayoutList size={14} />
-              <span>Table</span>
+              <LayoutList size={14} className="shrink-0" />
+              <span>Invoices</span>
             </button>
 
             <button
               type="button"
               id="tab-view-date"
               onClick={() => setGrouping('date')}
-              className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none ${
+              className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap ${
                 grouping === 'date'
                   ? 'bg-[#0d4a3a] text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
               }`}
             >
-              <Calendar size={14} />
-              <span>Date-wise</span>
+              <Calendar size={14} className="shrink-0" />
+              <span>Dates</span>
             </button>
 
             <button
               type="button"
               id="tab-view-customer"
               onClick={() => setGrouping('customer')}
-              className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none ${
+              className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap ${
                 grouping === 'customer'
                   ? 'bg-[#0d4a3a] text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
               }`}
             >
-              <Users size={14} />
-              <span>By Customer</span>
+              <Users size={14} className="shrink-0" />
+              <span>Customer</span>
             </button>
           </div>
 
-          {/* Search Bar + Controls */}
-          <div className="flex items-center gap-2 flex-1 max-w-xl">
-            <div className="relative flex-1 min-w-[180px]">
-              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-              <input enterKeyHint="search"
-                id="history-search-input"
-                type="text"
-                placeholder="Search bills, customer, phone, item..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-9 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/20 focus:border-[#0d4a3a] focus:bg-white transition-all shadow-2xs"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
-                  aria-label="Clear search"
-                >
-                  <X size={14} />
-                </button>
-              )}
-            </div>
-
-            {/* Accordion Expand/Collapse buttons when in grouped mode (Date-wise or Customer) */}
-            {grouping !== 'table' && (
-              <div className="inline-flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200 shrink-0">
-                <button
-                  type="button"
-                  onClick={handleExpandAll}
-                  className="text-[11px] font-semibold px-2.5 py-1.5 rounded-md bg-white hover:bg-slate-50 text-slate-700 shadow-2xs transition-colors cursor-pointer"
-                >
-                  Expand
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCollapseAll}
-                  className="text-[11px] font-semibold px-2.5 py-1.5 rounded-md hover:bg-white/80 text-slate-600 transition-colors cursor-pointer"
-                >
-                  Collapse
-                </button>
-              </div>
+          {/* Full-width Search Bar (Expand & Collapse removed as requested) */}
+          <div className="relative flex-1 min-w-0 max-w-xl">
+            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input
+              enterKeyHint="search"
+              id="history-search-input"
+              type="text"
+              placeholder="Search invoices, customer, item..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-9 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/20 focus:border-[#0d4a3a] focus:bg-white transition-all shadow-2xs"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                aria-label="Clear search"
+              >
+                <X size={14} />
+              </button>
             )}
           </div>
         </div>
@@ -523,133 +404,10 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
         </div>
       </div>
 
-      {syncBillsMsg && (
-        <div className="p-2.5 border rounded-xl flex items-center gap-2 text-xs font-bold bg-emerald-50 text-emerald-800 border-emerald-300">
-          <Check size={14} />
-          {syncBillsMsg}
-        </div>
-      )}
-
-      {/* PRIMARY VIEW MODE: Clean Table directly compliant with Image 1 */}
-      {grouping === 'table' && (
-        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
-          {/* Desktop Table View (visible on md screens and up) */}
-          <div className="hidden md:block overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-100 bg-slate-50/70">
-                  <th className="py-3.5 px-6 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    ITEM
-                  </th>
-                  <th className="py-3.5 px-6 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    DETAILS
-                  </th>
-                  <th className="py-3.5 px-6 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    VALUE
-                  </th>
-                  <th className="py-3.5 px-6 text-xs font-semibold uppercase tracking-wider text-slate-500 text-right">
-                    STATUS
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filteredBills.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="py-12 text-center text-slate-400 text-sm">
-                      No billing records found.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredBills.map((b) => {
-                    const due = billBalance(b);
-                    const isPaid = due <= 0.01;
-                    const invPrefix = billingSettings?.invoicePrefix || (b.isGstInvoice ? 'INV' : 'INV');
-                    const itemLabel = `${invPrefix}-${b.id}`;
-
-                    return (
-                      <tr
-                        key={b.id}
-                        onClick={() => onViewInvoice(b)}
-                        className="hover:bg-slate-50/80 cursor-pointer transition-colors group select-none"
-                        title="Click to view full sale details"
-                      >
-                        <td className="py-4 px-6 text-sm font-semibold text-slate-900 group-hover:text-emerald-800">
-                          {itemLabel}
-                        </td>
-                        <td className="py-4 px-6 text-sm text-slate-600 font-normal">
-                          {b.retailer || 'Cash customer'}
-                        </td>
-                        <td className="py-4 px-6 text-sm font-semibold text-slate-900 font-mono tabular-nums">
-                          ₹{money(b.total)}
-                        </td>
-                        <td className="py-4 px-6 text-sm text-right">
-                          <span className={`font-semibold text-xs ${isPaid ? 'text-teal-600' : 'text-amber-600'}`}>
-                            {isPaid ? 'Paid' : 'Pending'}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Mobile & Tablet Responsive View — strictly matching Image 1 */}
-          <div className="md:hidden">
-            <div className="border-b border-slate-100 bg-slate-50/70 px-4 py-3 flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">ITEM</span>
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">STATUS</span>
-            </div>
-            <div className="divide-y divide-slate-100">
-              {filteredBills.length === 0 ? (
-                <div className="py-12 text-center text-slate-400 text-sm">
-                  No billing records found.
-                </div>
-              ) : (
-                filteredBills.map((b) => {
-                  const due = billBalance(b);
-                  const isPaid = due <= 0.01;
-                  const invPrefix = billingSettings?.invoicePrefix || (b.isGstInvoice ? 'INV' : 'INV');
-                  const itemLabel = `${invPrefix}-${b.id}`;
-
-                  return (
-                    <div
-                      key={b.id}
-                      onClick={() => onViewInvoice(b)}
-                      className="px-4 py-3.5 flex items-center justify-between hover:bg-slate-50/80 active:bg-slate-100 cursor-pointer transition-colors select-none"
-                      title="Click to view full sale details"
-                    >
-                      <div className="min-w-0 pr-3">
-                        <div className="text-sm font-bold text-slate-900 leading-tight">
-                          {itemLabel}
-                        </div>
-                        <div className="text-xs text-slate-500 mt-1 truncate">
-                          {b.retailer || 'Cash customer'} · ₹{money(b.total)}
-                        </div>
-                      </div>
-                      <div className="shrink-0 text-right space-y-1.5">
-                        <span className={`block font-semibold text-xs ${isPaid ? 'text-teal-600' : 'text-amber-600'}`}>
-                          {isPaid ? 'Paid' : 'Pending'}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* SECONDARY VIEW MODES: Date-wise or By Customer */}
-      {grouping !== 'table' && (
-        <>
-
-      {/* Empty state — Crate-style */}
+      {/* Empty State */}
       {filteredBills.length === 0 && (
-        <div className="bg-white rounded-2xl border border-black/5 shadow-sm px-6 py-12 text-center">
-          <h3 className="text-base font-bold text-slate-900">No bills yet</h3>
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs px-6 py-12 text-center">
+          <h3 className="text-base font-bold text-slate-900">No invoices found</h3>
           <p className="text-sm text-slate-500 mt-1.5">
             Create your first sale to see it here.
           </p>
@@ -657,7 +415,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
             <button
               type="button"
               onClick={onNewInvoiceClick}
-              className="mt-5 inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-[#0d4a3a] text-white text-sm font-semibold shadow-sm cursor-pointer active:scale-[0.99]"
+              className="mt-5 inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-[#0d4a3a] text-white text-sm font-semibold shadow-xs cursor-pointer active:scale-[0.99]"
             >
               New sale
             </button>
@@ -665,375 +423,518 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
         </div>
       )}
 
-      {/* Grouping Mode 1: Date-wise (Sequence: Latest on top) */}
-      {grouping === 'date' &&
-        dateGroups.map((group, idx) => {
-          const expanded = isExpanded(group.key, idx === 0);
-          return (
-            <div key={group.key} className="border-2 rounded overflow-hidden shadow-sm" style={cardStyle}>
-              {/* Accordion Header */}
-              <button
-                type="button"
-                onClick={() => toggleExpand(group.key)}
-                className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left transition-colors cursor-pointer select-none bg-slate-50/80 hover:bg-slate-100/80 border-b"
-                style={{ borderColor: palette.line }}
-              >
-                <div className="flex items-center gap-2.5 flex-wrap">
-                  {expanded ? <ChevronUp size={16} className="text-slate-600" /> : <ChevronDown size={16} className="text-slate-600" />}
-                  <Calendar size={15} style={{ color: palette.navy }} />
-                  <span className="font-bold text-sm text-slate-900">{group.label}</span>
-                  <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-slate-200 text-slate-700">
-                    {group.bills.length} bill{group.bills.length !== 1 ? 's' : ''}
-                  </span>
-                </div>
+      {/* =========================================================================
+          VIEW MODE 1: Invoices (Clean Table UI with Edit, Share, Delete)
+          ========================================================================= */}
+      {filteredBills.length > 0 && grouping === 'table' && (
+        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+          {/* Desktop Table View */}
+          <div className="hidden md:block overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-100 bg-slate-50/70">
+                  <th className="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    ITEM
+                  </th>
+                  <th className="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    DETAILS
+                  </th>
+                  <th className="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    VALUE
+                  </th>
+                  <th className="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    STATUS
+                  </th>
+                  <th className="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-slate-500 text-right">
+                    ACTIONS
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredBills.map((b) => {
+                  const due = billBalance(b);
+                  const isPaid = due <= 0.01;
+                  const invPrefix = billingSettings?.invoicePrefix || 'INV';
+                  const itemLabel = `${invPrefix}-${b.id}`;
+                  const totalCases = (b.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
+                  const itemCount = (b.items || []).length;
 
-                <div className="flex items-center gap-3 text-xs font-bold">
-                  <span className="text-slate-800">₹{money(group.totalBilled)}</span>
-                  {group.totalDue > 0 ? (
-                    <span className="text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
-                      Due: ₹{money(group.totalDue)}
+                  return (
+                    <tr
+                      key={b.id}
+                      className="hover:bg-slate-50/80 transition-colors group select-none"
+                    >
+                      <td className="py-3.5 px-5 text-sm font-semibold text-slate-900">
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => onViewInvoice(b)}
+                            className="font-mono text-xs font-bold text-[#0d4a3a] hover:underline cursor-pointer"
+                            title="Click to view invoice"
+                          >
+                            #{itemLabel}
+                          </button>
+                          <span
+                            className={`text-[9px] font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider ${
+                              b.invoiceType === 'tax_invoice' || b.isGstInvoice
+                                ? 'bg-amber-50 text-amber-900 border-amber-300'
+                                : 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                            }`}
+                          >
+                            {b.invoiceType === 'tax_invoice' || b.isGstInvoice ? 'GST' : 'Non-GST'}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-5 text-sm text-slate-600 font-normal">
+                        <div className="font-medium text-slate-900">{b.retailer || 'Cash customer'}</div>
+                        <div className="text-[11px] text-slate-400">
+                          {b.date} · {totalCases} cs · {itemCount} {itemCount === 1 ? 'item' : 'items'}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-5 text-sm font-semibold text-slate-900 font-mono tabular-nums">
+                        ₹{money(b.total)}
+                      </td>
+                      <td className="py-3.5 px-5 text-sm">
+                        <span className={`font-semibold text-xs ${isPaid ? 'text-emerald-600' : 'text-red-600'}`}>
+                          {isPaid ? 'Paid' : `Due: ₹${money(due)}`}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-5 text-sm text-right">
+                        <div className="inline-flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => onEditBill(b)}
+                            disabled={(b.returns || []).length > 0}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer disabled:opacity-40"
+                            title="Edit this invoice"
+                          >
+                            <Pencil size={12} />
+                            <span>Edit</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onViewInvoice(b)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer"
+                            title="Share or View invoice"
+                          >
+                            <Share2 size={12} />
+                            <span>Share</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDeleteBill(b)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                            title="Delete bill"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile Table View */}
+          <div className="md:hidden divide-y divide-slate-100">
+            {filteredBills.map((b) => {
+              const due = billBalance(b);
+              const isPaid = due <= 0.01;
+              const invPrefix = billingSettings?.invoicePrefix || 'INV';
+              const itemLabel = `${invPrefix}-${b.id}`;
+              const totalCases = (b.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
+              const itemCount = (b.items || []).length;
+
+              return (
+                <div key={b.id} className="p-3.5 space-y-2 hover:bg-slate-50/60 transition-colors">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => onViewInvoice(b)}
+                        className="font-bold font-mono text-xs text-[#0d4a3a] hover:underline cursor-pointer"
+                      >
+                        #{itemLabel}
+                      </button>
+                      <span
+                        className={`text-[9px] font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider ${
+                          b.invoiceType === 'tax_invoice' || b.isGstInvoice
+                            ? 'bg-amber-50 text-amber-900 border-amber-300'
+                            : 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                        }`}
+                      >
+                        {b.invoiceType === 'tax_invoice' || b.isGstInvoice ? 'GST' : 'Non-GST'}
+                      </span>
+                    </div>
+                    <span className={`font-semibold text-xs ${isPaid ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {isPaid ? 'Paid' : `Due: ₹${money(due)}`}
                     </span>
-                  ) : (
-                    <span className="text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
-                      Settled
+                  </div>
+
+                  <div className="flex items-baseline justify-between text-xs">
+                    <span className="font-semibold text-slate-900">{b.retailer || 'Cash customer'}</span>
+                    <span className="font-mono font-bold text-slate-900">₹{money(b.total)}</span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[11px] text-slate-400 pt-0.5">
+                    <span>
+                      {b.date} · {totalCases} cs · {itemCount} {itemCount === 1 ? 'item' : 'items'}
                     </span>
-                  )}
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => onEditBill(b)}
+                        disabled={(b.returns || []).length > 0}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 bg-white text-xs font-semibold text-slate-700 shadow-2xs cursor-pointer disabled:opacity-40"
+                      >
+                        <Pencil size={11} />
+                        <span>Edit</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onViewInvoice(b)}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 bg-white text-xs font-semibold text-slate-700 shadow-2xs cursor-pointer"
+                      >
+                        <Share2 size={11} />
+                        <span>Share</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteBill(b)}
+                        className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                        title="Delete bill"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
                 </div>
-              </button>
-
-              {/* Accordion Body: Bills in sequence */}
-              {expanded && (
-                <div className="divide-y divide-slate-200 p-2 sm:p-3 space-y-2">
-                  {group.bills.map((bill) => (
-                    <BillItemCard
-                      key={bill.id}
-                      bill={bill}
-                      prefix={prefix}
-                      palette={palette}
-                      onViewInvoice={onViewInvoice}
-                      onEditBill={onEditBill}
-                      onDeleteBill={onDeleteBill}
-                      onCancelBill={onCancelBill}
-                      paymentDraft={paymentDraft[bill.id] || ''}
-                      onPaymentDraftChange={(val) => setPaymentDraft((prev) => ({ ...prev, [bill.id]: val }))}
-                      onRecordPayment={() => handleRecordPayment(bill.id)}
-                      onFullClear={() => handleFullClear(bill)}
-                      onOpenPaymentModal={() => setPaymentModalBill(bill)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-      {/* Grouping Mode 2: Customer-wise (Sequence: Latest customer on top) */}
-      {grouping === 'customer' &&
-        customerGroups.map((group, idx) => {
-          const expanded = isExpanded(group.key, idx === 0);
-          return (
-            <div key={group.key} className="border-2 rounded overflow-hidden shadow-sm" style={cardStyle}>
-              {/* Accordion Header */}
-              <button
-                type="button"
-                onClick={() => toggleExpand(group.key)}
-                className="w-full px-4 py-3 flex items-center justify-between gap-3 text-left transition-colors cursor-pointer select-none bg-slate-50/80 hover:bg-slate-100/80 border-b"
-                style={{ borderColor: palette.line }}
-              >
-                <div className="flex items-center gap-2.5 flex-wrap">
-                  {expanded ? <ChevronUp size={16} className="text-slate-600" /> : <ChevronDown size={16} className="text-slate-600" />}
-                  <User size={15} style={{ color: palette.navy }} />
-                  <span className="font-bold text-sm text-slate-900">{group.name}</span>
-                  {group.phone && <span className="text-xs text-slate-500 font-mono">({group.phone})</span>}
-                  <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-slate-200 text-slate-700">
-                    {group.bills.length} order{group.bills.length !== 1 ? 's' : ''}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-3 text-xs font-bold">
-                  <span className="text-slate-500">Last: {group.latestDate}</span>
-                  <span className="text-slate-800">Total: ₹{money(group.totalBilled)}</span>
-                  {group.totalDue > 0 ? (
-                    <span className="text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded">
-                      Due: ₹{money(group.totalDue)}
-                    </span>
-                  ) : (
-                    <span className="text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
-                      All Paid
-                    </span>
-                  )}
-                </div>
-              </button>
-
-              {/* Accordion Body: Bills for this customer in sequence */}
-              {expanded && (
-                <div className="divide-y divide-slate-200 p-2 sm:p-3 space-y-2">
-                  {group.bills.map((bill) => (
-                    <BillItemCard
-                      key={bill.id}
-                      bill={bill}
-                      prefix={prefix}
-                      palette={palette}
-                      onViewInvoice={onViewInvoice}
-                      onEditBill={onEditBill}
-                      onDeleteBill={onDeleteBill}
-                      onCancelBill={onCancelBill}
-                      paymentDraft={paymentDraft[bill.id] || ''}
-                      onPaymentDraftChange={(val) => setPaymentDraft((prev) => ({ ...prev, [bill.id]: val }))}
-                      onRecordPayment={() => handleRecordPayment(bill.id)}
-                      onFullClear={() => handleFullClear(bill)}
-                      onOpenPaymentModal={() => setPaymentModalBill(bill)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-        </>
+              );
+            })}
+          </div>
+        </div>
       )}
 
-      {/* Record Payment Modal with date maintenance */}
-      {paymentModalBill && (
-        <RecordPaymentModal
-          isOpen={Boolean(paymentModalBill)}
-          onClose={() => setPaymentModalBill(null)}
-          initialCustomerName={paymentModalBill.retailer}
-          initialBillId={paymentModalBill.id}
-          initialAmount={billBalance(paymentModalBill)}
-          existingCustomers={existingCustomers}
-          bills={bills}
-          palette={palette}
-          onSavePayment={({ customerName, amount, paymentDate, mode, referenceNote, billId }) => {
-            recordCustomerPayment(
-              customerName,
-              amount,
-              paymentDate,
-              mode,
-              referenceNote,
-              billId || paymentModalBill.id,
-              paymentModalBill.customerId
+      {/* =========================================================================
+          VIEW MODE 2: Dates (Date header with Total & Due below Date, then Bills & Items)
+          ========================================================================= */}
+      {filteredBills.length > 0 && grouping === 'date' && (
+        <div className="space-y-3">
+          {dateGroups.map((group, idx) => {
+            const expanded = isExpanded(group.key, idx === 0);
+            return (
+              <div
+                key={group.key}
+                className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden"
+              >
+                {/* Date Card Header: Line 1 Date, Line 2 Total & Due, Line 3 Bills & Items */}
+                <button
+                  type="button"
+                  onClick={() => toggleExpand(group.key)}
+                  className="w-full p-3.5 sm:px-4 sm:py-3.5 text-left transition-colors cursor-pointer select-none bg-slate-50/90 hover:bg-slate-100/80 border-b border-slate-200/80 space-y-1.5"
+                >
+                  {/* Line 1: Date & Chevron */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Calendar size={15} className="text-[#0d4a3a] shrink-0" />
+                      <span className="font-bold text-sm sm:text-base text-slate-900">{group.label}</span>
+                    </div>
+                    {expanded ? (
+                      <ChevronUp size={16} className="text-slate-400 shrink-0" />
+                    ) : (
+                      <ChevronDown size={16} className="text-slate-400 shrink-0" />
+                    )}
+                  </div>
+
+                  {/* Line 2: Total & Due (below Date, before Bills & Items) */}
+                  <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap text-xs sm:text-sm font-bold">
+                    <span className="text-slate-800 font-mono">
+                      Total: ₹{money(group.totalBilled)}
+                    </span>
+                    {group.totalDue > 0 ? (
+                      <span className="text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full text-xs font-bold">
+                        Due: ₹{money(group.totalDue)}
+                      </span>
+                    ) : (
+                      <span className="text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full text-xs font-bold">
+                        Paid
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Line 3: Bills and Items Count */}
+                  <div className="flex items-center gap-2 pt-0.5">
+                    <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-200/80 text-slate-700">
+                      {group.bills.length} {group.bills.length === 1 ? 'bill' : 'bills'}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+                      {group.totalItems} {group.totalItems === 1 ? 'item' : 'items'}
+                    </span>
+                  </div>
+                </button>
+
+                {/* Expanded Invoices List */}
+                {expanded && (
+                  <div className="divide-y divide-slate-100">
+                    {group.bills.map((bill) => {
+                      const due = billBalance(bill);
+                      const isPaid = due <= 0.01;
+                      const invPrefix = billingSettings?.invoicePrefix || 'INV';
+                      const itemLabel = `${invPrefix}-${bill.id}`;
+                      const totalCases = (bill.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
+                      const itemCount = (bill.items || []).length;
+
+                      return (
+                        <div
+                          key={bill.id}
+                          className="p-3.5 hover:bg-slate-50/60 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-4"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => onViewInvoice(bill)}
+                                className="font-bold font-mono text-xs text-[#0d4a3a] hover:underline cursor-pointer"
+                                title="View Invoice"
+                              >
+                                #{itemLabel}
+                              </button>
+                              <span
+                                className={`text-[10px] font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider ${
+                                  bill.invoiceType === 'tax_invoice' || bill.isGstInvoice
+                                    ? 'bg-amber-50 text-amber-900 border-amber-300'
+                                    : 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                                }`}
+                              >
+                                {bill.invoiceType === 'tax_invoice' || bill.isGstInvoice ? 'GST' : 'Non-GST'}
+                              </span>
+                              <span className="text-xs text-slate-800 font-semibold truncate">
+                                {bill.retailer || 'Cash customer'}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-500 mt-0.5">
+                              {totalCases} cases · {itemCount} {itemCount === 1 ? 'item' : 'items'}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between sm:justify-end gap-3 sm:gap-4 shrink-0 pt-1 sm:pt-0 border-t border-slate-100 sm:border-0">
+                            <div className="text-left sm:text-right">
+                              <div className="text-xs sm:text-sm font-bold text-slate-900 font-mono">
+                                ₹{money(bill.total)}
+                              </div>
+                              <div className="text-[11px]">
+                                {isPaid ? (
+                                  <span className="text-emerald-600 font-bold">Paid</span>
+                                ) : (
+                                  <span className="text-red-600 font-bold">Due: ₹{money(due)}</span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Actions: Edit, Share, Delete */}
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => onEditBill(bill)}
+                                disabled={(bill.returns || []).length > 0}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer disabled:opacity-40"
+                                title="Edit this invoice"
+                              >
+                                <Pencil size={12} />
+                                <span>Edit</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => onViewInvoice(bill)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer"
+                                title="Share or View this invoice"
+                              >
+                                <Share2 size={12} />
+                                <span>Share</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => onDeleteBill(bill)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                title="Delete this invoice"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             );
-            setPaymentModalBill(null);
-          }}
-        />
-      )}
-    </div>
-  );
-};
-
-interface BillItemCardProps {
-  bill: Bill;
-  prefix: string;
-  palette: any;
-  onViewInvoice: (b: Bill) => void;
-  onEditBill: (b: Bill) => void;
-  onDeleteBill: (b: Bill) => void;
-  onCancelBill: (b: Bill) => void;
-  paymentDraft: string;
-  onPaymentDraftChange: (val: string) => void;
-  onRecordPayment: () => void;
-  onFullClear: () => void;
-  onOpenPaymentModal: () => void;
-}
-
-const BillItemCard: React.FC<BillItemCardProps> = ({
-  bill,
-  prefix,
-  palette,
-  onViewInvoice,
-  onEditBill,
-  onDeleteBill,
-  onCancelBill,
-  paymentDraft,
-  onPaymentDraftChange,
-  onRecordPayment,
-  onFullClear,
-  onOpenPaymentModal,
-}) => {
-  const balance = billBalance(bill);
-  const st = statusOf(billNetTotal(bill), bill.amountPaid);
-  const totalCases = bill.items.reduce((s, i) => s + i.qty, 0);
-  const freeCases = bill.items.reduce((s, i) => s + (i.freeQty || 0), 0);
-  const returnCredit = billReturnCredit(bill);
-  const refundDue = billRefundDue(bill);
-
-  return (
-    <div className="border rounded-md p-3 bg-white hover:border-slate-400 transition-colors shadow-sm space-y-2.5">
-      {returnCredit > 0 && (
-        <div className="text-[11px] font-semibold rounded bg-sky-50 border border-sky-200 text-sky-700 px-2 py-1">
-          Returns credited: ₹{money(returnCredit)} ({(bill.returns || []).map((r) => r.creditNoteNo).join(', ')})
-          {refundDue > 0 && <span className="text-amber-800"> · Refund due to customer: ₹{money(refundDue)}</span>}
+          })}
         </div>
       )}
-      {/* Top Line: Invoice #, Date, Customer & Status */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={() => onViewInvoice(bill)}
-            className="font-bold font-mono text-xs px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-sky-700 border border-slate-300 cursor-pointer"
-            title="Click to view invoice"
-          >
-            #{prefix}{bill.id}
-          </button>
-          <span
-            className={`text-[10px] font-black px-2 py-0.5 rounded border uppercase tracking-wider ${
-              bill.invoiceType === 'tax_invoice' || bill.isGstInvoice
-                ? 'bg-amber-50 text-amber-900 border-amber-300'
-                : 'bg-emerald-50 text-emerald-900 border-emerald-300'
-            }`}
-            title={
-              bill.invoiceType === 'tax_invoice' || bill.isGstInvoice
-                ? 'GST Tax Invoice (with HSN code & tax breakdown)'
-                : 'Non-GST Retail Bill (B2C Cash Memo)'
-            }
-          >
-            {bill.invoiceType === 'tax_invoice' || bill.isGstInvoice ? '🏢 GST' : '🛒 Non-GST'}
-          </span>
-          <span className="text-xs text-slate-500 font-medium">{bill.date}</span>
-          <span className="font-bold text-xs text-slate-900">{bill.retailer}</span>
-          {bill.salesman && (
-            <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200 flex items-center gap-1">
-              <User size={10} />
-              <span>{bill.salesman}</span>
-            </span>
-          )}
-          {bill.phone && (
-            <span className="text-xs text-slate-500 font-mono flex items-center gap-0.5">
-              <Phone size={10} />
-              {bill.phone}
-            </span>
-          )}
-        </div>
 
-        <div className="flex items-center gap-2">
-          <StatusBadge status={st} />
-        </div>
-      </div>
-
-      {/* Item Summary Chips */}
-      <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-700">
-        <span className="font-bold text-slate-600">{totalCases} cs</span>
-        {freeCases > 0 && <span className="font-bold text-amber-700">(+{freeCases} free)</span>}
-        <span className="text-slate-300">·</span>
-        {bill.items.map((item, idx) => (
-          <span key={item.key || idx} className="bg-slate-50 border border-slate-200 px-1.5 py-0.5 rounded text-[11px]">
-            {item.productName} ({item.qty} cs @ ₹{item.rate})
-          </span>
-        ))}
-      </div>
-
-      {/* Financials & Quick Collection Row */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-slate-100">
-        <div className="flex items-center gap-3 text-xs flex-wrap">
-          <div>
-            <span className="text-slate-500">Bill: </span>
-            <strong className="text-slate-900">₹{money(bill.total)}</strong>
-          </div>
-          <div>
-            <span className="text-slate-500">Paid: </span>
-            <strong className="text-emerald-700">₹{money(bill.amountPaid)}</strong>
-          </div>
-          {balance > 0 ? (
-            <div>
-              <span className="text-slate-500">Due: </span>
-              <strong className="text-rose-700">₹{money(balance)}</strong>
-            </div>
-          ) : (
-            <span className="text-emerald-700 font-bold text-[11px]">✓ Settled</span>
-          )}
-        </div>
-
-        {/* Action Buttons */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {balance > 0 && (
-            <div className="flex items-center gap-1 mr-1">
-              <input
-                type="number" inputMode="decimal"
-                step="0.01"
-                placeholder={`₹${balance}`}
-                value={paymentDraft}
-                onChange={(e) => onPaymentDraftChange(e.target.value)}
-                className="w-20 px-2 py-1 text-xs border rounded font-mono font-bold focus:outline-none"
-                style={{ borderColor: palette.line }}
-              />
-              <button
-                type="button"
-                onClick={onRecordPayment}
-                disabled={!paymentDraft || Number(paymentDraft) <= 0}
-                className="px-2 py-1 text-xs font-bold rounded text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 cursor-pointer"
-                title="Record partial or full payment"
+      {/* =========================================================================
+          VIEW MODE 3: Customer (Customer header with Total & Due below Name, then Invoices)
+          ========================================================================= */}
+      {filteredBills.length > 0 && grouping === 'customer' && (
+        <div className="space-y-3">
+          {customerGroups.map((group, idx) => {
+            const expanded = isExpanded(group.key, idx === 0);
+            return (
+              <div
+                key={group.key}
+                className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden"
               >
-                Pay
-              </button>
-              <button
-                type="button"
-                onClick={onFullClear}
-                className="px-1.5 py-1 text-[11px] font-bold rounded border bg-slate-50 hover:bg-slate-100 text-slate-700 cursor-pointer"
-                title="Clear entire due balance"
-              >
-                Clear
-              </button>
-              <button
-                type="button"
-                onClick={onOpenPaymentModal}
-                className="px-2 py-1 text-[11px] font-bold rounded border border-blue-300 bg-sky-50 hover:bg-sky-100 text-sky-700 flex items-center gap-1 cursor-pointer"
-                title="Record payment with exact collection date, mode, and reference notes"
-              >
-                <Calendar size={11} />
-                <span>Date Pay</span>
-              </button>
-            </div>
-          )}
+                {/* Customer Card Header: Line 1 Name, Line 2 Total & Due, Line 3 Invoices */}
+                <button
+                  type="button"
+                  onClick={() => toggleExpand(group.key)}
+                  className="w-full p-3.5 sm:px-4 sm:py-3.5 text-left transition-colors cursor-pointer select-none bg-slate-50/90 hover:bg-slate-100/80 border-b border-slate-200/80 space-y-1.5"
+                >
+                  {/* Line 1: Customer Name & Chevron */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Users size={15} className="text-[#0d4a3a] shrink-0" />
+                      <span className="font-bold text-sm sm:text-base text-slate-900 break-words">
+                        {group.name}
+                      </span>
+                    </div>
+                    {expanded ? (
+                      <ChevronUp size={16} className="text-slate-400 shrink-0" />
+                    ) : (
+                      <ChevronDown size={16} className="text-slate-400 shrink-0" />
+                    )}
+                  </div>
 
-          <button
-            type="button"
-            onClick={() => onViewInvoice(bill)}
-            className="flex items-center gap-1 px-2 py-1 text-xs font-bold rounded border hover:bg-slate-100 cursor-pointer"
-            style={{ borderColor: palette.line, color: palette.navy }}
-            title={
-              bill.invoiceType === 'tax_invoice' || bill.isGstInvoice
-                ? 'View GST Tax Invoice'
-                : 'View Non-GST Retail Bill'
-            }
-          >
-            <Eye size={12} />
-            <span>View {bill.invoiceType === 'tax_invoice' || bill.isGstInvoice ? 'GST' : 'Bill'}</span>
-          </button>
+                  {/* Line 2: Total & Due (below Name, before Invoices count) */}
+                  <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap text-xs sm:text-sm font-bold">
+                    <span className="text-slate-800 font-mono">
+                      Total: ₹{money(group.totalBilled)}
+                    </span>
+                    {group.totalDue > 0 ? (
+                      <span className="text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full text-xs font-bold">
+                        Due: ₹{money(group.totalDue)}
+                      </span>
+                    ) : (
+                      <span className="text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full text-xs font-bold">
+                        Paid
+                      </span>
+                    )}
+                  </div>
 
-          <button
-            type="button"
-            onClick={() => onEditBill(bill)}
-            disabled={(bill.returns || []).length > 0}
-            className="flex items-center gap-1 px-2 py-1 text-xs font-bold rounded border hover:bg-amber-50 text-amber-800 border-amber-300 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-            title={(bill.returns || []).length > 0 ? 'Customer returns exist against this invoice. Cancel or correct the return first (Live stock → Returns), then edit the invoice.' : 'Edit this invoice'}
-          >
-            <Pencil size={12} />
-            <span>Edit</span>
-          </button>
+                  {/* Line 3: Invoices Count */}
+                  <div className="flex items-center gap-2 pt-0.5">
+                    <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-200/80 text-slate-700">
+                      {group.bills.length} {group.bills.length === 1 ? 'invoice' : 'invoices'}
+                    </span>
+                  </div>
+                </button>
 
-          <WhatsAppButton bill={bill} id={`wa-btn-hist-${bill.id}`} />
+                {/* Expanded Invoices List */}
+                {expanded && (
+                  <div className="divide-y divide-slate-100">
+                    {group.bills.map((bill) => {
+                      const due = billBalance(bill);
+                      const isPaid = due <= 0.01;
+                      const invPrefix = billingSettings?.invoicePrefix || 'INV';
+                      const itemLabel = `${invPrefix}-${bill.id}`;
+                      const totalCases = (bill.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
+                      const itemCount = (bill.items || []).length;
 
-          <button
-            type="button"
-            onClick={() => onCancelBill(bill)}
-            className="px-2 py-1 text-xs font-bold rounded text-rose-700 hover:bg-rose-50 border border-rose-300 cursor-pointer"
-            title="Cancel this invoice with a credit note (keeps the invoice number for GST records)"
-          >
-            Cancel
-          </button>
+                      return (
+                        <div
+                          key={bill.id}
+                          className="p-3.5 hover:bg-slate-50/60 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-4"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => onViewInvoice(bill)}
+                                className="font-bold font-mono text-xs text-[#0d4a3a] hover:underline cursor-pointer"
+                                title="View Invoice"
+                              >
+                                #{itemLabel}
+                              </button>
+                              <span
+                                className={`text-[10px] font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider ${
+                                  bill.invoiceType === 'tax_invoice' || bill.isGstInvoice
+                                    ? 'bg-amber-50 text-amber-900 border-amber-300'
+                                    : 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                                }`}
+                              >
+                                {bill.invoiceType === 'tax_invoice' || bill.isGstInvoice ? 'GST' : 'Non-GST'}
+                              </span>
+                              <span className="text-xs text-slate-600 font-medium">
+                                {bill.date}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-500 mt-0.5">
+                              {totalCases} cases · {itemCount} {itemCount === 1 ? 'item' : 'items'}
+                            </div>
+                          </div>
 
-          <button
-            type="button"
-            onClick={() => onDeleteBill(bill)}
-            className="p-1 text-xs font-bold rounded text-rose-600 hover:bg-rose-50 hover:text-rose-800 border border-transparent hover:border-rose-200 cursor-pointer"
-            title="Delete this bill"
-          >
-            <Trash2 size={13} />
-          </button>
+                          <div className="flex items-center justify-between sm:justify-end gap-3 sm:gap-4 shrink-0 pt-1 sm:pt-0 border-t border-slate-100 sm:border-0">
+                            <div className="text-left sm:text-right">
+                              <div className="text-xs sm:text-sm font-bold text-slate-900 font-mono">
+                                ₹{money(bill.total)}
+                              </div>
+                              <div className="text-[11px]">
+                                {isPaid ? (
+                                  <span className="text-emerald-600 font-bold">Paid</span>
+                                ) : (
+                                  <span className="text-red-600 font-bold">Due: ₹{money(due)}</span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Actions: Edit, Share, Delete */}
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => onEditBill(bill)}
+                                disabled={(bill.returns || []).length > 0}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer disabled:opacity-40"
+                                title="Edit this invoice"
+                              >
+                                <Pencil size={12} />
+                                <span>Edit</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => onViewInvoice(bill)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer"
+                                title="Share or View this invoice"
+                              >
+                                <Share2 size={12} />
+                                <span>Share</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => onDeleteBill(bill)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                title="Delete this invoice"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
-      </div>
+      )}
     </div>
   );
 };

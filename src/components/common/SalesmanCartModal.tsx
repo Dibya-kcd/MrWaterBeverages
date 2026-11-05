@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { SizeChip } from "../common/SizeChip";
-import { sizeTheme } from "../../utils/sizeColor";
+import { sizeTheme, packTheme } from "../../utils/sizeColor";
 import {
   X,
   ShoppingCart,
@@ -113,7 +113,17 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
   const [isBrowsingBeverages, setIsBrowsingBeverages] = useState<boolean>(false);
   const [beverageSearchQuery, setBeverageSearchQuery] = useState<string>('');
   const [selectedBeverageCategory, setSelectedBeverageCategory] = useState<string>('ALL');
+  const [selectedBeveragePack, setSelectedBeveragePack] = useState<'ALL' | 'CAN' | 'PET' | 'GLASS' | 'TETRA'>('ALL');
   const [activePriceType, setActivePriceType] = useState<PriceType>(priceType || 'Wholesale');
+
+  const nameCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of products) {
+      const clean = p.name.trim().toLowerCase();
+      counts.set(clean, (counts.get(clean) || 0) + 1);
+    }
+    return counts;
+  }, [products]);
 
   // Keep price type in sync with parent if provided
   useEffect(() => {
@@ -180,11 +190,25 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
         if (selectedBeverageCategory !== 'ALL' && p.category !== selectedBeverageCategory) {
           return false;
         }
+
+        if (selectedBeveragePack !== 'ALL') {
+          const pTheme = packTheme(p.pack, p.name);
+          const pLabel = pTheme.label.toLowerCase();
+          if (selectedBeveragePack === 'CAN' && !pLabel.includes('can') && !pLabel.includes('tin')) return false;
+          if (selectedBeveragePack === 'PET' && !pLabel.includes('pet') && !pLabel.includes('bottle')) return false;
+          if (selectedBeveragePack === 'GLASS' && !pLabel.includes('glass') && !pLabel.includes('rgb')) return false;
+          if (selectedBeveragePack === 'TETRA' && !pLabel.includes('tetra') && !pLabel.includes('pouch')) return false;
+        }
+
         if (q) {
+          const sTheme = sizeTheme(p.volume, p.name);
+          const pTheme = packTheme(p.pack, p.name);
           const matchName = p.name.toLowerCase().includes(q);
           const matchCat = (p.category || '').toLowerCase().includes(q);
-          const matchVol = String(p.volume || '').includes(q);
-          return matchName || matchCat || matchVol;
+          const matchVol = String(p.volume || '').includes(q) || sTheme.label.toLowerCase().includes(q);
+          const matchPack = (p.pack || '').toLowerCase().includes(q) || pTheme.label.toLowerCase().includes(q);
+          const matchUnits = p.unitsPerCrate ? `${p.unitsPerCrate}`.includes(q) : false;
+          return matchName || matchCat || matchVol || matchPack || matchUnits;
         }
         return true;
       })
@@ -196,7 +220,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
         if (stockA <= 0 && stockB > 0) return 1;
         return a.name.localeCompare(b.name);
       });
-  }, [products, beverageSearchQuery, selectedBeverageCategory, activeTrip, getVehicleStock]);
+  }, [products, beverageSearchQuery, selectedBeverageCategory, selectedBeveragePack, activeTrip, getVehicleStock]);
 
   // Handle adding/subtracting beverage from the in-cart beverage list
   const handleAddBeverageDelta = (prod: Product, delta: number) => {
@@ -413,6 +437,66 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                 )}
               </div>
 
+              {/* Packaging Container Type Pills: All, Can (Blue), PET (Red), Glass, Tetra */}
+              <div className="flex items-center gap-1.5 overflow-x-auto overscroll-x-contain rounded-xl border border-slate-200 bg-white p-1 shadow-2xs">
+                <span className="text-[11px] font-black text-slate-500 uppercase px-1.5 shrink-0">Pack:</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedBeveragePack('ALL')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-black cursor-pointer whitespace-nowrap transition-colors ${
+                    selectedBeveragePack === 'ALL'
+                      ? 'bg-slate-900 text-white shadow-2xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  All Packaging
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedBeveragePack('CAN')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-black cursor-pointer whitespace-nowrap transition-colors ${
+                    selectedBeveragePack === 'CAN'
+                      ? 'bg-blue-600 text-white shadow-2xs'
+                      : 'bg-blue-50 text-blue-700 border border-blue-300 hover:bg-blue-100'
+                  }`}
+                >
+                  🥫 Can (Blue)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedBeveragePack('PET')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-black cursor-pointer whitespace-nowrap transition-colors ${
+                    selectedBeveragePack === 'PET'
+                      ? 'bg-red-600 text-white shadow-2xs'
+                      : 'bg-red-50 text-red-700 border border-red-300 hover:bg-red-100'
+                  }`}
+                >
+                  🍾 PET (Red)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedBeveragePack('GLASS')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-black cursor-pointer whitespace-nowrap transition-colors ${
+                    selectedBeveragePack === 'GLASS'
+                      ? 'bg-emerald-700 text-white shadow-2xs'
+                      : 'bg-emerald-50 text-emerald-800 border border-emerald-300 hover:bg-emerald-100'
+                  }`}
+                >
+                  🍶 Glass RGB
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedBeveragePack('TETRA')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-black cursor-pointer whitespace-nowrap transition-colors ${
+                    selectedBeveragePack === 'TETRA'
+                      ? 'bg-amber-600 text-white shadow-2xs'
+                      : 'bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100'
+                  }`}
+                >
+                  🧃 Tetra
+                </button>
+              </div>
+
               {/* Category Filter Pills */}
               <div className="flex items-center gap-1.5 overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm pb-1">
                 {beverageCategories.map((cat) => (
@@ -468,9 +552,22 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                     <div>
                       <div className="flex items-start justify-between gap-2">
                         <div>
-                          <h4 className="font-black text-sm sm:text-base leading-snug">{prod.name}</h4>
-                          <div className="text-xs font-semibold opacity-75 mt-0.5">
-                            <SizeChip volume={prod.volume} pack={prod.pack} name={prod.name} className="mr-1" /> {prod.category}
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <h4 className="font-black text-sm sm:text-base leading-snug">{prod.name}</h4>
+                            {(nameCounts.get(prod.name.trim().toLowerCase()) || 0) > 1 && (
+                              <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
+                                ⚠️ Check Size/Pack
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs font-semibold opacity-75 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                            <SizeChip volume={prod.volume} pack={prod.pack} name={prod.name} className="mr-1" />
+                            {prod.unitsPerCrate && (
+                              <span className="text-[10.5px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                {prod.unitsPerCrate} pcs/case
+                              </span>
+                            )}
+                            <span>· {prod.category}</span>
                           </div>
                         </div>
 

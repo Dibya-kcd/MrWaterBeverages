@@ -8,8 +8,8 @@ import { notify } from '../../../utils/toast';
 export type SalesmanTripScreenMode = 'edit' | 'settle';
 
 /**
- * The same "Edit load" and "Record returned stock & close trip" screens the owner uses,
- * opened from the salesman's own Trips tab so a salesman can finish his own run:
+ * The same load sheet screen the owner uses, but VIEW-ONLY for the salesman (only the owner can change a saved
+ * trip), plus the "Record returned stock & close trip" screen so a salesman can finish his own run:
  * enter what came back to the warehouse unsold, enter the cash handed in, and close the trip.
  */
 export const SalesmanTripScreens: React.FC<{
@@ -65,11 +65,8 @@ export const SalesmanTripScreens: React.FC<{
           return null;
         }}
         onBack={onClose}
-        onSave={(updated) => {
-          updateTrip(updated);
-          notify(`Trip #${updated.id} (${updated.vehicle}) updated.`, 'success');
-          onClose();
-        }}
+        readOnly
+        onSave={() => onClose()}
         onRecordReturn={() => onSwitchMode('settle')}
       />
     );

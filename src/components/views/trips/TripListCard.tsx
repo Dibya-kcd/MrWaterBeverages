@@ -1,7 +1,10 @@
 import React, { useState } from 'react';
-import { CheckCircle2, ChevronDown, ChevronUp, Pencil, Receipt, Trash2, Truck, Warehouse as WarehouseIcon } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronUp, Pencil, Receipt, RotateCcw, Trash2, Truck, Warehouse as WarehouseIcon } from 'lucide-react';
 import { Trip } from '../../../types';
 import { money } from '../../../utils/billing';
+import { useLedger } from '../../../context/LedgerContext';
+import { SizeChip } from '../../common/SizeChip';
+import { sizeStripe } from '../../../utils/sizeColor';
 
 export interface TripCardRow {
   productId: number;
@@ -31,6 +34,7 @@ interface TripListCardProps {
   godownLabel: string;
   personLabel?: string;
   onSettle?: (t: Trip) => void;
+  onReopen?: (t: Trip) => void;
   onEdit: (t: Trip) => void;
   onBills: (t: Trip) => void;
   onDelete: (t: Trip) => void;
@@ -72,11 +76,14 @@ export const TripListCard: React.FC<TripListCardProps> = ({
   godownLabel,
   personLabel,
   onSettle,
+  onReopen,
   onEdit,
   onBills,
   onDelete,
 }) => {
   const [open, setOpen] = useState(mode === 'active');
+  const { products } = useLedger();
+  const productOf = (id: number) => products.find((p) => p.id === id);
   const loaded = rows.reduce((s, r) => s + r.loaded, 0);
   const sold = rows.reduce((s, r) => s + r.sold, 0);
   const returned = rows.reduce((s, r) => s + r.returned, 0);
@@ -181,8 +188,11 @@ export const TripListCard: React.FC<TripListCardProps> = ({
             {rows.map((r) => {
               const left = isActive ? Math.max(0, r.loaded - r.sold) : r.returned;
               return (
-                <li key={r.productId} className="px-3 py-2.5">
-                  <div className="text-[13px] font-semibold text-slate-900 leading-snug break-words">{r.name}</div>
+                <li key={r.productId} className="px-3 py-2.5" style={sizeStripe(productOf(r.productId)?.volume, r.name)}>
+                  <div className="text-[13px] font-semibold text-slate-900 leading-snug break-words">
+                    {r.name}{' '}
+                    <SizeChip volume={productOf(r.productId)?.volume} pack={productOf(r.productId)?.pack} name={r.name} />
+                  </div>
                   <div className="mt-1 text-[11px] text-slate-500 flex flex-wrap gap-x-3">
                     <span>Loaded <strong className="text-slate-800">{r.loaded}</strong></span>
                     <span>Sold <strong className="text-emerald-700">{r.sold}</strong></span>
@@ -213,7 +223,7 @@ export const TripListCard: React.FC<TripListCardProps> = ({
       </div>
 
       {/* Actions */}
-      <div className="px-4 pb-4 flex items-center gap-2">
+      <div className="px-4 pb-4 flex items-center gap-2 flex-wrap">
         {isActive && onSettle && (
           <button
             type="button"
@@ -223,10 +233,21 @@ export const TripListCard: React.FC<TripListCardProps> = ({
             <CheckCircle2 size={16} /> Day-end settlement
           </button>
         )}
+        {!isActive && onReopen && (
+          <button
+            type="button"
+            onClick={() => onReopen(trip)}
+            id={`btn-reopen-trip-${trip.id}`}
+            className="flex-1 min-h-11 px-4 rounded-xl bg-[#0d4a3a] hover:bg-[#0a3d30] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99] shadow-sm"
+            title="Reopen trip back to Active to edit load, return, or bill stock"
+          >
+            <RotateCcw size={16} /> Reopen trip
+          </button>
+        )}
         <button
           type="button"
           onClick={() => onEdit(trip)}
-          className={`min-h-11 px-4 rounded-xl border border-black/10 bg-white text-sm font-semibold text-slate-800 inline-flex items-center justify-center gap-2 cursor-pointer hover:bg-slate-50 ${isActive ? '' : 'flex-1'}`}
+          className={`min-h-11 px-4 rounded-xl border border-black/10 bg-white text-sm font-semibold text-slate-800 inline-flex items-center justify-center gap-2 cursor-pointer hover:bg-slate-50 ${isActive ? '' : 'flex-none'}`}
         >
           <Pencil size={15} /> Edit
         </button>

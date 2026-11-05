@@ -15,6 +15,8 @@ import {
 import { Bill, PaymentRecord, Product, Trip, TripShortageReason, Warehouse } from '../../types';
 import { billBelongsToTrip } from '../../utils/billing';
 import { billBalance } from '../../utils/salesReturns';
+import { SizeChip } from '../common/SizeChip';
+import { sizeTheme } from '../../utils/sizeColor';
 
 interface TripRecordReturnScreenProps {
   trip: Trip;
@@ -405,10 +407,21 @@ export const TripRecordReturnScreen: React.FC<TripRecordReturnScreenProps> = ({
 
                 return (
                   <tr key={pid} className="hover:bg-slate-50/70 transition-colors">
-                    <td className="py-2.5 px-3">
-                      <div className="font-bold text-slate-900">{prod?.name || `Product #${pid}`}</div>
-                      <div className="text-[11px] text-slate-500">
-                        {prod?.category || 'General'} {prod?.pack ? `· ${prod.pack}` : ''}
+                    <td
+                      className="py-2.5 px-3"
+                      style={{ borderLeftWidth: 6, borderLeftStyle: 'solid', borderLeftColor: sizeTheme(prod?.volume, prod?.name).hex }}
+                    >
+                      <div className="font-bold text-slate-900 leading-snug">{prod?.name || `Product #${pid}`}</div>
+                      <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                        <SizeChip volume={prod?.volume} name={prod?.name} pack={prod?.pack} />
+                        {prod?.unitsPerCrate && (
+                          <span className="text-[10.5px] font-bold text-slate-600 bg-slate-100 px-1 py-0.2 rounded border border-slate-200">
+                            {prod.unitsPerCrate} pcs/cs
+                          </span>
+                        )}
+                        <span className="text-[11px] text-slate-400 capitalize">
+                          · {prod?.category || 'General'}
+                        </span>
                       </div>
                     </td>
                     <td className="py-2.5 px-3 text-center font-semibold text-slate-700">{loaded} cs</td>

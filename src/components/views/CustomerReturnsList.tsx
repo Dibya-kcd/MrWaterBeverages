@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Undo2 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
+import { SizeChip } from '../common/SizeChip';
 import { money } from '../../utils/billing';
 import type { Bill, SalesReturn } from '../../types';
 import { SalesReturnModal } from '../common/SalesReturnModal';
@@ -11,7 +12,7 @@ import { SalesReturnModal } from '../common/SalesReturnModal';
  * return of good crates showed up nowhere except on its own invoice.
  */
 export const CustomerReturnsList: React.FC = () => {
-  const { bills, cancelSalesReturn } = useLedger();
+  const { bills, cancelSalesReturn, products } = useLedger();
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState<{ bill: Bill; ret: SalesReturn } | null>(null);
   const [cancelling, setCancelling] = useState<{ bill: Bill; ret: SalesReturn } | null>(null);
@@ -33,7 +34,7 @@ export const CustomerReturnsList: React.FC = () => {
       credit: number;
       restock: number;
       scrap: number;
-      lines: { name: string; restock: number; scrap: number }[];
+      lines: { productId: number; name: string; restock: number; scrap: number }[];
     }[] = [];
     for (const b of bills) {
       for (const r of b.returns || []) {
@@ -51,6 +52,7 @@ export const CustomerReturnsList: React.FC = () => {
           restock: r.lines.reduce((s, l) => s + (Number(l.restockQty) || 0), 0),
           scrap: r.lines.reduce((s, l) => s + (Number(l.scrapQty) || 0), 0),
           lines: r.lines.map((l) => ({
+            productId: l.productId,
             name: l.productName,
             restock: Number(l.restockQty) || 0,
             scrap: Number(l.scrapQty) || 0,
@@ -142,7 +144,13 @@ export const CustomerReturnsList: React.FC = () => {
                   <ul className="mt-1.5 text-xs text-slate-700 space-y-0.5">
                     {r.lines.map((l, i) => (
                       <li key={i}>
-                        {l.name}:{' '}
+                        {l.name}{' '}
+                        <SizeChip
+                          volume={products.find((p) => p.id === l.productId)?.volume}
+                          pack={products.find((p) => p.id === l.productId)?.pack}
+                          name={l.name}
+                        />
+                        :{' '}
                         {l.restock > 0 && <span className="text-emerald-700 font-semibold">{l.restock} cs to stock</span>}
                         {l.restock > 0 && l.scrap > 0 && ' · '}
                         {l.scrap > 0 && <span className="text-amber-700 font-semibold">{l.scrap} cs scrapped</span>}

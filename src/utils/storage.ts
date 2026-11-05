@@ -1123,6 +1123,16 @@ export type BusinessExpenseRecord = {
   /** Optional link to the trip this cost belongs to (fuel, driver, toll ...). */
   tripId?: number;
   tripLabel?: string;
+  /**
+   * Soft foreign keys — optional so existing realtime rows stay valid.
+   * When present they mirror Sell (bills) style links: party / invoice / receipt.
+   */
+  customerId?: string;
+  billId?: number;
+  paymentId?: string;
+  /** How the expense was paid (cash / upi / bank / cheque / other). */
+  mode?: string;
+  referenceNote?: string;
   /** Last edit time; the newest edit wins when devices merge. */
   updatedAt?: string;
 };

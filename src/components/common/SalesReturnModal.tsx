@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Undo2, Truck, Trash2, Clock } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { useLedger } from '../../context/LedgerContext';
+import { SizeChip } from './SizeChip';
+import { sizeStripe } from '../../utils/sizeColor';
 import type { Bill, SalesReturn, ScrapAction } from '../../types';
 import { money } from '../../utils/billing';
 import {
@@ -29,7 +31,7 @@ const toInt = (v: string): number => {
 };
 
 export const SalesReturnModal: React.FC<Props> = ({ bill: billProp, onClose, editReturn }) => {
-  const { createSalesReturn, editSalesReturn, notify, inventoryBatches } = useLedger();
+  const { createSalesReturn, editSalesReturn, notify, inventoryBatches, products } = useLedger();
   // While correcting a return, work on the invoice as it was BEFORE that return, so its crates are
   // available again and the preview shows the true before/after.
   const bill: Bill | null = useMemo(
@@ -188,10 +190,21 @@ export const SalesReturnModal: React.FC<Props> = ({ bill: billProp, onClose, edi
             const info = batchInfo[r.productId];
             const expired = info?.daysPast !== undefined && info.daysPast >= 0;
             return (
-              <div key={r.productId} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm space-y-2.5">
+              <div
+                key={r.productId}
+                className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm space-y-2.5"
+                style={sizeStripe(products.find((p) => p.id === r.productId)?.volume, r.name)}
+              >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="font-bold text-slate-900 leading-snug">{r.name}</div>
+                    <div className="font-bold text-slate-900 leading-snug">
+                      {r.name}{' '}
+                      <SizeChip
+                        volume={products.find((p) => p.id === r.productId)?.volume}
+                        pack={products.find((p) => p.id === r.productId)?.pack}
+                        name={r.name}
+                      />
+                    </div>
                     <div className="text-[11px] text-slate-500">
                       Sold {r.sold} · Already returned {r.back} · Can return {r.left}
                     </div>

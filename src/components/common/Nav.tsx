@@ -13,6 +13,7 @@ import {
   Truck,
   Users,
   Wallet,
+  Receipt,
   X,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
@@ -38,6 +39,7 @@ const MENU_ITEMS: NavItem[] = [
   { id: 'inventory', label: 'Inventory', icon: Boxes },
   { id: 'supplierSchemes', label: 'Supplier credits', icon: FileText },
   { id: 'payments', label: 'Payments', icon: Wallet },
+  { id: 'expenses', label: 'Expenses', icon: Receipt },
   { id: 'crates', label: 'Crates & deposits', icon: Container },
   { id: 'promotions', label: 'Promotions', icon: Tag },
   { id: 'trips', label: 'Trips', icon: Truck },
@@ -54,6 +56,7 @@ const SIDEBAR_ITEMS: (NavItem & { key: string })[] = [
   { key: 'inventory', id: 'inventory', label: 'Inventory', icon: Boxes },
   { key: 'cdn', id: 'supplierSchemes', label: 'Supplier credits', icon: FileText },
   { key: 'payments', id: 'payments', label: 'Payments', icon: Wallet },
+  { key: 'expenses', id: 'expenses', label: 'Expenses', icon: Receipt },
   { key: 'crates', id: 'crates', label: 'Crates & deposits', icon: Container },
   { key: 'schemes', id: 'promotions', label: 'Promotions', icon: Tag },
   { key: 'trips', id: 'trips', label: 'Trips', icon: Truck },
@@ -101,6 +104,7 @@ export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
     { id: 'products', label: 'Products', icon: BookOpen },
     { id: 'supplierSchemes', label: 'Supplier credits', icon: FileText },
     { id: 'payments', label: 'Payments', icon: Wallet },
+    { id: 'expenses', label: 'Expenses', icon: Receipt },
     { id: 'crates', label: 'Crates & deposits', icon: Container },
     { id: 'promotions', label: 'Promotions', icon: Tag },
     { id: 'trips', label: 'Trips', icon: Truck },
@@ -198,6 +202,7 @@ export const DesktopSidebar: React.FC = () => {
     if (tab === 'products') return 'catalogue';
     if (tab === 'supplierSchemes') return 'cdn';
     if (tab === 'payments') return 'payments';
+    if (tab === 'expenses') return 'expenses';
     if (tab === 'promotions') return 'schemes';
     if (tab === 'settings') return 'settings';
     if (tab === 'trips') return 'trips';

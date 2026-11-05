@@ -1,8 +1,18 @@
 import React, { useMemo, useState } from "react";
-import { Calendar, Download } from "lucide-react";
+import { Download } from "lucide-react";
 import { Bill, Customer, OrganizationProfile, Product } from "../../../types";
 import { money } from "../../../utils/billing";
 import { useLedger } from "../../../context/LedgerContext";
+import { RegisterCard, Pill } from "./mobile/ReportCards";
+import {
+  ReportBreakdownLine,
+  ReportChipGroup,
+  ReportFilterPanel,
+  ReportStat,
+  ReportStatGrid,
+  ReportTitleBar,
+} from "./ReportKit";
+import { Chips, HeroCard, LegendDot, MiniStat, PhoneHeader, PhoneSearch, SplitBar } from "./mobile/PhoneKit";
 import { checkEwayInvoices, buildEwayBillJson, buildEinvoiceJson, EWAY_BILL_THRESHOLD } from "../../../utils/ewayBill";
 import {
   buildGstLines,
@@ -83,9 +93,21 @@ export const TaxReport: React.FC<TaxReportProps> = ({
     [filteredBills, products, customers, invoicePrefix, orgStateCode],
   );
   const invoices = useMemo(() => summarizeInvoices(lines), [lines]);
-  const hsnRows = useMemo(() => hsnSummary(lines), [lines]);
+  const hsnAll = useMemo(() => hsnSummary(lines), [lines]);
+  const [search, setSearch] = useState("");
+  const sq = search.trim().toLowerCase();
+  const hsnRows = useMemo(
+    () => (sq ? hsnAll.filter((r) => String(r.hsn).toLowerCase().includes(sq)) : hsnAll),
+    [hsnAll, sq],
+  );
 
-  const b2bInvoices = invoices.filter((i) => i.isB2B);
+  const b2bInvoices = invoices
+    .filter((i) => i.isB2B)
+    .filter(
+      (i) =>
+        !sq ||
+        `${i.invoiceNo} ${i.customerName} ${i.customerGstin || ""}`.toLowerCase().includes(sq),
+    );
   const b2cLines = lines.filter((l) => !l.isB2B);
 
   const b2cByRate = useMemo(() => {
@@ -135,8 +157,9 @@ export const TaxReport: React.FC<TaxReportProps> = ({
 
   // Reconciliation: every invoice must read the same in the GST report and in the sales report.
   // Any invoice where the two disagree is listed with the reason (no silent "ghost" amounts).
-  const { repairBillTotals, cancelledBills, bills: allActiveBills } = useLedger();
+  const { repairBillTotals, repairNonGstBillTaxes, recordMissingSeriesAsCancelled, cancelledBills, bills: allActiveBills } = useLedger();
   const [repairMsg, setRepairMsg] = useState<string | null>(null);
+  const [seriesMsg, setSeriesMsg] = useState<string | null>(null);
   const mismatches = useMemo(() => {
     const byId = new Map<number, Bill>();
     filteredBills.forEach((b) => byId.set(b.id, b));
@@ -160,7 +183,7 @@ export const TaxReport: React.FC<TaxReportProps> = ({
       const totalDiff = Math.abs(inv.invoiceTotal - salesTotal);
       const taxDiff = Math.abs(gstTax - salesTax);
       if (totalDiff <= 1 && taxDiff <= 1) continue;
-      const nonGst = b.invoiceType === "retail" || b.invoiceType === "bill_of_supply" || b.isGstInvoice === false;
+      const nonGst = b.invoiceType === "retail" || b.invoiceType === "bill_of_supply" || b.isGstInvoice === false || !b.customerGstin;
       const extra = Number(b.additionalDiscount) || 0;
       let reason = "Saved totals differ from the invoice lines.";
       let repairable = false;
@@ -169,6 +192,10 @@ export const TaxReport: React.FC<TaxReportProps> = ({
         repairable = true;
       } else if (nonGst && taxDiff > 1) {
         reason = `Non-GST invoice: ₹${money(salesTax)} tax is stored on the bill (sales report) but the GST report shows ₹${money(gstTax)}.`;
+        repairable = true;
+      } else if (totalDiff > 1 && (b.retailer === "Free Sampling" || Number(b.discount) > 0)) {
+        reason = `Bill discount of ₹${money(Number(b.discount) || 0)} was not factored into the lines. Saved ₹${money(salesTotal)} vs lines ₹${money(inv.invoiceTotal)}.`;
+        repairable = true;
       }
       out.push({
         billId: b.id,
@@ -185,6 +212,7 @@ export const TaxReport: React.FC<TaxReportProps> = ({
     return out;
   }, [invoices, filteredBills]);
   const repairable = mismatches.filter((m) => m.repairable);
+  const nonGstRepairable = mismatches.filter((m) => m.reason.startsWith("Non-GST invoice:"));
 
   const series = useMemo(
     () => invoiceSeriesSummary(filteredBills, cancelledBills || [], allActiveBills || []),
@@ -257,43 +285,93 @@ export const TaxReport: React.FC<TaxReportProps> = ({
     setTimeout(() => setExportMsg(null), 4000);
   };
 
-  const cardCls =
-    "rounded-2xl border border-black/8 bg-white shadow-sm px-3.5 py-3 min-w-0";
-  const tableWrap =
-    "rounded-2xl border border-black/8 bg-white shadow-sm overflow-x-auto";
+  const grnShown = (filteredGrns || []).filter(
+    (g) =>
+      !sq ||
+      `${g.supplierName || ""} ${g.invoiceNo || ""} ${g.grnNumber || ""}`.toLowerCase().includes(sq),
+  );
+  const tableWrap = "rounded-2xl border border-black/10 bg-white overflow-x-auto";
   const th =
-    "px-3 py-2.5 text-[11px] font-bold text-slate-500 text-left whitespace-nowrap";
+    "px-3.5 py-2.5 text-[11px] font-bold uppercase tracking-wide text-slate-500 text-left whitespace-nowrap bg-[#faf8f5]";
   const thR =
-    "px-3 py-2.5 text-[11px] font-bold text-slate-500 text-right whitespace-nowrap";
-  const td = "px-3 py-2.5 text-sm text-slate-800";
-  const tdR = "px-3 py-2.5 text-sm text-slate-800 text-right tabular-nums";
+    "px-3.5 py-2.5 text-[11px] font-bold uppercase tracking-wide text-slate-500 text-right whitespace-nowrap bg-[#faf8f5]";
+  const td = "px-3.5 py-2.5 text-[13px] text-slate-800";
+  const tdR = "px-3.5 py-2.5 text-[13px] text-slate-800 text-right tabular-nums";
+  const searchable = tab === "b2b" || tab === "hsn" || tab === "purchases";
+  const searchHint =
+    tab === "b2b" ? "Search invoice, party or GSTIN" : tab === "hsn" ? "Search HSN code" : "Search supplier or invoice no";
+  const tabOptions = TABS.map((t) => ({ id: t.id, label: t.label }));
+  const rs0 = (n: number) => `₹${money(n)}`;
 
   return (
-    <div className="flex flex-col gap-4 max-w-none lg:max-w-4xl mx-auto w-full">
-      <div>
-        <div className="flex items-center gap-1.5">
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
-            GST &amp; reports
-          </h1>
+    <div className="flex flex-col gap-3 w-full" id="report-gst">
+      {/* ============================ PHONE ============================ */}
+      <div className="md:hidden space-y-3">
+        <PhoneHeader title="GST" sub="Output tax and input tax credit summary" />
+        <HeroCard tone="navy" label="Net GST payable" value={rs0(fromLines.netPayable)}>
+          <SplitBar
+            label="Output GST versus input credit"
+            parts={[
+              { value: fromLines.outputGst, className: "bg-rose-400" },
+              { value: fromLines.inputCredit, className: "bg-emerald-400" },
+            ]}
+          />
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-white/90">
+            <LegendDot dot="bg-rose-400">Output {rs0(fromLines.outputGst)}</LegendDot>
+            <LegendDot dot="bg-emerald-400">Input credit {rs0(fromLines.inputCredit)}</LegendDot>
+          </div>
+        </HeroCard>
+        <div className="grid grid-cols-3 gap-2">
+          <MiniStat label="Output GST" value={rs0(fromLines.outputGst)} />
+          <MiniStat label="Input credit" value={rs0(fromLines.inputCredit)} tone="green" />
+          <MiniStat label="Non-GST sales" value={rs0(fromLines.taxableNil)} />
         </div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full border border-black/10 bg-white text-sm font-semibold text-slate-800">
-          <Calendar size={15} className="text-slate-500" />
-          {formatPeriodLabel(periodLabel)}
-        </div>
+        {fromLines.carryForwardItc > 0 && (
+          <div className="px-1 text-xs font-semibold text-emerald-700">ITC carry-forward {rs0(fromLines.carryForwardItc)}</div>
+        )}
         <button
           type="button"
           onClick={handleExport}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full border border-black/10 bg-white text-sm font-semibold text-slate-800 hover:bg-slate-50 cursor-pointer"
+          className="w-full min-h-[48px] rounded-2xl border border-slate-200 bg-white text-[14px] font-bold text-slate-800 inline-flex items-center justify-center gap-2 cursor-pointer active:bg-slate-100"
         >
-          <Download size={15} />
-          Excel / CSV
+          <Download size={16} aria-hidden="true" /> Excel / CSV pack for CA
         </button>
-        {exportMsg && (
-          <span className="text-xs font-semibold text-emerald-700">{exportMsg}</span>
-        )}
+        {exportMsg && <div className="text-xs font-semibold text-emerald-700 px-1">{exportMsg}</div>}
+      </div>
+
+      {/* ======================= TABLET / DESKTOP ======================= */}
+      <div className="hidden md:block space-y-3">
+        <ReportTitleBar
+          title="GST"
+          sub={`${formatPeriodLabel(periodLabel)} · GSTR-3B, B2B, B2C, HSN and purchase register`}
+          actions={
+            <>
+              {exportMsg && <span className="text-xs font-semibold text-emerald-700">{exportMsg}</span>}
+              <button
+                type="button"
+                onClick={handleExport}
+                className="h-9 px-3 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download size={13} aria-hidden="true" /> Excel / CSV pack for CA
+              </button>
+            </>
+          }
+        />
+        <ReportStatGrid>
+          <ReportStat label="Output GST" value={rs0(fromLines.outputGst)} tone="red" sub="tax on your sales" />
+          <ReportStat label="Input credit" value={rs0(fromLines.inputCredit)} tone="green" sub="tax paid on purchases (ITC)" />
+          <ReportStat
+            label="Net payable"
+            value={rs0(fromLines.netPayable)}
+            sub={fromLines.carryForwardItc > 0 ? `ITC carry-forward ${rs0(fromLines.carryForwardItc)}` : "output − input credit"}
+          />
+          <ReportStat label="Non-GST sales" value={rs0(fromLines.taxableNil)} sub="nil rated / exempt" />
+        </ReportStatGrid>
+        <ReportBreakdownLine>
+          <span>
+            Output {rs0(fromLines.outputGst)} − Input credit {rs0(fromLines.inputCredit)} = Net payable {rs0(fromLines.netPayable)}
+          </span>
+        </ReportBreakdownLine>
       </div>
 
       {series && (
@@ -311,11 +389,26 @@ export const TaxReport: React.FC<TaxReportProps> = ({
             figures under "documents issued".
           </div>
           {series.missing.length > 0 && (
-            <div className="text-xs text-amber-900">
-              No invoice exists for number(s): {series.missing.slice(0, 30).join(", ")}
-              {series.missing.length > 30 ? "…" : ""}. A hole in the series has to be explained to the tax office (for
-              example a number never used); check whether an invoice was deleted.
-            </div>
+            <>
+              <div className="text-xs text-amber-900">
+                No invoice exists for number(s): {series.missing.slice(0, 30).join(", ")}
+                {series.missing.length > 30 ? "…" : ""}. A hole in the series has to be explained to the tax office (for
+                example a number never used); check whether an invoice was deleted.
+              </div>
+              <div className="pt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const count = recordMissingSeriesAsCancelled(series.missing);
+                    setSeriesMsg(`${count} missing test invoice number(s) registered as Cancelled in series.`);
+                  }}
+                  className="px-3.5 py-1.5 rounded-full bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
+                >
+                  Register {series.missing.length} missing test numbers as Cancelled in GSTR-1
+                </button>
+                {seriesMsg && <span className="text-xs font-semibold text-emerald-700">{seriesMsg}</span>}
+              </div>
+            </>
           )}
         </div>
       )}
@@ -397,18 +490,27 @@ export const TaxReport: React.FC<TaxReportProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  if (
-                    !window.confirm(
-                      `Recalculate the saved total, taxable value and GST of ${repairable.length} invoice(s) from their own lines and invoice discount?\n\nEach one is saved as an audited edit, and the customer's due follows the corrected total.`,
-                    )
-                  )
-                    return;
                   const r = repairBillTotals(repairable.map((m) => m.billId));
                   setRepairMsg(`${r.fixed} invoice(s) corrected${r.skipped ? `, ${r.skipped} left as they were` : ""}.`);
                 }}
-                className="px-3 py-1.5 rounded-full bg-amber-600 text-white text-xs font-bold cursor-pointer"
+                className="px-3 py-1.5 rounded-full bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold cursor-pointer transition-colors"
               >
                 Fix {repairable.length} invoice(s) with a missing discount
+              </button>
+              {repairMsg && <span className="text-xs font-semibold text-emerald-700">{repairMsg}</span>}
+            </div>
+          )}
+          {nonGstRepairable.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const r = repairNonGstBillTaxes(nonGstRepairable.map((m) => m.billId));
+                  setRepairMsg(`Done! ${r.fixed} Non-GST invoice(s) updated to ₹0.00 tax${r.skipped ? `, ${r.skipped} skipped` : ""}.`);
+                }}
+                className="px-3.5 py-1.5 rounded-full bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
+              >
+                Fix {nonGstRepairable.length} Non-GST invoice(s) (Set stored tax to ₹0.00)
               </button>
               {repairMsg && <span className="text-xs font-semibold text-emerald-700">{repairMsg}</span>}
             </div>
@@ -416,70 +518,50 @@ export const TaxReport: React.FC<TaxReportProps> = ({
         </div>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3">
-        <div className={cardCls}>
-          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-            Output GST
-          </div>
-          <div className="text-lg sm:text-xl font-extrabold text-slate-900 mt-1 tabular-nums">
-            ₹{money(fromLines.outputGst)}
-          </div>
-        </div>
-        <div className={cardCls}>
-          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-            Input credit
-          </div>
-          <div className="text-lg sm:text-xl font-extrabold text-emerald-700 mt-1 tabular-nums">
-            ₹{money(fromLines.inputCredit)}
-          </div>
-        </div>
-        <div className={cardCls}>
-          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-            Net payable
-          </div>
-          <div className="text-lg sm:text-xl font-extrabold text-slate-900 mt-1 tabular-nums">
-            ₹{money(fromLines.netPayable)}
-          </div>
-          {fromLines.carryForwardItc > 0 && (
-            <div className="text-[10px] font-semibold text-emerald-700 mt-0.5">
-              ITC carry-forward ₹{money(fromLines.carryForwardItc)}
-            </div>
-          )}
-        </div>
-        <div className={cardCls}>
-          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
-            Non-GST sales
-          </div>
-          <div className="text-lg sm:text-xl font-extrabold text-slate-900 mt-1 tabular-nums">
-            ₹{money(fromLines.taxableNil)}
-          </div>
-        </div>
+      <div className="md:hidden space-y-3">
+        <Chips<GstTab> label="GST report views" options={tabOptions} value={tab} onChange={setTab} />
+        {searchable && <PhoneSearch value={search} onChange={setSearch} placeholder={searchHint} />}
       </div>
-
-      <div className="w-full overflow-x-auto no-scrollbar">
-        <div className="inline-flex min-w-min bg-[#ebe8e1] rounded-full p-1 gap-0.5">
-          {TABS.map((t) => {
-            const active = tab === t.id;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setTab(t.id)}
-                className={`px-3.5 py-2 rounded-full text-xs sm:text-sm font-semibold whitespace-nowrap cursor-pointer transition-all ${
-                  active
-                    ? "bg-[#0d4a3a] text-white shadow-sm"
-                    : "text-slate-600 hover:text-slate-900"
-                }`}
-              >
-                {t.label}
-              </button>
-            );
-          })}
-        </div>
+      <div className="hidden md:block">
+        <ReportFilterPanel
+          search={searchable ? { value: search, onChange: setSearch, placeholder: searchHint } : undefined}
+          isFiltered={searchable && sq.length > 0}
+          onReset={() => setSearch("")}
+        >
+          <ReportChipGroup<GstTab> label="View" options={tabOptions} value={tab} onChange={setTab} />
+        </ReportFilterPanel>
       </div>
 
       {tab === "gstr3b" && (
-        <div className={tableWrap}>
+        <>
+        <div className="md:hidden space-y-3" id="gst-3b-cards">
+          {(() => {
+            const neg = (v: number) => `-₹${money(v)}`;
+            const rows: { key: string; title: string; hero?: string; heroLabel?: string; heroTone?: "ink" | "green" | "red" | "amber"; stats: { label: string; value: string; tone?: "ink" | "green" | "red" | "amber" | "muted" }[] }[] = [
+              { key: "a", title: "3.1(a) Outward taxable supplies", heroLabel: "Taxable", hero: `₹${money(fromLines.taxableGst)}`, stats: [
+                { label: "IGST", value: `₹${money(fromLines.igst)}` }, { label: "CGST", value: `₹${money(fromLines.cgst)}` }, { label: "SGST", value: `₹${money(fromLines.sgst)}` }, { label: "Cess", value: `₹${money(fromLines.cess)}` } ] },
+              { key: "c", title: "3.1(c) Nil rated / non-GST", heroLabel: "Taxable", hero: `₹${money(fromLines.taxableNil)}`, stats: [] },
+              { key: "cn", title: "Less: credit notes issued", heroLabel: "Taxable", hero: neg(fromLines.cnTaxable), heroTone: "amber", stats: [
+                { label: "IGST", value: neg(fromLines.cnIgst), tone: "amber" }, { label: "CGST", value: neg(fromLines.cnCgst), tone: "amber" }, { label: "SGST", value: neg(fromLines.cnSgst), tone: "amber" } ] },
+              { key: "net", title: "Net output tax (after credit notes)", stats: [
+                { label: "IGST", value: `₹${money(Math.max(0, fromLines.igst - fromLines.cnIgst))}` }, { label: "CGST", value: `₹${money(Math.max(0, fromLines.cgst - fromLines.cnCgst))}` }, { label: "SGST", value: `₹${money(Math.max(0, fromLines.sgst - fromLines.cnSgst))}` }, { label: "Cess", value: `₹${money(fromLines.cess)}` } ] },
+              { key: "itc", title: `4(A)(5) ITC — all other${(gstTaxSummary.itcReversal?.total || 0) > 0 ? " (before reversal)" : ""}`, heroLabel: "Purchases", hero: `₹${money(purchaseStats.netPurchaseVal)}`, stats: [
+                { label: "IGST", value: `₹${money(gstTaxSummary.itcReversal?.igst || 0)}`, tone: "green" }, { label: "CGST", value: `₹${money(fromLines.inputCredit / 2 + (gstTaxSummary.itcReversal?.cgst || 0))}`, tone: "green" }, { label: "SGST", value: `₹${money(fromLines.inputCredit / 2 + (gstTaxSummary.itcReversal?.sgst || 0))}`, tone: "green" }, { label: "Cess", value: `₹${money(purchaseStats.totalCessPaid || 0)}`, tone: "green" } ] },
+            ];
+            if ((gstTaxSummary.itcReversal?.total || 0) > 0) {
+              rows.push({ key: "rev", title: "4(B)(2) ITC reversed — goods returned to suppliers", stats: [
+                { label: "IGST", value: neg(gstTaxSummary.itcReversal!.igst), tone: "red" }, { label: "CGST", value: neg(gstTaxSummary.itcReversal!.cgst), tone: "red" }, { label: "SGST", value: neg(gstTaxSummary.itcReversal!.sgst), tone: "red" } ] });
+            }
+            rows.push({ key: "pay", title: "Net GST payable (net output − ITC)", heroLabel: "Payable", hero: `₹${money(fromLines.netPayable)}`, heroTone: "red", stats: [] });
+            if (fromLines.carryForwardItc > 0) {
+              rows.push({ key: "cf", title: "ITC carried forward to next period", heroLabel: "Carry forward", hero: `₹${money(fromLines.carryForwardItc)}`, heroTone: "green", stats: [] });
+            }
+            return rows.map((r) => (
+              <RegisterCard key={r.key} title={<span className="text-[14px]">{r.title}</span>} heroLabel={r.heroLabel} hero={r.hero} heroTone={r.heroTone} stats={r.stats.length ? r.stats : undefined} />
+            ));
+          })()}
+        </div>
+        <div className={`hidden md:block ${tableWrap}`}>
           <table className="w-full text-sm min-w-[520px]">
             <thead>
               <tr className="border-b border-black/5">
@@ -579,10 +661,39 @@ export const TaxReport: React.FC<TaxReportProps> = ({
             </tbody>
           </table>
         </div>
+        </>
       )}
 
       {tab === "b2b" && (
-        <div className={tableWrap}>
+        <>
+        <div className="md:hidden space-y-3" id="gst-b2b-cards">
+          {b2bInvoices.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-slate-500">Nothing for this month.</div>
+          ) : (
+            b2bInvoices.map((inv) => (
+              <RegisterCard
+                key={inv.billId}
+                title={inv.customerName}
+                subtitle={
+                  <>
+                    <div className="font-mono font-bold text-slate-900">{inv.invoiceNo}</div>
+                    <div className="text-slate-500">
+                      {inv.date}
+                      {inv.customerGstin ? ` · ${inv.customerGstin}` : ""}
+                    </div>
+                  </>
+                }
+                heroLabel="Total"
+                hero={`₹${money(inv.invoiceTotal)}`}
+                stats={[
+                  { label: "Taxable", value: `₹${money(inv.taxable)}` },
+                  { label: "Tax", value: `₹${money(inv.cgst + inv.sgst + inv.igst + inv.cess)}`, tone: "amber" },
+                ]}
+              />
+            ))
+          )}
+        </div>
+        <div className={`hidden md:block ${tableWrap}`}>
           {b2bInvoices.length === 0 ? (
             <div className="px-4 py-10 text-center text-sm text-slate-500">
               Nothing for this month.
@@ -621,10 +732,31 @@ export const TaxReport: React.FC<TaxReportProps> = ({
             </table>
           )}
         </div>
+        </>
       )}
 
       {tab === "b2c" && (
-        <div className={tableWrap}>
+        <>
+        <div className="md:hidden space-y-3" id="gst-b2c-cards">
+          {b2cByRate.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-slate-500">Nothing for this month.</div>
+          ) : (
+            b2cByRate.map((row) => (
+              <RegisterCard
+                key={`${row.rate}-${row.inter}`}
+                title={row.inter ? "Inter-state" : "Intra-state"}
+                pills={<Pill tone="blue">{row.rate % 1 === 0 ? row.rate.toFixed(0) : row.rate.toFixed(2)}% GST</Pill>}
+                heroLabel="Taxable"
+                hero={`₹${money(row.taxable)}`}
+                stats={[
+                  { label: "Tax", value: `₹${money(row.tax)}`, tone: "amber" },
+                  { label: "Cess", value: `₹${money(row.cess)}`, tone: row.cess > 0 ? "amber" : "muted" },
+                ]}
+              />
+            ))
+          )}
+        </div>
+        <div className={`hidden md:block ${tableWrap}`}>
           {b2cByRate.length === 0 ? (
             <div className="px-4 py-10 text-center text-sm text-slate-500">
               Nothing for this month.
@@ -661,10 +793,32 @@ export const TaxReport: React.FC<TaxReportProps> = ({
             </table>
           )}
         </div>
+        </>
       )}
 
       {tab === "hsn" && (
-        <div className={tableWrap}>
+        <>
+        <div className="md:hidden space-y-3" id="gst-hsn-cards">
+          {hsnRows.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-slate-500">Nothing for this month.</div>
+          ) : (
+            hsnRows.map((row) => (
+              <RegisterCard
+                key={`${row.hsn}-${row.rate}`}
+                title={<span className="font-mono">HSN {row.hsn}</span>}
+                pills={<Pill tone="blue">{row.rate % 1 === 0 ? row.rate.toFixed(0) : row.rate.toFixed(2)}% GST</Pill>}
+                heroLabel="Taxable"
+                hero={`₹${money(row.taxable)}`}
+                stats={[
+                  { label: "Qty", value: row.qty },
+                  { label: "Tax", value: `₹${money(row.cgst + row.sgst + row.igst)}`, tone: "amber" },
+                  { label: "Cess", value: `₹${money(row.cess)}`, tone: row.cess > 0 ? "amber" : "muted" },
+                ]}
+              />
+            ))
+          )}
+        </div>
+        <div className={`hidden md:block ${tableWrap}`}>
           {hsnRows.length === 0 ? (
             <div className="px-4 py-10 text-center text-sm text-slate-500">
               Nothing for this month.
@@ -703,11 +857,42 @@ export const TaxReport: React.FC<TaxReportProps> = ({
             </table>
           )}
         </div>
+        </>
       )}
 
       {tab === "purchases" && (
-        <div className={tableWrap}>
-          {!filteredGrns || filteredGrns.length === 0 ? (
+        <>
+        <div className="md:hidden space-y-3" id="gst-purchase-cards">
+          {!grnShown || grnShown.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-slate-500">Nothing for this month.</div>
+          ) : (
+            [...grnShown]
+              .sort((a, b) => String(b.inwardDate || "").localeCompare(String(a.inwardDate || "")))
+              .map((g) => {
+                const gst = Number(g.totalTax) || (Number(g.totalCgst) || 0) + (Number(g.totalSgst) || 0) + (Number(g.totalIgst) || 0);
+                return (
+                  <RegisterCard
+                    key={g.id}
+                    title={g.supplierName || "—"}
+                    subtitle={
+                      <>
+                        <div className="font-mono font-bold text-slate-900">{g.invoiceNo || g.grnNumber || "—"}</div>
+                        <div className="text-slate-500">{g.inwardDate || g.invoiceDate || "—"}</div>
+                      </>
+                    }
+                    heroLabel="Total"
+                    hero={`₹${money(Number(g.grandTotal) || 0)}`}
+                    stats={[
+                      { label: "Taxable", value: `₹${money(Number(g.totalTaxable) || Number(g.taxableAmount) || 0)}` },
+                      { label: "GST (ITC)", value: `₹${money(gst)}`, tone: "green" },
+                    ]}
+                  />
+                );
+              })
+          )}
+        </div>
+        <div className={`hidden md:block ${tableWrap}`}>
+          {!grnShown || grnShown.length === 0 ? (
             <div className="px-4 py-10 text-center text-sm text-slate-500">
               Nothing for this month.
             </div>
@@ -724,7 +909,7 @@ export const TaxReport: React.FC<TaxReportProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-black/5">
-                {[...filteredGrns]
+                {[...grnShown]
                   .sort((a, b) =>
                     String(b.inwardDate || "").localeCompare(
                       String(a.inwardDate || ""),
@@ -764,6 +949,7 @@ export const TaxReport: React.FC<TaxReportProps> = ({
             </table>
           )}
         </div>
+        </>
       )}
 
       <p className="text-[11px] text-slate-400 leading-relaxed">

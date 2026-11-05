@@ -13,6 +13,8 @@ import {
   History,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
+import { SizeChip } from '../common/SizeChip';
+import { sizeStripe } from '../../utils/sizeColor';
 import { Button, Card, CardContent, Badge, Modal } from '../ui';
 import {
   AuditSession,
@@ -389,9 +391,12 @@ export const SmartReconciliationView: React.FC = () => {
                   <div
                     key={p.id}
                     className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-100 lg:border-r"
+                    style={sizeStripe(p.volume, p.name)}
                   >
                     <div className="min-w-0">
-                      <p className="text-sm text-slate-800 break-words leading-snug" title={p.name}>{p.name}</p>
+                      <p className="text-sm text-slate-800 break-words leading-snug" title={p.name}>
+                        {p.name} <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
+                      </p>
                       <p className="text-[11px] text-slate-400">System says {bookStock(p.id)}</p>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
@@ -525,9 +530,15 @@ export const SmartReconciliationView: React.FC = () => {
                 const locked = entry && (entry.decisionStatus === 'awaiting_approval' || entry.decisionStatus === 'applied');
                 const removed = editRemove.has(p.id);
                 return (
-                  <div key={p.id} className={`flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-100 lg:border-r ${removed ? 'opacity-40' : ''}`}>
+                  <div
+                    key={p.id}
+                    className={`flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-100 lg:border-r ${removed ? 'opacity-40' : ''}`}
+                    style={sizeStripe(p.volume, p.name)}
+                  >
                     <div className="min-w-0">
-                      <p className="text-sm text-slate-800 break-words leading-snug">{p.name}</p>
+                      <p className="text-sm text-slate-800 break-words leading-snug">
+                        {p.name} <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
+                      </p>
                       <p className="text-[11px] text-slate-400">
                         {entry
                           ? locked
@@ -742,11 +753,18 @@ const SessionDetail: React.FC<{
             void pendingTxnsFor;
 
             return (
-              <Card key={entry.id}>
+              <Card key={entry.id} style={sizeStripe(products.find((p: any) => p.id === entry.productId)?.volume, entry.productName)}>
                 <CardContent className="space-y-2.5">
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <p className="font-semibold text-sm text-slate-900">{entry.productName}</p>
+                      <p className="font-semibold text-sm text-slate-900">
+                        {entry.productName}{' '}
+                        <SizeChip
+                          volume={products.find((p: any) => p.id === entry.productId)?.volume}
+                          pack={products.find((p: any) => p.id === entry.productId)?.pack}
+                          name={entry.productName}
+                        />
+                      </p>
                       <p className="text-xs text-slate-500">
                         System says {entry.systemStock}, physical count is {entry.physicalStock}.
                       </p>

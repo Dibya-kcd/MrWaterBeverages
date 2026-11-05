@@ -37,6 +37,8 @@ import { generateSkuId, money } from '../../utils/billing';
 import { collectExpiryAlerts } from '../../utils/fefo';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { EmptyState } from '../common/EmptyState';
+import { SizeChip } from '../common/SizeChip';
+import { sizeStripe } from '../../utils/sizeColor';
 import { LoadingSkeleton } from '../common/LoadingSkeleton';
 import { AuditView } from './AuditView';
 import { BulkInwardModal } from './BulkInwardModal';
@@ -527,6 +529,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                     <li
                       key={p.id}
                       className="rounded-2xl border border-black/8 bg-white shadow-sm overflow-hidden"
+                      style={sizeStripe(p.volume, p.name)}
                     >
                       <button
                         type="button"
@@ -540,7 +543,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                         aria-expanded={expanded}
                       >
                         <span className="text-[13px] sm:text-sm font-bold text-slate-900 leading-snug break-words min-w-0">
-                          {p.name}
+                          {p.name}{' '}
+                          <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
                         </span>
                         <span
                           className={`text-sm font-extrabold tabular-nums shrink-0 ${
@@ -793,7 +797,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                                   <div className="min-w-0">
                                     <span className="font-semibold text-slate-800">
                                       {item.productName}
-                                    </span>
+                                    </span>{' '}
+                                    <SizeChip
+                                      volume={products.find((p) => p.id === item.productId)?.volume}
+                                      pack={products.find((p) => p.id === item.productId)?.pack}
+                                      name={item.productName}
+                                    />
                                     {item.schemeText && (
                                       <span className="ml-1.5 text-[10px] text-purple-700">
                                         {item.schemeText}
@@ -943,10 +952,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         // then System / Counted / Diff), classic 4-column grid from `sm` upwards.
         const renderAuditRow = (opts: {
           key: string;
+          productId?: number;
           name: string;
           meta: string;
           systemQty: number;
         }) => {
+          const auditProd = products.find((p) => p.id === opts.productId);
           const countedStr = auditCounts[opts.key] ?? '';
           const hasCount = countedStr !== '';
           const counted = hasCount ? Number(countedStr) : NaN;
@@ -957,10 +968,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
               className={`grid grid-cols-[1fr_1.4fr_1fr] sm:grid-cols-[1fr_5rem_5.5rem_4rem] gap-x-3 gap-y-1.5 sm:gap-y-0 px-3 sm:px-4 py-2.5 sm:py-3 items-start sm:items-center ${
                 diff !== null && diff !== 0 ? 'bg-amber-50/50' : ''
               }`}
+              style={sizeStripe(auditProd?.volume, opts.name)}
             >
               <div className="col-span-3 sm:col-span-1 min-w-0">
                 <div className="text-[13px] sm:text-sm font-semibold text-slate-900 leading-snug break-words">
-                  {opts.name}
+                  {opts.name}{' '}
+                  <SizeChip volume={auditProd?.volume} pack={auditProd?.pack} name={opts.name} />
                 </div>
                 <div className="text-[11px] text-slate-500 leading-tight mt-0.5">{opts.meta}</div>
               </div>
@@ -1078,6 +1091,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                 {visibleRows.map((r) =>
                   renderAuditRow({
                     key: r.key,
+                    productId: r.batch.productId,
                     name: r.name,
                     meta: `Batch ${r.batch.batchNumber || '—'} · Exp ${fmtExp(r.batch.expiryDate)}`,
                     systemQty: r.systemQty,
@@ -1086,6 +1100,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                 {visibleOrphans.map((o) =>
                   renderAuditRow({
                     key: o.key,
+                    productId: o.productId,
                     name: o.name,
                     meta: 'No batch · book stock',
                     systemQty: o.systemQty,
@@ -1268,11 +1283,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                   return (
                     <div
                       key={line.key}
-                      className="flex items-center gap-2 sm:gap-3 py-2.5 border-b border-black/5 last:border-0"
+                      className="flex items-center gap-2 sm:gap-3 py-2.5 pl-2 border-b border-black/5 last:border-0"
+                      style={sizeStripe(prod?.volume, prod?.name)}
                     >
                       <div className="min-w-0 flex-1">
                         <div className="text-[13px] sm:text-sm font-semibold text-slate-900 leading-snug break-words">
-                          {prod?.name || `Product #${line.productId}`}
+                          {prod?.name || `Product #${line.productId}`}{' '}
+                          <SizeChip volume={prod?.volume} pack={prod?.pack} name={prod?.name} />
                         </div>
                         <div
                           className={`text-[11px] font-medium ${
@@ -1389,10 +1406,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                       <li
                         key={st.id}
                         className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm"
+                        style={sizeStripe(prod?.volume, prod?.name)}
                       >
                         <div className="flex items-start justify-between gap-3">
                           <span className="font-semibold text-slate-800 leading-snug break-words min-w-0">
-                            {prod?.name || `Product #${st.productId}`}
+                            {prod?.name || `Product #${st.productId}`}{' '}
+                            <SizeChip volume={prod?.volume} pack={prod?.pack} name={prod?.name} />
                           </span>
                           <span className="font-bold tabular-nums text-slate-800 shrink-0">{st.quantity} cs</span>
                         </div>

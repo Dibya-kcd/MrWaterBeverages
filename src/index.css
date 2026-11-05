@@ -1395,9 +1395,11 @@ body {
     z-index: 1;
     background-color: #fff;
     box-shadow: 1px 0 0 #e2e8f0, 4px 0 6px -4px rgba(15, 23, 42, 0.18);
-    max-width: 9.5rem;
+    min-width: 7.5rem;
+    max-width: 10rem;
     white-space: normal;
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
+    word-break: normal;
   }
   .reports-root table thead th:first-child {
     background-color: #f1f5f9;
@@ -1423,8 +1425,11 @@ body {
 }
 
 /* ============================================================
-   Phones: simple report tables become one card per row.
+   Phones: report tables become one card per row.
    (src/utils/tableCards.ts tags each cell with its column title.)
+   - up to 5 columns: title on the left, value on the right
+   - 6+ columns: compact two-column card, small title above each value
+   - total rows (table footer) become a highlighted card
    ============================================================ */
 @media (max-width: 767px) {
   .reports-root table[data-cards] {
@@ -1436,29 +1441,46 @@ body {
   .reports-root table[data-cards] thead {
     display: none;
   }
-  .reports-root table[data-cards] tbody {
+  .reports-root table[data-cards] tbody,
+  .reports-root table[data-cards] tfoot {
     display: block;
   }
-  .reports-root table[data-cards] tbody tr {
+  .reports-root table[data-cards] :is(tbody, tfoot) tr {
     display: block;
     margin: 0 0 0.6rem;
     padding: 0.35rem 0.75rem;
     border: 1px solid #e2e8f0 !important;
     border-radius: 0.9rem;
+    background: #fff;
     box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
   }
-  .reports-root table[data-cards] tbody td {
+  .reports-root table[data-cards] tfoot tr {
+    background: #f1f5f9;
+    border-color: #cbd5e1 !important;
+  }
+  .reports-root table[data-cards] :is(tbody, tfoot) td {
     display: block;
     position: static;
     max-width: none;
+    min-width: 0;
     padding: 0.15rem 0;
     text-align: left !important;
     box-shadow: none;
     background-color: transparent;
     white-space: normal;
+    overflow-wrap: break-word;
   }
-  /* cells that have a column title: title left, value right */
-  .reports-root table[data-cards] tbody td[data-label]:not(:first-child) {
+  .reports-root table[data-cards] td:empty {
+    display: none;
+  }
+  /* title cell: name / date / invoice, or the "TOTAL ..." label */
+  .reports-root table[data-cards] :is(tbody, tfoot) td:first-child {
+    font-size: 1rem;
+    font-weight: 700;
+    padding: 0.4rem 0 0.5rem;
+  }
+  /* few columns: title left, value right */
+  .reports-root table[data-cards]:not([data-dense]) :is(tbody, tfoot) td[data-label]:not(:first-child) {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -1467,7 +1489,7 @@ body {
     border-top: 1px dashed #e2e8f0;
     text-align: right !important;
   }
-  .reports-root table[data-cards] tbody td[data-label]:not(:first-child):not([data-label=""])::before {
+  .reports-root table[data-cards]:not([data-dense]) :is(tbody, tfoot) td[data-label]:not(:first-child):not([data-label=""])::before {
     content: attr(data-label);
     flex: 0 0 auto;
     max-width: 48%;
@@ -1477,20 +1499,43 @@ body {
     color: #64748b;
     text-align: left;
   }
-  /* first cell = the card title (name / date / invoice) */
-  .reports-root table[data-cards] tbody td:first-child {
-    font-size: 1rem;
-    padding: 0.4rem 0 0.5rem;
+  /* many columns: two values per line, small title above each */
+  .reports-root table[data-cards][data-dense] :is(tbody, tfoot) tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 0.75rem;
   }
-  /* full-width rows (expanded details, totals) */
+  .reports-root table[data-cards][data-dense] :is(tbody, tfoot) td:first-child,
+  .reports-root table[data-cards][data-dense] :is(tbody, tfoot) td[colspan],
+  .reports-root table[data-cards][data-dense] :is(tbody, tfoot) td[data-label=""] {
+    grid-column: 1 / -1;
+  }
+  .reports-root table[data-cards][data-dense] :is(tbody, tfoot) td[data-label]:not(:first-child) {
+    padding: 0.4rem 0;
+    border-top: 1px dashed #e2e8f0;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+  .reports-root table[data-cards][data-dense] :is(tbody, tfoot) td[data-label]:not(:first-child):not([data-label=""])::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 0.1rem;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: #64748b;
+  }
+  /* full-width rows (expanded details) */
+  .reports-root table[data-cards] :is(tbody, tfoot) td[colspan]:not(:first-child),
   .reports-root table[data-cards] tbody td[colspan] {
     display: block;
     border-top: 0;
   }
-  .reports-root table[data-cards] tbody tr:has(> td[colspan]) {
+  .reports-root table[data-cards] tbody tr:has(> td[colspan]:only-child) {
     padding: 0.35rem 0.5rem;
   }
-  .reports-root table[data-cards] tbody td > * {
+  .reports-root table[data-cards] td > * {
     max-width: 100%;
   }
 }

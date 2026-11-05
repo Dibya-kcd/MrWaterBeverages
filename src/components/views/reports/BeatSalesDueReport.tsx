@@ -7,6 +7,7 @@ import { todayISO } from '../../../utils/dateLocal';
 import { buildBeatSummary, NO_BEAT, OVERDUE_AFTER_DAYS } from '../../../utils/beatReports';
 import { downloadPdf, downloadXlsx, fileSlug, fileStamp } from '../../../utils/reportDownload';
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
+import { BeatSalesDuePhone } from './mobile/BeatSalesDuePhone';
 
 export interface BeatSalesDueReportProps {
   periodLabel: string;
@@ -90,7 +91,9 @@ export const BeatSalesDueReport: React.FC<BeatSalesDueReportProps> = ({ periodLa
   );
 
   return (
-    <div className="space-y-3" id="report-beat-sales-due">
+    <>
+      <BeatSalesDuePhone summary={summary} periodLabel={periodLabel} onExcel={exportExcel} onPdf={exportPdf} />
+    <div className="hidden md:block space-y-3" id="report-beat-sales-due">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h2 className="text-base font-bold text-slate-900">Beat-wise sales &amp; due</h2>
@@ -208,5 +211,6 @@ export const BeatSalesDueReport: React.FC<BeatSalesDueReportProps> = ({ periodLa
         </div>
       )}
     </div>
+    </>
   );
 };

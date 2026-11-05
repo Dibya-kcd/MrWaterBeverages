@@ -15,6 +15,7 @@ import {
   Wallet,
 } from 'lucide-react';
 export type ReportSection =
+  | 'overview'
   | 'sales'
   | 'margin'
   | 'netProfit'
@@ -34,16 +35,13 @@ const TABS: {
   label: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
 }[] = [
-  { id: 'sales', label: 'Sales & Revenue', icon: TrendingUp },
   { id: 'margin', label: 'Sales, Margin & P&L', icon: Percent },
-  { id: 'netProfit', label: 'Net Profit & Salary', icon: Wallet },
   { id: 'dispositions', label: 'Returns, Free & Claims', icon: AlertTriangle },
   { id: 'purchases', label: 'Inward & Purchases', icon: ArrowDownToLine },
   { id: 'receivables', label: 'Party Credit & Receivables', icon: Users },
   { id: 'inventory', label: 'Inventory & Valuation', icon: Boxes },
   { id: 'trips', label: 'Vehicle Trips & Logistics', icon: Truck },
   { id: 'tax', label: 'GST', icon: ShieldCheck },
-  { id: 'supplierProfit', label: 'Supplier & Product Profit', icon: HandCoins },
   { id: 'daybook', label: 'Daily Collection (paid / due)', icon: BookOpen },
   { id: 'beats', label: 'Beat-wise Sales & Due', icon: MapPin },
 ];

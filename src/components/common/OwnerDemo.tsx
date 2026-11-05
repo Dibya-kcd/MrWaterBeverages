@@ -24,6 +24,7 @@ import {
   Boxes,
   FileText,
   Wallet,
+  Receipt,
   Container,
   Tag,
   Truck,
@@ -56,6 +57,7 @@ type ScreenId =
   | 'inventory'
   | 'supplierSchemes'
   | 'payments'
+  | 'expenses'
   | 'crates'
   | 'promotions'
   | 'trips'
@@ -152,8 +154,7 @@ const PROMO_TYPES = [
 
 const REPORTS = [
   { id: 'sales', label: 'Sales & Revenue', blurb: 'Day-wise totals, every invoice, and what each product dispatched.' },
-  { id: 'margin', label: 'Sales, Margin & P&L', blurb: 'Profit on each sale after the cost of the stock you sold.' },
-  { id: 'netProfit', label: 'Net Profit & Salary', blurb: 'Profit after expenses and salaries.' },
+  { id: 'margin', label: 'Sales, Margin & P&L', blurb: 'P&L, product margins, and Net Profit & Pay (expenses/salary).' },
   { id: 'dispositions', label: 'Returns, Free & Claims', blurb: 'Returns, free goods and claims you can make on the company.' },
   { id: 'purchases', label: 'Inward & Purchases', blurb: 'Everything you bought, supplier by supplier.' },
   { id: 'receivables', label: 'Party Credit & Receivables', blurb: 'Who owes you money, and how much.' },
@@ -174,6 +175,7 @@ const MENU: { id: ScreenId; label: string; Icon: React.ComponentType<{ size?: nu
   { id: 'inventory', label: 'Inventory', Icon: Boxes },
   { id: 'supplierSchemes', label: 'Supplier credits', Icon: FileText },
   { id: 'payments', label: 'Payments', Icon: Wallet },
+  { id: 'expenses', label: 'Expenses', Icon: Receipt },
   { id: 'crates', label: 'Crates & deposits', Icon: Container },
   { id: 'promotions', label: 'Promotions', Icon: Tag },
   { id: 'trips', label: 'Trips', Icon: Truck },
@@ -1526,6 +1528,7 @@ export const OwnerDemo: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     promotions: screenPromotions,
     trips: screenTrips,
     reports: screenReports,
+    expenses: screenDashboard,
     settings: screenSettings,
     finish: screenFinish,
   };

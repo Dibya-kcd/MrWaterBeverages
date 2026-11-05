@@ -543,3 +543,226 @@ export function buildBeatSummary(args: {
     },
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* Day-wise sales, collection and status                               */
+/* ------------------------------------------------------------------ */
+
+export interface DaySummaryRow {
+  date: string;
+  bills: number;
+  sales: number;
+  receipts: number;
+  received: number;
+  cash: number;
+  other: number;
+  /** Sales minus money received that day. Positive: customers owe more at day end. Negative: old dues were recovered. */
+  dueChange: number;
+  status: 'up' | 'down' | 'even';
+  receiptRows: ReceiptRow[];
+}
+
+export interface DaySummary {
+  days: DaySummaryRow[];
+  totals: { bills: number; sales: number; receipts: number; received: number; cash: number; other: number; dueChange: number };
+}
+
+export function buildDaySummary(args: {
+  bills: Bill[];
+  payments: PaymentRecord[];
+  customers: Customer[];
+  existingCustomers: ExistingCustomer[];
+  beats: BeatLike[];
+  inPeriod: (date: string) => boolean;
+  beatFilter?: string;
+}): DaySummary {
+  const { bills, payments, customers, existingCustomers, beats, inPeriod } = args;
+  const beatFilter = args.beatFilter || 'all';
+  const resolver = makeBeatResolver(customers, beats);
+  const map = new Map<string, DaySummaryRow>();
+  const day = (d: string): DaySummaryRow => {
+    let g = map.get(d);
+    if (!g) {
+      g = { date: d, bills: 0, sales: 0, receipts: 0, received: 0, cash: 0, other: 0, dueChange: 0, status: 'even', receiptRows: [] };
+      map.set(d, g);
+    }
+    return g;
+  };
+
+  for (const b of bills || []) {
+    if (!isLive(b)) continue;
+    const d = day10(b.date);
+    if (!d || !inPeriod(d)) continue;
+    if (beatFilter !== 'all' && resolver.beatIdFor(b.retailer, b.phone, b.customerId) !== beatFilter) continue;
+    const g = day(d);
+    g.bills += 1;
+    g.sales = round2(g.sales + billNetTotal(b));
+  }
+
+  const reg = buildReceiptRegister({ bills, payments, customers, existingCustomers, beats, inPeriod, beatFilter });
+  for (const rd of reg.days) {
+    const g = day(rd.date);
+    g.receipts = rd.rows.length;
+    g.received = rd.total;
+    g.cash = rd.cash;
+    g.other = rd.other;
+    g.receiptRows = rd.rows;
+  }
+
+  const days = Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
+  for (const g of days) {
+    g.dueChange = round2(g.sales - g.received);
+    g.status = g.dueChange > 0.004 ? 'up' : g.dueChange < -0.004 ? 'down' : 'even';
+  }
+  const sum = (f: (r: DaySummaryRow) => number) => round2(days.reduce((s, r) => s + f(r), 0));
+  return {
+    days,
+    totals: {
+      bills: days.reduce((s, r) => s + r.bills, 0),
+      sales: sum((r) => r.sales),
+      receipts: days.reduce((s, r) => s + r.receipts, 0),
+      received: sum((r) => r.received),
+      cash: sum((r) => r.cash),
+      other: sum((r) => r.other),
+      dueChange: sum((r) => r.dueChange),
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Customer-wise overall billed, paid and due                          */
+/* ------------------------------------------------------------------ */
+
+export interface CustomerOverallRow {
+  key: string;
+  name: string;
+  phone: string;
+  beatId: string;
+  beatName: string;
+  bills: number;
+  billed: number;
+  paid: number;
+  due: number;
+  advance: number;
+  lastReceiptDate: string;
+}
+
+export interface CustomerOverall {
+  rows: CustomerOverallRow[];
+  totals: { customers: number; billed: number; paid: number; due: number; advance: number };
+}
+
+/** Whole-life figures per customer (not limited to a period): the same ledger the Customers screen shows. */
+export function buildCustomerOverall(args: {
+  bills: Bill[];
+  payments: PaymentRecord[];
+  customers: Customer[];
+  existingCustomers: ExistingCustomer[];
+  beats: BeatLike[];
+  beatFilter?: string;
+  search?: string;
+  onlyDue?: boolean;
+}): CustomerOverall {
+  const { bills, payments, customers, existingCustomers, beats } = args;
+  const beatFilter = args.beatFilter || 'all';
+  const q = (args.search || '').trim().toLowerCase();
+  const resolver = makeBeatResolver(customers, beats);
+  const beatName = (id: string) => (id === NO_BEAT ? NO_BEAT_LABEL : beats.find((b) => b.id === id)?.name || NO_BEAT_LABEL);
+
+  const lastReceipt = new Map<string, string>();
+  for (const e of collectReceipts({ bills, payments, resolver })) {
+    const k = norm(e.customerName);
+    if (e.date > (lastReceipt.get(k) || '')) lastReceipt.set(k, e.date);
+  }
+
+  const rows: CustomerOverallRow[] = [];
+  for (const e of existingCustomers || []) {
+    const beatId = resolver.beatIdFor(e.name, e.phone, e.id);
+    if (beatFilter !== 'all' && beatId !== beatFilter) continue;
+    if (q && !e.name.toLowerCase().includes(q) && !String(e.phone || '').includes(q)) continue;
+    const due = round2(Number(e.balanceDue) || 0);
+    const advance = round2(Number(e.advance) || 0);
+    if (args.onlyDue && due <= 0.004) continue;
+    rows.push({
+      key: e.id || norm(e.name),
+      name: e.name,
+      phone: e.phone || '',
+      beatId,
+      beatName: beatName(beatId),
+      bills: Number(e.totalBills) || 0,
+      billed: round2(Number(e.totalBilled) || 0),
+      paid: round2(Number(e.totalPaid) || 0),
+      due,
+      advance,
+      lastReceiptDate: lastReceipt.get(norm(e.name)) || '',
+    });
+  }
+  rows.sort((a, b) => b.due - a.due || b.billed - a.billed || a.name.localeCompare(b.name));
+  const sum = (f: (r: CustomerOverallRow) => number) => round2(rows.reduce((s, r) => s + f(r), 0));
+  return {
+    rows,
+    totals: { customers: rows.length, billed: sum((r) => r.billed), paid: sum((r) => r.paid), due: sum((r) => r.due), advance: sum((r) => r.advance) },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Invoices that still have money to collect                           */
+/* ------------------------------------------------------------------ */
+
+export interface DueInvoiceRow {
+  billId: number;
+  invoiceNo: string;
+  date: string;
+  customerName: string;
+  phone: string;
+  beatId: string;
+  beatName: string;
+  total: number;
+  paid: number;
+  balance: number;
+  ageDays: number;
+}
+
+export function buildDueInvoices(args: {
+  bills: Bill[];
+  payments: PaymentRecord[];
+  customers: Customer[];
+  beats: BeatLike[];
+  today: string;
+  beatFilter?: string;
+  search?: string;
+}): { rows: DueInvoiceRow[]; total: number } {
+  const { bills, payments, customers, beats, today } = args;
+  const beatFilter = args.beatFilter || 'all';
+  const q = (args.search || '').trim().toLowerCase();
+  const resolver = makeBeatResolver(customers, beats);
+  const balances = effectiveBillBalances(bills, payments);
+  const beatName = (id: string) => (id === NO_BEAT ? NO_BEAT_LABEL : beats.find((b) => b.id === id)?.name || NO_BEAT_LABEL);
+  const rows: DueInvoiceRow[] = [];
+  for (const b of bills || []) {
+    if (!isLive(b)) continue;
+    const balance = round2(balances.get(b.id) || 0);
+    if (balance <= 0.004) continue;
+    const beatId = resolver.beatIdFor(b.retailer, b.phone, b.customerId);
+    if (beatFilter !== 'all' && beatId !== beatFilter) continue;
+    const inv = invoiceNo(b.id);
+    if (q && !(b.retailer || '').toLowerCase().includes(q) && !inv.toLowerCase().includes(q) && !String(b.phone || '').includes(q)) continue;
+    const total = round2(billNetTotal(b));
+    const d = day10(b.date);
+    rows.push({
+      billId: b.id,
+      invoiceNo: inv,
+      date: d,
+      customerName: b.retailer || 'Cash Sale',
+      phone: b.phone || '',
+      beatId,
+      beatName: beatName(beatId),
+      total,
+      paid: round2(Math.max(0, total - balance)),
+      balance,
+      ageDays: d ? Math.max(0, daysBetween(d, today)) : 0,
+    });
+  }
+  rows.sort((a, b) => b.ageDays - a.ageDays || b.balance - a.balance);
+  return { rows, total: round2(rows.reduce((s, r) => s + r.balance, 0)) };
+}

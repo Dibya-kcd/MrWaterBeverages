@@ -1,26 +1,120 @@
-import React, { useState, useMemo } from 'react';
-import { ArrowRight, Truck, Package, CheckCircle2, AlertTriangle, Calendar, FileText, ChevronDown, ChevronUp, Building2 } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { ArrowRight, Check, Truck } from 'lucide-react';
 import { Trip, Warehouse } from '../../../types';
-import { StatCard, Card, Badge, Button } from '../../ui';
-import { todayISO, toLocalISODate } from "../../../utils/dateLocal";
+import { useLedger } from '../../../context/LedgerContext';
+import { todayISO, toLocalISODate } from '../../../utils/dateLocal';
+import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
+import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
+import {
+  ExplainBox,
+  ReportBreakdownLine,
+  ReportChipGroup,
+  ReportEmpty,
+  ReportExplainModal,
+  ReportFilterPanel,
+  ReportGroupCard,
+  ReportList,
+  ReportListMeta,
+  ReportRow,
+  ReportStat,
+  ReportStatGrid,
+  ReportTitleBar,
+} from './ReportKit';
+import {
+  Chips,
+  EmptyNote,
+  HeroCard,
+  IconTile,
+  LegendDot,
+  MiniStat,
+  PhoneDownloadBar,
+  PhoneHeader,
+  PhoneSearch,
+  RowCard,
+  SplitBar,
+  Tag,
+  UnifiedPhoneFilterBar,
+  PhoneFilterBottomSheet,
+} from './mobile/PhoneKit';
 
 interface TripsReportProps {
   filteredTrips: Trip[];
   tripBreakdown: (t: Trip) => { rows: any[] };
   period: string;
+  /** Label of the period chosen at the top of Reports (e.g. "November 2026"). Falls back to `period`. */
+  periodLabel?: string;
   warehouses?: Warehouse[];
   onNavigateTrips: () => void;
 }
 
+type ViewMode = 'daywise' | 'log';
+type StatusFilter = 'all' | 'out' | 'closed';
+
+interface TripNums {
+  loaded: number;
+  delivered: number;
+  returned: number;
+  disc: number;
+}
+
+interface TripLine {
+  trip: Trip;
+  nums: TripNums;
+}
+
+interface TripDay {
+  date: string;
+  dateLabel: string;
+  vehicles: string[];
+  loaded: number;
+  delivered: number;
+  returned: number;
+  disc: number;
+  lines: TripLine[];
+}
+
+const VIEW_OPTIONS: { id: ViewMode; label: string }[] = [
+  { id: 'daywise', label: 'By day' },
+  { id: 'log', label: 'Trip log' },
+];
+
+const STATUS_OPTIONS: { id: StatusFilter; label: string }[] = [
+  { id: 'all', label: 'All trips' },
+  { id: 'out', label: 'In transit' },
+  { id: 'closed', label: 'Reconciled' },
+];
+
+const sumVals = (o?: Record<number, number>) => Object.values(o || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+const cs = (n: number) => `${n} cs`;
+const varText = (n: number) => (n > 0 ? `−${n} cs` : '0');
+
+const formatDateHuman = (d: string): string => {
+  const dt = new Date(`${d}T12:00:00`);
+  return isNaN(dt.getTime())
+    ? d
+    : dt.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+};
+
+/**
+ * Vehicle trips, laid out like "Daily collection": totals on top, always-visible search + filters,
+ * then one collapsed card per day (open it to see every run). Uses the period chosen at the top of Reports.
+ */
 export const TripsReport: React.FC<TripsReportProps> = ({
   filteredTrips,
   tripBreakdown,
   period,
-  warehouses = [],
+  periodLabel,
   onNavigateTrips,
 }) => {
-  const [viewMode, setViewMode] = useState<'daywise' | 'log'>('daywise');
-  const [expandedDay, setExpandedDay] = useState<string | null>(null);
+  const { orgProfile } = useLedger();
+  const label = periodLabel || period;
+
+  const [viewMode, setViewMode] = useState<ViewMode>('daywise');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [search, setSearch] = useState('');
+  const [openDays, setOpenDays] = useState<Set<string>>(new Set());
+  const [explainOpen, setExplainOpen] = useState(false);
+  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
 
   const todayStr = useMemo(() => todayISO(), []);
   const yesterdayStr = useMemo(() => {
@@ -29,419 +123,507 @@ export const TripsReport: React.FC<TripsReportProps> = ({
     return toLocalISODate(d);
   }, []);
 
-  const formatFriendlyDate = (dateStr: string) => {
-    if (!dateStr) return 'Unknown Date';
-    try {
-      const [y, m, d] = dateStr.split('-').map(Number);
-      const dt = new Date(y, m - 1, d);
-      return dt.toLocaleDateString('en-IN', {
-        weekday: 'short',
-        day: 'numeric',
-        month: 'short',
-        year: 'numeric',
-      });
-    } catch {
-      return dateStr;
-    }
+  const dayLabel = (d: string) =>
+    d === todayStr ? `Today · ${formatDateHuman(d)}` : d === yesterdayStr ? `Yesterday · ${formatDateHuman(d)}` : formatDateHuman(d);
+
+  // ---- every trip with its numbers, latest first -------------------------------------------------
+  const allLines = useMemo<TripLine[]>(() => {
+    const lines = filteredTrips.map((t) => {
+      const { rows } = tripBreakdown(t);
+      return {
+        trip: t,
+        nums: {
+          loaded: sumVals(t.loaded),
+          returned: sumVals(t.returned),
+          delivered: rows.reduce((s, r) => s + (r.sold || 0), 0),
+          disc: rows.reduce((s, r) => s + (r.discrepancy || 0), 0),
+        },
+      };
+    });
+    return lines.sort((a, b) => {
+      const dCmp = (b.trip.date || '').localeCompare(a.trip.date || '');
+      return dCmp !== 0 ? dCmp : Number(b.trip.id) - Number(a.trip.id);
+    });
+  }, [filteredTrips, tripBreakdown]);
+
+  const totals = useMemo(
+    () =>
+      allLines.reduce(
+        (a, l) => ({
+          loaded: a.loaded + l.nums.loaded,
+          delivered: a.delivered + l.nums.delivered,
+          returned: a.returned + l.nums.returned,
+          disc: a.disc + l.nums.disc,
+        }),
+        { loaded: 0, delivered: 0, returned: 0, disc: 0 },
+      ),
+    [allLines],
+  );
+
+  // ---- filters -----------------------------------------------------------------------------------
+  const q = search.toLowerCase().trim();
+  const isFiltered = statusFilter !== 'all' || q.length > 0;
+
+  const statusCounts = useMemo<Record<StatusFilter, number>>(
+    () => ({
+      all: allLines.length,
+      out: allLines.filter((l) => l.trip.status === 'out').length,
+      closed: allLines.filter((l) => l.trip.status !== 'out').length,
+    }),
+    [allLines],
+  );
+
+  const shownLines = useMemo(
+    () =>
+      allLines.filter((l) => {
+        if (statusFilter === 'out' && l.trip.status !== 'out') return false;
+        if (statusFilter === 'closed' && l.trip.status === 'out') return false;
+        if (q) {
+          const hay = `${l.trip.id} ${l.trip.vehicle || ''} ${l.trip.driver || ''} ${l.trip.salesman || ''} ${l.trip.route || ''}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      }),
+    [allLines, statusFilter, q],
+  );
+
+  const dayGroups = useMemo<TripDay[]>(() => {
+    const map = new Map<string, TripDay>();
+    shownLines.forEach((l) => {
+      const d = (l.trip.date || '').slice(0, 10) || 'Unknown date';
+      let g = map.get(d);
+      if (!g) {
+        g = { date: d, dateLabel: dayLabel(d), vehicles: [], loaded: 0, delivered: 0, returned: 0, disc: 0, lines: [] };
+        map.set(d, g);
+      }
+      if (l.trip.vehicle && !g.vehicles.includes(l.trip.vehicle)) g.vehicles.push(l.trip.vehicle);
+      g.loaded += l.nums.loaded;
+      g.delivered += l.nums.delivered;
+      g.returned += l.nums.returned;
+      g.disc += l.nums.disc;
+      g.lines.push(l);
+    });
+    return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownLines, todayStr, yesterdayStr]);
+
+  const resetFilters = () => {
+    setStatusFilter('all');
+    setSearch('');
   };
 
-  const tripStats = useMemo(() => {
-    return filteredTrips.reduce(
-      (acc, t) => {
-        const { rows } = tripBreakdown(t);
-        const loaded = Object.values(t.loaded || {}).reduce((s, v) => s + v, 0);
-        const returned = Object.values(t.returned || {}).reduce((s, v) => s + v, 0);
-        const delivered = rows.reduce((s, r) => s + r.sold, 0);
-        const discrepancy = rows.reduce((s, r) => s + r.discrepancy, 0);
-        return {
-          loaded: acc.loaded + loaded,
-          delivered: acc.delivered + delivered,
-          returned: acc.returned + returned,
-          discrepancy: acc.discrepancy + discrepancy,
-        };
-      },
-      { loaded: 0, delivered: 0, returned: 0, discrepancy: 0 }
-    );
-  }, [filteredTrips, tripBreakdown]);
+  const forceOpen = q.length > 0;
+  const isOpen = (d: string) => forceOpen || openDays.has(d);
+  const toggleDay = (d: string) =>
+    setOpenDays((prev) => {
+      const next = new Set(prev);
+      if (next.has(d)) next.delete(d);
+      else next.add(d);
+      return next;
+    });
+  const allOpen = dayGroups.length > 0 && dayGroups.every((g) => openDays.has(g.date));
+  const toggleAll = () => setOpenDays(allOpen ? new Set() : new Set(dayGroups.map((g) => g.date)));
 
-  // Day-wise aggregated trip runs breakdown (Sorted Day-wise, Latest on top)
-  const dayWiseTrips = useMemo(() => {
-    const map = new Map<
-      string,
+  const statusText = (t: Trip) => (t.status === 'out' ? 'In transit' : 'Reconciled');
+
+  // ---- downloads ---------------------------------------------------------------------------------
+  const shop = orgProfile?.name || 'MrWater Distribution';
+  const filterText = [
+    statusFilter !== 'all' ? STATUS_OPTIONS.find((o) => o.id === statusFilter)?.label : '',
+    q ? `Search "${search.trim()}"` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const exportExcel = () =>
+    downloadXlsx(`vehicle-trips-${fileStamp()}.xlsx`, [
       {
-        date: string;
-        tripCount: number;
-        vehicles: Set<string>;
-        loaded: number;
-        delivered: number;
-        returned: number;
-        discrepancy: number;
-        trips: Trip[];
-      }
-    >();
+        name: 'Day-wise summary',
+        header: ['Date', 'Runs', 'Vehicles', 'Loaded (cs)', 'Delivered (cs)', 'Returned (cs)', 'Variance (cs)'],
+        rows: dayGroups.map((g) => [g.date, g.lines.length, g.vehicles.join(', '), g.loaded, g.delivered, g.returned, g.disc]),
+        total: [
+          'Total',
+          shownLines.length,
+          '',
+          shownLines.reduce((s, l) => s + l.nums.loaded, 0),
+          shownLines.reduce((s, l) => s + l.nums.delivered, 0),
+          shownLines.reduce((s, l) => s + l.nums.returned, 0),
+          shownLines.reduce((s, l) => s + l.nums.disc, 0),
+        ],
+      },
+      {
+        name: 'Trips',
+        header: ['Trip', 'Date', 'Vehicle', 'Status', 'Loaded (cs)', 'Delivered (cs)', 'Returned (cs)', 'Variance (cs)'],
+        rows: shownLines.map((l) => [l.trip.id, l.trip.date, l.trip.vehicle || '', statusText(l.trip), l.nums.loaded, l.nums.delivered, l.nums.returned, l.nums.disc]),
+      },
+    ]);
 
-    filteredTrips.forEach((t) => {
-      const d = (t.date || '').slice(0, 10) || 'Unknown Date';
-      const { rows } = tripBreakdown(t);
-      const loaded = Object.values(t.loaded || {}).reduce((s, v) => s + v, 0);
-      const returned = Object.values(t.returned || {}).reduce((s, v) => s + v, 0);
-      const delivered = rows.reduce((s, r) => s + r.sold, 0);
-      const disc = rows.reduce((s, r) => s + r.discrepancy, 0);
-
-      const existing = map.get(d);
-      if (!existing) {
-        map.set(d, {
-          date: d,
-          tripCount: 1,
-          vehicles: new Set([t.vehicle || 'Van']),
-          loaded,
-          delivered,
-          returned,
-          discrepancy: disc,
-          trips: [t],
-        });
-      } else {
-        existing.tripCount += 1;
-        if (t.vehicle) existing.vehicles.add(t.vehicle);
-        existing.loaded += loaded;
-        existing.delivered += delivered;
-        existing.returned += returned;
-        existing.discrepancy += disc;
-        existing.trips.push(t);
-      }
+  const exportPdf = () =>
+    downloadPdf({
+      filename: `vehicle-trips-${fileStamp()}.pdf`,
+      title: 'Vehicle trips',
+      subtitle: [shop, `Period: ${label}`, ...(filterText ? [`Filtered: ${filterText}`] : [])],
+      landscape: true,
+      sections: [
+        {
+          title: 'Day-wise summary',
+          header: ['Date', 'Runs', 'Vehicles', 'Loaded', 'Delivered', 'Returned', 'Variance'],
+          rows: dayGroups.map((g) => [formatDateHuman(g.date), g.lines.length, g.vehicles.join(', '), g.loaded, g.delivered, g.returned, g.disc]),
+          rightAlign: [1, 3, 4, 5, 6],
+        },
+        {
+          title: 'Trips',
+          header: ['Trip', 'Date', 'Vehicle', 'Status', 'Loaded', 'Delivered', 'Returned', 'Variance'],
+          rows: shownLines.map((l) => [l.trip.id, l.trip.date, l.trip.vehicle || '', statusText(l.trip), l.nums.loaded, l.nums.delivered, l.nums.returned, l.nums.disc]),
+          rightAlign: [4, 5, 6, 7],
+        },
+      ],
     });
 
-    // Sort strictly day-wise: Latest day on top
-    return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
-  }, [filteredTrips, tripBreakdown]);
+  const hasAny = allLines.length > 0;
+  const statusOptionsWithCount = STATUS_OPTIONS.map((o) => ({ ...o, count: statusCounts[o.id] }));
+  const phoneStatusOptions = STATUS_OPTIONS.map((o) => ({ id: o.id, label: o.id === 'all' ? o.label : `${o.label} ${statusCounts[o.id]}` }));
 
-  // Individual trips sorted latest date on top
-  const sortedTrips = useMemo(() => {
-    return [...filteredTrips].sort((a, b) => {
-      const dCmp = (b.date || '').localeCompare(a.date || '');
-      if (dCmp !== 0) return dCmp;
-      return Number(b.id) - Number(a.id);
-    });
-  }, [filteredTrips]);
+  const runSummary = (g: TripDay) => `${g.lines.length} run${g.lines.length === 1 ? '' : 's'}${g.vehicles.length ? ` · ${g.vehicles.join(', ')}` : ''}`;
+  const runSub = (l: TripLine) => `Loaded ${l.nums.loaded} · Delivered ${l.nums.delivered} · Returned ${l.nums.returned} cs`;
+
+  const emptyText = hasAny && isFiltered ? 'Nothing matches these filters' : 'No delivery trips in this period. Log trips under Vehicle Trips to see them here.';
 
   return (
-    <div className="space-y-6">
-      {/* Metrics Row: 2-col mobile -> 4-col desktop */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        <StatCard
-          title="Dispatched Trips"
-          value={`${filteredTrips.length} runs`}
-          icon={Truck}
-          subtitle="Route delivery trips"
-          variant="default"
-        />
+    <>
+      {/* ============================ PHONE ============================ */}
+      <div className="md:hidden space-y-3" id="report-trips-phone">
+        <PhoneHeader title="Vehicle trips" sub="Deliveries and crate tracking" />
 
-        <StatCard
-          title="Crates Loaded"
-          value={`${tripStats.loaded} cs`}
-          icon={Package}
-          subtitle="Total cargo dispatched"
-          variant="accent"
-        />
-
-        <StatCard
-          title="Crates Delivered"
-          value={`${tripStats.delivered} cs`}
-          icon={CheckCircle2}
-          subtitle="Delivered to retailers"
-          variant="success"
-        />
-
-        <StatCard
-          title="Stock Discrepancy"
-          value={`${tripStats.discrepancy} cases`}
-          icon={AlertTriangle}
-          subtitle="Unaccounted in transit"
-          variant={tripStats.discrepancy > 0 ? 'danger' : 'success'}
-        />
-      </div>
-
-      {/* Trips Reconciliation Table with Day-wise View Toggle */}
-      <Card noPadding>
-        <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between flex-wrap gap-3">
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-base font-extrabold text-slate-900">Vehicle Trips & Dispatches Report</h3>
-              <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-sky-50 text-sky-700 border border-sky-200">
-                Sorted: Day-wise, Latest on Top ↓
-              </span>
-            </div>
-            <p className="hidden sm:block text-xs text-slate-500 mt-0.5">
-              Loaded vs delivered counts, returned empties, and transit variance.
-            </p>
+        <HeroCard tone="navy" label="Delivered" value={cs(totals.delivered)}>
+          <SplitBar
+            label="Delivered, returned and missing crates"
+            parts={[
+              { value: totals.delivered, className: 'bg-emerald-400' },
+              { value: totals.returned, className: 'bg-sky-400' },
+              { value: totals.disc, className: 'bg-rose-400' },
+            ]}
+          />
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-white/90">
+            <LegendDot dot="bg-emerald-400">Delivered {cs(totals.delivered)}</LegendDot>
+            <LegendDot dot="bg-sky-400">Returned {cs(totals.returned)}</LegendDot>
+            {totals.disc > 0 && <LegendDot dot="bg-rose-400">Missing {cs(totals.disc)}</LegendDot>}
           </div>
+        </HeroCard>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* View Mode Toggle */}
-            <div className="flex rounded-lg border border-slate-300 p-0.5 bg-slate-100">
-              <button
-                type="button"
-                onClick={() => setViewMode('daywise')}
-                className={`px-3 py-1.5 text-xs font-bold rounded-md flex items-center gap-1.5 cursor-pointer transition-colors ${
-                  viewMode === 'daywise'
-                    ? 'bg-sky-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Calendar className="w-3.5 h-3.5" />
-                <span>Day-Wise Summary ({dayWiseTrips.length})</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode('log')}
-                className={`px-3 py-1.5 text-xs font-bold rounded-md flex items-center gap-1.5 cursor-pointer transition-colors ${
-                  viewMode === 'log'
-                    ? 'bg-sky-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <FileText className="w-3.5 h-3.5" />
-                <span>Trip Logs ({filteredTrips.length})</span>
-              </button>
-            </div>
-
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={onNavigateTrips}
-              rightIcon={<ArrowRight className="w-3.5 h-3.5" />}
-            >
-              Open Trips Manager
-            </Button>
-          </div>
+        <div className="grid grid-cols-3 gap-2">
+          <MiniStat label="Trips" value={allLines.length} />
+          <MiniStat label="Loaded" value={cs(totals.loaded)} />
+          <MiniStat label="Variance" value={varText(totals.disc)} tone={totals.disc > 0 ? 'red' : 'green'} />
         </div>
 
-        {filteredTrips.length === 0 ? (
-          <div className="text-center py-12 text-slate-500 text-sm">
-            No delivery trips recorded for {period}. Log trips under Vehicle Trips to track drivers and vehicles.
-          </div>
-        ) : viewMode === 'daywise' ? (
-          /* ======================================================== */
-          /* DAY-WISE TRIPS SUMMARY (LATEST DAY ON TOP)               */
-          /* ======================================================== */
-          <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <table className="w-full text-left data-table text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50 text-[11px] uppercase tracking-wider text-slate-600 font-bold">
-                  <th className="px-4 py-3">Dispatch Date</th>
-                  <th className="px-3 py-3 text-center">Trips Run</th>
-                  <th className="px-3 py-3">Vehicles Dispatched</th>
-                  <th className="px-3 py-3 text-right">Loaded</th>
-                  <th className="px-3 py-3 text-right">Delivered</th>
-                  <th className="px-3 py-3 text-right">Returned</th>
-                  <th className="px-3 py-3 text-right">Transit Variance</th>
-                  <th className="px-3 py-3 text-center">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {dayWiseTrips.map((day) => {
-                  const isExpanded = expandedDay === day.date;
-                  const isToday = day.date === todayStr;
-                  const isYesterday = day.date === yesterdayStr;
+        <UnifiedPhoneFilterBar
+          search={search}
+          onSearch={setSearch}
+          placeholder="Search trip, vehicle or driver…"
+          onOpenFilter={() => setIsFilterSheetOpen(true)}
+          activeFilterCount={(viewMode !== 'daywise' ? 1 : 0) + (statusFilter !== 'all' ? 1 : 0)}
+        />
 
-                  return (
-                    <React.Fragment key={day.date}>
-                      <tr className={`hover:bg-slate-50/75 transition-colors ${isExpanded ? 'bg-sky-50/40' : ''}`}>
-                        <td className="px-4 py-3 font-semibold text-slate-900">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="font-mono">{day.date}</span>
-                            {isToday && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-black uppercase bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                Today
-                              </span>
-                            )}
-                            {isYesterday && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-black uppercase bg-blue-100 text-blue-800 border border-sky-200">
-                                Yesterday
-                              </span>
-                            )}
-                          </div>
-                          <span className="text-[11px] text-slate-500 font-normal block mt-0.5">
-                            {formatFriendlyDate(day.date)}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-800 border">
-                            {day.tripCount} {day.tripCount === 1 ? 'run' : 'runs'}
-                          </span>
-                        </td>
-                        <td className="px-3 py-3 text-slate-600 max-w-[150px] truncate">
-                          {Array.from(day.vehicles).join(', ')}
-                        </td>
-                        <td className="px-3 py-3 text-right font-medium tabular-nums">{day.loaded} cs</td>
-                        <td className="px-3 py-3 text-right font-medium text-emerald-700 tabular-nums">
-                          {day.delivered} cs
-                        </td>
-                        <td className="px-3 py-3 text-right font-medium text-slate-600 tabular-nums">
-                          {day.returned} cs
-                        </td>
-                        <td
-                          className={`px-3 py-3 text-right font-black tabular-nums ${
-                            day.discrepancy > 0 ? 'text-rose-700' : 'text-emerald-700'
-                          }`}
-                        >
-                          {day.discrepancy > 0 ? `-${day.discrepancy} cs` : '0'}
-                        </td>
-                        <td className="px-3 py-3 text-center">
-                          <button
-                            type="button"
-                            onClick={() => setExpandedDay(isExpanded ? null : day.date)}
-                            className="px-2.5 py-1 text-xs font-bold border rounded bg-white hover:bg-slate-50 text-sky-700 flex items-center gap-1 mx-auto cursor-pointer transition-colors shadow-sm"
-                          >
-                            <span>{isExpanded ? 'Hide' : 'View Runs'}</span>
-                            {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                          </button>
-                        </td>
-                      </tr>
+        <PhoneFilterBottomSheet
+          isOpen={isFilterSheetOpen}
+          onClose={() => setIsFilterSheetOpen(false)}
+          title="Filter Vehicle Trips"
+          activeCount={(viewMode !== 'daywise' ? 1 : 0) + (statusFilter !== 'all' ? 1 : 0)}
+          onReset={resetFilters}
+        >
+          {/* View Mode */}
+          <div className="space-y-2">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              View Grouping
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {VIEW_OPTIONS.map((opt) => {
+                const isSelected = viewMode === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setViewMode(opt.id)}
+                    className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer ${
+                      isSelected
+                        ? 'border-blue-600 bg-blue-50/70 text-blue-900 shadow-xs'
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span>{opt.label}</span>
+                    {isSelected && <Check size={14} className="text-blue-600 shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-                      {/* Expanded Sub-Table showing individual trips of this day */}
-                      {isExpanded && (
-                        <tr className="bg-slate-50/80">
-                          <td colSpan={8} className="p-3 sm:p-4">
-                            <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-2 shadow-inner">
-                              <div className="flex items-center justify-between text-xs font-bold text-slate-700 border-b pb-2">
-                                <span>Vehicle Dispatches on {formatFriendlyDate(day.date)}</span>
-                                <span className="text-slate-500 font-medium">{day.trips.length} Trips</span>
-                              </div>
-                              <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
-                                <table className="w-full text-xs">
-                                  <thead>
-                                    <tr className="border-b text-[10.5px] uppercase font-bold text-slate-500 bg-slate-50">
-                                      <th className="px-3 py-1.5 text-left">Trip ID</th>
-                                      <th className="px-3 py-1.5 text-left">Vehicle</th>
-                                      <th className="px-3 py-1.5 text-left">Godown</th>
-                                      <th className="px-3 py-1.5 text-left">Status</th>
-                                      <th className="px-3 py-1.5 text-right">Loaded</th>
-                                      <th className="px-3 py-1.5 text-right">Delivered</th>
-                                      <th className="px-3 py-1.5 text-right">Returned</th>
-                                      <th className="px-3 py-1.5 text-right">Discrepancy</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-slate-100">
-                                    {day.trips.map((t) => {
-                                      const { rows } = tripBreakdown(t);
-                                      const loaded = Object.values(t.loaded || {}).reduce((s, v) => s + v, 0);
-                                      const returned = Object.values(t.returned || {}).reduce((s, v) => s + v, 0);
-                                      const delivered = rows.reduce((s, r) => s + r.sold, 0);
-                                      const disc = rows.reduce((s, r) => s + r.discrepancy, 0);
-                                      return (
-                                        <tr key={t.id} className="hover:bg-slate-50">
-                                          <td className="px-3 py-2 font-mono font-bold text-sky-700">{t.id}</td>
-                                          <td className="px-3 py-2 font-semibold text-slate-900">{t.vehicle}</td>
-                                          <td className="px-3 py-2">
-                                            <Badge
-                                              variant={t.status === 'out' ? 'warning' : 'success'}
-                                              size="sm"
-                                            >
-                                              {t.status === 'out' ? 'In Transit' : 'Reconciled'}
-                                            </Badge>
-                                          </td>
-                                          <td className="px-3 py-2 text-right font-medium">{loaded} cs</td>
-                                          <td className="px-3 py-2 text-right text-emerald-700 font-medium">{delivered} cs</td>
-                                          <td className="px-3 py-2 text-right text-slate-600">{returned} cs</td>
-                                          <td className={`px-3 py-2 text-right font-bold ${disc > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
-                                            {disc > 0 ? `-${disc} cs` : '0'}
-                                          </td>
-                                        </tr>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 border-slate-300 bg-slate-100 font-black text-xs text-slate-900">
-                  <td className="px-4 py-3" colSpan={3}>
-                    TOTAL DISPATCHES ({dayWiseTrips.length} Active Days)
-                  </td>
-                  <td className="px-3 py-3 text-right">{tripStats.loaded} cs</td>
-                  <td className="px-3 py-3 text-right text-emerald-800">{tripStats.delivered} cs</td>
-                  <td className="px-3 py-3 text-right text-slate-600">{tripStats.returned} cs</td>
-                  <td className={`px-3 py-3 text-right ${tripStats.discrepancy > 0 ? 'text-rose-800' : 'text-emerald-800'}`}>
-                    {tripStats.discrepancy > 0 ? `-${tripStats.discrepancy} cs` : '0'}
-                  </td>
-                  <td className="px-3 py-3"></td>
-                </tr>
-              </tfoot>
-            </table>
+          {/* Status Filter */}
+          <div className="space-y-2">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              Trip Status
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {STATUS_OPTIONS.map((opt) => {
+                const isSelected = statusFilter === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setStatusFilter(opt.id)}
+                    className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer ${
+                      isSelected
+                        ? 'border-blue-600 bg-blue-50/70 text-blue-900 shadow-xs'
+                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span>{opt.label}</span>
+                    {isSelected && <Check size={14} className="text-blue-600 shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        ) : (
-          /* ======================================================== */
-          /* DETAILED TRIP LOGS (SORTED LATEST ON TOP)                */
-          /* ======================================================== */
-          <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <table className="w-full text-left data-table text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-slate-200 bg-slate-50 text-[11px] uppercase tracking-wider text-slate-600 font-bold">
-                  <th className="px-4 py-3">Trip ID</th>
-                  <th className="px-3 py-3">Date</th>
-                  <th className="px-3 py-3">Vehicle</th>
-                  <th className="px-3 py-3">Status</th>
-                  <th className="px-3 py-3 text-right">Loaded</th>
-                  <th className="px-3 py-3 text-right">Delivered</th>
-                  <th className="px-3 py-3 text-right">Returned</th>
-                  <th className="px-3 py-3 text-right">Variance</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {sortedTrips.map((t) => {
-                  const { rows } = tripBreakdown(t);
-                  const loaded = Object.values(t.loaded || {}).reduce((s, v) => s + v, 0);
-                  const returned = Object.values(t.returned || {}).reduce((s, v) => s + v, 0);
-                  const delivered = rows.reduce((s, r) => s + r.sold, 0);
-                  const disc = rows.reduce((s, r) => s + r.discrepancy, 0);
-                  return (
-                    <tr key={t.id} className="hover:bg-slate-50/75 transition-colors">
-                      <td className="px-4 py-3 font-mono font-bold text-sky-700">{t.id}</td>
-                      <td className="px-3 py-3 text-slate-600 font-mono">{t.date}</td>
-                      <td className="px-3 py-3 font-semibold text-slate-900">{t.vehicle}</td>
-                      <td className="px-3 py-3">
-                        <Badge
-                          variant={t.status === 'out' ? 'warning' : 'success'}
-                          size="sm"
-                        >
-                          {t.status === 'out' ? 'In Transit' : 'Reconciled'}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-3 text-right font-medium tabular-nums">{loaded} cs</td>
-                      <td className="px-3 py-3 text-right font-medium text-emerald-700 tabular-nums">{delivered} cs</td>
-                      <td className="px-3 py-3 text-right font-medium text-slate-600 tabular-nums">{returned} cs</td>
-                      <td className={`px-3 py-3 text-right font-bold tabular-nums ${disc > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
-                        {disc > 0 ? `-${disc} cs` : '0'}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 border-slate-300 bg-slate-100 font-black text-xs text-slate-900">
-                  <td className="px-4 py-3" colSpan={4}>
-                    TOTAL TRIPS ({sortedTrips.length} Runs)
-                  </td>
-                  <td className="px-3 py-3 text-right">{tripStats.loaded} cs</td>
-                  <td className="px-3 py-3 text-right text-emerald-800">{tripStats.delivered} cs</td>
-                  <td className="px-3 py-3 text-right text-slate-600">{tripStats.returned} cs</td>
-                  <td className={`px-3 py-3 text-right ${tripStats.discrepancy > 0 ? 'text-rose-800' : 'text-emerald-800'}`}>
-                    {tripStats.discrepancy > 0 ? `-${tripStats.discrepancy} cs` : '0'}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
+        </PhoneFilterBottomSheet>
+
+        {(viewMode === 'daywise' && dayGroups.length > 1 && !forceOpen) || isFiltered ? (
+          <div className="flex items-center justify-between px-1 text-xs text-slate-500">
+            <span>
+              {shownLines.length} trip{shownLines.length === 1 ? '' : 's'}
+              {isFiltered && (
+                <>
+                  {' · '}
+                  <button type="button" onClick={resetFilters} className="font-bold text-rose-600 cursor-pointer">
+                    Clear filters
+                  </button>
+                </>
+              )}
+            </span>
+            {viewMode === 'daywise' && dayGroups.length > 1 && !forceOpen && (
+              <button type="button" onClick={toggleAll} className="font-bold text-slate-700 cursor-pointer min-h-[36px]">
+                {allOpen ? 'Collapse all' : 'Expand all'}
+              </button>
+            )}
           </div>
+        ) : null}
+
+        {shownLines.length === 0 && <EmptyNote>{emptyText}</EmptyNote>}
+
+        {viewMode === 'daywise' &&
+          dayGroups.map((g) => {
+            const open = isOpen(g.date);
+            return (
+              <RowCard key={g.date}>
+                <button
+                  type="button"
+                  onClick={() => toggleDay(g.date)}
+                  aria-expanded={open}
+                  disabled={forceOpen}
+                  className="w-full text-left p-3 cursor-pointer active:bg-slate-50 disabled:cursor-default"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[15px] font-extrabold text-slate-900 leading-snug break-words">{g.dateLabel}</div>
+                      <div className="text-xs text-slate-500 break-words">{runSummary(g)}</div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-[17px] font-extrabold text-emerald-700 tabular-nums leading-tight">{cs(g.delivered)}</div>
+                      <div className="text-[11px] text-slate-500">delivered</div>
+                    </div>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-x-3 text-[12px] font-semibold tabular-nums">
+                    <span className="text-slate-600">Loaded {cs(g.loaded)}</span>
+                    {g.disc > 0 && <span className="text-rose-700">Missing {cs(g.disc)}</span>}
+                  </div>
+                </button>
+                {open && (
+                  <ul className="divide-y divide-slate-100 border-t border-slate-100">
+                    {g.lines.map((l) => (
+                      <PhoneTripRow key={l.trip.id} l={l} statusText={statusText(l.trip)} />
+                    ))}
+                  </ul>
+                )}
+              </RowCard>
+            );
+          })}
+
+        {viewMode === 'log' && shownLines.length > 0 && (
+          <RowCard>
+            <ul className="divide-y divide-slate-100">
+              {shownLines.map((l) => (
+                <PhoneTripRow key={l.trip.id} l={l} statusText={statusText(l.trip)} showDate />
+              ))}
+            </ul>
+          </RowCard>
         )}
-      </Card>
-    </div>
+
+        <button
+          type="button"
+          onClick={onNavigateTrips}
+          className="w-full min-h-[48px] rounded-2xl border border-slate-200 bg-white text-[14px] font-bold text-slate-800 inline-flex items-center justify-center gap-2 cursor-pointer active:bg-slate-100"
+        >
+          Open Trips manager <ArrowRight size={16} aria-hidden="true" />
+        </button>
+
+        <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} disabled={!hasAny} />
+      </div>
+
+      {/* ======================= TABLET / DESKTOP ======================= */}
+      <div className="hidden md:block space-y-3" id="report-trips">
+        <ReportTitleBar
+          title="Vehicle trips"
+          sub={`${label} · day by day: crates loaded, delivered, returned and missing`}
+          actions={
+            <>
+              <button
+                type="button"
+                onClick={onNavigateTrips}
+                className="h-9 px-3 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                Open Trips manager <ArrowRight size={13} aria-hidden="true" />
+              </button>
+              <ReportDownloadButtons onExcel={exportExcel} onPdf={exportPdf} disabled={!hasAny} reportTitle="Vehicle trips" />
+            </>
+          }
+        />
+
+        <ReportStatGrid>
+          <ReportStat label="Delivered" value={cs(totals.delivered)} tone="green" sub={`${allLines.length} trip${allLines.length === 1 ? '' : 's'}`} />
+          <ReportStat label="Loaded" value={cs(totals.loaded)} sub="total cargo dispatched" />
+          <ReportStat label="Returned" value={cs(totals.returned)} sub="empties and unsold back" />
+          <ReportStat label="Variance" value={varText(totals.disc)} tone={totals.disc > 0 ? 'red' : 'green'} sub="unaccounted in transit" />
+        </ReportStatGrid>
+        <ReportBreakdownLine onExplain={() => setExplainOpen(true)}>
+          <span className="inline-flex items-center gap-1.5">
+            <Truck size={13} aria-hidden="true" /> {statusCounts.out} in transit · {statusCounts.closed} reconciled
+          </span>
+        </ReportBreakdownLine>
+
+        <ReportFilterPanel
+          search={{ value: search, onChange: setSearch, placeholder: 'Search trip no, vehicle or driver' }}
+          isFiltered={isFiltered}
+          onReset={resetFilters}
+        >
+          <ReportChipGroup<ViewMode> label="View" options={VIEW_OPTIONS} value={viewMode} onChange={setViewMode} />
+          <ReportChipGroup<StatusFilter> label="Status" options={statusOptionsWithCount} value={statusFilter} onChange={setStatusFilter} />
+        </ReportFilterPanel>
+
+        {viewMode === 'daywise' && dayGroups.length > 1 && !forceOpen && (
+          <ReportListMeta allOpen={allOpen} onToggleAll={toggleAll}>
+            {dayGroups.length} days · {shownLines.length} trip{shownLines.length === 1 ? '' : 's'}
+            {isFiltered ? ' match' : ''}
+          </ReportListMeta>
+        )}
+
+        {shownLines.length === 0 && <ReportEmpty>{emptyText}</ReportEmpty>}
+
+        {viewMode === 'daywise' &&
+          dayGroups.map((g) => (
+            <ReportGroupCard
+              key={g.date}
+              title={g.dateLabel}
+              sub={runSummary(g)}
+              inline={
+                <>
+                  <span>Loaded {cs(g.loaded)}</span>
+                  <span>Returned {cs(g.returned)}</span>
+                  {g.disc > 0 && <span className="text-rose-700 font-semibold">Missing {cs(g.disc)}</span>}
+                </>
+              }
+              headLabel="Delivered"
+              head={cs(g.delivered)}
+              open={isOpen(g.date)}
+              locked={forceOpen}
+              onToggle={() => toggleDay(g.date)}
+            >
+              <ReportList>
+                {g.lines.map((l) => (
+                  <ReportRow
+                    key={l.trip.id}
+                    title={
+                      <>
+                        <span className="font-mono text-sky-700">#{l.trip.id}</span> · {l.trip.vehicle || 'Vehicle'}
+                      </>
+                    }
+                    sub={runSub(l)}
+                    amount={cs(l.nums.delivered)}
+                    amountTone="green"
+                    status={`${statusText(l.trip)}${l.nums.disc > 0 ? ` · missing ${l.nums.disc}` : ''}`}
+                    statusTone={l.trip.status === 'out' ? 'amber' : l.nums.disc > 0 ? 'red' : 'green'}
+                  />
+                ))}
+              </ReportList>
+            </ReportGroupCard>
+          ))}
+
+        {viewMode === 'log' && shownLines.length > 0 && (
+          <section className="rounded-2xl border border-black/10 bg-white overflow-hidden">
+            <ReportList>
+              {shownLines.map((l) => (
+                <ReportRow
+                  key={l.trip.id}
+                  title={
+                    <>
+                      <span className="font-mono text-sky-700">#{l.trip.id}</span> · {l.trip.vehicle || 'Vehicle'}
+                    </>
+                  }
+                  sub={`${formatDateHuman((l.trip.date || '').slice(0, 10))} · ${runSub(l)}`}
+                  amount={cs(l.nums.delivered)}
+                  amountTone="green"
+                  status={`${statusText(l.trip)}${l.nums.disc > 0 ? ` · missing ${l.nums.disc}` : ''}`}
+                  statusTone={l.trip.status === 'out' ? 'amber' : l.nums.disc > 0 ? 'red' : 'green'}
+                />
+              ))}
+            </ReportList>
+          </section>
+        )}
+      </div>
+
+      {explainOpen && (
+        <ReportExplainModal ariaLabel="How vehicle trips are calculated" onClose={() => setExplainOpen(false)}>
+          <ExplainBox tone="slate" title={`Loaded: ${cs(totals.loaded)}`}>
+            <p>Crates put on the vehicle when the trip was dispatched.</p>
+          </ExplainBox>
+          <ExplainBox tone="emerald" title={`Delivered: ${cs(totals.delivered)}`}>
+            <p>Crates sold to customers on the trip&apos;s bills.</p>
+          </ExplainBox>
+          <ExplainBox tone="slate" title={`Returned: ${cs(totals.returned)}`}>
+            <p>Crates brought back when the trip was closed.</p>
+          </ExplainBox>
+          <ExplainBox tone="rose" title={`Variance: ${varText(totals.disc)}`}>
+            <p>
+              Crates that left but are not in delivered or returned. Open the trip in Trips manager to see the reason recorded
+              at closing.
+            </p>
+          </ExplainBox>
+        </ReportExplainModal>
+      )}
+    </>
   );
 };
+
+/** One trip line on the phone. */
+const PhoneTripRow: React.FC<{ l: TripLine; statusText: string; showDate?: boolean }> = ({ l, statusText, showDate }) => (
+  <li className="p-3 flex items-start gap-3">
+    <IconTile tone={l.trip.status === 'out' ? 'blue' : l.nums.disc > 0 ? 'red' : 'green'}>
+      <Truck size={20} />
+    </IconTile>
+    <div className="min-w-0 flex-1">
+      <div className="text-[15px] font-bold text-slate-900 leading-snug break-words">{l.trip.vehicle || 'Vehicle'}</div>
+      <div className="text-xs text-slate-500 leading-snug break-words">
+        #{l.trip.id}
+        {showDate && l.trip.date ? ` · ${formatDateHuman(l.trip.date.slice(0, 10))}` : ''}
+        {` · Loaded ${l.nums.loaded} · Returned ${l.nums.returned}`}
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        <Tag tone={l.trip.status === 'out' ? 'amber' : 'green'}>{statusText}</Tag>
+        {l.nums.disc > 0 && <Tag tone="red">Missing {l.nums.disc} cs</Tag>}
+      </div>
+    </div>
+    <div className="text-right shrink-0">
+      <div className="text-[17px] font-extrabold tabular-nums leading-tight text-emerald-700">{cs(l.nums.delivered)}</div>
+      <div className="text-[11px] text-slate-400">delivered</div>
+    </div>
+  </li>
+);
