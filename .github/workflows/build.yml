@@ -36,9 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -96,17 +96,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
 
       - name: Warn when the app has no server address
         shell: bash
@@ -122,6 +123,11 @@ jobs:
         run: |
           set -euxo pipefail
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            # Fallback path used on some runner images
+            SDKMANAGER="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1 || true)"
+          fi
+          test -x "$SDKMANAGER"
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
             "platform-tools" \
@@ -137,8 +143,31 @@ jobs:
       - name: Generate Android project (skipped if android/ is committed)
         shell: bash
         run: |
-          if [ ! -d android ]; then npx cap add android; fi
+          set -euxo pipefail
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
           npx cap sync android
+
+      - name: Harden Gradle network timeouts and memory
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Default Gradle socket timeout is 10s — that is what produces "timeout (10000ms)" when
+          # the wrapper first downloads Gradle itself or when Maven Central is slow.
+          mkdir -p android
+          cat >> android/gradle.properties <<'EOF'
+
+# CI: raise network timeouts (default 10s causes timeout (10000ms) on first Gradle download)
+systemProp.http.connectionTimeout=120000
+systemProp.http.socketTimeout=120000
+systemProp.org.gradle.internal.http.connectionTimeout=120000
+systemProp.org.gradle.internal.http.socketTimeout=120000
+org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+org.gradle.daemon=false
+EOF
+          # Also export for the initial wrapper bootstrap before gradle.properties is read
+          echo "ORG_GRADLE_PROJECT_org.gradle.jvmargs=-Xmx3g" >> "$GITHUB_ENV"
 
       - name: Set version code and turn off Android auto-backup of app data
         shell: bash
@@ -150,6 +179,13 @@ jobs:
 
       - name: Build debug APK
         working-directory: android
+        env:
+          # Extra belt-and-suspenders for the wrapper's first download
+          GRADLE_OPTS: >-
+            -Dorg.gradle.internal.http.connectionTimeout=120000
+            -Dorg.gradle.internal.http.socketTimeout=120000
+            -Dhttp.connectionTimeout=120000
+            -Dhttp.socketTimeout=120000
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Verify APK exists
@@ -175,9 +211,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
