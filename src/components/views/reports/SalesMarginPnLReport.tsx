@@ -2156,6 +2156,7 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
           periodLabel={periodLabel}
         />
       )}
+      </div>
 
       {/* Interactive Product Profit & Pricing Modal */}
       <ProductProfitPricingModal
