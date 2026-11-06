@@ -41,6 +41,8 @@ import {
 } from '../../utils/speechRecognition';
 import { useLedger } from '../../context/LedgerContext';
 import { useLanguage } from '../../i18n/LanguageContext';
+import { searchHaystack } from '../../utils/displayName';
+import { useAutoOdiaNameMap, nameFromMap } from '../../hooks/useAutoOdiaName';
 import { useBeatFilter } from '../../hooks/useBeatFilter';
 import { BeatFilterBar } from '../common/BeatFilterBar';
 import { collectExpiryAlerts } from '../../utils/fefo';
@@ -127,7 +129,9 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
   onSelectTripId,
   onOpenNewVanModal,
 }) => {
-  const { t, isOdia } = useLanguage();
+  const { t, isOdia, language } = useLanguage();
+  const productNameMap = useAutoOdiaNameMap(products || []);
+  const customerNameMap = useAutoOdiaNameMap(customers || []);
 
   // Read-only ledger data for smart assist (does not change sale / stock behaviour)
   const { inventoryBatches, bills, customers: ledgerCustomers, findBillingCustomer, getCustomerLedger } = useLedger();
@@ -169,7 +173,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
     }
     const query = customerSearchQuery.toLowerCase().trim();
     return inBeat
-      .filter((c) => c.name.toLowerCase().includes(query) || (c.phone && c.phone.includes(query)))
+      .filter((c) => searchHaystack(c).includes(query) || (c.phone && c.phone.includes(query)))
       .slice(0, 12);
   }, [customers, customerSearchQuery, beatFilter.apply, beatFilter.active]);
 
@@ -189,7 +193,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
       // Text search
       if (searchTerm.trim()) {
         const query = searchTerm.toLowerCase();
-        const matchesName = prod.name.toLowerCase().includes(query);
+        const matchesName = searchHaystack(prod).includes(query);
         const matchesCat = (prod.category || '').toLowerCase().includes(query);
         if (!matchesName && !matchesCat) return false;
       }
@@ -527,14 +531,14 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           </div>
           <div className="min-w-0">
             <div className="text-[11px] font-black uppercase tracking-wider opacity-80">
-              Stock Source / Vehicle Run:
+              {t('salesman.stockSource')}
             </div>
             <div className="text-base sm:text-lg font-black truncate">
               {activeTrip ? `${activeTrip.vehicle} (Trip #${activeTrip.id})` : t('salesman.vehicleNotDispatched')}
             </div>
             {activeTrip ? (
               <div className="text-xs font-semibold opacity-90 truncate">
-                Route: {activeTrip.route || 'City Beat'} • Loaded: {Object.values(activeTrip.loaded || {}).reduce((a, b) => a + (Number(b) || 0), 0)} cs
+                {t('salesman.route')}: {activeTrip.route || t('salesman.cityBeat')} • {t('salesman.loaded')}: {Object.values(activeTrip.loaded || {}).reduce((a, b) => a + (Number(b) || 0), 0)} cs
               </div>
             ) : (
               <div className="text-xs font-semibold opacity-90">
@@ -604,7 +608,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           <div className="flex items-center gap-2 min-w-0">
             <Building2 size={18} className="text-sky-700 shrink-0" />
             <span className="text-sm font-black text-slate-900">
-              Customer / Shop Details
+              {t('salesman.customerShopDetails')}
             </span>
             {!selectedRetailer && (
               <button
@@ -755,7 +759,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                       className="w-full min-h-[48px] p-3 text-left hover:bg-sky-50 active:bg-blue-100 flex items-center justify-between cursor-pointer transition-colors"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="text-sm sm:text-base font-black text-slate-900 truncate">{cust.name}</div>
+                        <div className="text-sm sm:text-base font-black text-slate-900 truncate">{nameFromMap(customerNameMap, cust, language)}</div>
                         <div className="text-xs text-slate-500 font-bold flex items-center gap-2 flex-wrap mt-0.5">
                           {cust.phone && <span>Ph: {cust.phone}</span>}
                           {cust.balanceDue > 0 && (
@@ -842,7 +846,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 className="min-h-[44px] py-2 px-3 rounded-xl border-2 border-slate-900 bg-slate-900 hover:bg-slate-800 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-transform active:scale-[0.99]"
               >
                 <UserPlus size={17} className="text-emerald-400" />
-                <span>+ Add Customer</span>
+                <span>{t('salesman.addCustomer')}</span>
               </button>
 
               {/* Voice Search Button */}
@@ -969,7 +973,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           <div className="flex items-center gap-2">
             <ShoppingCart size={18} className="text-sky-700" />
             <span className="text-sm font-black text-slate-900">
-              Select Beverages (Vehicle Stock)
+              {t('salesman.selectBeverages')}
             </span>
           </div>
 
@@ -1048,7 +1052,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
 
           {/* Alphabet Quick Jump Pills */}
           <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
-            <span className="text-[11px] font-black text-slate-500 uppercase shrink-0">Jump:</span>
+            <span className="text-[11px] font-black text-slate-500 uppercase shrink-0">{t('salesman.jump')}</span>
             {['ALL', 'A-D', 'E-H', 'I-L', 'M-P', 'Q-T', 'U-Z'].map((grp) => {
               const active = productAlphaFilter === grp;
               return (
@@ -1098,7 +1102,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                     className={`font-extrabold text-slate-900 break-words whitespace-normal leading-snug ${isLowVision ? 'text-lg' : 'text-[14.5px]'}`}
                     style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
                   >
-                    {prod.name}
+                    {nameFromMap(productNameMap, prod, language)}
                   </h3>
                   <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                     <SizeChip volume={prod.volume} pack={prod.pack} name={prod.name} />
@@ -1115,7 +1119,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                           : 'bg-emerald-100 text-emerald-900'
                       }`}
                     >
-                      {isOutOfStock ? 'Empty' : `${available} in van`}
+                      {isOutOfStock ? t('salesman.empty') : `${available} ${t('salesman.inVan')}`}
                     </span>
                   </div>
                 </div>

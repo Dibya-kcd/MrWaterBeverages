@@ -14,10 +14,13 @@ import {
   Trash2,
   User,
   X,
+  Languages,
+  Loader2,
 } from "lucide-react";
 import { useLedger } from "../../context/LedgerContext";
 import { useLanguage } from "../../i18n/LanguageContext";
-import { displayName } from "../../utils/displayName";
+import { useAutoOdiaNameMap, nameFromMap } from "../../hooks/useAutoOdiaName";
+import { translateManyToOdia, getCachedOdiaName } from "../../utils/odiaAutoTranslate";
 import {
   Bill,
   Customer,
@@ -238,6 +241,45 @@ export const CustomersView: React.FC = () => {
     customerNameClash,
   } = useLedger();
   const { language } = useLanguage();
+  const customerNameMap = useAutoOdiaNameMap(customers || []);
+  const [translatingCustomers, setTranslatingCustomers] = useState(false);
+  const [customerTranslateMsg, setCustomerTranslateMsg] = useState<string | null>(null);
+  const missingCustomerOdia = useMemo(
+    () => (customers || []).filter((c) => c.name?.trim() && !(c as any).nameOr?.trim()).length,
+    [customers]
+  );
+  const translateAllCustomersToOdia = async () => {
+    const need = (customers || []).filter((c) => c.name?.trim() && !(c as any).nameOr?.trim());
+    if (need.length === 0) {
+      setCustomerTranslateMsg("All customers already have an Odia name.");
+      setTimeout(() => setCustomerTranslateMsg(null), 3000);
+      return;
+    }
+    setTranslatingCustomers(true);
+    setCustomerTranslateMsg(`Translating 0 / ${need.length}…`);
+    try {
+      const map = await translateManyToOdia(need.map((c) => c.name.trim()), 2);
+      let saved = 0;
+      for (const c of need) {
+        const odia = map.get(c.name.trim()) || getCachedOdiaName(c.name);
+        if (odia && odia.trim() && odia.trim().toLowerCase() !== c.name.trim().toLowerCase()) {
+          updateCustomer({ ...c, nameOr: odia.trim(), updatedAt: new Date().toISOString() } as any);
+          saved += 1;
+          setCustomerTranslateMsg(`Saving ${saved} / ${need.length}…`);
+        }
+      }
+      setCustomerTranslateMsg(
+        saved > 0
+          ? `Done — saved Odia names for ${saved} customer${saved === 1 ? "" : "s"}.`
+          : "No new Odia names saved. Check internet and try again."
+      );
+    } catch {
+      setCustomerTranslateMsg("Translation failed. Check internet connection.");
+    } finally {
+      setTranslatingCustomers(false);
+      setTimeout(() => setCustomerTranslateMsg(null), 5000);
+    }
+  };
 
   const [partyTab, setPartyTab] = useState<PartyTab>("customers");
   const [searchTerm, setSearchTerm] = useState("");
@@ -643,7 +685,7 @@ export const CustomersView: React.FC = () => {
       if (!destPhone) return null;
       const orgName = orgProfile?.name || "MrWater Distribution";
       const lines = [
-        `*Customer Ledger Statement - ${displayName(c, language)}*`,
+        `*Customer Ledger Statement - ${nameFromMap(customerNameMap, c, language)}*`,
         orgName,
         `Date: ${new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}`,
         `--------------------------------`,
@@ -682,7 +724,7 @@ export const CustomersView: React.FC = () => {
           </button>
           <div className="min-w-0 flex-1">
             <h1 className="text-base sm:text-lg font-bold text-slate-900 truncate">
-              {displayName(c, language)}
+              {nameFromMap(customerNameMap, c, language)}
             </h1>
             <p className="text-xs text-slate-500 truncate">
               {c.phone || "No phone"}
@@ -1170,7 +1212,7 @@ export const CustomersView: React.FC = () => {
         {/* Refund credit to customer */}
         {showRefund && (
           <RecordRefundModal
-            customerName={displayName(c, language)}
+            customerName={nameFromMap(customerNameMap, c, language)}
             maxAmount={getCustomerCreditSummary(c.name).refundable}
             onClose={() => setShowRefund(false)}
             onSave={(amount, date, mode, note) =>
@@ -1184,7 +1226,7 @@ export const CustomersView: React.FC = () => {
           <RecordPaymentModal
             isOpen
             onClose={() => setShowRecordPayment(false)}
-            initialCustomerName={displayName(c, language)}
+            initialCustomerName={nameFromMap(customerNameMap, c, language)}
             existingCustomers={existingCustomers}
             bills={bills}
             palette={palette}
@@ -1759,6 +1801,33 @@ export const CustomersView: React.FC = () => {
         </div>
 
         {partyTab === "customers" && (
+          <div className="mb-3 space-y-1.5">
+            <button
+              type="button"
+              onClick={translateAllCustomersToOdia}
+              disabled={translatingCustomers || missingCustomerOdia === 0}
+              className={`w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border text-sm font-bold transition-colors cursor-pointer ${
+                translatingCustomers || missingCustomerOdia === 0
+                  ? "bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed"
+                  : "bg-amber-50 border-amber-300 text-amber-950 hover:bg-amber-100"
+              }`}
+            >
+              {translatingCustomers ? <Loader2 className="w-4 h-4 animate-spin" /> : <Languages className="w-4 h-4" />}
+              <span>
+                {translatingCustomers
+                  ? "Translating to Odia…"
+                  : missingCustomerOdia === 0
+                    ? "All customers have Odia names"
+                    : `Translate all customers to Odia (${missingCustomerOdia})`}
+              </span>
+            </button>
+            {customerTranslateMsg && (
+              <p className="text-xs font-semibold text-center text-slate-600">{customerTranslateMsg}</p>
+            )}
+          </div>
+        )}
+
+        {partyTab === "customers" && (
           <div className="flex items-center gap-1.5 mb-3.5 overflow-x-auto pb-1 text-xs">
             <button
               type="button"
@@ -1896,7 +1965,7 @@ export const CustomersView: React.FC = () => {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-slate-900 break-words leading-snug">
-                        {displayName(c, language)}
+                        {nameFromMap(customerNameMap, c, language)}
                       </span>
                       {hasAdvance && (
                         <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0">
