@@ -1,3 +1,4 @@
+import { useLanguage } from '../../i18n/LanguageContext';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Search,
@@ -53,6 +54,8 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
   scale,
   currentRetailer = '',
 }) => {
+  const { isOdia } = useLanguage();
+
   const [searchTerm, setSearchTerm] = useState('');
   const [activeAlphaGroup, setActiveAlphaGroup] = useState('ALL');
   const [isListening, setIsListening] = useState(false);
@@ -343,7 +346,8 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
             </div>
 
             {/* Voice Search Button (Large & Accessible) */}
-            <button
+            {!isOdia && (
+<button
               type="button"
               onClick={handleToggleVoiceSearch}
               className={`px-4 py-3 rounded-lg font-black text-sm border-2 flex items-center gap-2 cursor-pointer shadow-sm transition-all ${
@@ -369,6 +373,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
                 </>
               )}
             </button>
+)}
           </div>
 
           {/* Voice Feedback Banner */}

@@ -16,6 +16,8 @@ import {
   X,
 } from "lucide-react";
 import { useLedger } from "../../context/LedgerContext";
+import { useLanguage } from "../../i18n/LanguageContext";
+import { displayName } from "../../utils/displayName";
 import {
   Bill,
   Customer,
@@ -137,6 +139,7 @@ function seedFromGrns(grns: GRN[], existing: SupplierMaster[]): SupplierMaster[]
 
 const emptyCustomerForm = () => ({
   name: "",
+  nameOr: "",
   contactPerson: "",
   phone: "",
   customerType: "Retail",
@@ -234,6 +237,7 @@ export const CustomersView: React.FC = () => {
     orgProfile,
     customerNameClash,
   } = useLedger();
+  const { language } = useLanguage();
 
   const [partyTab, setPartyTab] = useState<PartyTab>("customers");
   const [searchTerm, setSearchTerm] = useState("");
@@ -317,6 +321,7 @@ export const CustomersView: React.FC = () => {
       list = list.filter(
         (c) =>
           c.name.toLowerCase().includes(q) ||
+          ((c as any).nameOr || "").toLowerCase().includes(q) ||
           (c.phone || "").includes(q) ||
           (c.gstin || "").toLowerCase().includes(q) ||
           (c.city || "").toLowerCase().includes(q) ||
@@ -377,6 +382,7 @@ export const CustomersView: React.FC = () => {
     setEditingCustomer(full || null);
     setCustomerForm({
       name: full?.name || ec.name || "",
+      nameOr: full?.nameOr || (ec as any).nameOr || "",
       contactPerson: "",
       phone: full?.phone || ec.phone || "",
       customerType: "Retail",
@@ -406,6 +412,7 @@ export const CustomersView: React.FC = () => {
     }
     const payload = {
       name,
+      nameOr: customerForm.nameOr.trim() || undefined,
       phone: customerForm.phone.trim(),
       address: customerForm.address.trim() || undefined,
       city: customerForm.beat.trim() || undefined,
@@ -636,7 +643,7 @@ export const CustomersView: React.FC = () => {
       if (!destPhone) return null;
       const orgName = orgProfile?.name || "MrWater Distribution";
       const lines = [
-        `*Customer Ledger Statement - ${c.name}*`,
+        `*Customer Ledger Statement - ${displayName(c, language)}*`,
         orgName,
         `Date: ${new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}`,
         `--------------------------------`,
@@ -675,7 +682,7 @@ export const CustomersView: React.FC = () => {
           </button>
           <div className="min-w-0 flex-1">
             <h1 className="text-base sm:text-lg font-bold text-slate-900 truncate">
-              {c.name}
+              {displayName(c, language)}
             </h1>
             <p className="text-xs text-slate-500 truncate">
               {c.phone || "No phone"}
@@ -1163,7 +1170,7 @@ export const CustomersView: React.FC = () => {
         {/* Refund credit to customer */}
         {showRefund && (
           <RecordRefundModal
-            customerName={c.name}
+            customerName={displayName(c, language)}
             maxAmount={getCustomerCreditSummary(c.name).refundable}
             onClose={() => setShowRefund(false)}
             onSave={(amount, date, mode, note) =>
@@ -1177,7 +1184,7 @@ export const CustomersView: React.FC = () => {
           <RecordPaymentModal
             isOpen
             onClose={() => setShowRecordPayment(false)}
-            initialCustomerName={c.name}
+            initialCustomerName={displayName(c, language)}
             existingCustomers={existingCustomers}
             bills={bills}
             palette={palette}
@@ -1494,12 +1501,21 @@ export const CustomersView: React.FC = () => {
             </>
           ) : (
             <>
-              <Field label="Shop / Business name">
+              <Field label="Shop / Business name (English)">
                 <input
                   className="crate-input"
                   value={customerForm.name}
                   onChange={(e) => setCField("name", e.target.value)}
                   autoFocus
+                />
+              </Field>
+              <Field label="Name in Odia (ଓଡ଼ିଆ) — optional">
+                <input
+                  className="crate-input"
+                  value={customerForm.nameOr || ""}
+                  onChange={(e) => setCField("nameOr", e.target.value)}
+                  placeholder="ଉଦାହରଣ: ମାଆ ଦୁର୍ଗା ଷ୍ଟୋର୍"
+                  dir="auto"
                 />
               </Field>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1880,7 +1896,7 @@ export const CustomersView: React.FC = () => {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-slate-900 break-words leading-snug">
-                        {c.name}
+                        {displayName(c, language)}
                       </span>
                       {hasAdvance && (
                         <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0">

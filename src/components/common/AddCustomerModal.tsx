@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { Customer } from '../../types';
 import { useLedger } from '../../context/LedgerContext';
+import { useLanguage } from '../../i18n/LanguageContext';
 import { useBeats } from '../../hooks/useBeats';
 import {
   isSpeechRecognitionSupported,
@@ -48,7 +49,9 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
   const { addCustomer, palette, customers: registeredCustomers } = useLedger();
   const { activeBeats, myBeats } = useBeats();
 
+  const { t, isOdia } = useLanguage();
   const [name, setName] = useState('');
+  const [nameOr, setNameOr] = useState('');
   const [phone, setPhone] = useState('');
   const [contactPerson, setContactPerson] = useState('');
   const [address, setAddress] = useState('');
@@ -168,6 +171,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
       const knownIds = new Set((registeredCustomers || []).map((c) => c.id));
       const newCustomer = addCustomer({
         name: cleanName,
+        nameOr: nameOr.trim() || undefined,
         phone: cleanPhone,
         address: cleanAddress || undefined,
         city: cleanRoute || undefined,
@@ -263,6 +267,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
                 placeholder="e.g. Maa Durga General Store"
                 className="w-full pl-10 pr-12 py-2.5 rounded-xl border-2 border-slate-300 font-extrabold text-sm sm:text-base text-slate-900 focus:outline-none focus:border-slate-900 bg-white shadow-xs"
               />
+              {!isOdia && (
               <button
                 type="button"
                 onClick={() => handleVoiceInput('name')}
@@ -275,7 +280,23 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
               >
                 {isListening && listeningTarget === 'name' ? <MicOff size={16} /> : <Mic size={16} />}
               </button>
+              )}
             </div>
+          </div>
+
+          {/* Odia name (optional) */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-black uppercase tracking-wider text-slate-700">
+              Name in Odia (ଓଡ଼ିଆ) — optional
+            </label>
+            <input
+              type="text"
+              value={nameOr}
+              onChange={(e) => setNameOr(e.target.value)}
+              placeholder="ଉଦାହରଣ: ମାଆ ଦୁର୍ଗା ଜେନେରାଲ୍ ଷ୍ଟୋର୍"
+              dir="auto"
+              className="w-full px-3 py-2.5 rounded-xl border-2 border-slate-300 font-bold text-sm sm:text-base text-slate-900 focus:outline-none focus:border-slate-900 bg-white shadow-xs"
+            />
           </div>
 
           {/* Mobile / Phone Number Field */}
@@ -292,6 +313,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
                 placeholder="10-digit mobile (for WhatsApp bill & ledger)"
                 className="w-full pl-10 pr-12 py-2.5 rounded-xl border-2 border-slate-300 font-bold font-mono text-sm sm:text-base text-slate-900 focus:outline-none focus:border-slate-900 bg-white shadow-xs"
               />
+              {!isOdia && (
               <button
                 type="button"
                 onClick={() => handleVoiceInput('phone')}
@@ -304,6 +326,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
               >
                 {isListening && listeningTarget === 'phone' ? <MicOff size={16} /> : <Mic size={16} />}
               </button>
+              )}
             </div>
           </div>
 

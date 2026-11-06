@@ -27,6 +27,8 @@ import {
   Key,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
+import { useLanguage } from '../../i18n/LanguageContext';
+import type { LanguageCode } from '../../i18n/translations';
 import { BeatsSettings } from './BeatsSettings';
 import { FontSize, GstMode, PriceType, StickyTotalPosition, Salesman } from '../../types';
 import { validateOrgProfile, summarizeErrors, normalizeGstin } from '../../utils/validation';
@@ -89,6 +91,8 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
     clearTransactions,
     resetToDefault,
   } = useLedger();
+
+  const { language, setLanguage, t } = useLanguage();
 
   // Active section filter for navigation (default: business)
   const [activeSection, setActiveSection] = useState<SettingsSection>(
@@ -521,14 +525,14 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
         {/* Segmented Filter Tabs */}
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs -mx-2.5 px-2.5 sm:mx-0 sm:px-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {[
-            { id: 'business' as const, label: 'Business & GST' },
-            { id: 'billing' as const, label: 'Billing Rules' },
-            { id: 'fleet' as const, label: 'Warehouses & Fleet' },
-            ...(currentUser?.role === 'admin' ? [{ id: 'beats' as const, label: 'Beats' }] : []),
-            { id: 'staff' as const, label: 'Staff & Roles' },
-            { id: 'display' as const, label: 'Display' },
-            { id: 'cloud' as const, label: 'Cloud DB' },
-            { id: 'backups' as const, label: 'Backups' },
+            { id: 'business' as const, label: t('settings.section.business') },
+            { id: 'billing' as const, label: t('settings.section.billing') },
+            { id: 'fleet' as const, label: t('settings.section.fleet') },
+            ...(currentUser?.role === 'admin' ? [{ id: 'beats' as const, label: t('settings.section.beats') }] : []),
+            { id: 'staff' as const, label: t('settings.section.staff') },
+            { id: 'display' as const, label: t('settings.section.display') },
+            { id: 'cloud' as const, label: t('settings.section.cloud') },
+            { id: 'backups' as const, label: t('settings.section.backups') },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -1327,18 +1331,18 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
         {activeSection === 'display' && (
           <div className="bg-white rounded-2xl border border-neutral-200/90 p-3.5 sm:p-6 shadow-xs space-y-5">
             <div>
-              <h2 className="text-base sm:text-lg font-bold text-neutral-900">Display & Accessibility</h2>
+              <h2 className="text-base sm:text-lg font-bold text-neutral-900">{t('settings.display.title')}</h2>
               <p className="hidden sm:block text-xs text-neutral-500 mt-0.5">
-                Scale typography for bright depot lighting conditions and elder readability.
+                {t('settings.display.subtitle')}
               </p>
             </div>
 
             {/* Font Scale Buttons */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {[
-                { id: 'standard' as FontSize, title: 'Standard (1.00x)', desc: 'Dense HD layout' },
-                { id: 'large' as FontSize, title: 'Large (1.25x)', desc: 'Depot Recommended' },
-                { id: 'xlarge' as FontSize, title: 'Extra Large (1.55x)', desc: 'High Visibility' },
+                { id: 'standard' as FontSize, title: t('settings.display.fontStandard'), desc: t('settings.display.fontStandardDesc') },
+                { id: 'large' as FontSize, title: t('settings.display.fontLarge'), desc: t('settings.display.fontLargeDesc') },
+                { id: 'xlarge' as FontSize, title: t('settings.display.fontXLarge'), desc: t('settings.display.fontXLargeDesc') },
               ].map((opt) => (
                 <button
                   key={opt.id}
@@ -1360,8 +1364,8 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
             <div className="pt-2 border-t border-neutral-100 space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <span className="text-sm font-semibold text-neutral-800 block">High Contrast Mode (WCAG AAA)</span>
-                  <span className="text-xs text-neutral-500">Stark monochrome with deep contrast for outdoor sunlight.</span>
+                  <span className="text-sm font-semibold text-neutral-800 block">{t('settings.display.highContrast')}</span>
+                  <span className="text-xs text-neutral-500">{t('settings.display.highContrastDesc')}</span>
                 </div>
                 <button
                   type="button"
@@ -1380,8 +1384,8 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
 
               <div className="flex items-center justify-between">
                 <div>
-                  <span className="text-sm font-semibold text-neutral-800 block">Easy View (Accessible Mobile Touch Billing)</span>
-                  <span className="text-xs text-neutral-500">Large touch steppers with simplified single-column layout.</span>
+                  <span className="text-sm font-semibold text-neutral-800 block">{t('settings.display.easyView')}</span>
+                  <span className="text-xs text-neutral-500">{t('settings.display.easyViewDesc')}</span>
                 </div>
                 <button
                   type="button"
@@ -1397,6 +1401,35 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   />
                 </button>
               </div>
+
+              {/* Language Switcher */}
+              <div className="pt-3 border-t border-neutral-100">
+                <div className="mb-2.5">
+                  <span className="text-sm font-semibold text-neutral-800 block">{t('settings.display.language')}</span>
+                  <span className="text-xs text-neutral-500">{t('settings.display.languageDesc')}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  {([
+                    { id: 'en' as LanguageCode, title: t('settings.display.languageEn'), desc: 'English' },
+                    { id: 'or' as LanguageCode, title: t('settings.display.languageOr'), desc: 'ଓଡ଼ିଆ' },
+                  ]).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setLanguage(opt.id)}
+                      className={`p-3.5 border rounded-xl text-left transition-all cursor-pointer ${
+                        language === opt.id
+                          ? 'border-[#064E3B] bg-emerald-50/50 text-[#064E3B] ring-1 ring-[#064E3B]'
+                          : 'border-neutral-200 hover:border-neutral-300 text-neutral-700 bg-white'
+                      }`}
+                    >
+                      <div className="text-sm font-bold">{opt.title}</div>
+                      <div className="text-xs text-neutral-500 mt-0.5">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
             </div>
           </div>
         )}

@@ -52,6 +52,7 @@ import {
   List,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
+import { useLanguage } from '../../i18n/LanguageContext';
 import { normCustName, splitSameNameShops } from '../../context/ledgerHelpers';
 import { Bill, BillItem, ExistingCustomer, PriceType, Product, Trip } from '../../types';
 import { billTotals, buildBillText, computeLine, normalizeGstFraction, money, schemeLabel, whatsappLink, resolveProductGstRate, resolveProductHsn, formatProductVolPack, volumeFromName } from '../../utils/billing';
@@ -241,6 +242,7 @@ export const SalesmanView: React.FC = () => {
   }, [defaultWarehouse, warehouses, selectedLoadWarehouseId]);
 
   // View state: 'home' vs 'sell' vs 'vanStock' vs 'bills' vs 'customerDue' vs 'trips'
+    const { t } = useLanguage();
   const [salesmanTab, setSalesmanTab] = useState<'home' | 'sell' | 'vanStock' | 'bills' | 'customerDue' | 'trips'>('home');
   // Edit load / record returned stock & close trip screens (same ones the owner uses)
   const [tripScreen, setTripScreen] = useState<{ mode: SalesmanTripScreenMode; trip: Trip } | null>(null);
@@ -1256,7 +1258,7 @@ export const SalesmanView: React.FC = () => {
                   title="Back to Dashboard Home"
                 >
                   <LayoutGrid size={16} className="text-amber-500" />
-                  <span>Home</span>
+                  <span>{t('salesman.tab.home')}</span>
                 </button>
 
                 <div className="min-w-0">
@@ -1266,7 +1268,7 @@ export const SalesmanView: React.FC = () => {
                       style={{ color: palette.ink }}
                     >
                       {salesmanTab === 'sell' && 'New Sale'}
-                      {salesmanTab === 'vanStock' && 'Van Stock'}
+                      {salesmanTab === 'vanStock' && t('salesman.tab.vanStock')}
                       {salesmanTab === 'bills' && 'My Bills'}
                       {salesmanTab === 'customerDue' && 'Payments'}
                       {salesmanTab === 'trips' && 'Trips'}
@@ -1585,7 +1587,7 @@ export const SalesmanView: React.FC = () => {
                     </div>
                     <div className="min-w-0">
                       <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-purple-600 transition-colors">
-                        4. Van Stock
+                        {t('salesman.tab.vanStock')}
                       </div>
                       <div className="text-xs text-slate-500 truncate mt-0.5">
                         Check remaining stock & crates
@@ -1781,7 +1783,7 @@ export const SalesmanView: React.FC = () => {
                   </div>
                   <div>
                     <h2 style={fz(18, { fontWeight: 900 })} className="text-slate-900">
-                      {activeTrip ? `Van Stock · ${activeTrip.vehicle}` : 'Van Stock'}
+                      {activeTrip ? `Van Stock · ${activeTrip.vehicle}` : t('salesman.tab.vanStock')}
                     </h2>
                     <p className="text-xs font-semibold text-slate-500 mt-0.5">
                       {activeTrip

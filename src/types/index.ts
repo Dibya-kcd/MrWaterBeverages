@@ -12,6 +12,8 @@ export interface Product {
   updatedAt?: string;
   sku?: string;
   name: string;
+  /** Optional Odia (ଓଡ଼ିଆ) display name. Shown when app language is Odia. */
+  nameOr?: string;
   volume: number;
   pack: string;
   category: CategoryKey;
@@ -420,6 +422,8 @@ export interface PaymentAuditEntry {
 export interface Customer {
   id: string; // Unique ID e.g. "cust_1742081234"
   name: string; // Customer / Retailer / Shop Name
+  /** Optional Odia (ଓଡ଼ିଆ) display name. Shown when app language is Odia. */
+  nameOr?: string;
   phone: string; // Primary phone
   altPhone?: string; // Secondary contact
   email?: string;
@@ -441,6 +445,8 @@ export interface Customer {
 export interface ExistingCustomer {
   id?: string;
   name: string;
+  /** Optional Odia (ଓଡ଼ିଆ) display name. Shown when app language is Odia. */
+  nameOr?: string;
   phone: string;
   altPhone?: string;
   address?: string;

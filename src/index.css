@@ -25,8 +25,8 @@
   --border: #d4dee8;
   --ring: var(--teal);
 
-  --font-sans: "Manrope", system-ui, -apple-system, sans-serif;
-  --font-display: "Sora", "Manrope", system-ui, sans-serif;
+  --font-sans: "Manrope", "Noto Sans Oriya", "Noto Sans Odia", system-ui, -apple-system, sans-serif;
+  --font-display: "Sora", "Manrope", "Noto Sans Oriya", "Noto Sans Odia", system-ui, sans-serif;
 
   color-scheme: light;
   font-family: var(--font-sans);
@@ -1538,4 +1538,13 @@ body {
   .reports-root table[data-cards] td > * {
     max-width: 100%;
   }
+}
+
+
+/* When Odia is selected, prefer Noto Sans Oriya for correct glyph shaping */
+html[lang="or"],
+html[data-lang="or"] {
+  --font-sans: "Noto Sans Oriya", "Noto Sans Odia", "Manrope", system-ui, sans-serif;
+  --font-display: "Noto Sans Oriya", "Noto Sans Odia", "Sora", "Manrope", system-ui, sans-serif;
+  font-family: var(--font-sans);
 }

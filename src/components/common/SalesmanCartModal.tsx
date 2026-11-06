@@ -1,3 +1,4 @@
+import { useLanguage } from '../../i18n/LanguageContext';
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { SizeChip } from "../common/SizeChip";
 import { sizeTheme, packTheme } from "../../utils/sizeColor";
@@ -111,6 +112,8 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
   priceType,
   isPriceLocked = false,
 }) => {
+  const { isOdia } = useLanguage();
+
   // Beverage browsing mode state (allows adding beverages without leaving modal)
   const [isBrowsingBeverages, setIsBrowsingBeverages] = useState<boolean>(false);
   const [beverageSearchQuery, setBeverageSearchQuery] = useState<string>('');
@@ -721,7 +724,8 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                 <Zap size={17} />
               </button>
             )}
-            <button
+            {!isOdia && (
+<button
               type="button"
               id="cart-btn-voice-recog"
               onClick={onVoiceSearchCustomer}
@@ -733,6 +737,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
             >
               {isVoiceSearching ? <MicOff size={17} className="animate-spin" /> : <Mic size={17} />}
             </button>
+)}
             <button
               type="button"
               id="cart-btn-change-customer"

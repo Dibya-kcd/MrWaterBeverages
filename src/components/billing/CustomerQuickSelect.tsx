@@ -1,3 +1,4 @@
+import { useLanguage } from '../../i18n/LanguageContext';
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { notify } from "../../utils/toast";
 import {
@@ -48,6 +49,8 @@ export const CustomerQuickSelect: React.FC<CustomerQuickSelectProps> = ({
   onSelectSpotSale,
   onOpenCreateCustomer,
 }) => {
+  const { isOdia } = useLanguage();
+
   const [query, setQuery] = useState(customerName);
   const [debouncedQuery, setDebouncedQuery] = useState(customerName);
   const [isDebouncing, setIsDebouncing] = useState(false);
@@ -339,7 +342,8 @@ export const CustomerQuickSelect: React.FC<CustomerQuickSelectProps> = ({
                   </button>
                 )}
 
-                <button
+                {!isOdia && (
+<button
                   type="button"
                   onClick={handleVoiceSearch}
                   title={isListening ? 'Stop listening' : 'Voice search customer'}
@@ -351,6 +355,7 @@ export const CustomerQuickSelect: React.FC<CustomerQuickSelectProps> = ({
                 >
                   {isListening ? <MicOff size={14} /> : <Mic size={14} />}
                 </button>
+)}
 
                 <button
                   type="button"

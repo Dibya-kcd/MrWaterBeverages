@@ -35,7 +35,7 @@ const TABS: {
   label: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
 }[] = [
-  { id: 'margin', label: 'Sales, Margin & P&L', icon: Percent },
+  { id: 'margin', label: 'Profit & Loss', icon: Percent },
   { id: 'dispositions', label: 'Returns, Free & Claims', icon: AlertTriangle },
   { id: 'purchases', label: 'Inward & Purchases', icon: ArrowDownToLine },
   { id: 'receivables', label: 'Party Credit & Receivables', icon: Users },

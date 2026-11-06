@@ -40,6 +40,7 @@ import {
   ActiveSpeechSession,
 } from '../../utils/speechRecognition';
 import { useLedger } from '../../context/LedgerContext';
+import { useLanguage } from '../../i18n/LanguageContext';
 import { useBeatFilter } from '../../hooks/useBeatFilter';
 import { BeatFilterBar } from '../common/BeatFilterBar';
 import { collectExpiryAlerts } from '../../utils/fefo';
@@ -126,6 +127,8 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
   onSelectTripId,
   onOpenNewVanModal,
 }) => {
+  const { t, isOdia } = useLanguage();
+
   // Read-only ledger data for smart assist (does not change sale / stock behaviour)
   const { inventoryBatches, bills, customers: ledgerCustomers, findBillingCustomer, getCustomerLedger } = useLedger();
 
@@ -527,7 +530,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
               Stock Source / Vehicle Run:
             </div>
             <div className="text-base sm:text-lg font-black truncate">
-              {activeTrip ? `${activeTrip.vehicle} (Trip #${activeTrip.id})` : 'Vehicle Not Dispatched'}
+              {activeTrip ? `${activeTrip.vehicle} (Trip #${activeTrip.id})` : t('salesman.vehicleNotDispatched')}
             </div>
             {activeTrip ? (
               <div className="text-xs font-semibold opacity-90 truncate">
@@ -556,10 +559,10 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                   : 'bg-white text-slate-800 border-sky-300'
               }`}
               style={{ minHeight: '40px' }}
-              title="Select or Switch Vehicle Run"
-              aria-label="Select or Switch Vehicle Run"
+              title={t('salesman.selectVehicle')}
+              aria-label={t('salesman.selectVehicle')}
             >
-              {!activeTrip && <option value="">Select Dispatched Van...</option>}
+              {!activeTrip && <option value="">{t('salesman.selectDispatchedVan')}</option>}
               {availableTrips.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.vehicle} (Trip #{t.id})
@@ -582,7 +585,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
               style={{ minHeight: '40px' }}
             >
               <Plus size={15} />
-              <span>{activeTrip ? 'New Van Run' : 'Start / Load Van Run'}</span>
+              <span>{activeTrip ? t('salesman.newVanRun') : t('salesman.startLoadVanRun')}</span>
             </button>
           )}
         </div>
@@ -614,8 +617,8 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                     ? 'bg-[#0B3D32] border-[#0B3D32] text-white hover:brightness-110'
                     : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
                 }`}
-                title={cart.items.length > 0 ? `Cart · ${cart.items.length} item(s)` : 'Cart is empty'}
-                aria-label={cart.items.length > 0 ? `Open cart, ${cart.items.length} items` : 'Cart empty'}
+                title={cart.items.length > 0 ? `Cart · ${cart.items.length} item(s)` : t('salesman.cartEmpty')}
+                aria-label={cart.items.length > 0 ? `Open cart, ${cart.items.length} items` : t('salesman.cartEmpty')}
               >
                 <ShoppingCart size={17} />
                 {cart.items.length > 0 && (
@@ -642,7 +645,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
               className="px-2.5 py-1 rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs flex items-center gap-1 cursor-pointer transition-colors"
             >
               <X size={13} />
-              <span>Cancel Sale</span>
+              <span>{t('salesman.cancelSale')}</span>
             </button>
           )}
         </div>
@@ -651,7 +654,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           /* Active Customer Display Card */
           <div className="p-3 rounded-xl border-2 border-emerald-500 bg-emerald-50/80 flex items-center justify-between gap-3">
             <div className="min-w-0 flex-1">
-              <div className="text-[11px] font-black uppercase text-emerald-800">Billed To:</div>
+              <div className="text-[11px] font-black uppercase text-emerald-800">{t('salesman.billedTo')}</div>
               <div className="flex items-center gap-2 min-w-0">
                 <div className="text-base sm:text-lg font-black text-slate-900 truncate">{selectedRetailer}</div>
                 {/* Cart icon beside customer name */}
@@ -665,8 +668,8 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                       ? 'bg-[#0B3D32] border-[#0B3D32] text-white hover:brightness-110'
                       : 'bg-white border-emerald-200 text-slate-400 cursor-not-allowed'
                   }`}
-                  title={cart.items.length > 0 ? `Cart · ${cart.items.length} item(s)` : 'Cart is empty'}
-                  aria-label={cart.items.length > 0 ? `Open cart, ${cart.items.length} items` : 'Cart empty'}
+                  title={cart.items.length > 0 ? `Cart · ${cart.items.length} item(s)` : t('salesman.cartEmpty')}
+                  aria-label={cart.items.length > 0 ? `Open cart, ${cart.items.length} items` : t('salesman.cartEmpty')}
                 >
                   <ShoppingCart size={17} />
                   {cart.items.length > 0 && (
@@ -711,7 +714,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 <input enterKeyHint="search"
                   type="text"
                   id="input-customer-search-direct"
-                  placeholder="Search customer by shop name or phone number..."
+                  placeholder={t('salesman.searchCustomer')}
                   value={customerSearchQuery}
                   onChange={(e) => {
                     setCustomerSearchQuery(e.target.value);
@@ -843,7 +846,8 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
               </button>
 
               {/* Voice Search Button */}
-              <button
+              {!isOdia && (
+<button
                 type="button"
                 id="btn-voice-search-customer"
                 onClick={onVoiceSearchCustomer}
@@ -856,22 +860,23 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 {isVoiceSearching ? (
                   <>
                     <MicOff size={18} className="animate-spin" />
-                    <span>Listening...</span>
+                    <span>{t('salesman.listening')}</span>
                   </>
                 ) : (
                   <>
                     <Mic size={18} className="text-amber-800" />
-                    <span>Speak Name</span>
+                    <span>{t('salesman.speakName')}</span>
                   </>
                 )}
               </button>
+)}
 
               {/* 1-Tap Spot Cash Sale */}
               <button
                 type="button"
                 id="btn-spot-cash-sale"
                 onClick={() => {
-                  setSelectedRetailer('Spot Cash / Walk-in Customer');
+                  setSelectedRetailer(t('salesman.spotCashCustomer'));
                   setRetailerPhone('');
                   setRetailerCustomerId?.('');
                   speakAssistiveText('Spot cash customer selected.');
@@ -879,7 +884,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 className="min-h-[44px] py-2 px-3 rounded-xl border-2 border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-950 font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors"
               >
                 <Zap size={17} className="text-emerald-600" />
-                <span>Spot Cash Sale</span>
+                <span>{t('salesman.spotCashSale')}</span>
               </button>
             </div>
           </div>
@@ -889,7 +894,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
         <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-3 text-xs">
           <label htmlFor="salesman-sale-date-input" className="font-extrabold text-slate-700 flex items-center gap-1.5">
             <Calendar size={14} className="text-slate-500" />
-            <span>Sale Date:</span>
+            <span>{t('salesman.saleDate')}</span>
           </label>
           <input
             id="salesman-sale-date-input"
@@ -969,7 +974,8 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           </div>
 
           {/* Voice Product Search Button */}
-          <button
+          {!isOdia && (
+<button
             type="button"
             id="btn-voice-product-search"
             onClick={handleStartProductVoiceSearch}
@@ -989,10 +995,11 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
             ) : (
               <>
                 <Mic size={16} className="text-sky-700" />
-                <span>Speak Item (e.g. "5 Apple Fizz")</span>
+                <span>{t('salesman.speakItem')}</span>
               </>
             )}
           </button>
+)}
         </div>
 
         {/* Product Controls: Text Search & Quick Alphabet Jump */}
@@ -1004,7 +1011,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
               <input enterKeyHint="search"
                 type="text"
                 id="input-beverage-search"
-                placeholder="Search beverages by name or category..."
+                placeholder={t('salesman.searchBeverages')}
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 className="w-full pl-9 pr-8 py-2 rounded-xl border-2 border-slate-200 text-xs font-bold text-slate-900 focus:outline-none focus:border-sky-600 bg-white"
@@ -1171,7 +1178,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
             <div className="text-slate-800 text-sm font-black">
               {searchTerm || selectedCategory !== 'ALL' || productAlphaFilter !== 'ALL'
                 ? 'No loaded beverages match the selected filter.'
-                : 'No products loaded on this vehicle run.'}
+                : t('salesman.noProductsLoaded')}
             </div>
             <p className="text-xs font-semibold text-slate-500">
               {searchTerm || selectedCategory !== 'ALL' || productAlphaFilter !== 'ALL'
@@ -1197,7 +1204,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 className="px-4 py-2 text-xs font-black bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-xl cursor-pointer shadow-sm inline-flex items-center gap-1.5"
               >
                 <Truck size={15} />
-                <span>Go to Trips to Load Van</span>
+                <span>{t('salesman.goToTripsLoadVan')}</span>
               </button>
             )}
           </div>
@@ -1214,7 +1221,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           <div className="w-full max-w-sm rounded-2xl border-2 border-slate-300 bg-white p-5 shadow-2xl space-y-4">
             <div className="flex items-center gap-2 text-rose-600 font-black text-base">
               <AlertCircle size={22} />
-              <span>Cancel Current Sale?</span>
+              <span>{t('salesman.cancelCurrentSale')}</span>
             </div>
             <p className="text-sm font-semibold text-slate-600">
               You have <strong className="text-slate-900">{cart.items.length} beverage item{cart.items.length !== 1 ? 's' : ''}</strong> in this cart.
@@ -1246,7 +1253,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
       {/* ===================================================================== */}
       {/* 3. CART REVIEW TRIGGER BAR (Fixed at bottom above nav)                */}
       {/* ===================================================================== */}
-      {/* Sticky cart bar: always visible while the cart has items — running total + one big "Review cart" button.
+      {/* Sticky cart bar: always visible while the cart has items — running total + one big Review cart button.
           (Cancel sale lives inside the cart.) */}
       <div
         id="salesman-cart-bottom-bar"
@@ -1254,7 +1261,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           isLowVision ? 'p-3 border-4 border-black bg-yellow-300 text-black' : 'pl-3.5 pr-2.5 py-2.5 bg-[#0B3D32] text-white'
         }`}
         role="region"
-        aria-label="Running cart total"
+        aria-label={t('salesman.runningCartTotal')}
       >
         <div className="relative shrink-0">
           <ShoppingCart size={24} />
@@ -1282,7 +1289,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
             isLowVision ? 'bg-black text-yellow-300' : 'bg-white text-[#0B3D32] active:bg-slate-100'
           }`}
         >
-          <span>Review cart</span>
+          <span>{t('salesman.reviewCart')}</span>
           <ChevronRight size={17} strokeWidth={3} />
         </button>
       </div>

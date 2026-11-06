@@ -1,3 +1,4 @@
+import { useLanguage } from '../../i18n/LanguageContext';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
@@ -101,6 +102,8 @@ export const SalesmanCartSheet: React.FC<SalesmanCartSheetProps> = ({
   getVehicleStock,
   isPriceLocked = false,
 }) => {
+  const { isOdia } = useLanguage();
+
   const [editingKey, setEditingKey] = useState<string | number | null>(null);
   const [rateDraft, setRateDraft] = useState('');
   const [lineDiscountDraft, setLineDiscountDraft] = useState('');
@@ -279,6 +282,7 @@ export const SalesmanCartSheet: React.FC<SalesmanCartSheetProps> = ({
                     Spot cash / walk-in
                   </button>
                 )}
+                {!isOdia && (
                 <button
                   type="button"
                   onClick={() => {
@@ -290,6 +294,7 @@ export const SalesmanCartSheet: React.FC<SalesmanCartSheetProps> = ({
                   <Mic size={16} className={isVoiceSearching ? 'text-rose-600' : 'text-sky-700'} />
                   {isVoiceSearching ? 'Listening…' : 'Find customer by voice'}
                 </button>
+                )}
                 {onCancelSale && (
                   <button
                     type="button"

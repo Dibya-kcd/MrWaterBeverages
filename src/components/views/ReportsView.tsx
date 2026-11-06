@@ -20,6 +20,8 @@ import { PurchasesReport } from "./reports/PurchasesReport";
 import { ReceivablesReport } from "./reports/ReceivablesReport";
 import { TripsReport } from "./reports/TripsReport";
 import { TaxReport } from "./reports/TaxReport";
+import { SimpleGstReport } from "./reports/SimpleGstReport";
+import { SimplePnLReport } from "./reports/SimplePnLReport";
 import { SalesMarginPnLReport } from "./reports/SalesMarginPnLReport";
 import { BeatSalesDueReport } from "./reports/BeatSalesDueReport";
 import { CustomerReceiptsReport } from "./reports/CustomerReceiptsReport";
@@ -421,11 +423,12 @@ export const ReportsView: React.FC = () => {
         return "Beat-wise sales & due";
       case "receivables":
         return "Party credit";
-      case "sales":
-      case "supplierProfit":
       case "margin":
       case "netProfit":
-        return "Sales, Margin & P&L";
+        return "Profit & Loss";
+      case "sales":
+      case "supplierProfit":
+        return "Sales & product profit";
       case "inventory":
         return "Inventory & value";
       case "purchases":
@@ -521,13 +524,33 @@ export const ReportsView: React.FC = () => {
       );
     }
 
-    // Sales / Product profit / Margin / Net Profit — one unified report with sub-tabs.
-    if (
-      activeReport === "sales" ||
-      activeReport === "margin" ||
-      activeReport === "supplierProfit" ||
-      activeReport === "netProfit"
-    ) {
+    // Profit & Loss: one plain statement. The detailed product / customer / day view is behind a button.
+    if (activeReport === "margin" || activeReport === "netProfit") {
+      return (
+        <SimplePnLReport
+          dateInPeriod={reportInPeriod}
+          filteredBills={periodBills}
+          products={products}
+          gstTaxSummary={gstTaxSummary}
+          purchaseStats={purchaseStats}
+          periodLabel={periodLabel}
+          detail={
+            <SalesMarginPnLReport
+              dateInPeriod={reportInPeriod}
+              filteredBills={periodBills}
+              products={products}
+              gstTaxSummary={gstTaxSummary}
+              purchaseStats={purchaseStats}
+              periodLabel={periodLabel}
+              initialSubTab="products"
+            />
+          }
+        />
+      );
+    }
+
+    // Sales by day / Product profit — the detailed report with sub-tabs.
+    if (activeReport === "sales" || activeReport === "supplierProfit") {
       const initialSubTab =
         activeReport === "supplierProfit"
           ? "products"
@@ -607,16 +630,28 @@ export const ReportsView: React.FC = () => {
 
     if (activeReport === "tax") {
       return (
-        <TaxReport
+        <SimpleGstReport
           gstTaxSummary={gstTaxSummary}
           purchaseStats={purchaseStats}
           filteredBills={periodBills}
-          filteredGrns={filteredGrns}
           products={products}
           customers={customers || []}
           orgProfile={orgProfile}
           invoicePrefix={billingSettings?.invoicePrefix || "INV"}
           periodLabel={periodLabel}
+          detail={
+            <TaxReport
+              gstTaxSummary={gstTaxSummary}
+              purchaseStats={purchaseStats}
+              filteredBills={periodBills}
+              filteredGrns={filteredGrns}
+              products={products}
+              customers={customers || []}
+              orgProfile={orgProfile}
+              invoicePrefix={billingSettings?.invoicePrefix || "INV"}
+              periodLabel={periodLabel}
+            />
+          }
         />
       );
     }

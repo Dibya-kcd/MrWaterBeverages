@@ -108,8 +108,8 @@ export const REPORT_GROUPS: ReportCategoryGroup[] = [
     items: [
       {
         id: 'margin',
-        title: 'Sales, Margin & P&L',
-        subtitle: 'P&L, Net Profit & Pay, product / customer / day margins',
+        title: 'Profit & Loss',
+        subtitle: 'Sales, cost, expenses and net profit',
         initial: 'M',
         tone: 'blue',
       },
@@ -156,7 +156,7 @@ export const REPORT_GROUPS: ReportCategoryGroup[] = [
       {
         id: 'tax',
         title: 'GST',
-        subtitle: 'GSTR-3B, B2B, HSN',
+        subtitle: 'GST to pay, input credit, CA download',
         initial: 'G',
         tone: 'slate',
       },

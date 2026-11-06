@@ -10,6 +10,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { LedgerProvider } from './context/LedgerContext';
+import { LanguageProvider } from './i18n/LanguageContext';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import './index.css';
 import './mobile-theme.css';
@@ -27,9 +28,11 @@ if (rootElement) {
   ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
       <ErrorBoundary fallbackTitle="Application Error">
-        <LedgerProvider>
-          <App />
-        </LedgerProvider>
+        <LanguageProvider>
+          <LedgerProvider>
+            <App />
+          </LedgerProvider>
+        </LanguageProvider>
       </ErrorBoundary>
     </React.StrictMode>
   );

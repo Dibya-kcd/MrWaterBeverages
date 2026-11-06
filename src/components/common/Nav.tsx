@@ -17,11 +17,15 @@ import {
   X,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
+import { useLanguage } from '../../i18n/LanguageContext';
 import { TabId } from '../../types';
 
 export interface NavItem {
   id: TabId;
-  label: string;
+  /** i18n key — resolved with t() at render time */
+  labelKey: string;
+  /** @deprecated use labelKey + t() */
+  label?: string;
   icon: React.ComponentType<{
     className?: string;
     'aria-hidden'?: boolean | 'true' | 'false';
@@ -32,42 +36,42 @@ export interface NavItem {
 
 /** Full menu used by mobile sheet + desktop sidebar */
 const MENU_ITEMS: NavItem[] = [
-  { id: 'dashboard', label: 'Home', icon: Home },
-  { id: 'billing', label: 'Sell', icon: ShoppingCart },
-  { id: 'customers', label: 'Parties', icon: Users },
-  { id: 'products', label: 'Products', icon: BookOpen },
-  { id: 'inventory', label: 'Inventory', icon: Boxes },
-  { id: 'supplierSchemes', label: 'Supplier credits', icon: FileText },
-  { id: 'payments', label: 'Payments', icon: Wallet },
-  { id: 'expenses', label: 'Expenses', icon: Receipt },
-  { id: 'crates', label: 'Crates & deposits', icon: Container },
-  { id: 'promotions', label: 'Promotions', icon: Tag },
-  { id: 'trips', label: 'Trips', icon: Truck },
-  { id: 'reports', label: 'Reports', icon: BarChart3 },
-  { id: 'settings', label: 'Settings', icon: Settings },
+  { id: 'dashboard', labelKey: 'nav.home', icon: Home },
+  { id: 'billing', labelKey: 'nav.sell', icon: ShoppingCart },
+  { id: 'customers', labelKey: 'nav.parties', icon: Users },
+  { id: 'products', labelKey: 'nav.products', icon: BookOpen },
+  { id: 'inventory', labelKey: 'nav.inventory', icon: Boxes },
+  { id: 'supplierSchemes', labelKey: 'nav.supplierCredits', icon: FileText },
+  { id: 'payments', labelKey: 'nav.payments', icon: Wallet },
+  { id: 'expenses', labelKey: 'nav.expenses', icon: Receipt },
+  { id: 'crates', labelKey: 'nav.crates', icon: Container },
+  { id: 'promotions', labelKey: 'nav.promotions', icon: Tag },
+  { id: 'trips', labelKey: 'nav.trips', icon: Truck },
+  { id: 'reports', labelKey: 'nav.reports', icon: BarChart3 },
+  { id: 'settings', labelKey: 'nav.settings', icon: Settings },
 ];
 
 /** Unique keys for list rendering (billing/inventory/settings appear twice with different labels) */
 const SIDEBAR_ITEMS: (NavItem & { key: string })[] = [
-  { key: 'home', id: 'dashboard', label: 'Home', icon: Home },
-  { key: 'sell', id: 'billing', label: 'Sell', icon: ShoppingCart },
-  { key: 'parties', id: 'customers', label: 'Parties', icon: Users },
-  { key: 'catalogue', id: 'products', label: 'Products', icon: BookOpen },
-  { key: 'inventory', id: 'inventory', label: 'Inventory', icon: Boxes },
-  { key: 'cdn', id: 'supplierSchemes', label: 'Supplier credits', icon: FileText },
-  { key: 'payments', id: 'payments', label: 'Payments', icon: Wallet },
-  { key: 'expenses', id: 'expenses', label: 'Expenses', icon: Receipt },
-  { key: 'crates', id: 'crates', label: 'Crates & deposits', icon: Container },
-  { key: 'schemes', id: 'promotions', label: 'Promotions', icon: Tag },
-  { key: 'trips', id: 'trips', label: 'Trips', icon: Truck },
-  { key: 'reports', id: 'reports', label: 'Reports', icon: BarChart3 },
-  { key: 'settings', id: 'settings', label: 'Settings', icon: Settings },
+  { key: 'home', id: 'dashboard', labelKey: 'nav.home', icon: Home },
+  { key: 'sell', id: 'billing', labelKey: 'nav.sell', icon: ShoppingCart },
+  { key: 'parties', id: 'customers', labelKey: 'nav.parties', icon: Users },
+  { key: 'catalogue', id: 'products', labelKey: 'nav.products', icon: BookOpen },
+  { key: 'inventory', id: 'inventory', labelKey: 'nav.inventory', icon: Boxes },
+  { key: 'cdn', id: 'supplierSchemes', labelKey: 'nav.supplierCredits', icon: FileText },
+  { key: 'payments', id: 'payments', labelKey: 'nav.payments', icon: Wallet },
+  { key: 'expenses', id: 'expenses', labelKey: 'nav.expenses', icon: Receipt },
+  { key: 'crates', id: 'crates', labelKey: 'nav.crates', icon: Container },
+  { key: 'schemes', id: 'promotions', labelKey: 'nav.promotions', icon: Tag },
+  { key: 'trips', id: 'trips', labelKey: 'nav.trips', icon: Truck },
+  { key: 'reports', id: 'reports', labelKey: 'nav.reports', icon: BarChart3 },
+  { key: 'settings', id: 'settings', labelKey: 'nav.settings', icon: Settings },
 ];
 
 export const NAV_GROUPS = [
   {
     id: 'menu',
-    label: 'Menu',
+    labelKey: 'nav.menu',
     items: MENU_ITEMS,
   },
 ];
@@ -80,6 +84,7 @@ export interface NavProps {
 /** Mobile / tablet menu sheet (unchanged behaviour) */
 export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
   const { tab, setTab, currentUser, logout } = useLedger();
+  const { t } = useLanguage();
 
   if (!open) return null;
 
@@ -97,19 +102,19 @@ export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
 
   // Sheet shows unique destinations (no duplicate billing/inventory entries)
   const sheetItems: NavItem[] = [
-    { id: 'dashboard', label: 'Home', icon: Home },
-    { id: 'billing', label: 'Sell', icon: ShoppingCart },
-      { id: 'inventory', label: 'Inventory', icon: Boxes },
-    { id: 'customers', label: 'Parties', icon: Users },
-    { id: 'products', label: 'Products', icon: BookOpen },
-    { id: 'supplierSchemes', label: 'Supplier credits', icon: FileText },
-    { id: 'payments', label: 'Payments', icon: Wallet },
-    { id: 'expenses', label: 'Expenses', icon: Receipt },
-    { id: 'crates', label: 'Crates & deposits', icon: Container },
-    { id: 'promotions', label: 'Promotions', icon: Tag },
-    { id: 'trips', label: 'Trips', icon: Truck },
-    { id: 'reports', label: 'Reports', icon: BarChart3 },
-    { id: 'settings', label: 'Settings', icon: Settings },
+    { id: 'dashboard', labelKey: 'nav.home', icon: Home },
+    { id: 'billing', labelKey: 'nav.sell', icon: ShoppingCart },
+      { id: 'inventory', labelKey: 'nav.inventory', icon: Boxes },
+    { id: 'customers', labelKey: 'nav.parties', icon: Users },
+    { id: 'products', labelKey: 'nav.products', icon: BookOpen },
+    { id: 'supplierSchemes', labelKey: 'nav.supplierCredits', icon: FileText },
+    { id: 'payments', labelKey: 'nav.payments', icon: Wallet },
+    { id: 'expenses', labelKey: 'nav.expenses', icon: Receipt },
+    { id: 'crates', labelKey: 'nav.crates', icon: Container },
+    { id: 'promotions', labelKey: 'nav.promotions', icon: Tag },
+    { id: 'trips', labelKey: 'nav.trips', icon: Truck },
+    { id: 'reports', labelKey: 'nav.reports', icon: BarChart3 },
+    { id: 'settings', labelKey: 'nav.settings', icon: Settings },
   ];
 
   return (
@@ -118,7 +123,7 @@ export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center lg:hidden"
       role="dialog"
       aria-modal="true"
-      aria-label="Menu"
+      aria-label={t("nav.menu")}
     >
       <button
         type="button"
@@ -129,7 +134,7 @@ export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
       <div className="relative w-full sm:max-w-lg bg-[#faf8f5] rounded-t-3xl sm:rounded-3xl shadow-2xl border border-black/5 max-h-[88vh] overflow-y-auto p-4 sm:p-5 mb-0 sm:mb-4">
         <div className="flex items-start justify-between mb-3">
           <div>
-            <h2 className="text-lg font-bold text-slate-900">Menu</h2>
+            <h2 className="text-lg font-bold text-slate-900">{t("nav.menu")}</h2>
             {email && <p className="text-xs text-slate-500 mt-0.5">{email}</p>}
           </div>
           <button
@@ -143,11 +148,11 @@ export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-          {sheetItems.map(({ id, label, icon: Icon }) => {
+          {sheetItems.map(({ id, labelKey, icon: Icon }) => {
             const active = tab === id;
             return (
               <button
-                key={`${id}-${label}`}
+                key={`${id}-${labelKey}`}
                 type="button"
                 onClick={() => go(id)}
                 className={`flex flex-col items-center justify-center gap-2 min-h-[88px] px-2 py-3 rounded-2xl border text-center cursor-pointer transition-colors ${
@@ -157,7 +162,7 @@ export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
                 }`}
               >
                 <Icon size={22} className="text-[#0d4a3a]" aria-hidden="true" />
-                <span className="text-xs font-semibold leading-tight">{label}</span>
+                <span className="text-xs font-semibold leading-tight">{t(labelKey)}</span>
               </button>
             );
           })}
@@ -185,6 +190,7 @@ export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
  * Matches Crate reference: dark green rail, amber active pill, logo, sign out.
  */
 export const DesktopSidebar: React.FC = () => {
+  const { t } = useLanguage();
   const { tab, setTab, logout } = useLedger();
 
   const isActive = (item: (typeof SIDEBAR_ITEMS)[0]) => {
@@ -253,7 +259,7 @@ export const DesktopSidebar: React.FC = () => {
                 className="shrink-0"
                 aria-hidden="true"
               />
-              <span className="truncate leading-tight">{item.label}</span>
+              <span className="truncate leading-tight">{t(item.labelKey)}</span>
             </button>
           );
         })}

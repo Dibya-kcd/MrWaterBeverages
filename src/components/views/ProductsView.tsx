@@ -3,6 +3,8 @@ import { SizeChip } from "../common/SizeChip";
 import { sizeTheme } from "../../utils/sizeColor";
 import { Package, Plus, Search, Trash2, X } from "lucide-react";
 import { useLedger } from "../../context/LedgerContext";
+import { useLanguage } from "../../i18n/LanguageContext";
+import { displayName } from "../../utils/displayName";
 import { CategoryKey, Product } from "../../types";
 import { CATS } from "../../constants/initialData";
 import { CASE_PACK_SIZES, gstRateFromHsn, money, resolveProductGstRate, resolveProductHsn, volumeFromName, detectPack } from "../../utils/billing";
@@ -14,6 +16,7 @@ const GST_OPTIONS = ["0%", "5%", "18%", "40%"];
 
 const emptyProductForm = () => ({
   name: "",
+  nameOr: "",
   sku: "",
   brand: "",
   category: "general" as CategoryKey,
@@ -56,6 +59,7 @@ export const ProductsView: React.FC = () => {
     updateProductFields,
     deleteProduct,
   } = useLedger();
+  const { language } = useLanguage();
 
   const [searchTerm, setSearchTerm] = useState("");
   const [filterCat, setFilterCat] = useState<string>("all");
@@ -72,6 +76,7 @@ export const ProductsView: React.FC = () => {
       if (!q) return true;
       return (
         p.name.toLowerCase().includes(q) ||
+        (p.nameOr || "").toLowerCase().includes(q) ||
         (p.sku || "").toLowerCase().includes(q) ||
         (p.brand || "").toLowerCase().includes(q) ||
         (p.hsn || "").includes(q)
@@ -90,6 +95,7 @@ export const ProductsView: React.FC = () => {
     setEditingId(p.id);
     setForm({
       name: p.name || "",
+      nameOr: p.nameOr || "",
       sku: p.sku || "",
       brand: p.brand || "",
       category: p.category || "general",
@@ -140,6 +146,7 @@ export const ProductsView: React.FC = () => {
 
     const payload: Omit<Product, "id"> = {
       name,
+      nameOr: form.nameOr.trim() || undefined,
       sku: form.sku.trim() || undefined,
       brand: form.brand.trim(),
       category: cat,
@@ -195,12 +202,22 @@ export const ProductsView: React.FC = () => {
             </div>
           )}
 
-          <Field label="Name">
+          <Field label="Name (English)">
             <input
               className="crate-input uppercase"
               value={form.name}
               onChange={(e) => setField("name", e.target.value.toUpperCase())}
               autoFocus
+            />
+          </Field>
+
+          <Field label="Name (Odia / ଓଡ଼ିଆ) — optional">
+            <input
+              className="crate-input"
+              value={form.nameOr}
+              onChange={(e) => setField("nameOr", e.target.value)}
+              placeholder="ଉଦାହରଣ: ଆପଲ୍ ଫିଜ୍"
+              dir="auto"
             />
           </Field>
 
@@ -529,8 +546,8 @@ export const ProductsView: React.FC = () => {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="text-[13px] sm:text-base font-semibold text-slate-900 leading-snug break-words">
-                      {p.name}{' '}
-                      <SizeChip volume={p.volume} pack={p.pack} name={p.name} className="align-middle ml-1" />
+                      {displayName(p, language)}{' '}
+                      <SizeChip volume={p.volume} pack={p.pack} name={displayName(p, language)} className="align-middle ml-1" />
                     </div>
                     <div className="text-[11px] sm:text-xs text-slate-500 leading-tight mt-0.5 break-words">
                       {[p.brand, p.sku, CATS[p.category]?.name]
