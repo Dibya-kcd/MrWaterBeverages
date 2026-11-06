@@ -23,14 +23,14 @@ import {
   Search,
   Store,
   Zap,
+  ChevronDown,
+  MoreVertical,
 } from 'lucide-react';
 import { BillItem, PriceType, Product, Trip, ExistingCustomer } from '../../types';
 import { money } from '../../utils/billing';
 import { speakAssistiveText } from '../../utils/speechRecognition';
-import { useIsMobile } from '../../hooks/useIsMobile';
-import { SalesmanCartSheet } from './SalesmanCartSheet';
 
-export interface SalesmanCartModalProps {
+interface SalesmanCartModalProps {
   isOpen: boolean;
   onClose: () => void;
   cart: {
@@ -72,7 +72,7 @@ export interface SalesmanCartModalProps {
   isPriceLocked?: boolean;
 }
 
-const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
+export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
   isOpen,
   onClose,
   cart,
@@ -117,6 +117,10 @@ const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
   const [selectedBeverageCategory, setSelectedBeverageCategory] = useState<string>('ALL');
   const [selectedBeveragePack, setSelectedBeveragePack] = useState<'ALL' | 'CAN' | 'PET' | 'GLASS' | 'TETRA'>('ALL');
   const [activePriceType, setActivePriceType] = useState<PriceType>(priceType || 'Wholesale');
+  // Compact-cart UI state: bill discount panel, payment mode, overflow menu
+  const [showDiscount, setShowDiscount] = useState<boolean>(false);
+  const [payMode, setPayMode] = useState<'credit' | 'partial' | 'full'>('credit');
+  const [showMenu, setShowMenu] = useState<boolean>(false);
 
   const nameCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -139,6 +143,10 @@ const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
     if (!isOpen) {
       setIsBrowsingBeverages(false);
       setBeverageSearchQuery('');
+      setShowMenu(false);
+      setShowDiscount(false);
+      setPayMode('credit');
+      setEditingItemKey(null);
     }
   }, [isOpen]);
 
@@ -255,7 +263,7 @@ const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
 
   const saveEditingItem = (key: string | number) => {
     const rateVal = Number(editingRateDraft);
-    if (!isNaN(rateVal) && rateVal >= 0) {
+    if (!isPriceLocked && !isNaN(rateVal) && rateVal >= 0) {
       onUpdateRate(key, rateVal);
     }
     const discVal = Number(editingDiscountDraft) || 0;
@@ -268,101 +276,93 @@ const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
 
   if (!isOpen) return null;
 
+  const lv = isLowVision;
+  const mode: 'credit' | 'partial' | 'full' = payMode === 'partial' ? 'partial' : isFull ? 'full' : isCredit ? 'credit' : 'partial';
+
   return (
     <div
       id="salesman-cart-modal-backdrop"
-      className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-4 bg-black/75 backdrop-blur-xs overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center p-0 sm:p-4 bg-black/75 backdrop-blur-xs sm:overflow-y-auto"
       role="dialog"
       aria-modal="true"
       aria-label="Invoice Draft & Cart"
     >
       <div
         id="salesman-cart-modal-container"
-        className={`w-full max-w-3xl h-[100dvh] sm:h-auto rounded-none sm:rounded-xl shadow-2xl flex flex-col my-0 sm:my-auto max-h-[100dvh] sm:max-h-[92dvh] overflow-hidden border-0 sm:border-3 ${
-          isLowVision ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white text-slate-900 border-slate-700'
+        className={`w-full sm:max-w-3xl sm:rounded-xl shadow-2xl flex flex-col sm:my-auto h-[100dvh] sm:h-auto sm:max-h-[92dvh] overflow-hidden sm:border-3 ${
+          lv ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-slate-100 text-slate-900 border-slate-700'
         }`}
-        style={!isLowVision ? { backgroundColor: palette.panel, borderColor: palette.navy } : {}}
+        style={!lv ? { borderColor: palette.navy } : {}}
       >
-        {/* Header Bar */}
+        {/* Header: one line — back / title, always-visible total, menu, close */}
         <div
-          className={`px-4 py-3.5 border-b-2 flex items-center justify-between gap-3 ${
-            isLowVision ? 'bg-yellow-400 text-black border-yellow-500' : 'bg-slate-900 text-white'
+          className={`px-3 sm:px-4 pb-3 flex items-center justify-between gap-2 shrink-0 ${
+            lv ? 'bg-yellow-400 text-black' : 'bg-[#0B3D32] text-white'
           }`}
+          style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top, 0px))' }}
         >
-          <div className="flex items-center gap-2.5">
-            {isBrowsingBeverages ? (
-              <button
-                type="button"
-                id="btn-back-to-cart-header"
-                onClick={() => {
-                  setIsBrowsingBeverages(false);
-                  if (isLowVision) speakAssistiveText('Returned to invoice cart view.');
-                }}
-                className={`px-3 py-1.5 rounded-lg border-2 cursor-pointer font-black transition-colors flex items-center gap-1.5 text-xs shadow-sm ${
-                  isLowVision
-                    ? 'bg-black text-yellow-300 border-yellow-400 hover:bg-zinc-900'
-                    : 'bg-white/10 hover:bg-white/20 text-white border-white/20'
-                }`}
-                title="Back to Invoice Cart"
-              >
-                <ArrowLeft size={16} />
-                <span>Back to Cart</span>
-              </button>
-            ) : (
-              <div
-                className={`p-2 rounded-lg flex items-center justify-center ${
-                  isLowVision ? 'bg-black text-yellow-300' : 'bg-blue-600 text-white'
-                }`}
-              >
-                <ShoppingCart size={22} />
-              </div>
-            )}
-            <div>
-              <h2 className="text-lg sm:text-xl font-black leading-tight flex items-center gap-2">
-                <span>{isBrowsingBeverages ? 'Browse & Add Beverages' : 'Invoice Cart'}</span>
-                <span
-                  className={`px-2 py-0.5 text-xs font-black rounded-full ${
-                    isLowVision ? 'bg-black text-yellow-300' : 'bg-white text-slate-900'
-                  }`}
-                >
-                  {cart.items.length} {cart.items.length === 1 ? 'Beverage' : 'Beverages'} • {totalCases} Cases
-                </span>
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <button
+              type="button"
+              id={isBrowsingBeverages ? 'btn-back-to-cart-header' : 'btn-close-cart-modal'}
+              onClick={isBrowsingBeverages ? () => { setIsBrowsingBeverages(false); if (lv) speakAssistiveText('Returned to invoice cart view.'); } : onClose}
+              className={`w-10 h-10 shrink-0 rounded-lg flex items-center justify-center cursor-pointer ${lv ? 'bg-black text-yellow-300' : 'hover:bg-white/10 text-white'}`}
+              aria-label={isBrowsingBeverages ? 'Back to cart' : 'Close cart'}
+            >
+              <ArrowLeft size={22} />
+            </button>
+            <div className="min-w-0">
+              <h2 className="text-[17px] font-extrabold leading-tight truncate">
+                {isBrowsingBeverages ? 'Add beverages' : 'Cart'}
               </h2>
-              <p className={`text-xs font-bold ${isLowVision ? 'text-black' : 'text-slate-300'}`}>
-                {isBrowsingBeverages
-                  ? `Select beverages loaded in ${activeTrip?.vehicle || 'Van Stock'} to add into invoice`
-                  : `Active Run: ${activeTrip?.vehicle || 'Van Stock'} • Salesman Bill`}
+              <p className={`text-[11.5px] font-semibold truncate ${lv ? 'text-black' : 'text-emerald-200'}`}>
+                {cart.items.length} {cart.items.length === 1 ? 'item' : 'items'} · {totalCases} cases · {activeTrip?.vehicle || 'Van Stock'}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 shrink-0 relative">
             <span
-              className={`inline-block text-base sm:text-lg font-black px-2.5 sm:px-3 py-1 rounded border-2 ${
-                isLowVision ? 'bg-black text-yellow-300 border-black' : 'bg-emerald-600 text-white border-emerald-500'
-              }`}
+              className={`text-[17px] font-black px-3 py-1.5 rounded-xl ${lv ? 'bg-black text-yellow-300' : 'bg-white text-[#0B3D32]'}`}
+              aria-live="polite"
             >
               ₹{money(finalCartTotal)}
             </span>
-            <button
-              type="button"
-              id="btn-close-cart-modal"
-              onClick={onClose}
-              className={`p-2 rounded-lg border-2 cursor-pointer font-black transition-colors ${
-                isLowVision
-                  ? 'bg-black text-white hover:bg-gray-800 border-black'
-                  : 'bg-white/10 hover:bg-white/20 text-white border-white/20'
-              }`}
-              aria-label="Close cart invoice"
-            >
-              <X size={20} />
-            </button>
+            {!isBrowsingBeverages && onCancelSale && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowMenu((v) => !v)}
+                  className={`w-9 h-10 rounded-lg flex items-center justify-center cursor-pointer ${lv ? 'bg-black text-yellow-300' : 'hover:bg-white/10 text-white'}`}
+                  aria-label="More actions"
+                  aria-expanded={showMenu}
+                >
+                  <MoreVertical size={20} />
+                </button>
+                {showMenu && (
+                  <div className="absolute right-0 top-full mt-1 z-20 w-44 rounded-xl bg-white text-slate-900 shadow-xl border border-slate-200 overflow-hidden">
+                    <button
+                      type="button"
+                      id="btn-modal-cancel-sale"
+                      onClick={() => {
+                        setShowMenu(false);
+                        onCancelSale();
+                        onClose();
+                      }}
+                      className="w-full text-left px-4 py-3 text-sm font-extrabold text-rose-700 hover:bg-rose-50 cursor-pointer flex items-center gap-2"
+                    >
+                      <Trash2 size={16} /> Cancel sale
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </div>
 
         {/* Modal Body: Either Beverage Catalog List OR Cart Review */}
         {isBrowsingBeverages ? (
-          <div className="p-2.5 sm:p-5 space-y-3 sm:space-y-4 overflow-y-auto flex-1">
+          <div className="p-3 sm:p-5 space-y-4 overflow-y-auto flex-1">
             {/* Top controls: Search, Category pills, Price Tier selector */}
             <div
               className={`p-3.5 rounded-xl border-2 space-y-3 ${
@@ -381,7 +381,7 @@ const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
                       {filteredBeverages.length} Items
                     </span>
                   </h3>
-                  <p className="hidden sm:block text-xs opacity-75 font-semibold mt-0.5">
+                  <p className="text-xs opacity-75 font-semibold mt-0.5">
                     1-Tap to add cases directly from {activeTrip?.vehicle || 'Van Stock'} into bill
                   </p>
                 </div>
@@ -524,7 +524,7 @@ const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
             </div>
 
             {/* Beverage Grid Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {filteredBeverages.map((prod) => {
                 const vehicleStock = getVehicleStock(activeTrip, prod.id);
                 const existingItem = cart.items.find((it) => it.productId === prod.id);
@@ -541,7 +541,7 @@ const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
                     key={prod.id}
                     id={`beverage-select-card-${prod.id}`}
                     style={{ borderLeftWidth: 6, borderLeftColor: sizeTheme(prod.volume, prod.name).hex }}
-                    className={`p-2.5 sm:p-3 rounded-xl border-2 flex flex-col justify-between gap-2 sm:gap-2.5 transition-all ${
+                    className={`p-3 rounded-xl border-2 flex flex-col justify-between gap-2.5 transition-all ${
                       currentQty > 0
                         ? isLowVision
                           ? 'bg-zinc-900 border-yellow-400 text-yellow-300 shadow-md ring-2 ring-yellow-400/30'
@@ -672,176 +672,96 @@ const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
           </div>
         ) : (
           /* Scrollable Content Body */
-          <div className="p-3 sm:p-5 space-y-4 overflow-y-auto flex-1">
+          <div className="flex-1 overflow-y-auto overscroll-contain">
           {/* POST-FINALIZE WHATSAPP BANNER */}
           {lastFinalizedWhatsApp && (
-            <div
-              className={`p-3 rounded-lg border-2 flex flex-col sm:flex-row items-center justify-between gap-3 ${
-                isLowVision
-                  ? 'bg-yellow-300 text-black border-black'
-                  : 'bg-emerald-50 text-emerald-950 border-emerald-400'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
+            <div className={`m-3 p-3 rounded-xl border-2 flex items-center justify-between gap-3 ${lv ? 'bg-yellow-300 text-black border-black' : 'bg-emerald-50 text-emerald-950 border-emerald-400'}`}>
+              <div className="flex items-center gap-2.5 min-w-0">
                 <MessageCircle size={22} className="shrink-0 text-emerald-700" />
-                <div>
-                  <div className="font-black text-sm">Bill #{lastFinalizedWhatsApp.id} Ready on WhatsApp!</div>
-                  <div className="text-xs">Destination: {lastFinalizedWhatsApp.phone}</div>
+                <div className="min-w-0">
+                  <div className="font-black text-sm">Bill #{lastFinalizedWhatsApp.id} ready on WhatsApp</div>
+                  <div className="text-xs truncate">{lastFinalizedWhatsApp.phone}</div>
                 </div>
               </div>
-              <a
-                href={lastFinalizedWhatsApp.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full sm:w-auto px-4 py-2 rounded-lg font-black text-xs bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center gap-2 shadow-md cursor-pointer"
-              >
-                <MessageCircle size={16} />
-                <span>Open WhatsApp Chat</span>
+              <a href={lastFinalizedWhatsApp.url} target="_blank" rel="noopener noreferrer"
+                 className="px-4 min-h-[44px] rounded-lg font-black text-xs bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center gap-1.5 cursor-pointer shrink-0">
+                <MessageCircle size={16} /><span>Open</span>
               </a>
             </div>
           )}
 
-          {/* Active Customer / Shop Bar (Streamlined: Step 1 active shop, no bulky suggestion list) */}
+          {/* Customer bar — one row */}
           <div
             id="cart-active-shop-header"
-            className={`p-3 rounded-xl border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
-              isLowVision
-                ? 'bg-zinc-950 border-yellow-400 text-yellow-300'
-                : 'bg-slate-50 border-slate-300 text-slate-900 shadow-sm'
-            }`}
+            className={`px-3 py-2.5 flex items-center gap-2.5 border-b ${lv ? 'bg-zinc-950 border-yellow-400 text-yellow-300' : 'bg-white border-slate-200'}`}
           >
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div
-                className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 font-black ${
-                  isLowVision ? 'bg-yellow-400 text-black' : 'bg-sky-600 text-white'
-                }`}
-              >
-                <Store size={18} />
-              </div>
-              <div className="min-w-0">
-                <div className="text-[10px] font-black uppercase tracking-wider opacity-60">
-                  Active Shop (Step 1 Customer):
-                </div>
-                <div className="text-sm sm:text-base font-black truncate flex items-center gap-1.5">
-                  <span>{selectedRetailer || 'Spot Cash / Walk-in Customer'}</span>
-                  {selectedRetailer && selectedRetailer !== 'Spot Cash / Walk-in Customer' && (
-                    <CheckCircle2 size={15} className="text-emerald-600 shrink-0" />
-                  )}
-                </div>
-                {retailerPhone && (
-                  <div className="text-xs font-bold opacity-75 flex items-center gap-1 mt-0.5">
-                    <Phone size={11} />
-                    <span>WhatsApp: {retailerPhone}</span>
-                  </div>
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${lv ? 'bg-yellow-400 text-black' : 'bg-sky-100 text-sky-700'}`}>
+              <Store size={18} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-extrabold leading-tight flex items-center gap-1.5">
+                <span className="truncate">{selectedRetailer || 'Spot Cash / Walk-in Customer'}</span>
+                {selectedRetailer && selectedRetailer !== 'Spot Cash / Walk-in Customer' && (
+                  <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
                 )}
               </div>
+              <div className={`text-[11.5px] font-semibold truncate ${lv ? 'opacity-80' : 'text-slate-500'}`}>
+                {retailerPhone ? `${retailerPhone}${autoSendWhatsApp ? ' · bill sent on WhatsApp' : ''}` : 'No phone number'}
+              </div>
             </div>
-
-            {/* Quick Actions: Spot Cash / Walk-in & Voice Recognition ONLY (No bulky suggestion box) */}
-            <div className="flex items-center gap-2 shrink-0 flex-wrap">
-              {selectedRetailer !== 'Spot Cash / Walk-in Customer' && (
-                <button
-                  type="button"
-                  id="cart-btn-walkin-cash"
-                  onClick={handlePickWalkInCash}
-                  className={`px-3 py-2 rounded-lg text-xs font-black border-2 flex items-center gap-1.5 cursor-pointer shadow-sm transition-colors ${
-                    isLowVision
-                      ? 'bg-yellow-400 text-black border-yellow-400 hover:bg-yellow-300'
-                      : 'bg-amber-50 text-amber-950 border-amber-300 hover:bg-amber-100'
-                  }`}
-                  title="Switch to Spot Cash / Walk-in sale"
-                  style={{ minHeight: '38px' }}
-                >
-                  <Zap size={14} className={isLowVision ? 'text-black' : 'text-amber-600'} />
-                  <span>Spot Cash / Walk-in</span>
-                </button>
-              )}
-
+            {selectedRetailer !== 'Spot Cash / Walk-in Customer' && (
               <button
                 type="button"
-                id="cart-btn-voice-recog"
-                onClick={onVoiceSearchCustomer}
-                className={`px-3 py-2 rounded-lg text-xs font-black border-2 flex items-center gap-1.5 cursor-pointer shadow-sm transition-colors ${
-                  isVoiceSearching
-                    ? 'bg-rose-600 text-white border-rose-700 animate-pulse ring-2 ring-rose-400'
-                    : isLowVision
-                    ? 'bg-black text-yellow-300 border-yellow-400 hover:bg-zinc-900'
-                    : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-100'
-                }`}
-                title="Speak customer or shop name"
-                style={{ minHeight: '38px' }}
+                id="cart-btn-walkin-cash"
+                onClick={handlePickWalkInCash}
+                className={`w-10 h-10 rounded-xl border-[1.5px] flex items-center justify-center cursor-pointer shrink-0 ${lv ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-amber-50 text-amber-700 border-amber-300'}`}
+                title="Switch to Spot Cash / Walk-in sale"
+                aria-label="Switch to Spot Cash / Walk-in customer"
               >
-                {isVoiceSearching ? (
-                  <>
-                    <MicOff size={14} className="animate-spin" />
-                    <span>Listening...</span>
-                  </>
-                ) : (
-                  <>
-                    <Mic size={14} className={isLowVision ? 'text-yellow-400' : 'text-sky-700'} />
-                    <span>Voice Search</span>
-                  </>
-                )}
+                <Zap size={17} />
               </button>
-            </div>
+            )}
+            <button
+              type="button"
+              id="cart-btn-voice-recog"
+              onClick={onVoiceSearchCustomer}
+              className={`w-10 h-10 rounded-xl border-[1.5px] flex items-center justify-center cursor-pointer shrink-0 ${
+                isVoiceSearching ? 'bg-rose-600 text-white border-rose-700 animate-pulse' : lv ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white text-sky-700 border-slate-300'
+              }`}
+              title="Speak customer or shop name"
+              aria-label={isVoiceSearching ? 'Listening for customer name' : 'Speak customer name'}
+            >
+              {isVoiceSearching ? <MicOff size={17} className="animate-spin" /> : <Mic size={17} />}
+            </button>
+            <button
+              type="button"
+              id="cart-btn-change-customer"
+              onClick={onOpenCustomerDirectory}
+              className={`px-3 min-h-[40px] rounded-xl border-[1.5px] text-xs font-extrabold cursor-pointer shrink-0 ${lv ? 'bg-yellow-400 text-black border-yellow-400' : 'text-sky-700 border-sky-200 bg-white'}`}
+            >
+              Change
+            </button>
           </div>
 
-          {/* Cart Items List */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between border-b pb-1.5 gap-2">
-              <h3 className="font-black text-base flex items-center gap-2">
-                <Receipt size={18} />
-                <span>Invoice Items ({cart.items.length})</span>
-              </h3>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  id="btn-add-beverages-from-cart-header"
-                  onClick={() => {
-                    setIsBrowsingBeverages(true);
-                    if (isLowVision) speakAssistiveText('Opening beverage catalog to add items.');
-                  }}
-                  className={`px-3 py-1 rounded-lg text-xs font-black border-2 cursor-pointer flex items-center gap-1.5 shadow-sm transition-colors ${
-                    isLowVision
-                      ? 'bg-yellow-400 text-black border-yellow-400 hover:bg-yellow-300'
-                      : 'bg-sky-50 text-sky-700 border-blue-300 hover:bg-sky-100'
-                  }`}
-                >
-                  <Plus size={14} />
-                  <span>Browse & Add Beverages</span>
-                </button>
-              </div>
-            </div>
-
+          <div className="p-3 space-y-2.5">
+            {/* Cart items — compact cards */}
             {cart.items.length === 0 ? (
-              <div
-                className={`text-center py-10 border-2 border-dashed rounded-lg font-bold text-sm ${
-                  isLowVision ? 'border-yellow-400 text-yellow-300' : 'border-slate-300 text-slate-500'
-                }`}
-              >
+              <div className={`text-center py-10 border-2 border-dashed rounded-xl font-bold text-sm ${lv ? 'border-yellow-400 text-yellow-300' : 'border-slate-300 text-slate-500'}`}>
                 <ShoppingCart size={36} className="mx-auto mb-2 opacity-50" />
                 No beverages in cart yet.
                 <div className="mt-3">
                   <button
                     type="button"
                     id="btn-empty-cart-browse-beverages"
-                    onClick={() => {
-                      setIsBrowsingBeverages(true);
-                      if (isLowVision) speakAssistiveText('Opening beverage catalog to add items.');
-                    }}
-                    className={`px-5 py-2.5 rounded-lg font-black text-xs sm:text-sm border-2 cursor-pointer shadow-md flex items-center gap-2 mx-auto ${
-                      isLowVision
-                        ? 'bg-yellow-400 text-black border-yellow-500 hover:bg-yellow-300'
-                        : 'bg-sky-600 text-white border-blue-950 hover:bg-sky-700'
-                    }`}
+                    onClick={() => { setIsBrowsingBeverages(true); if (lv) speakAssistiveText('Opening beverage catalog to add items.'); }}
+                    className={`px-5 min-h-[44px] rounded-xl font-black text-sm cursor-pointer flex items-center gap-2 mx-auto ${lv ? 'bg-yellow-400 text-black' : 'bg-sky-600 text-white'}`}
                   >
-                    <Plus size={16} />
-                    <span>Browse & Add Beverages</span>
+                    <Plus size={16} /><span>Add beverages</span>
                   </button>
                 </div>
               </div>
             ) : (
-              cart.items.map((item, idx) => {
+              cart.items.map((item) => {
                 const prod = products.find((p) => p.id === item.productId);
                 const vehicleStock = prod ? getVehicleStock(activeTrip, prod.id) : { available: 999, loaded: 0, sold: 0 };
                 const isEditing = editingItemKey === item.key;
@@ -850,472 +770,301 @@ const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
                   <div
                     key={item.key}
                     id={`cart-item-${item.key}`}
-                    style={{ borderLeftWidth: 6, borderLeftColor: sizeTheme(prod?.volume, item.productName).hex }}
-                    className={`p-3.5 rounded-xl border-2 transition-all ${
-                      isLowVision
-                        ? 'bg-gray-950 border-yellow-400 text-yellow-300'
-                        : 'bg-white border-slate-300 text-slate-900 shadow-sm'
+                    style={{ borderLeftWidth: 5, borderLeftColor: sizeTheme(prod?.volume, item.productName).hex }}
+                    className={`p-2.5 rounded-xl border transition-shadow ${
+                      lv ? 'bg-gray-950 border-yellow-400 text-yellow-300' : isEditing ? 'bg-white border-sky-500 shadow-md' : 'bg-white border-slate-200 shadow-xs'
                     }`}
                   >
-                    {/* Top Row: Product Info & Actions */}
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b pb-2 mb-2.5">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="w-5 h-5 rounded-full bg-slate-200 text-slate-800 text-xs font-black flex items-center justify-center">
-                            {idx + 1}
-                          </span>
-                          <span className="font-black text-base sm:text-lg">{item.productName}</span>
+                    {/* Row 1: name, size, tier, line total */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="font-extrabold text-[14.5px] leading-snug break-words">{item.productName}</div>
+                        <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                           <SizeChip volume={prod?.volume} pack={prod?.pack} name={item.productName} />
-                          <span
-                            className={`px-2 py-0.5 text-[11px] font-black rounded uppercase ${
-                              item.priceType === 'Retail'
-                                ? 'bg-blue-100 text-sky-700 border border-blue-300'
-                                : 'bg-purple-100 text-purple-900 border border-purple-300'
-                            }`}
-                          >
+                          <span className={`px-1.5 py-0.5 text-[10.5px] font-extrabold rounded-md ${item.priceType === 'Retail' ? 'bg-sky-100 text-sky-800' : 'bg-purple-100 text-purple-800'}`}>
                             {item.priceType}
                           </span>
-                        </div>
-                        <div className="text-xs font-semibold opacity-75 mt-0.5">
-                          Category: {item.category.toUpperCase()} • Available in Van: {vehicleStock.available} cs
-                        </div>
-                      </div>
-
-                      {/* Right: Item Total & Delete */}
-                      <div className="flex items-center justify-between sm:justify-end gap-3">
-                        <div className="text-right">
-                          <div className="text-base sm:text-lg font-black text-emerald-700">
-                            ₹{money(item.amount)}
-                          </div>
                           {item.discount > 0 && (
-                            <div className="text-[11px] font-bold text-rose-600">
-                              (Discount: -₹{money(item.discount)})
-                            </div>
+                            <span className="px-1.5 py-0.5 text-[10.5px] font-extrabold rounded-md bg-rose-50 text-rose-700">−₹{money(item.discount)} disc</span>
                           )}
                         </div>
-
-                        <button
-                          type="button"
-                          id={`btn-remove-item-${item.key}`}
-                          onClick={() => onRemoveItem(item.key)}
-                          className={`p-2 rounded-lg border cursor-pointer transition-colors ${
-                            isLowVision
-                              ? 'bg-red-600 text-white border-red-700 hover:bg-red-700'
-                              : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
-                          }`}
-                          title="Remove item from invoice"
-                        >
-                          <Trash2 size={16} />
-                        </button>
                       </div>
+                      <div className="text-base font-black whitespace-nowrap">₹{money(item.amount)}</div>
                     </div>
 
-                    {/* Controls Row: Quantity Steppers, Rate Adjuster, Price Type Switch */}
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 sm:gap-3 items-start sm:items-center">
-                      {/* 1. Cases Quantity Stepper */}
-                      <div>
-                        <label className="block text-xs font-black mb-1">
-                          Quantity (Cases):
-                        </label>
-                        <div className="flex items-center border-2 rounded-lg overflow-hidden">
-                          <button
-                            type="button"
-                            id={`btn-qty-minus-${item.key}`}
-                            onClick={() => onUpdateQty(item.key, item.qty - 1)}
-                            className={`px-3.5 py-2 font-black text-base cursor-pointer ${
-                              isLowVision
-                                ? 'bg-yellow-400 text-black hover:bg-yellow-500'
-                                : 'bg-slate-100 hover:bg-slate-200 text-slate-800'
-                            }`}
-                            aria-label="Decrease quantity"
-                          >
-                            <Minus size={16} />
-                          </button>
-                          <input
-                            type="number" inputMode="numeric"
-                            min={1}
-                            max={vehicleStock.available}
-                            value={item.qty}
-                            onChange={(e) => {
-                              const val = Number(e.target.value);
-                              if (!isNaN(val)) {
-                                onUpdateQty(item.key, Math.max(1, Math.min(vehicleStock.available, val)));
-                              }
-                            }}
-                            className={`w-full text-center font-black text-sm py-1.5 ${
-                              isLowVision ? 'bg-black text-yellow-300' : 'bg-white text-slate-900'
-                            }`}
-                          />
-                          <button
-                            type="button"
-                            id={`btn-qty-plus-${item.key}`}
-                            onClick={() => onUpdateQty(item.key, item.qty + 1)}
-                            disabled={item.qty >= vehicleStock.available}
-                            className={`px-3.5 py-2 font-black text-base cursor-pointer disabled:opacity-30 ${
-                              isLowVision
-                                ? 'bg-yellow-400 text-black hover:bg-yellow-500'
-                                : 'bg-slate-100 hover:bg-slate-200 text-slate-800'
-                            }`}
-                            aria-label="Increase quantity"
-                          >
-                            <Plus size={16} />
-                          </button>
-                        </div>
+                    {/* Row 2: stepper · rate (tap pencil to edit) · van stock · remove */}
+                    <div className="flex items-center gap-2 mt-2">
+                      <div className={`flex items-center border-[1.5px] rounded-xl overflow-hidden ${lv ? 'border-yellow-400' : 'border-slate-300'}`}>
+                        <button
+                          type="button"
+                          id={`btn-qty-minus-${item.key}`}
+                          onClick={() => onUpdateQty(item.key, item.qty - 1)}
+                          className={`w-10 h-10 flex items-center justify-center cursor-pointer ${lv ? 'bg-yellow-400 text-black' : 'bg-slate-100 hover:bg-slate-200 text-slate-800'}`}
+                          aria-label="Decrease quantity"
+                        >
+                          <Minus size={16} />
+                        </button>
+                        <input
+                          type="number" inputMode="numeric"
+                          min={1}
+                          max={vehicleStock.available}
+                          value={item.qty}
+                          aria-label="Quantity in cases"
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            if (!isNaN(val)) onUpdateQty(item.key, Math.max(1, Math.min(vehicleStock.available, val)));
+                          }}
+                          className={`w-11 text-center font-black text-sm h-10 ${lv ? 'bg-black text-yellow-300' : 'bg-white text-slate-900'}`}
+                        />
+                        <button
+                          type="button"
+                          id={`btn-qty-plus-${item.key}`}
+                          onClick={() => onUpdateQty(item.key, item.qty + 1)}
+                          disabled={item.qty >= vehicleStock.available}
+                          className={`w-10 h-10 flex items-center justify-center cursor-pointer disabled:opacity-30 ${lv ? 'bg-yellow-400 text-black' : 'bg-slate-100 hover:bg-slate-200 text-slate-800'}`}
+                          aria-label="Increase quantity"
+                        >
+                          <Plus size={16} />
+                        </button>
                       </div>
 
-                      {/* 2. Rate Editor / Price Type */}
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="block text-xs font-black">
-                            Rate / Case (₹):
-                          </label>
+                      <button
+                        type="button"
+                        onClick={() => (isEditing ? setEditingItemKey(null) : startEditingItem(item))}
+                        className={`min-h-[40px] px-1.5 flex items-center gap-1 text-[12.5px] font-bold cursor-pointer ${lv ? 'text-yellow-300' : 'text-slate-700'}`}
+                        aria-label={`Edit rate and discount for ${item.productName}`}
+                        aria-expanded={isEditing}
+                      >
+                        <span>₹{money(item.rate)}/cs</span>
+                        <Edit2 size={13} className={lv ? 'text-yellow-300' : 'text-sky-600'} />
+                      </button>
+
+                      <span className={`ml-auto text-[10.5px] font-bold text-right ${lv ? '' : 'text-slate-500'}`}>Van {vehicleStock.available}</span>
+
+                      <button
+                        type="button"
+                        id={`btn-remove-item-${item.key}`}
+                        onClick={() => onRemoveItem(item.key)}
+                        className={`w-10 h-10 rounded-xl flex items-center justify-center cursor-pointer shrink-0 ${lv ? 'bg-red-600 text-white' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'}`}
+                        title="Remove item from invoice"
+                        aria-label={`Remove ${item.productName}`}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+
+                    {/* Expanded editor — only for the tapped line */}
+                    {isEditing && (
+                      <div className="mt-2.5 pt-2.5 border-t border-dashed border-slate-300">
+                        <div className="flex gap-2.5">
+                          {!isPriceLocked && (
+                            <div className="flex-1 min-w-0">
+                              <label className="block text-[10.5px] font-extrabold tracking-wide text-slate-500 mb-1">RATE / CASE (₹)</label>
+                              <input
+                                type="number" inputMode="decimal"
+                                value={editingRateDraft}
+                                onChange={(e) => setEditingRateDraft(e.target.value)}
+                                placeholder={`₹${item.rate}`}
+                                className="w-full h-11 px-3 text-base font-black rounded-xl border-2 border-sky-500 bg-white text-slate-900"
+                              />
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <label className="block text-[10.5px] font-extrabold tracking-wide text-slate-500 mb-1">LINE DISCOUNT (₹)</label>
+                            <input
+                              type="number" inputMode="numeric"
+                              min={0}
+                              value={editingDiscountDraft}
+                              onChange={(e) => setEditingDiscountDraft(e.target.value)}
+                              placeholder="0"
+                              className="w-full h-11 px-3 text-base font-black rounded-xl border-2 border-sky-500 bg-white text-slate-900"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 mt-2.5">
                           <button
                             type="button"
-                            onClick={() => {
-                              const nextType: PriceType = item.priceType === 'Retail' ? 'Wholesale' : 'Retail';
-                              onTogglePriceType(item.key, nextType);
-                            }}
-                            className="text-[11px] font-bold underline cursor-pointer text-blue-600 hover:text-blue-800"
+                            onClick={() => onTogglePriceType(item.key, item.priceType === 'Retail' ? 'Wholesale' : 'Retail')}
+                            className="min-h-[40px] px-3 rounded-full text-xs font-extrabold bg-purple-100 text-purple-800 cursor-pointer"
                           >
                             Use {item.priceType === 'Retail' ? 'Wholesale' : 'Retail'}
                           </button>
+                          {isPriceLocked && (
+                            <span className="text-[10px] font-bold text-slate-500 uppercase px-1.5 py-0.5 rounded bg-slate-200">Standard rate</span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => saveEditingItem(item.key)}
+                            className="ml-auto min-h-[42px] px-5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-black text-sm flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Check size={17} strokeWidth={3} /> Done
+                          </button>
                         </div>
-
-                        {isEditing && !isPriceLocked ? (
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="number" inputMode="decimal"
-                              value={editingRateDraft}
-                              onChange={(e) => setEditingRateDraft(e.target.value)}
-                              placeholder={`₹${item.rate}`}
-                              className="w-full px-2 py-1.5 text-xs font-black rounded border-2 border-blue-500"
-                            />
-                            <button aria-label="Confirm"
-                              type="button"
-                              onClick={() => saveEditingItem(item.key)}
-                              className="px-2.5 py-1.5 rounded bg-emerald-600 text-white font-black text-xs cursor-pointer"
-                            >
-                              <Check size={14} />
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="flex items-center justify-between border-2 rounded-lg px-2.5 py-1.5 bg-slate-50/50">
-                            <span className="font-black text-sm">₹{item.rate} / cs</span>
-                            {isPriceLocked ? (
-                              <span className="text-[10px] font-bold text-slate-500 uppercase px-1.5 py-0.5 rounded bg-slate-200">
-                                Standard Rate
-                              </span>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => startEditingItem(item)}
-                                className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1 cursor-pointer"
-                              >
-                                <Edit2 size={12} />
-                                <span>Edit</span>
-                              </button>
-                            )}
-                          </div>
-                        )}
                       </div>
-
-                      {/* 3. Quick Preset Adjuster or Discount */}
-                      <div className="col-span-2 sm:col-span-1">
-                        <label className="block text-xs font-black mb-1">
-                          Line Discount (₹):
-                        </label>
-                        <input
-                          type="number" inputMode="numeric"
-                          min={0}
-                          value={item.discount || ''}
-                          onChange={(e) => onUpdateDiscount(item.key, Number(e.target.value) || 0)}
-                          placeholder="₹0 discount"
-                          className={`w-full px-2.5 py-1.5 text-xs font-bold rounded-lg border-2 ${
-                            isLowVision ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white border-slate-300'
-                          }`}
-                        />
-                      </div>
-                    </div>
+                    )}
                   </div>
                 );
               })
             )}
-          </div>
 
-          {/* INVOICE-LEVEL SPECIAL DISCOUNT & PRICE OVERRIDE */}
-          {cart.items.length > 0 && (
-            <div
-              className={`p-4 rounded-xl border-2 space-y-3 ${
-                isLowVision ? 'bg-gray-900 border-yellow-400 text-yellow-300' : 'bg-amber-50/70 border-amber-300 text-slate-900'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Percent size={18} className="text-amber-700" />
-                  <span className="font-black text-sm">Special Discount & Price Override After Total</span>
-                </div>
-                {appliedDiscount > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => handleDiscountChange('0')}
-                    className="text-xs font-black text-rose-600 hover:underline cursor-pointer"
-                  >
-                    Reset Discount
-                  </button>
-                )}
-              </div>
-
-              {/* Quick Discount Presets */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs font-bold">Quick Presets:</span>
-                {[50, 100, 200].map((amt) => (
-                  <button
-                    key={amt}
-                    type="button"
-                    onClick={() => applyQuickDiscount(amt, false)}
-                    className={`px-3 py-1 text-xs font-black rounded-lg border-2 cursor-pointer ${
-                      isLowVision ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-white border-slate-400 hover:bg-amber-100'
-                    }`}
-                  >
-                    -₹{amt}
-                  </button>
-                ))}
+            {/* Add more + bill discount toggle */}
+            {cart.items.length > 0 && (
+              <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => applyQuickDiscount(5, true)}
-                  className={`px-3 py-1 text-xs font-black rounded-lg border-2 cursor-pointer ${
-                    isLowVision ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-white border-slate-400 hover:bg-amber-100'
+                  id="btn-add-beverages-from-cart-header"
+                  onClick={() => { setIsBrowsingBeverages(true); if (lv) speakAssistiveText('Opening beverage catalog to add items.'); }}
+                  className={`flex-1 min-h-[44px] rounded-xl text-[13px] font-extrabold border-[1.5px] border-dashed flex items-center justify-center gap-1.5 cursor-pointer ${lv ? 'bg-yellow-400 text-black border-black' : 'text-sky-700 border-sky-300 bg-sky-50'}`}
+                >
+                  <Plus size={16} /><span>Add more beverages</span>
+                </button>
+                <button
+                  type="button"
+                  id="btn-toggle-bill-discount"
+                  onClick={() => setShowDiscount((v) => !v)}
+                  aria-expanded={showDiscount}
+                  className={`min-h-[44px] px-3 rounded-xl text-[12.5px] font-extrabold border flex items-center gap-1.5 cursor-pointer ${
+                    appliedDiscount > 0 || showDiscount ? 'bg-amber-50 border-amber-300 text-amber-900' : lv ? 'bg-black border-yellow-400 text-yellow-300' : 'bg-white border-slate-200 text-slate-600'
                   }`}
                 >
-                  -5%
+                  <Percent size={15} />
+                  <span>{appliedDiscount > 0 ? `−₹${money(appliedDiscount)}` : 'Discount'}</span>
+                  <ChevronDown size={15} className={`transition-transform ${showDiscount ? 'rotate-180' : ''}`} />
                 </button>
               </div>
+            )}
 
-              {/* Discount Amount & Settled Final Total Inputs */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label htmlFor="cart-special-discount-amt" className="block text-xs font-black mb-1">
-                    Special Invoice Discount (₹):
-                  </label>
-                  <input
-                    id="cart-special-discount-amt"
-                    type="number" inputMode="numeric"
-                    min={0}
-                    value={invoiceDiscountDraft}
-                    onChange={(e) => handleDiscountChange(e.target.value)}
-                    placeholder="₹0"
-                    className={`w-full px-3 py-1.5 text-sm font-black rounded-lg border-2 ${
-                      isLowVision ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white border-slate-400'
-                    }`}
-                  />
+            {/* Bill discount panel — collapsed by default */}
+            {cart.items.length > 0 && showDiscount && (
+              <div className={`p-3 rounded-xl border-[1.5px] space-y-2.5 ${lv ? 'bg-gray-900 border-yellow-400 text-yellow-300' : 'bg-amber-50 border-amber-300 text-slate-900'}`}>
+                <div className="flex items-center justify-between text-[11px] font-extrabold tracking-wide text-amber-900">
+                  <span>BILL DISCOUNT</span>
+                  {appliedDiscount > 0 && (
+                    <button type="button" onClick={() => handleDiscountChange('0')} className="text-rose-600 text-xs font-black cursor-pointer min-h-[32px]">Reset</button>
+                  )}
                 </div>
-
-                <div>
-                  <label htmlFor="cart-settled-total-amt" className="block text-xs font-black mb-1">
-                    Modify Settled Final Total (₹):
-                  </label>
-                  <input
-                    id="cart-settled-total-amt"
-                    type="number" inputMode="decimal"
-                    min={0}
-                    value={settledTotalDraft}
-                    onChange={(e) => handleSettledTotalChange(e.target.value)}
-                    placeholder={`₹${rawCartTotal}`}
-                    className={`w-full px-3 py-1.5 text-sm font-black rounded-lg border-2 ${
-                      isLowVision ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white border-slate-400'
-                    }`}
-                  />
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[50, 100, 200].map((amt) => (
+                    <button key={amt} type="button" onClick={() => applyQuickDiscount(amt, false)}
+                      className={`min-h-[40px] text-[13px] font-black rounded-xl border-[1.5px] cursor-pointer ${lv ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-white border-amber-300 text-amber-900'}`}>
+                      −₹{amt}
+                    </button>
+                  ))}
+                  <button type="button" onClick={() => applyQuickDiscount(5, true)}
+                    className={`min-h-[40px] text-[13px] font-black rounded-xl border-[1.5px] cursor-pointer ${lv ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-white border-amber-300 text-amber-900'}`}>
+                    −5%
+                  </button>
                 </div>
-              </div>
-
-              {/* Financial Calculation Breakdown */}
-              <div className="pt-2 border-t flex items-center justify-between text-xs sm:text-sm font-black">
-                <span>Gross Items Total: ₹{money(rawCartTotal)}</span>
-                {appliedDiscount > 0 && (
-                  <span className="text-rose-600">Less Discount: -₹{money(appliedDiscount)}</span>
-                )}
-                <span className="text-emerald-700 text-base font-black">
-                  Net Settled: ₹{money(finalCartTotal)}
-                </span>
-              </div>
-            </div>
-          )}
-
-          {/* WHATSAPP AUTOMATION & PAYMENT SECTION */}
-          {cart.items.length > 0 && (
-            <div className="space-y-3 pt-2">
-              {/* WhatsApp Delivery Option */}
-              <div
-                className={`p-3 rounded-xl border-2 flex items-center justify-between gap-3 ${
-                  isLowVision ? 'bg-gray-900 border-yellow-400 text-yellow-300' : 'bg-slate-50 border-slate-300'
-                }`}
-              >
-                <label className="flex items-center gap-2.5 cursor-pointer font-bold text-xs sm:text-sm">
-                  <input
-                    type="checkbox"
-                    checked={autoSendWhatsApp}
-                    onChange={(e) => setAutoSendWhatsApp(e.target.checked)}
-                    className="w-4 h-4 accent-emerald-600 cursor-pointer"
-                  />
-                  <div className="flex items-center gap-1.5">
-                    <MessageCircle size={16} className="text-emerald-600" />
-                    <span>Directly send bill through WhatsApp if number available</span>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label htmlFor="cart-special-discount-amt" className="block text-[10.5px] font-extrabold tracking-wide text-slate-500 mb-1">DISCOUNT (₹)</label>
+                    <input id="cart-special-discount-amt" type="number" inputMode="numeric" min={0}
+                      value={invoiceDiscountDraft} onChange={(e) => handleDiscountChange(e.target.value)} placeholder="₹0"
+                      className={`w-full h-11 px-3 text-base font-black rounded-xl border-2 ${lv ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white border-amber-400 text-slate-900'}`} />
                   </div>
-                </label>
-                <span className="text-xs font-semibold opacity-70 truncate max-w-[130px]">
-                  {retailerPhone || '(No phone)'}
-                </span>
-              </div>
-
-              {/* Cash / Amount Paid Today Section with Full or Credit Options */}
-              <div
-                className={`p-3.5 sm:p-4 rounded-xl border-2 space-y-3 ${
-                  isLowVision ? 'bg-gray-900 border-yellow-400 text-yellow-300' : 'bg-slate-50 border-slate-300'
-                }`}
-              >
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <label htmlFor="cart-amount-paid-today" className="block text-xs sm:text-sm font-black">
-                    Cash / Amount Paid Today (₹):
-                  </label>
-                  <span className="text-xs font-bold opacity-75">
-                    Net Bill: <span className="font-black">₹{money(finalCartTotal)}</span>
-                  </span>
+                  <div>
+                    <label htmlFor="cart-settled-total-amt" className="block text-[10.5px] font-extrabold tracking-wide text-slate-500 mb-1">FINAL TOTAL (₹)</label>
+                    <input id="cart-settled-total-amt" type="number" inputMode="decimal" min={0}
+                      value={settledTotalDraft} onChange={(e) => handleSettledTotalChange(e.target.value)} placeholder={`₹${rawCartTotal}`}
+                      className={`w-full h-11 px-3 text-base font-black rounded-xl border-2 ${lv ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white border-amber-400 text-slate-900'}`} />
+                  </div>
                 </div>
+              </div>
+            )}
 
-                {/* Quick Selection: Full or Credit options (Default: Credit = ₹0) */}
-                <div className="grid grid-cols-2 gap-2">
-                  {/* Credit Option (Default is Credit = 0) */}
+            {/* Payment + WhatsApp */}
+            {cart.items.length > 0 && (
+              <div className={`p-3 rounded-xl border ${lv ? 'bg-gray-900 border-yellow-400 text-yellow-300' : 'bg-white border-slate-200'}`}>
+                <div className="text-[11px] font-extrabold tracking-wide text-slate-500 mb-2">PAYMENT TODAY</div>
+                <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Payment today">
                   <button
-                    type="button"
+                    type="button" role="radio" aria-checked={mode === 'credit'}
                     id="btn-payment-option-credit"
                     onClick={() => {
+                      setPayMode('credit');
                       setAmountPaidDraft('0');
-                      if (isLowVision) speakAssistiveText(`Selected Credit. 0 rupees paid today. Rupees ${finalCartTotal} due to pay.`);
+                      if (lv) speakAssistiveText(`Selected Credit. 0 rupees paid today. Rupees ${finalCartTotal} due to pay.`);
                     }}
-                    className={`py-2.5 px-3 rounded-xl font-black text-xs sm:text-sm border-2 cursor-pointer flex items-center justify-center gap-1.5 transition-all ${
-                      isCredit
-                        ? isLowVision
-                          ? 'bg-yellow-400 text-black border-yellow-500 shadow-md ring-2 ring-yellow-400'
-                          : 'bg-amber-600 text-white border-amber-700 shadow-md ring-2 ring-amber-300'
-                        : isLowVision
-                        ? 'bg-black text-yellow-300 border-yellow-400/50 hover:bg-gray-800'
-                        : 'bg-white text-amber-900 border-amber-300 hover:bg-amber-50'
+                    className={`min-h-[44px] rounded-xl font-black text-[13px] border-[1.5px] flex items-center justify-center gap-1 cursor-pointer ${
+                      mode === 'credit' ? (lv ? 'bg-yellow-400 text-black border-yellow-500 ring-2 ring-yellow-400' : 'bg-amber-600 text-white border-amber-600 ring-2 ring-amber-200') : lv ? 'bg-black text-yellow-300 border-yellow-400/50' : 'bg-white text-slate-700 border-slate-300'
                     }`}
                   >
-                    <Clock size={16} className="shrink-0" />
-                    <span>Credit / Udhaar (₹0)</span>
-                    {isCredit && (
-                      <span className="text-[10px] uppercase font-black px-1.5 py-0.5 rounded bg-black/20 ml-0.5">
-                        Default
-                      </span>
-                    )}
+                    <Clock size={15} /> Credit
                   </button>
-
-                  {/* Full Payment Option */}
                   <button
-                    type="button"
+                    type="button" role="radio" aria-checked={mode === 'partial'}
+                    id="btn-payment-option-partial"
+                    onClick={() => {
+                      setPayMode('partial');
+                      if (isFull || isCredit) setAmountPaidDraft('');
+                    }}
+                    className={`min-h-[44px] rounded-xl font-black text-[13px] border-[1.5px] flex items-center justify-center cursor-pointer ${
+                      mode === 'partial' ? (lv ? 'bg-yellow-400 text-black border-yellow-500 ring-2 ring-yellow-400' : 'bg-sky-600 text-white border-sky-600 ring-2 ring-sky-200') : lv ? 'bg-black text-yellow-300 border-yellow-400/50' : 'bg-white text-slate-700 border-slate-300'
+                    }`}
+                  >
+                    Partial
+                  </button>
+                  <button
+                    type="button" role="radio" aria-checked={mode === 'full'}
                     id="btn-payment-option-full"
                     onClick={() => {
+                      setPayMode('full');
                       setAmountPaidDraft(String(finalCartTotal));
-                      if (isLowVision) speakAssistiveText(`Selected Full Cash. Rupees ${finalCartTotal} paid today. 0 due.`);
+                      if (lv) speakAssistiveText(`Selected Full Cash. Rupees ${finalCartTotal} paid today. 0 due.`);
                     }}
-                    className={`py-2.5 px-3 rounded-xl font-black text-xs sm:text-sm border-2 cursor-pointer flex items-center justify-center gap-1.5 transition-all ${
-                      isFull
-                        ? isLowVision
-                          ? 'bg-yellow-400 text-black border-yellow-500 shadow-md ring-2 ring-yellow-400'
-                          : 'bg-emerald-600 text-white border-emerald-700 shadow-md ring-2 ring-emerald-300'
-                        : isLowVision
-                        ? 'bg-black text-yellow-300 border-yellow-400/50 hover:bg-gray-800'
-                        : 'bg-white text-emerald-900 border-emerald-300 hover:bg-emerald-50'
+                    className={`min-h-[44px] rounded-xl font-black text-[13px] border-[1.5px] flex items-center justify-center gap-1 cursor-pointer ${
+                      mode === 'full' ? (lv ? 'bg-yellow-400 text-black border-yellow-500 ring-2 ring-yellow-400' : 'bg-emerald-600 text-white border-emerald-600 ring-2 ring-emerald-200') : lv ? 'bg-black text-yellow-300 border-yellow-400/50' : 'bg-white text-slate-700 border-slate-300'
                     }`}
                   >
-                    <CheckCircle2 size={16} className="shrink-0" />
-                    <span>Full Cash (₹{money(finalCartTotal)})</span>
-                    {isFull && (
-                      <span className="text-[10px] uppercase font-black px-1.5 py-0.5 rounded bg-black/20 ml-0.5">
-                        Active
-                      </span>
-                    )}
+                    <CheckCircle2 size={15} /> Full cash
                   </button>
                 </div>
 
-                {/* Custom / Partial Payment Input */}
-                <div>
-                  <div className="flex items-center justify-between mb-1 text-xs">
-                    <span className="font-bold opacity-80">
-                      Or enter custom / partial payment (₹):
-                    </span>
-                    {isPartial && (
-                      <span className="text-[11px] font-black text-sky-700 bg-blue-100 px-2 py-0.5 rounded border border-blue-300">
-                        Partial Payment
-                      </span>
-                    )}
+                {mode === 'partial' && (
+                  <div className="flex gap-2.5 mt-2.5 items-end">
+                    <div className="flex-1 min-w-0">
+                      <label htmlFor="cart-amount-paid-today" className="block text-[10.5px] font-extrabold tracking-wide text-slate-500 mb-1">AMOUNT RECEIVED (₹)</label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 font-black opacity-60">₹</span>
+                        <input
+                          id="cart-amount-paid-today"
+                          type="number" inputMode="decimal" min={0} step="any" autoFocus
+                          value={amountPaidDraft}
+                          onChange={(e) => setAmountPaidDraft(e.target.value)}
+                          placeholder="0"
+                          className={`w-full h-11 pl-7 pr-3 text-base font-black rounded-xl border-2 ${lv ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white border-sky-500 text-slate-900'}`}
+                        />
+                      </div>
+                    </div>
+                    <div className={`flex-1 rounded-xl border-[1.5px] px-2.5 py-1 h-11 ${balanceDue > 0 ? 'bg-amber-50 border-amber-300' : 'bg-emerald-50 border-emerald-300'}`}>
+                      <div className="text-[9.5px] font-extrabold text-amber-900">BALANCE DUE</div>
+                      <div className={`text-base font-black leading-tight ${balanceDue > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>₹{money(balanceDue)}</div>
+                    </div>
                   </div>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 font-black opacity-60">₹</span>
-                    <input
-                      id="cart-amount-paid-today"
-                      type="number" inputMode="decimal"
-                      min={0}
-                      step="any"
-                      value={amountPaidDraft}
-                      onChange={(e) => setAmountPaidDraft(e.target.value)}
-                      placeholder="0"
-                      className={`w-full pl-8 pr-3 py-2 text-base font-black rounded-lg border-2 ${
-                        isLowVision ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white border-slate-400 text-slate-900'
-                      }`}
-                    />
-                  </div>
-                </div>
+                )}
 
-                {/* Live Payment & Balance Due Breakdown */}
-                <div
-                  className={`p-3 rounded-lg border-2 flex items-center justify-between gap-3 text-xs sm:text-sm font-black ${
-                    balanceDue > 0
-                      ? isLowVision
-                        ? 'bg-black border-yellow-400 text-yellow-300'
-                        : 'bg-amber-50 border-amber-300 text-amber-950'
-                      : isLowVision
-                      ? 'bg-black border-yellow-400 text-yellow-300'
-                      : 'bg-emerald-50 border-emerald-300 text-emerald-950'
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    {balanceDue > 0 ? (
-                      <AlertCircle size={18} className="text-amber-700 shrink-0" />
-                    ) : (
-                      <CheckCircle2 size={18} className="text-emerald-700 shrink-0" />
-                    )}
-                    <div>
-                      <div>
-                        {balanceDue > 0 ? 'Due to Pay (Balance on Credit):' : 'Full Payment Settled:'}
-                      </div>
-                      <div className="text-[11px] font-bold opacity-75">
-                        Amount Paid Today: ₹{money(numericPaid)}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className={`text-base sm:text-lg font-black ${balanceDue > 0 ? 'text-rose-700' : 'text-emerald-800'}`}>
-                      {balanceDue > 0 ? `₹${money(balanceDue)} Due` : '₹0 Due'}
-                    </div>
-                    <div className="text-[10px] uppercase tracking-wider font-bold opacity-70">
-                      {isCredit ? 'Credit / Udhaar' : isFull ? 'Paid in Full' : 'Partial Paid'}
-                    </div>
-                  </div>
-                </div>
+                <label className="flex items-center justify-between gap-3 mt-3 cursor-pointer min-h-[40px]">
+                  <span className="text-[13px] font-bold flex items-center gap-1.5">
+                    <MessageCircle size={16} className="text-emerald-600" /> Send bill on WhatsApp
+                  </span>
+                  <input
+                    type="checkbox" role="switch"
+                    checked={autoSendWhatsApp}
+                    onChange={(e) => setAutoSendWhatsApp(e.target.checked)}
+                    className="w-5 h-5 accent-emerald-600 cursor-pointer"
+                    aria-label="Send bill on WhatsApp"
+                  />
+                </label>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+          </div>
         )}
 
-        {/* Footer Actions */}
+        {/* Footer: sticky — totals + due + one big Finalize button */}
         <div
-          className={`p-3 sm:p-4 border-t-2 flex flex-col sm:flex-row items-center justify-between gap-3 ${
-            isLowVision ? 'bg-gray-950 border-yellow-400' : 'bg-slate-100 border-slate-300'
-          }`}
-          style={{ paddingBottom: 'max(0.75rem, calc(env(safe-area-inset-bottom, 0px) + 0.75rem))' }}
+          className={`shrink-0 px-3 pt-2.5 border-t ${lv ? 'bg-gray-950 border-yellow-400' : 'bg-white border-slate-300 shadow-[0_-6px_18px_rgba(15,23,42,0.10)]'}`}
+          style={{ paddingBottom: 'max(0.75rem, calc(env(safe-area-inset-bottom, 0px) + 0.5rem))' }}
         >
           {isBrowsingBeverages ? (
             <div className="flex flex-col sm:flex-row items-center justify-between gap-3 w-full">
@@ -1349,66 +1098,28 @@ const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
             </div>
           ) : (
             <>
-              <div className="flex items-center gap-2 w-full sm:w-auto">
-                <button
-                  type="button"
-                  id="btn-modal-add-more-beverages"
-                  onClick={() => {
-                    setIsBrowsingBeverages(true);
-                    if (isLowVision) speakAssistiveText('Opening beverage catalog to add more items.');
-                  }}
-                  className={`flex-1 sm:flex-none min-h-[44px] px-4 py-2.5 rounded-xl font-black text-sm border-2 cursor-pointer flex items-center justify-center gap-2 transition-colors ${
-                    isLowVision
-                      ? 'bg-black text-yellow-300 border-yellow-400 hover:bg-gray-900'
-                      : 'bg-white text-slate-800 border-slate-400 hover:bg-slate-200'
-                  }`}
-                >
-                  <Plus size={16} />
-                  <span>Add More Beverages</span>
-                </button>
-
-                {onCancelSale && (
-                  <button
-                    type="button"
-                    id="btn-modal-cancel-sale"
-                    onClick={() => {
-                      onCancelSale();
-                      onClose();
-                    }}
-                    className={`min-h-[44px] px-3.5 py-2.5 rounded-xl font-black text-xs sm:text-sm border-2 cursor-pointer transition-colors ${
-                      isLowVision
-                        ? 'border-rose-400 text-rose-300 bg-black hover:bg-rose-950'
-                        : 'border-rose-300 text-rose-700 bg-rose-50 hover:bg-rose-100'
-                    }`}
-                    title="Cancel sale sequence and clear cart"
-                  >
-                    Cancel Sale
-                  </button>
+              <div className="flex items-center justify-between gap-2 text-[12.5px] font-bold mb-2">
+                <span className={lv ? '' : 'text-slate-600'}>
+                  Items ₹{money(rawCartTotal)}
+                  {appliedDiscount > 0 && <> · Discount <b className="text-rose-600">−₹{money(appliedDiscount)}</b></>}
+                </span>
+                {cart.items.length > 0 && (
+                  <span className={`font-extrabold ${balanceDue > 0 ? (lv ? '' : 'text-amber-700') : 'text-emerald-700'}`}>
+                    {balanceDue > 0 ? `₹${money(balanceDue)} ${isCredit ? 'on credit' : 'due'}` : 'Paid in full'}
+                  </span>
                 )}
               </div>
-
               <button
                 type="button"
                 id="btn-finalize-from-cart-modal"
                 disabled={cart.items.length === 0 || !selectedRetailer.trim()}
-                onClick={() => {
-                  onFinalize();
-                }}
-                className={`w-full sm:w-auto min-h-[44px] px-6 py-2.5 rounded-xl font-black text-base border-2 shadow-lg cursor-pointer flex items-center justify-center gap-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
-                  isLowVision
-                    ? 'bg-yellow-400 text-black border-yellow-500 hover:bg-yellow-500'
-                    : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+                onClick={() => { onFinalize(); }}
+                className={`w-full min-h-[54px] rounded-xl font-black text-[16.5px] shadow-lg cursor-pointer flex items-center justify-center gap-2 transition-all active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed ${
+                  lv ? 'bg-yellow-400 text-black hover:bg-yellow-500' : 'bg-emerald-600 hover:bg-emerald-700 text-white'
                 }`}
               >
-                <CheckCircle2 size={20} />
-                <span>
-                  Finalize Van Sale (₹{money(finalCartTotal)})
-                  {balanceDue > 0 && (
-                    <span className="text-xs font-bold opacity-90 block sm:inline sm:ml-1.5">
-                      • ₹{money(balanceDue)} Due
-                    </span>
-                  )}
-                </span>
+                <CheckCircle2 size={22} strokeWidth={2.6} />
+                <span>Finalize sale · ₹{money(finalCartTotal)}</span>
               </button>
             </>
           )}
@@ -1416,16 +1127,4 @@ const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
       </div>
     </div>
   );
-};
-
-/**
- * Phones get the compact full-screen cart sheet; tablets / desktop keep the original modal.
- * Easy View (low vision) keeps the original high-contrast modal on every screen size.
- */
-export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = (props) => {
-  const isMobile = useIsMobile();
-  if (isMobile && !props.isLowVision) {
-    return <SalesmanCartSheet {...props} />;
-  }
-  return <SalesmanCartModalDesktop {...props} />;
 };
