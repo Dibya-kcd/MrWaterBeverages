@@ -74,6 +74,8 @@ interface SalesmanSaleWorkflowProps {
   onCancelSaleSequence: () => void;
   onCreateNextInvoice?: () => void;
   onOpenCustomerDirectory?: () => void;
+  /** Opens the printable invoice preview for a saved bill (used by the Print button on phones). */
+  onOpenInvoiceModal?: (bill: Bill) => void;
   onVoiceSearchCustomer: () => void;
   isVoiceSearching: boolean;
   speakAssistiveText: (text: string) => void;
@@ -111,6 +113,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
   onOpenCart,
   onCancelSaleSequence,
   onCreateNextInvoice,
+  onOpenInvoiceModal,
   onVoiceSearchCustomer,
   isVoiceSearching,
   speakAssistiveText,
@@ -449,10 +452,11 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
     };
 
     return (
-      <div id="confirmed-sale-screen" className="space-y-4 max-w-none lg:max-w-2xl mx-auto py-2 pb-36 sm:pb-40">
+      <div id="confirmed-sale-screen" className="space-y-4 max-w-none lg:max-w-2xl mx-auto py-2 pb-56 sm:pb-40">
         <InvoiceSuccessCard
           bill={confirmedBill}
           onCreateNextBill={handleNextInvoice}
+          onOpenInvoiceModal={onOpenInvoiceModal ? (b) => onOpenInvoiceModal(b) : undefined}
           onOpenHistory={() => {
             setConfirmedBill(null);
             onSetSalesmanTab('bills');
@@ -460,7 +464,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
         />
 
         {/* Floating Quick Action: Create Next Invoice — Always visible above bottom navigation */}
-        <div className="fixed bottom-16 sm:bottom-20 inset-x-0 z-30 px-3 sm:px-4 pointer-events-none">
+        <div className="hidden sm:block fixed sm:bottom-20 inset-x-0 z-30 px-3 sm:px-4 pointer-events-none">
           <div className="max-w-2xl mx-auto flex items-center justify-end pointer-events-auto">
             <button
               type="button"
@@ -514,7 +518,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
       {/* VEHICLE & STOCK SOURCE CARD (Unified, non-redundant) */}
       <div
         id="section-stock-source-salesman"
-        className={`p-3.5 sm:p-4 rounded-2xl border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+        className={`p-2.5 sm:p-4 rounded-2xl border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3 ${
           isLowVision
             ? 'bg-black text-yellow-300 border-yellow-400'
             : !activeTrip
@@ -535,7 +539,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
             {!activeTrip ? <AlertTriangle size={22} /> : <Truck size={22} />}
           </div>
           <div className="min-w-0">
-            <div className="text-[11px] font-black uppercase tracking-wider opacity-80">
+            <div className="hidden sm:block text-[11px] font-black uppercase tracking-wider opacity-80">
               Stock Source / Vehicle Run:
             </div>
             <div className="text-base sm:text-lg font-black truncate">
@@ -606,7 +610,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
       {/* ===================================================================== */}
       <div
         id="section-customer-details"
-        className="p-3.5 sm:p-4 rounded-2xl border-2 bg-white shadow-sm space-y-3"
+        className="p-2.5 sm:p-4 rounded-2xl border-2 bg-white shadow-sm space-y-2 sm:space-y-3"
         style={{ borderColor: palette.line }}
       >
         <div className="flex items-center justify-between flex-wrap gap-2">
@@ -842,7 +846,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
             </div>
 
             {/* Quick Actions: Add New Customer, Speak Name & Spot Cash Sale */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+            <div className="grid grid-cols-3 gap-1.5 sm:gap-2 pt-0.5 sm:pt-1">
               {/* Add New Customer Button */}
               <button
                 type="button"
@@ -851,7 +855,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 className="min-h-[44px] py-2 px-3 rounded-xl border-2 border-slate-900 bg-slate-900 hover:bg-slate-800 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-transform active:scale-[0.99]"
               >
                 <UserPlus size={17} className="text-emerald-400" />
-                <span>+ Add Customer</span>
+                <span className="sm:hidden">Add</span><span className="hidden sm:inline">+ Add Customer</span>
               </button>
 
               {/* Voice Search Button */}
@@ -868,12 +872,12 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 {isVoiceSearching ? (
                   <>
                     <MicOff size={18} className="animate-spin" />
-                    <span>Listening...</span>
+                    <span className="sm:hidden">Listening</span><span className="hidden sm:inline">Listening...</span>
                   </>
                 ) : (
                   <>
                     <Mic size={18} className="text-amber-800" />
-                    <span>Speak Name</span>
+                    <span className="sm:hidden">Speak</span><span className="hidden sm:inline">Speak Name</span>
                   </>
                 )}
               </button>
@@ -891,14 +895,14 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 className="min-h-[44px] py-2 px-3 rounded-xl border-2 border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-950 font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors"
               >
                 <Zap size={17} className="text-emerald-600" />
-                <span>Spot Cash Sale</span>
+                <span className="sm:hidden">Spot cash</span><span className="hidden sm:inline">Spot Cash Sale</span>
               </button>
             </div>
           </div>
         )}
 
         {/* Simplified Sale Date (Defaults to today, simple & selectable) */}
-        <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-3 text-xs">
+        <div className="pt-1.5 sm:pt-2 border-t border-slate-100 flex items-center justify-between gap-3 text-xs">
           <label htmlFor="salesman-sale-date-input" className="font-extrabold text-slate-700 flex items-center gap-1.5">
             <Calendar size={14} className="text-slate-500" />
             <span>Sale Date:</span>
@@ -969,10 +973,10 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
 {/* ===================================================================== */}
       <div
         id="section-beverage-selection"
-        className="p-3.5 sm:p-4 rounded-2xl border-2 bg-white shadow-sm space-y-3"
+        className="p-2.5 sm:p-4 rounded-2xl border-2 bg-white shadow-sm space-y-2.5 sm:space-y-3"
         style={{ borderColor: palette.line }}
       >
-        <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="hidden sm:flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <ShoppingCart size={18} className="text-sky-700" />
             <span className="text-sm font-black text-slate-900">
@@ -1011,7 +1015,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
         <div className="space-y-2">
           <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
             {/* Search Input */}
-            <div className="relative flex-1 min-w-[200px]">
+            <div className="relative flex-1 min-w-0 sm:min-w-[200px]">
               <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
               <input enterKeyHint="search"
                 type="text"
@@ -1019,7 +1023,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 placeholder="Search beverages by name or category..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-8 py-2 rounded-xl border-2 border-slate-200 text-xs font-bold text-slate-900 focus:outline-none focus:border-sky-600 bg-white"
+                className="w-full pl-9 pr-8 py-2 min-h-[44px] sm:min-h-0 rounded-xl border-2 border-slate-200 text-sm sm:text-xs font-bold text-slate-900 focus:outline-none focus:border-sky-600 bg-white"
               />
               {searchTerm && (
                 <button
@@ -1032,16 +1036,31 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
               )}
             </div>
 
+            {/* Voice search — icon only on phones (full button stays in the header on larger screens) */}
+            <button
+              type="button"
+              id="btn-voice-product-search-mobile"
+              onClick={handleStartProductVoiceSearch}
+              aria-label="Speak an item, for example 5 Apple Fizz"
+              className={`sm:hidden shrink-0 size-11 rounded-xl border-2 flex items-center justify-center cursor-pointer ${
+                isProductVoiceActive
+                  ? 'bg-rose-600 text-white border-rose-700 animate-pulse'
+                  : 'bg-white text-sky-700 border-slate-200 active:bg-sky-50'
+              }`}
+            >
+              {isProductVoiceActive ? <MicOff size={18} /> : <Mic size={18} />}
+            </button>
+
             {/* Category Filter Pills */}
-            <div className="flex items-center gap-1 overflow-x-auto pb-1 max-w-full no-scrollbar">
+            <div className="order-last w-full sm:order-none sm:w-auto flex items-center gap-1.5 sm:gap-1 overflow-x-auto pb-1 max-w-full no-scrollbar">
               {categories.map((cat) => (
                 <button
                   key={cat}
                   type="button"
                   onClick={() => setSelectedCategory(cat)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-black whitespace-nowrap cursor-pointer transition-colors ${
+                  className={`px-3.5 sm:px-2.5 py-2 sm:py-1 min-h-[40px] sm:min-h-0 rounded-full sm:rounded-lg text-sm sm:text-xs font-black whitespace-nowrap cursor-pointer transition-colors ${
                     selectedCategory === cat
-                      ? 'bg-sky-600 text-white'
+                      ? 'bg-[#0B3D32] sm:bg-sky-600 text-white'
                       : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                   }`}
                 >
@@ -1052,7 +1071,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           </div>
 
           {/* Alphabet Quick Jump Pills */}
-          <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+          <div className="hidden sm:flex items-center gap-1.5 flex-wrap pt-0.5">
             <span className="text-[11px] font-black text-slate-500 uppercase shrink-0">Jump:</span>
             {['ALL', 'A-D', 'E-H', 'I-L', 'M-P', 'Q-T', 'U-Z'].map((grp) => {
               const active = productAlphaFilter === grp;
@@ -1077,16 +1096,85 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
 
         {/* BEVERAGE CARDS GRID */}
         {/* Full product name visibility (never cut off), Stock info positioned lower, Tap to add 1 */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-3 pt-0 sm:pt-1">
           {filteredProducts.map((prod) => {
             const { available } = getVehicleStock(activeTrip, prod.id);
             const inCartQty = getProductCartQty(prod.id);
             const isOutOfStock = available <= 0;
             const price = prod.retail || prod.wholesale;
 
+            const atMax = inCartQty >= available;
+
             return (
+              <React.Fragment key={prod.id}>
+              {/* PHONE: one compact row per product (~78px) — name, size, rate, van stock, Add / stepper */}
               <div
-                key={prod.id}
+                id={`beverage-row-${prod.id}`}
+                className={`sm:hidden flex items-center gap-2 rounded-xl border bg-white pl-2.5 pr-2 py-2 ${
+                  inCartQty > 0 ? 'border-sky-500 bg-sky-50/50' : isOutOfStock ? 'border-slate-200 opacity-60' : 'border-slate-200'
+                }`}
+                style={{ borderLeftWidth: 5, borderLeftColor: sizeTheme(prod.volume, prod.name).hex }}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="text-[15px] font-black text-slate-900 leading-snug break-words">{prod.name}</div>
+                  <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                    <SizeChip volume={prod.volume} pack={prod.pack} name={prod.name} />
+                    <span className="text-sm font-black text-slate-900">
+                      ₹{money(price)}<span className="text-xs font-semibold text-slate-500">/cs</span>
+                    </span>
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[11px] font-black ${
+                        isOutOfStock
+                          ? 'bg-rose-100 text-rose-800'
+                          : available < 5
+                          ? 'bg-amber-100 text-amber-900'
+                          : 'bg-emerald-100 text-emerald-900'
+                      }`}
+                    >
+                      {isOutOfStock ? 'Empty' : `${available} in van`}
+                    </span>
+                  </div>
+                </div>
+                {isOutOfStock ? (
+                  <span className="shrink-0 text-xs font-bold text-slate-400 pr-1">Out of stock</span>
+                ) : inCartQty === 0 ? (
+                  <button
+                    type="button"
+                    id={`btn-add-beverage-m-${prod.id}`}
+                    onClick={() => onQuickProductCartChange(prod.id, 1)}
+                    className="shrink-0 min-h-[44px] min-w-[84px] px-3 rounded-xl bg-sky-600 active:bg-sky-700 text-white text-sm font-black flex items-center justify-center gap-1"
+                    aria-label={`Add ${prod.name}`}
+                  >
+                    <Plus size={16} strokeWidth={3} /> Add
+                  </button>
+                ) : (
+                  <div className="shrink-0 flex items-center rounded-xl border-2 border-sky-600 bg-white overflow-hidden">
+                    <button
+                      type="button"
+                      id={`btn-minus-beverage-m-${prod.id}`}
+                      onClick={() => onQuickProductCartChange(prod.id, -1)}
+                      className="size-11 flex items-center justify-center text-slate-900 active:bg-slate-100"
+                      aria-label={`Decrease ${prod.name}`}
+                    >
+                      <Minus size={18} />
+                    </button>
+                    <span className="min-w-[30px] text-center text-lg font-black text-sky-700">{inCartQty}</span>
+                    <button
+                      type="button"
+                      id={`btn-plus-beverage-m-${prod.id}`}
+                      disabled={atMax}
+                      onClick={() => onQuickProductCartChange(prod.id, 1)}
+                      className="size-11 flex items-center justify-center bg-sky-600 text-white active:bg-sky-700 disabled:opacity-40"
+                      aria-label={`Increase ${prod.name}`}
+                    >
+                      <Plus size={18} />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* TABLET / DESKTOP: original card */}
+              <div
                 id={`beverage-card-${prod.id}`}
                 onClick={() => {
                   // Direct tap on card increments by 1 if stock available
@@ -1094,7 +1182,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                     onQuickProductCartChange(prod.id, 1);
                   }
                 }}
-                className={`p-3.5 sm:p-4 rounded-2xl border-2 transition-all flex flex-col justify-between cursor-pointer select-none ${
+                className={`p-3.5 sm:p-4 rounded-2xl border-2 transition-all hidden sm:flex flex-col justify-between cursor-pointer select-none ${
                   inCartQty > 0
                     ? 'border-sky-600 bg-sky-50/50 shadow-md ring-2 ring-blue-900/20'
                     : isOutOfStock
@@ -1200,6 +1288,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                   )}
                 </div>
               </div>
+              </React.Fragment>
             );
           })}
         </div>
@@ -1292,9 +1381,8 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
         className={`${cart.items.length > 0 ? 'flex' : 'hidden'} sticky bottom-16 z-30 rounded-2xl border-2 shadow-2xl items-center gap-2 ${
           isLowVision
             ? 'p-3 border-4 border-black bg-yellow-300 text-black'
-            : 'p-2.5 border-slate-200 bg-white/95 backdrop-blur-sm'
+            : 'p-2 pl-3 border-[#0B3D32] bg-[#0B3D32] text-white'
         }`}
-        style={isLowVision ? undefined : { borderColor: palette.line }}
         role="region"
         aria-label="Running cart total"
       >
@@ -1302,7 +1390,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           type="button"
           id="btn-bottom-cancel-sale"
           onClick={() => setShowCancelConfirm(true)}
-          className={`shrink-0 min-h-[56px] px-3 rounded-xl font-black text-xs flex flex-col items-center justify-center gap-0.5 cursor-pointer border-2 ${
+          className={`shrink-0 min-h-[56px] px-3 rounded-xl font-black text-xs hidden sm:flex flex-col items-center justify-center gap-0.5 cursor-pointer border-2 ${
             isLowVision ? 'border-black bg-white text-black' : 'border-rose-300 bg-rose-50 text-rose-700 active:bg-rose-100'
           }`}
           aria-label="Cancel this sale and clear the cart"
@@ -1311,12 +1399,12 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           <span>Cancel</span>
         </button>
 
-        <div className="min-w-0 flex-1 text-center">
-          <div className={`font-bold leading-tight ${isLowVision ? 'text-sm text-black' : 'text-[11px] text-slate-500'}`}>
-            {cartItemCount} cs · {cart.items.length} item{cart.items.length !== 1 ? 's' : ''}
+        <div className="min-w-0 flex-1 text-left sm:text-center">
+          <div className={`font-bold leading-tight ${isLowVision ? 'text-sm text-black' : 'text-xs text-emerald-100/90'}`}>
+            {cart.items.length} item{cart.items.length !== 1 ? 's' : ''} · {cartItemCount} case{cartItemCount !== 1 ? 's' : ''}
           </div>
           <div
-            className={`font-black tracking-tight leading-none ${isLowVision ? 'text-2xl text-black' : 'text-xl text-blue-950'}`}
+            className={`font-black tracking-tight leading-none ${isLowVision ? 'text-2xl text-black' : 'text-xl text-white'}`}
             aria-live="polite"
             aria-atomic="true"
           >
@@ -1331,11 +1419,11 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           onClick={onOpenCart}
           aria-label={`Review and finalise, ${cart.items.length} items, total rupees ${money(finalCartTotal)}`}
           className={`shrink-0 min-h-[56px] px-4 rounded-xl font-black flex flex-col items-center justify-center gap-0.5 cursor-pointer shadow-lg text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-black disabled:opacity-40 disabled:cursor-not-allowed ${
-            isLowVision ? 'bg-black text-yellow-300 border-4 border-black' : 'bg-emerald-600 active:bg-emerald-700 text-white'
+            isLowVision ? 'bg-black text-yellow-300 border-4 border-black' : 'bg-white active:bg-emerald-50 text-[#0B3D32]'
           }`}
         >
           <CheckCircle2 size={18} />
-          <span>Review &amp; Finalise</span>
+          <span>Review cart</span>
         </button>
       </div>
 

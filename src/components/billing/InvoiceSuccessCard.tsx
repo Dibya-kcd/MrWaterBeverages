@@ -4,6 +4,7 @@ import { Bill } from '../../types';
 import { money, buildBillText, whatsappLink } from '../../utils/billing';
 import { downloadInvoicePdf } from '../../utils/invoicePdf';
 import { useLedger } from '../../context/LedgerContext';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 interface InvoiceSuccessCardProps {
   bill: Bill;
@@ -19,6 +20,7 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
   onOpenHistory,
 }) => {
   const { orgProfile, billingSettings } = useLedger();
+  const isMobile = useIsMobile();
 
   // Document format toggle (GST B2B Tax Invoice vs Non-GST B2C Retail Bill)
   const [selectedFormat, setSelectedFormat] = useState<'gst' | 'non_gst'>(() => {
@@ -37,6 +39,195 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
   const whatsappUrl = bill.phone
     ? whatsappLink(bill.phone, buildBillText(bill, orgProfile, billingSettings, selectedFormat))
     : '';
+
+
+  // ---------------------------------------------------------------------------
+  // PHONE LAYOUT: slim success header → Total / Paid / Due strip → items first →
+  // format switch → one sticky action bar. (Tablet / desktop keep the layout below.)
+  // ---------------------------------------------------------------------------
+  if (isMobile) {
+    const itemsTotal = bill.items.reduce((s, it) => s + (it.amount || 0), 0);
+    const discount = Math.max(0, Math.round((itemsTotal - bill.total) * 100) / 100);
+    const totalCases = bill.items.reduce((s, it) => s + it.qty, 0);
+    const formatLabel = selectedFormat === 'gst' ? 'GST invoice' : 'Retail bill';
+
+    return (
+      <div id="invoice-success-mobile">
+        <div className="rounded-2xl overflow-hidden border border-slate-200 shadow-sm">
+        {/* 1. One-line success header */}
+        <div className="bg-emerald-700 text-white px-3 py-3 flex items-center gap-3">
+          <div className="size-10 rounded-full bg-white text-emerald-700 flex items-center justify-center shrink-0">
+            <Check size={22} strokeWidth={3.5} />
+          </div>
+          <div className="min-w-0">
+            <div className="text-base font-black leading-tight">Sale saved · Bill #{bill.id}</div>
+            <div className="text-xs font-semibold text-emerald-100 truncate">
+              {bill.retailer} · {bill.date}
+              {bill.vehicle ? ` · ${bill.vehicle}` : ''}
+            </div>
+          </div>
+        </div>
+
+        {/* 2. Total / Paid / Due strip */}
+        <div className="grid grid-cols-3 bg-white">
+          <div className="px-3 py-2.5">
+            <div className="text-[11px] font-bold text-slate-500">Total</div>
+            <div className="text-lg font-black text-slate-900 leading-tight">₹{money(bill.total)}</div>
+          </div>
+          <div className="px-3 py-2.5 border-l border-slate-100">
+            <div className="text-[11px] font-bold text-slate-500">Paid</div>
+            <div className="text-lg font-black text-emerald-700 leading-tight">₹{money(bill.amountPaid || 0)}</div>
+          </div>
+          <div className={`px-3 py-2.5 border-l border-slate-100 ${balanceDue > 0 ? 'bg-rose-50' : 'bg-emerald-50'}`}>
+            <div className={`text-[11px] font-bold ${balanceDue > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+              {balanceDue > 0 ? ((bill.amountPaid || 0) > 0 ? 'Due' : 'Due · credit') : 'Settled'}
+            </div>
+            <div className={`text-lg font-black leading-tight ${balanceDue > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+              ₹{money(balanceDue)}
+            </div>
+          </div>
+        </div>
+        </div>
+
+        {/* 3. Items sold — straight away, no scrolling past banners */}
+        <div className="pt-3">
+          <div className="rounded-2xl bg-white border border-slate-200 shadow-sm overflow-hidden">
+            <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-xs font-black text-slate-600">
+              <span>Items sold · {bill.items.length}</span>
+              <span>
+                {totalCases} case{totalCases === 1 ? '' : 's'}
+              </span>
+            </div>
+            <ul className="divide-y divide-slate-100">
+              {bill.items.map((it, idx) => (
+                <li key={it.key || idx} className="px-3 py-2.5 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[15px] font-black text-slate-900 leading-snug break-words">{it.productName}</div>
+                    <div className="text-xs font-semibold text-slate-500 mt-0.5">
+                      {it.qty} cs × ₹{money(it.rate)}
+                      {it.discount > 0 ? ` · −₹${money(it.discount)} disc` : ''}
+                    </div>
+                    {it.freeQty ? <div className="text-xs font-black text-emerald-700 mt-0.5">+{it.freeQty} cs free</div> : null}
+                  </div>
+                  <div className="text-[15px] font-black text-slate-900 shrink-0">₹{money(it.amount)}</div>
+                </li>
+              ))}
+            </ul>
+            <div className="px-3 py-2.5 border-t border-slate-200 space-y-1 text-sm">
+              <div className="flex items-center justify-between font-semibold text-slate-600">
+                <span>Items</span>
+                <span>₹{money(itemsTotal)}</span>
+              </div>
+              {discount > 0 && (
+                <div className="flex items-center justify-between font-black text-rose-600">
+                  <span>Discount</span>
+                  <span>−₹{money(discount)}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-between pt-1.5 border-t border-dashed border-slate-300 text-base font-black text-slate-900">
+                <span>Total</span>
+                <span>₹{money(bill.total)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* 4. Bill format — small row, below the items */}
+          <div className="mt-3 flex items-center justify-between gap-3">
+            <span className="text-sm font-bold text-slate-600">Bill format</span>
+            <div className="inline-flex rounded-xl bg-slate-200/70 p-1" role="group" aria-label="Bill format">
+              <button
+                type="button"
+                onClick={() => setSelectedFormat('non_gst')}
+                aria-pressed={selectedFormat === 'non_gst'}
+                className={`min-h-[40px] px-4 rounded-lg text-sm font-black transition-colors ${
+                  selectedFormat === 'non_gst' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-600'
+                }`}
+              >
+                Retail
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedFormat('gst')}
+                aria-pressed={selectedFormat === 'gst'}
+                className={`min-h-[40px] px-4 rounded-lg text-sm font-black transition-colors ${
+                  selectedFormat === 'gst' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-600'
+                }`}
+              >
+                GST invoice
+              </button>
+            </div>
+          </div>
+
+          {onOpenHistory && (
+            <button
+              type="button"
+              onClick={onOpenHistory}
+              className="mt-2 min-h-[44px] px-1 text-sm font-bold text-slate-500 flex items-center gap-1 active:text-slate-800"
+            >
+              Billing history <ArrowRight size={14} />
+            </button>
+          )}
+        </div>
+
+        {/* 5. One sticky action bar above the bottom nav */}
+        <div
+          className="fixed inset-x-0 bottom-16 z-30 bg-white border-t border-slate-200 px-3 pt-2.5 pb-3 space-y-2 shadow-[0_-6px_16px_rgba(15,23,42,0.08)]"
+          role="region"
+          aria-label="Bill actions"
+        >
+          <div className="flex items-stretch gap-2">
+            {bill.phone ? (
+              <a
+                href={whatsappUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                id="btn-success-whatsapp"
+                className="flex-1 min-h-[50px] rounded-xl bg-[#25D366] active:brightness-95 text-white text-base font-black flex items-center justify-center gap-2 shadow-sm"
+              >
+                <MessageCircle size={20} />
+                WhatsApp bill
+              </a>
+            ) : (
+              <div className="flex-1 min-h-[50px] rounded-xl bg-slate-100 text-slate-400 text-sm font-bold flex items-center justify-center text-center px-2">
+                No phone for WhatsApp
+              </div>
+            )}
+            <button
+              type="button"
+              id="btn-success-pdf"
+              onClick={handleDownloadPdf}
+              aria-label={`Download ${formatLabel} PDF`}
+              className="w-[62px] min-h-[50px] rounded-xl border-2 border-slate-200 bg-white text-slate-700 flex flex-col items-center justify-center gap-0.5 active:bg-slate-50"
+            >
+              <Download size={18} />
+              <span className="text-[11px] font-black leading-none">PDF</span>
+            </button>
+            {onOpenInvoiceModal && (
+              <button
+                type="button"
+                id="btn-success-print"
+                onClick={() => onOpenInvoiceModal(bill, selectedFormat)}
+                aria-label={`Print ${formatLabel}`}
+                className="w-[62px] min-h-[50px] rounded-xl border-2 border-slate-200 bg-white text-slate-700 flex flex-col items-center justify-center gap-0.5 active:bg-slate-50"
+              >
+                <Printer size={18} />
+                <span className="text-[11px] font-black leading-none">Print</span>
+              </button>
+            )}
+          </div>
+          <button
+            type="button"
+            id="btn-create-next-invoice-top"
+            onClick={onCreateNextBill}
+            className="w-full min-h-[50px] rounded-xl bg-[#0B3D32] active:bg-[#072720] text-white text-base font-black flex items-center justify-center gap-2"
+          >
+            <Plus size={19} strokeWidth={3} />
+            New sale
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4 max-w-none lg:max-w-2xl mx-auto">

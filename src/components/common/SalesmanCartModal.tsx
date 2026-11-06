@@ -27,8 +27,10 @@ import {
 import { BillItem, PriceType, Product, Trip, ExistingCustomer } from '../../types';
 import { money } from '../../utils/billing';
 import { speakAssistiveText } from '../../utils/speechRecognition';
+import { useIsMobile } from '../../hooks/useIsMobile';
+import { SalesmanCartSheet } from './SalesmanCartSheet';
 
-interface SalesmanCartModalProps {
+export interface SalesmanCartModalProps {
   isOpen: boolean;
   onClose: () => void;
   cart: {
@@ -70,7 +72,7 @@ interface SalesmanCartModalProps {
   isPriceLocked?: boolean;
 }
 
-export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
+const SalesmanCartModalDesktop: React.FC<SalesmanCartModalProps> = ({
   isOpen,
   onClose,
   cart,
@@ -269,14 +271,14 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
   return (
     <div
       id="salesman-cart-modal-backdrop"
-      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/75 backdrop-blur-xs overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-4 bg-black/75 backdrop-blur-xs overflow-y-auto"
       role="dialog"
       aria-modal="true"
       aria-label="Invoice Draft & Cart"
     >
       <div
         id="salesman-cart-modal-container"
-        className={`w-full max-w-3xl rounded-xl shadow-2xl flex flex-col my-auto max-h-[92dvh] max-h-[92svh] overflow-hidden border-3 ${
+        className={`w-full max-w-3xl h-[100dvh] sm:h-auto rounded-none sm:rounded-xl shadow-2xl flex flex-col my-0 sm:my-auto max-h-[100dvh] sm:max-h-[92dvh] overflow-hidden border-0 sm:border-3 ${
           isLowVision ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white text-slate-900 border-slate-700'
         }`}
         style={!isLowVision ? { backgroundColor: palette.panel, borderColor: palette.navy } : {}}
@@ -336,7 +338,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
 
           <div className="flex items-center gap-2">
             <span
-              className={`hidden sm:inline-block text-lg font-black px-3 py-1 rounded border-2 ${
+              className={`inline-block text-base sm:text-lg font-black px-2.5 sm:px-3 py-1 rounded border-2 ${
                 isLowVision ? 'bg-black text-yellow-300 border-black' : 'bg-emerald-600 text-white border-emerald-500'
               }`}
             >
@@ -360,7 +362,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
 
         {/* Modal Body: Either Beverage Catalog List OR Cart Review */}
         {isBrowsingBeverages ? (
-          <div className="p-3 sm:p-5 space-y-4 overflow-y-auto flex-1">
+          <div className="p-2.5 sm:p-5 space-y-3 sm:space-y-4 overflow-y-auto flex-1">
             {/* Top controls: Search, Category pills, Price Tier selector */}
             <div
               className={`p-3.5 rounded-xl border-2 space-y-3 ${
@@ -379,7 +381,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                       {filteredBeverages.length} Items
                     </span>
                   </h3>
-                  <p className="text-xs opacity-75 font-semibold mt-0.5">
+                  <p className="hidden sm:block text-xs opacity-75 font-semibold mt-0.5">
                     1-Tap to add cases directly from {activeTrip?.vehicle || 'Van Stock'} into bill
                   </p>
                 </div>
@@ -522,7 +524,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
             </div>
 
             {/* Beverage Grid Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
               {filteredBeverages.map((prod) => {
                 const vehicleStock = getVehicleStock(activeTrip, prod.id);
                 const existingItem = cart.items.find((it) => it.productId === prod.id);
@@ -539,7 +541,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                     key={prod.id}
                     id={`beverage-select-card-${prod.id}`}
                     style={{ borderLeftWidth: 6, borderLeftColor: sizeTheme(prod.volume, prod.name).hex }}
-                    className={`p-3 rounded-xl border-2 flex flex-col justify-between gap-2.5 transition-all ${
+                    className={`p-2.5 sm:p-3 rounded-xl border-2 flex flex-col justify-between gap-2 sm:gap-2.5 transition-all ${
                       currentQty > 0
                         ? isLowVision
                           ? 'bg-zinc-900 border-yellow-400 text-yellow-300 shadow-md ring-2 ring-yellow-400/30'
@@ -909,7 +911,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                     </div>
 
                     {/* Controls Row: Quantity Steppers, Rate Adjuster, Price Type Switch */}
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 sm:gap-3 items-start sm:items-center">
                       {/* 1. Cases Quantity Stepper */}
                       <div>
                         <label className="block text-xs font-black mb-1">
@@ -1018,7 +1020,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                       </div>
 
                       {/* 3. Quick Preset Adjuster or Discount */}
-                      <div>
+                      <div className="col-span-2 sm:col-span-1">
                         <label className="block text-xs font-black mb-1">
                           Line Discount (₹):
                         </label>
@@ -1414,4 +1416,16 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
       </div>
     </div>
   );
+};
+
+/**
+ * Phones get the compact full-screen cart sheet; tablets / desktop keep the original modal.
+ * Easy View (low vision) keeps the original high-contrast modal on every screen size.
+ */
+export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = (props) => {
+  const isMobile = useIsMobile();
+  if (isMobile && !props.isLowVision) {
+    return <SalesmanCartSheet {...props} />;
+  }
+  return <SalesmanCartModalDesktop {...props} />;
 };

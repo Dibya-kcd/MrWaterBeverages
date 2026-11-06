@@ -2207,6 +2207,7 @@ export const SalesmanView: React.FC = () => {
               onOpenCart={() => setIsCartOpen(true)}
               onCancelSaleSequence={handleCancelSaleSequence}
               onCreateNextInvoice={handleCreateNextInvoice}
+              onOpenInvoiceModal={(b) => setInvoiceModalBill(b)}
               onOpenCustomerDirectory={() => setShowCustomerSelectorModal(true)}
               onVoiceSearchCustomer={handleVoiceSearchCustomer}
               isVoiceSearching={isVoiceSearching}
