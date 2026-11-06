@@ -1223,7 +1223,7 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
         {mobileActiveSubPage === null ? (
           <>
             {showControls && (
-              <HeroCard tone={profitNeg ? 'red' : 'green'} label={viewBasis === 'exGst' ? 'Operating profit' : 'Gross margin'} value={rs(pnl.activeGrossProfit)} negative={profitNeg}>
+              <HeroCard tone={profitNeg ? 'red' : 'profit'} label={viewBasis === 'exGst' ? 'Operating profit' : 'Gross margin'} value={rs(pnl.activeGrossProfit)} negative={profitNeg}>
                 <SplitBar
                   label="Cost versus profit"
                   parts={[
@@ -2119,6 +2119,7 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
           periodLabel={periodLabel}
         />
       )}
+      </div>
 
       {/* Interactive Product Profit & Pricing Modal */}
       <ProductProfitPricingModal

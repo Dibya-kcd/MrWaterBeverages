@@ -124,7 +124,7 @@ export const ProductProfitPhone: React.FC<ProductProfitPhoneProps> = ({
 
       {/* Hero Card with Green / Navy gradient */}
       <HeroCard
-        tone={totalProfit < 0 ? 'red' : 'green'}
+        tone={totalProfit < 0 ? 'red' : 'profit'}
         label="Operating profit (after GST)"
         value={rs(totalProfit)}
       >

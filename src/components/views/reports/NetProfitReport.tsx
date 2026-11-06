@@ -199,7 +199,7 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
       {/* ============================ PHONE ============================ */}
       <div className="md:hidden space-y-3">
         <PhoneHeader title="Net profit" sub="Gross margin minus operating expenses" />
-        <HeroCard tone={netNeg ? 'red' : 'green'} label="Net profit" value={rs(np.netProfit)} negative={netNeg}>
+        <HeroCard tone={netNeg ? 'red' : 'profit'} label="Net profit" value={rs(np.netProfit)} negative={netNeg}>
           <SplitBar
             label="Running costs, pay and net profit"
             parts={[
@@ -214,7 +214,7 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
           </div>
         </HeroCard>
         <div className="grid grid-cols-3 gap-2">
-          <MiniStat label="Gross profit" value={rs(pnl.operatingGrossProfit)} />
+          <MiniStat label="Gross profit" value={rs(pnl.operatingGrossProfit)} tone={pnl.operatingGrossProfit < 0 ? 'red' : 'profit'} />
           <MiniStat label="For pay" value={rs(np.profitBeforePay)} tone={np.profitBeforePay < 0 ? 'red' : 'ink'} />
           <MiniStat label="Pay given" value={rs(np.payPaid)} tone="amber" />
         </div>

@@ -629,7 +629,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   return (
     <div className="w-full max-w-none lg:max-w-4xl mx-auto space-y-4 pb-16 min-w-0 overflow-x-hidden">
       {/* Top Header with Responsive Floating Cart Icon */}
-      <div className="flex items-center justify-between gap-3 sticky top-0 bg-[#f8fafc]/95 backdrop-blur-md z-30 py-2.5 -my-2 border-b border-slate-200/60">
+      <div className="flex items-center justify-between gap-3 sticky top-0 bg-[var(--canvas)] z-30 py-2.5 -my-2 border-b border-slate-200/60">
         <button
           type="button"
           onClick={onBack}

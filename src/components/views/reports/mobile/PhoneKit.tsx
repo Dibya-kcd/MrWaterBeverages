@@ -75,6 +75,8 @@ const HERO_TONE = {
   green: 'bg-gradient-to-br from-[#064E3B] via-[#063C2E] to-[#02261C] text-white shadow-xl shadow-emerald-950/20',
   navy: 'bg-gradient-to-br from-[#0B1E48] via-[#08183A] to-[#040E24] text-white shadow-xl shadow-blue-950/20',
   red: 'bg-gradient-to-br from-[#7F1D1D] via-[#601212] to-[#3B0707] text-white shadow-xl shadow-rose-950/20',
+  /** Profit = purple, matching `MetricCard tone="profit"` */
+  profit: 'bg-gradient-to-br from-[#4C2A9A] via-[#3B2078] to-[#26134F] text-white shadow-xl shadow-violet-950/20',
 } as const;
 
 export const HeroCard: React.FC<{
@@ -306,14 +308,14 @@ export const IconTile: React.FC<{ tone: keyof typeof TILE; children: React.React
 );
 
 /** Small grey tile with a label and a figure (Sales / Received / Collected...). */
-export const MiniStat: React.FC<{ label: string; value: React.ReactNode; tone?: 'ink' | 'green' | 'red' | 'amber' }> = ({
+export const MiniStat: React.FC<{ label: string; value: React.ReactNode; tone?: 'ink' | 'green' | 'red' | 'amber' | 'profit' }> = ({
   label,
   value,
   tone = 'ink',
 }) => {
-  const c = { ink: 'text-slate-900', green: 'text-emerald-700', red: 'text-rose-700', amber: 'text-amber-700' }[tone];
+  const c = { ink: 'text-slate-900', green: 'text-emerald-700', red: 'text-rose-700', amber: 'text-amber-700', profit: 'text-violet-700' }[tone];
   return (
-    <div className="rounded-xl bg-slate-50 px-2.5 py-2 min-w-0">
+    <div className={`rounded-xl px-2.5 py-2 min-w-0 ${tone === 'profit' ? 'bg-violet-50' : 'bg-slate-50'}`}>
       <div className="text-[10.5px] font-semibold text-slate-500 leading-tight">{label}</div>
       <div className={`text-[15px] font-extrabold tabular-nums leading-tight mt-0.5 ${c}`}>{value}</div>
     </div>

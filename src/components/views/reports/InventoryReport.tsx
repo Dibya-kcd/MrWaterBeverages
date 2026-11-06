@@ -273,7 +273,7 @@ export const InventoryReport: React.FC<InventoryReportProps> = ({ inventoryStats
         <div className="grid grid-cols-3 gap-2">
           <MiniStat label="In stock" value={`${inventoryStats.totalCrates} cs`} />
           <MiniStat label="Realisation" value={rs(inventoryStats.totalSellingValuation)} tone="green" />
-          <MiniStat label="Gross profit" value={rs(inventoryStats.potentialGrossProfit)} tone="green" />
+          <MiniStat label="Gross profit" value={rs(inventoryStats.potentialGrossProfit)} tone={inventoryStats.potentialGrossProfit < 0 ? 'red' : 'profit'} />
         </div>
         <button
           type="button"

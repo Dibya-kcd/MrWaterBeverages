@@ -253,10 +253,10 @@ export const SupplierProductProfitReport: React.FC<SupplierProductProfitReportPr
       />
     <div className="hidden md:block space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-        <StatCard icon={TrendingUp} title="Confirmed Operating Profit" value={`₹${money(totalProfit)}`} />
-        <StatCard icon={ShieldCheck} title="Total Output GST" value={`₹${money(totalGst)}`} />
-        <StatCard icon={IndianRupee} title="Supplier Credit Recv." value={`₹${money(totalCreditReceived)}`} />
-        <StatCard icon={Package} title="Credit Outstanding" value={`₹${money(totalCreditOutstanding)}`} />
+        <StatCard tone="profit" icon={TrendingUp} title="Confirmed Operating Profit" value={`₹${money(totalProfit)}`} />
+        <StatCard tone="sales" icon={ShieldCheck} title="Total Output GST" value={`₹${money(totalGst)}`} />
+        <StatCard tone="received" icon={IndianRupee} title="Supplier Credit Recv." value={`₹${money(totalCreditReceived)}`} />
+        <StatCard tone="due" icon={Package} title="Credit Outstanding" value={`₹${money(totalCreditOutstanding)}`} />
       </div>
 
       <InfoTip title="GST-accurate operating profit" text="How profit is calculated">
