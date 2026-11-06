@@ -173,6 +173,53 @@ export const LoadLineCard: React.FC<LoadLineCardProps> = ({
 };
 
 /* ------------------------------------------------------------------ */
+/* Step progress (1 → 2 → 3) for sequential load-sheet wizard          */
+/* ------------------------------------------------------------------ */
+export const StepProgress: React.FC<{
+  step: 1 | 2 | 3;
+  labels?: [string, string, string];
+}> = ({ step, labels = ['Details', 'Products', 'Review'] }) => (
+  <div className="mx-auto max-w-xl px-3 pt-2 pb-1">
+    <div className="flex items-center gap-1.5">
+      {([1, 2, 3] as const).map((n) => {
+        const done = n < step;
+        const active = n === step;
+        return (
+          <React.Fragment key={n}>
+            {n > 1 && (
+              <div
+                className={`h-0.5 flex-1 rounded-full ${done || active ? 'bg-[#0d4a3a]' : 'bg-black/10'}`}
+                aria-hidden
+              />
+            )}
+            <div className="flex flex-col items-center gap-0.5 shrink-0">
+              <div
+                className={`size-7 rounded-full flex items-center justify-center text-[11px] font-black border-2 ${
+                  done
+                    ? 'bg-[#0d4a3a] border-[#0d4a3a] text-white'
+                    : active
+                      ? 'bg-white border-[#0d4a3a] text-[#0d4a3a]'
+                      : 'bg-white border-black/15 text-slate-400'
+                }`}
+              >
+                {done ? <Check size={13} strokeWidth={3} /> : n}
+              </div>
+              <span
+                className={`text-[9.5px] font-bold uppercase tracking-wide ${
+                  active ? 'text-[#0d4a3a]' : done ? 'text-slate-600' : 'text-slate-400'
+                }`}
+              >
+                {labels[n - 1]}
+              </span>
+            </div>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  </div>
+);
+
+/* ------------------------------------------------------------------ */
 /* Bottom action bar: up to three big icon + word buttons              */
 /* ------------------------------------------------------------------ */
 export interface BarAction {
