@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { Download } from "lucide-react";
+import { Download, FileText, Hash, Landmark, ShoppingBag, Users } from "lucide-react";
 import { Bill, Customer, OrganizationProfile, Product } from "../../../types";
 import { money } from "../../../utils/billing";
 import { useLedger } from "../../../context/LedgerContext";
@@ -12,7 +12,8 @@ import {
   ReportStatGrid,
   ReportTitleBar,
 } from "./ReportKit";
-import { Chips, HeroCard, LegendDot, MiniStat, PhoneHeader, PhoneSearch, SplitBar } from "./mobile/PhoneKit";
+import { HeroCard, LegendDot, MiniStat, PhoneHeader, PhoneSearch, SplitBar } from "./mobile/PhoneKit";
+import { SubPageBack, SubPageMenu, type SubPageCard } from "./mobile/SubPageMenu";
 import { checkEwayInvoices, buildEwayBillJson, buildEinvoiceJson, EWAY_BILL_THRESHOLD } from "../../../utils/ewayBill";
 import {
   buildGstLines,
@@ -82,6 +83,8 @@ export const TaxReport: React.FC<TaxReportProps> = ({
   periodLabel = "period",
 }) => {
   const [tab, setTab] = useState<GstTab>("gstr3b");
+  /** Phone only: which GST section is open as its own page (null = the list of section cards). */
+  const [phoneOpen, setPhoneOpen] = useState<GstTab | null>(null);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
   const orgStateCode = orgStateCodeFromProfile(orgProfile);
@@ -303,10 +306,62 @@ export const TaxReport: React.FC<TaxReportProps> = ({
   const tabOptions = TABS.map((t) => ({ id: t.id, label: t.label }));
   const rs0 = (n: number) => `₹${money(n)}`;
 
+  const gstCards: SubPageCard<GstTab>[] = [
+    {
+      id: "gstr3b",
+      title: "GSTR-3B Summary",
+      summary: `Output tax ${rs0(fromLines.outputGst)} less input credit ${rs0(fromLines.inputCredit)}, line by line as the return asks for it`,
+      badge: `Payable ${rs0(fromLines.netPayable)}`,
+      badgeTone: "red",
+      icon: Landmark,
+      tone: "indigo",
+    },
+    {
+      id: "b2b",
+      title: "B2B Invoices (with GSTIN)",
+      summary: "Sales to GST-registered parties, invoice by invoice, for GSTR-1",
+      badge: `${invoices.filter((i) => i.isB2B).length} invoices`,
+      badgeTone: "blue",
+      icon: FileText,
+      tone: "blue",
+    },
+    {
+      id: "b2c",
+      title: "B2C Small Sales (without GSTIN)",
+      summary: "Sales to shops and customers without a GSTIN, added up by tax rate",
+      badge: `${b2cByRate.length} rate${b2cByRate.length === 1 ? "" : "s"}`,
+      badgeTone: "amber",
+      icon: Users,
+      tone: "amber",
+    },
+    {
+      id: "hsn",
+      title: "HSN Summary",
+      summary: "Quantity, taxable value and tax grouped by HSN code",
+      badge: `${hsnAll.length} HSN code${hsnAll.length === 1 ? "" : "s"}`,
+      badgeTone: "purple",
+      icon: Hash,
+      tone: "purple",
+    },
+    {
+      id: "purchases",
+      title: "Purchase Register (Input Credit)",
+      summary: "Supplier invoices received in this period and the GST paid on them",
+      badge: `${(filteredGrns || []).length} inward`,
+      badgeTone: "green",
+      icon: ShoppingBag,
+      tone: "emerald",
+    },
+  ];
+
   return (
     <div className="flex flex-col gap-3 w-full" id="report-gst">
       {/* ============================ PHONE ============================ */}
       <div className="md:hidden space-y-3">
+        {phoneOpen !== null ? (
+          <SubPageBack backLabel="All GST sections" title={gstCards.find((c) => c.id === phoneOpen)?.title || "GST"} onBack={() => setPhoneOpen(null)} />
+        ) : (
+          <>
         <PhoneHeader title="GST" sub="Output tax and input tax credit summary" />
         <HeroCard tone="navy" label="Net GST payable" value={rs0(fromLines.netPayable)}>
           <SplitBar
@@ -329,6 +384,15 @@ export const TaxReport: React.FC<TaxReportProps> = ({
         {fromLines.carryForwardItc > 0 && (
           <div className="px-1 text-xs font-semibold text-emerald-700">ITC carry-forward {rs0(fromLines.carryForwardItc)}</div>
         )}
+        <SubPageMenu<GstTab>
+          heading="GST sections"
+          cards={gstCards}
+          onOpen={(id) => {
+            setTab(id);
+            setSearch("");
+            setPhoneOpen(id);
+          }}
+        />
         <button
           type="button"
           onClick={handleExport}
@@ -337,6 +401,8 @@ export const TaxReport: React.FC<TaxReportProps> = ({
           <Download size={16} aria-hidden="true" /> Excel / CSV pack for CA
         </button>
         {exportMsg && <div className="text-xs font-semibold text-emerald-700 px-1">{exportMsg}</div>}
+          </>
+        )}
       </div>
 
       {/* ======================= TABLET / DESKTOP ======================= */}
@@ -374,6 +440,8 @@ export const TaxReport: React.FC<TaxReportProps> = ({
         </ReportBreakdownLine>
       </div>
 
+      {/* Warnings / helpers: on a phone they belong to the list screen, not inside a section page */}
+      <div className={phoneOpen === null ? "contents" : "hidden md:contents"}>
       {series && (
         <div
           className={`rounded-2xl border p-4 space-y-1 ${
@@ -518,10 +586,13 @@ export const TaxReport: React.FC<TaxReportProps> = ({
         </div>
       )}
 
-      <div className="md:hidden space-y-3">
-        <Chips<GstTab> label="GST report views" options={tabOptions} value={tab} onChange={setTab} />
-        {searchable && <PhoneSearch value={search} onChange={setSearch} placeholder={searchHint} />}
       </div>
+
+      {phoneOpen !== null && searchable && (
+        <div className="md:hidden space-y-3">
+          <PhoneSearch value={search} onChange={setSearch} placeholder={searchHint} />
+        </div>
+      )}
       <div className="hidden md:block">
         <ReportFilterPanel
           search={searchable ? { value: search, onChange: setSearch, placeholder: searchHint } : undefined}
@@ -532,6 +603,8 @@ export const TaxReport: React.FC<TaxReportProps> = ({
         </ReportFilterPanel>
       </div>
 
+      {/* Phone: the section body shows only after its card is opened. Tablet / desktop: always shown. */}
+      <div className={`flex-col gap-3 ${phoneOpen === null ? "hidden md:flex" : "flex"}`}>
       {tab === "gstr3b" && (
         <>
         <div className="md:hidden space-y-3" id="gst-3b-cards">
@@ -951,6 +1024,8 @@ export const TaxReport: React.FC<TaxReportProps> = ({
         </div>
         </>
       )}
+
+      </div>
 
       <p className="text-[11px] text-slate-400 leading-relaxed">
         Figures follow the selected report period (all bills in the period,

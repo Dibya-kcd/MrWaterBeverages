@@ -35,12 +35,17 @@ import {
   Tag,
   UnifiedPhoneFilterBar,
   PhoneFilterBottomSheet,
+  PhonePeriodPicker,
+  isPeriodFilterActive,
+  type PhonePeriodControl,
 } from './mobile/PhoneKit';
 
 interface TripsReportProps {
   filteredTrips: Trip[];
   tripBreakdown: (t: Trip) => { rows: any[] };
   period: string;
+  /** Lets the phone Filter sheet change the date period (same as Daily collection). */
+  periodControl?: PhonePeriodControl;
   /** Label of the period chosen at the top of Reports (e.g. "November 2026"). Falls back to `period`. */
   periodLabel?: string;
   warehouses?: Warehouse[];
@@ -103,6 +108,7 @@ export const TripsReport: React.FC<TripsReportProps> = ({
   filteredTrips,
   tripBreakdown,
   period,
+  periodControl,
   periodLabel,
   onNavigateTrips,
 }) => {
@@ -207,9 +213,17 @@ export const TripsReport: React.FC<TripsReportProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownLines, todayStr, yesterdayStr]);
 
+  const periodActive = !!periodControl && isPeriodFilterActive(periodControl.period);
+  const filterCount = (viewMode !== 'daywise' ? 1 : 0) + (statusFilter !== 'all' ? 1 : 0) + (periodActive ? 1 : 0);
+
   const resetFilters = () => {
     setStatusFilter('all');
     setSearch('');
+  };
+  const resetSheet = () => {
+    resetFilters();
+    setViewMode('daywise');
+    periodControl?.onPeriodChange('thisMonth');
   };
 
   const forceOpen = q.length > 0;
@@ -322,16 +336,18 @@ export const TripsReport: React.FC<TripsReportProps> = ({
           onSearch={setSearch}
           placeholder="Search trip, vehicle or driver…"
           onOpenFilter={() => setIsFilterSheetOpen(true)}
-          activeFilterCount={(viewMode !== 'daywise' ? 1 : 0) + (statusFilter !== 'all' ? 1 : 0)}
+          activeFilterCount={filterCount}
         />
 
         <PhoneFilterBottomSheet
           isOpen={isFilterSheetOpen}
           onClose={() => setIsFilterSheetOpen(false)}
           title="Filter Vehicle Trips"
-          activeCount={(viewMode !== 'daywise' ? 1 : 0) + (statusFilter !== 'all' ? 1 : 0)}
-          onReset={resetFilters}
+          activeCount={filterCount}
+          onReset={resetSheet}
         >
+          {periodControl && <PhonePeriodPicker {...periodControl} />}
+
           {/* View Mode */}
           <div className="space-y-2">
             <label className="text-xs font-bold uppercase tracking-wider text-slate-500">

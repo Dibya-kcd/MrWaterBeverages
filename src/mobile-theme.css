@@ -1,0 +1,772 @@
+/* ============================================================================
+   Hydrate Hub — PHONE THEME
+   Modern soft-fintech look: white and lavender, elevated white cards, pastel
+   finance tiles, navy Inter type.
+
+   SCOPE: every rule below sits inside @media (max-width: 767px).
+   Tablet (768px+) and desktop are not touched. No logic, routes or data code
+   depend on this file; it is presentation only.
+
+   Load order: imported in main.tsx after index.css, so it wins over the older
+   rules. Tailwind utilities live in a cascade layer, so these unlayered rules
+   beat them without !important (the only !important is the font family).
+
+   Layout of this file
+     1. Tokens
+     2. Typography
+     3. Page layout and spacing
+     4. Header and bottom navigation
+     5. Cards and metric tiles
+     6. Buttons, inputs, chips
+     7. Sheets, menus and dialogs
+     8. Report / table cards
+     9. Tailwind colour remap (old green/teal/slate -> theme)
+   ========================================================================== */
+
+@media (max-width: 767px) {
+  /* ---------------------------------------------------------------- 1. Tokens */
+  :root {
+    /* colour */
+    --mt-bg: #f3f5ff;
+    --mt-surface: #ffffff;
+    --mt-surface-soft: #f7f8ff;
+    --mt-text: #101d3a;
+    --mt-text-2: #64748b;
+    --mt-primary: #2864d9;
+    --mt-primary-soft: #edf4ff;
+    --mt-success: #087c55;
+    --mt-success-bg: #e8f9f3;
+    --mt-danger: #d91f48;
+    --mt-danger-bg: #fff0f4;
+    --mt-sales-bg: #edf4ff;
+    --mt-profit: #6b38c9;
+    --mt-profit-bg: #f5eeff;
+    --mt-brand: #ff9800;
+    --mt-border: #e3e8f7;
+
+    /* shape */
+    --mt-r-card: 22px;
+    --mt-r-metric: 18px;
+    --mt-r-control: 14px;
+
+    /* depth: soft, diffused, blue-tinted; never black */
+    --mt-shadow: 0 8px 24px -12px rgba(40, 100, 217, 0.18), 0 2px 6px rgba(16, 29, 58, 0.04);
+    --mt-shadow-sm: 0 4px 14px -8px rgba(40, 100, 217, 0.16), 0 1px 3px rgba(16, 29, 58, 0.04);
+    --mt-shadow-up: 0 -8px 24px -12px rgba(40, 100, 217, 0.18);
+
+    /* spacing */
+    --mt-pad-x: 16px;
+    --mt-gap-card: 12px;
+    --mt-gap-section: 20px;
+    --mt-touch: 44px;
+
+    /* type */
+    --mt-font: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mt-fs-label: 12px;
+    --mt-fs-body: 14px;
+    --mt-fs-title: 16px;
+    --mt-fs-h: 20px;
+    --mt-fs-amount: 20px;
+
+    /* Re-point the app's existing design variables so older components follow the theme. */
+    --canvas: var(--mt-bg);
+    --ink: var(--mt-text);
+    --deep: var(--mt-text);
+    --muted-fg: var(--mt-text-2);
+    --border: var(--mt-border);
+    --panel-solid: var(--mt-surface);
+    --panel: var(--mt-surface);
+    --panel-line: var(--mt-border);
+    --teal: var(--mt-primary);
+    --ring: var(--mt-primary);
+    --font-sans: var(--mt-font);
+    --font-display: var(--mt-font);
+    --font-mono: var(--mt-font);
+    --destructive: var(--mt-danger);
+  }
+
+  /* ------------------------------------------------------------ 2. Typography */
+  /* Inter is the only family on phones. This is the one !important in the file, so a stray
+     font-mono / font-serif / inline family on any screen cannot sneak in. */
+  html,
+  body,
+  body * {
+    font-family: var(--mt-font) !important;
+  }
+
+  body {
+    background: var(--mt-bg);
+    color: var(--mt-text);
+    font-size: calc(var(--mt-fs-body) * var(--app-font-scale, 1));
+    font-weight: 400;
+    line-height: 1.5;
+  }
+
+  h1,
+  h2 {
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+  }
+  h1 {
+    font-size: calc(var(--mt-fs-h) * var(--app-font-scale, 1));
+  }
+  h2 {
+    font-size: calc(var(--mt-fs-title) * var(--app-font-scale, 1));
+  }
+  h3,
+  h4 {
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    line-height: 1.3;
+    font-size: calc(var(--mt-fs-body) * var(--app-font-scale, 1));
+  }
+
+  /* Weight scale: 700 headings and amounts, 600 titles and buttons, 500 small labels, 400 body.
+     Inter is loaded at 400-700, so 800/900 would only synthesize. */
+  .font-extrabold,
+  .font-black {
+    font-weight: 700;
+  }
+
+  /* Small caps-style labels become sentence-case 12px / 500 labels. */
+  .uppercase {
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  [class*="tracking-wider"],
+  [class*="tracking-widest"],
+  [class*="tracking-[0."] {
+    letter-spacing: 0;
+  }
+  label,
+  [class*="text-[9px]"],
+  [class*="text-[10px]"],
+  [class*="text-[11px]"] {
+    font-weight: 500;
+  }
+  label {
+    font-size: var(--mt-fs-label);
+    color: var(--mt-text-2);
+  }
+
+  /* Money and counts line up in columns. */
+  .tabular-nums,
+  .font-mono,
+  [class*="mt-metric__value"],
+  .data-table td {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+
+  /* -------------------------------------------- 3. Page layout and spacing */
+  html,
+  body,
+  #root,
+  .app-shell {
+    background: var(--mt-bg);
+    overflow-x: hidden;
+  }
+
+  /* The one gutter lives on the wrapper App.tsx puts inside <main>. */
+  .app-content > .flex-1 {
+    padding-left: var(--mt-pad-x);
+    padding-right: var(--mt-pad-x);
+    padding-top: 12px;
+    padding-bottom: 16px;
+  }
+  .app-content,
+  .app-main {
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+  .app-content :is(img, video, canvas, svg) {
+    max-width: 100%;
+  }
+  .app-content :is(pre, code) {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* 20px between page sections, 12px between cards in a list. */
+  [id^="view-"]:is(.space-y-3, .space-y-4, .space-y-5, .space-y-6) > :not(:last-child) {
+    margin-block-start: 0;
+    margin-block-end: var(--mt-gap-section);
+  }
+  .app-content :is(.space-y-2\.5, .space-y-3) > :not(:last-child) {
+    margin-block-end: var(--mt-gap-card);
+  }
+  .app-content .grid:is(.grid-cols-2, .grid-cols-3) {
+    gap: var(--mt-gap-card);
+  }
+  .mt-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--mt-gap-card);
+  }
+  .mt-grid > * {
+    min-width: 0;
+  }
+  .mt-section + .mt-section {
+    margin-top: var(--mt-gap-section);
+  }
+
+  /* ------------------------------------- 4. Header and bottom navigation */
+  #app-header.mt-header {
+    margin: 10px var(--mt-pad-x) 0;
+    width: auto;
+    background: var(--mt-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 1px solid var(--mt-border);
+    border-radius: var(--mt-r-card);
+    box-shadow: var(--mt-shadow-sm);
+  }
+  #app-header.mt-header > div {
+    min-height: 52px;
+    padding: 8px 12px 8px 10px;
+  }
+  /* Brand name: one title, no truncation fight with the role chip. */
+  #app-header.mt-header .font-bold {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--mt-text);
+  }
+  /* The orange logo tile is kept as is; only its glow is toned down to the soft shadow. */
+  #app-header.mt-header .mt-header__logo {
+    box-shadow: 0 4px 12px -4px rgba(255, 152, 0, 0.45);
+  }
+  /* Owner / role chip */
+  #app-header.mt-header .mt-header__role {
+    min-height: 30px;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 12px;
+    font-size: var(--mt-fs-label);
+    font-weight: 600;
+    color: var(--mt-primary);
+    background: var(--mt-primary-soft);
+    border: 1px solid rgba(40, 100, 217, 0.16);
+    box-shadow: none;
+  }
+
+  #mobile-nav {
+    background: var(--mt-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 1px solid var(--mt-border);
+    border-bottom: 0;
+    border-radius: var(--mt-r-card) var(--mt-r-card) 0 0;
+    box-shadow: var(--mt-shadow-up);
+  }
+  #mobile-nav button {
+    border-radius: var(--mt-r-control);
+    color: var(--mt-text-2);
+    min-height: 54px;
+  }
+  #mobile-nav button span {
+    font-size: 11px;
+    font-weight: 500;
+  }
+  #mobile-nav button[data-active="true"] {
+    color: var(--mt-primary);
+    background: var(--mt-primary-soft);
+  }
+  #mobile-nav button[data-active="true"] span {
+    font-weight: 600;
+  }
+
+  /* Compact back / close buttons used across screens. */
+  button[aria-label="Back"],
+  button[aria-label="Close"],
+  button[aria-label="Go back"] {
+    border-radius: var(--mt-r-control);
+    border: 1px solid var(--mt-border);
+    background: var(--mt-surface);
+    color: var(--mt-text);
+    box-shadow: var(--mt-shadow-sm);
+  }
+
+  /* ------------------------------------------ 5. Cards and metric tiles */
+  /* Main surfaces: anything the app draws as a white rounded panel. */
+  #root :is(.mw-panel, .glass-panel, .bg-white):is(.rounded-xl, .rounded-2xl, .rounded-3xl):not(.mt-metric):not(.fixed):not(button):not(input):not(select):not(textarea):not(span):not(label):not([role="switch"]):not([class*="size-"]):not([class~="h-8"]):not([class~="h-9"]):not([class~="h-10"]) {
+    background: var(--mt-surface);
+    border: 1px solid var(--mt-border);
+    /* older screens set radius / shadow / border colour with !important; these must out-rank them */
+    border-radius: var(--mt-r-card) !important;
+    border-color: var(--mt-border) !important;
+    box-shadow: var(--mt-shadow) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  /* A card inside a card is flat, so shadows never stack. */
+  #root :is(.mw-panel, .glass-panel, .bg-white):is(.rounded-xl, .rounded-2xl, .rounded-3xl) :is(.mw-panel, .glass-panel, .bg-white):is(.rounded-xl, .rounded-2xl, .rounded-3xl):not(.mt-metric):not(.fixed):not(button):not(input):not(select):not(textarea):not(span):not(label):not([class*="size-"]):not([class~="h-8"]):not([class~="h-9"]):not([class~="h-10"]) {
+    border-radius: var(--mt-r-metric) !important;
+    box-shadow: none !important;
+    background: var(--mt-surface-soft);
+  }
+  .bg-slate-50,
+  .bg-slate-100 {
+    background-color: var(--mt-surface-soft);
+  }
+
+  /* Shared metric tile (MetricCard / StatCard / StatBlock). */
+  .mt-metric {
+    --tone-bg: var(--mt-surface);
+    --tone-fg: var(--mt-text);
+    --tone-line: var(--mt-border);
+    --tone-icon-bg: var(--mt-primary-soft);
+    --tone-icon-fg: var(--mt-primary);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 4px;
+    min-width: 0;
+    min-height: 92px;
+    padding: 14px;
+    background: var(--tone-bg);
+    border: 1px solid var(--tone-line);
+    border-radius: var(--mt-r-metric);
+    box-shadow: var(--mt-shadow-sm);
+    overflow: hidden;
+  }
+  .mt-metric[data-tone="sales"] {
+    --tone-bg: var(--mt-sales-bg);
+    --tone-fg: var(--mt-primary);
+    --tone-line: rgba(40, 100, 217, 0.14);
+    --tone-icon-bg: #ffffff;
+    --tone-icon-fg: var(--mt-primary);
+  }
+  .mt-metric[data-tone="profit"] {
+    --tone-bg: var(--mt-profit-bg);
+    --tone-fg: var(--mt-profit);
+    --tone-line: rgba(107, 56, 201, 0.14);
+    --tone-icon-bg: #ffffff;
+    --tone-icon-fg: var(--mt-profit);
+  }
+  .mt-metric[data-tone="received"] {
+    --tone-bg: var(--mt-success-bg);
+    --tone-fg: var(--mt-success);
+    --tone-line: rgba(8, 124, 85, 0.16);
+    --tone-icon-bg: #ffffff;
+    --tone-icon-fg: var(--mt-success);
+  }
+  .mt-metric[data-tone="due"] {
+    --tone-bg: var(--mt-danger-bg);
+    --tone-fg: var(--mt-danger);
+    --tone-line: rgba(217, 31, 72, 0.16);
+    --tone-icon-bg: #ffffff;
+    --tone-icon-fg: var(--mt-danger);
+  }
+  .mt-metric__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .mt-metric__icon {
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: var(--tone-icon-bg);
+    color: var(--tone-icon-fg);
+  }
+  .mt-metric__label {
+    font-size: var(--mt-fs-label);
+    font-weight: 500;
+    line-height: 1.25;
+    color: var(--mt-text-2);
+    min-width: 0;
+  }
+  .mt-metric__value {
+    margin-top: 2px;
+    font-size: calc(var(--mt-fs-amount) * var(--app-font-scale, 1));
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    color: var(--tone-fg);
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+  .mt-metric__sub {
+    margin: 0;
+    font-size: var(--mt-fs-label);
+    font-weight: 500;
+    color: var(--mt-text-2);
+    border-top: 0;
+    padding-top: 0;
+  }
+  #root .mt-metric {
+    border-radius: var(--mt-r-metric) !important;
+    border-color: var(--tone-line) !important;
+    box-shadow: var(--mt-shadow-sm) !important;
+  }
+  /* StatCard / StatBlock keep their own inner layout; just align them to the tile. */
+  .mt-metric.ui-stat > div:first-child {
+    align-items: center;
+  }
+  .mt-metric[class*="min-h-"] {
+    min-height: 92px;
+  }
+
+  /* The older dashboard "rainbow" (teal / blue / amber / purple gradients, !important) and the
+     tinted panel variants give way to the tone system. Phones only. */
+  #view-dashboard .grid > div.mt-metric.mt-metric[data-tone] {
+    background: var(--tone-bg) !important;
+    border-color: var(--tone-line) !important;
+  }
+  .mw-panel-tint-sales,
+  .mw-panel-tint-stock,
+  .mw-panel-tint-field,
+  .mw-panel-tint-insights,
+  .mw-panel-tint-success,
+  .mw-panel-tint-warn {
+    background: var(--mt-surface);
+    border-color: var(--mt-border) !important;
+  }
+
+  /* Dashboard hero: the sales figure sits on the pastel blue sales surface. */
+  .mt-hero {
+    background: var(--mt-sales-bg);
+    background-image: none;
+    color: var(--mt-text);
+    border: 1px solid rgba(40, 100, 217, 0.14);
+    border-radius: var(--mt-r-card);
+    box-shadow: var(--mt-shadow);
+  }
+  .mt-hero [class*="text-white"] {
+    color: var(--mt-text-2);
+  }
+  .mt-hero .tabular-nums {
+    color: var(--mt-primary);
+    font-weight: 700;
+    font-size: 30px;
+    line-height: 1.15;
+  }
+  .mt-hero [class*="text-amber-"],
+  .mt-hero [class*="text-emerald-200"] {
+    color: var(--mt-text);
+  }
+  .mt-hero button[class*="bg-white/"] {
+    background: var(--mt-surface);
+    border: 1px solid var(--mt-border);
+    box-shadow: var(--mt-shadow-sm);
+    color: var(--mt-text);
+  }
+  .mt-hero button[class*="bg-white/"] span {
+    font-weight: 600;
+  }
+  .mt-hero [class*="text-emerald-200"] {
+    color: var(--mt-primary);
+  }
+  /* Period dropdown panel inside the hero stays a normal white card. */
+  .mt-hero [class*="shadow-2xl"] {
+    border-radius: var(--mt-r-card);
+    box-shadow: var(--mt-shadow);
+  }
+  .mt-hero [class*="shadow-2xl"] [class*="text-white"] {
+    color: #fff;
+  }
+
+  /* ----------------------------------------- 6. Buttons, inputs and chips */
+  button:not(.rounded-full):not([role="switch"]):not([role="tab"]):not([class*="size-"]):not([class*="rounded-lg"]):not([class*="rounded-md"]) {
+    border-radius: var(--mt-r-control);
+  }
+  button {
+    font-weight: 600;
+  }
+  /* Controls the app already shapes with rounded-lg/md/xl keep a 14px radius too. */
+  button:is([class*="rounded-lg"], [class*="rounded-xl"], [class*="rounded-2xl"]):not(.rounded-full):not([role="switch"]):not([class*="size-"]) {
+    border-radius: var(--mt-r-control);
+  }
+
+  /* Primary action = theme blue. Success = green, destructive = red. */
+  button:is([class~="bg-slate-900"], [class~="bg-sky-600"], [class~="bg-sky-700"], [class~="bg-indigo-600"], [class~="bg-indigo-700"], [class~="bg-[#0d4a3a]"], [class~="bg-[#0B3D32]"], [class~="bg-[#064E3B]"], [class~="bg-[#064e3b]"], [class~="bg-[#0a3d30]"], [class~="bg-[#0a382c]"], [class~="bg-emerald-700"], [class~="bg-emerald-800"], [class~="bg-teal-600"], [class~="bg-teal-700"]):not([disabled]):not(.inset-0) {
+    background-color: var(--mt-primary) !important;
+    color: #fff;
+    border-color: transparent;
+    box-shadow: 0 8px 18px -10px rgba(40, 100, 217, 0.6);
+  }
+  button:is([class*="bg-emerald-600"], [class*="bg-green-600"], [class*="bg-green-700"]):not([disabled]) {
+    background-color: var(--mt-success);
+    color: #fff;
+  }
+  button:is([class*="bg-rose-600"], [class*="bg-rose-700"], [class*="bg-red-600"], [class*="bg-red-700"]):not([disabled]) {
+    background-color: var(--mt-danger);
+    color: #fff;
+  }
+  button[disabled] {
+    opacity: 0.5;
+  }
+  /* Swipe strips clip overflow, so chips inside stay flat. */
+  .no-scrollbar button,
+  button.rounded-full:not([class*="size-"]):not([class*="w-1"]) {
+    box-shadow: none !important;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+  select,
+  textarea {
+    min-height: var(--mt-touch);
+    border-radius: var(--mt-r-control);
+    border: 1px solid var(--mt-border);
+    background-color: var(--mt-surface);
+    color: var(--mt-text);
+    font-weight: 400;
+    box-shadow: inset 0 1px 2px rgba(16, 29, 58, 0.04);
+  }
+  textarea {
+    min-height: 88px;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: #94a3b8;
+    font-weight: 400;
+  }
+  input:focus,
+  select:focus,
+  textarea:focus {
+    outline: none;
+    border-color: var(--mt-primary);
+    box-shadow: 0 0 0 3px rgba(40, 100, 217, 0.16);
+  }
+  /* The app-wide focus outline (App.tsx) stays for keyboard users. */
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 3px solid rgba(40, 100, 217, 0.45);
+    outline-offset: 1px;
+  }
+
+  /* Pills and chips: pastel, subtle border. */
+  .rounded-full:is(span, div):is([class*="bg-"]) {
+    font-weight: 500;
+  }
+  [role="tab"][aria-selected="true"] {
+    color: var(--mt-primary);
+  }
+
+  /* Toggle switches keep their small size (see MOBILE_UI_CHANGES.md); just recolour. */
+  [role="switch"][aria-checked="true"] {
+    background-color: var(--mt-primary);
+  }
+
+  /* ------------------------------------- 7. Sheets, menus and dialogs */
+  #mobile-menu-sheet > div.relative {
+    background: var(--mt-surface);
+    border: 1px solid var(--mt-border);
+    border-radius: var(--mt-r-card) var(--mt-r-card) 0 0;
+    box-shadow: var(--mt-shadow-up);
+  }
+  #mobile-menu-sheet > div.relative h2 {
+    font-size: 18px;
+    font-weight: 700;
+  }
+  #mobile-menu-sheet > div.relative .grid > button {
+    border-radius: var(--mt-r-metric);
+    border: 1px solid var(--mt-border);
+    background: var(--mt-surface-soft);
+    color: var(--mt-text);
+    box-shadow: none;
+  }
+  #mobile-menu-sheet > div.relative .grid > button[class*="ebe8e1"] {
+    background: var(--mt-primary-soft);
+    border-color: rgba(40, 100, 217, 0.22);
+    color: var(--mt-primary);
+  }
+  #mobile-menu-sheet > div.relative .grid > button svg[class*="0d4a3a"] {
+    color: var(--mt-primary);
+  }
+  #mobile-menu-sheet > div.relative .grid > button span {
+    font-weight: 600;
+  }
+  #mobile-menu-sheet > div.relative .grid > button[class*="text-rose"] {
+    background: var(--mt-danger-bg);
+    color: var(--mt-danger);
+    border-color: rgba(217, 31, 72, 0.16);
+  }
+
+  /* Bottom sheets and centred dialogs. */
+  .fixed.inset-0 :is(.rounded-t-2xl, .rounded-t-3xl):is(.bg-white, [class*="bg-["]) {
+    border-radius: var(--mt-r-card) var(--mt-r-card) 0 0;
+    border: 1px solid var(--mt-border);
+    box-shadow: var(--mt-shadow-up);
+  }
+  [role="dialog"] > :is(.bg-white, [class*="bg-["]):is(.rounded-2xl, .rounded-3xl, .rounded-xl) {
+    border-radius: var(--mt-r-card);
+  }
+  .fixed.inset-0[class*="bg-slate-900/"],
+  .fixed.inset-0[class*="bg-black/"] {
+    background-color: rgba(16, 29, 58, 0.38);
+  }
+
+  /* ---------------------------------------------- 8. Report / table cards */
+  .reports-root table[data-cards] :is(tbody, tfoot) tr {
+    border: 1px solid var(--mt-border) !important;
+    border-radius: var(--mt-r-metric);
+    background: var(--mt-surface);
+    box-shadow: var(--mt-shadow-sm);
+  }
+  .reports-root table[data-cards] tfoot tr {
+    background: var(--mt-primary-soft);
+    border-color: rgba(40, 100, 217, 0.18) !important;
+  }
+  .reports-root table[data-cards]:not([data-dense]) :is(tbody, tfoot) td[data-label]:not(:first-child),
+  .reports-root table[data-cards][data-dense] :is(tbody, tfoot) td[data-label]:not(:first-child) {
+    border-top-color: var(--mt-border);
+  }
+  .reports-root table[data-cards] :is(tbody, tfoot) td:first-child {
+    font-size: var(--mt-fs-title);
+    font-weight: 700;
+    color: var(--mt-text);
+  }
+  .reports-root table[data-cards]:not([data-dense]) :is(tbody, tfoot) td[data-label]:not(:first-child):not([data-label=""])::before,
+  .reports-root table[data-cards][data-dense] :is(tbody, tfoot) td[data-label]:not(:first-child):not([data-label=""])::before {
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: var(--mt-fs-label);
+    font-weight: 500;
+    color: var(--mt-text-2);
+  }
+  .reports-root table:not([data-cards]) thead th {
+    background-color: var(--mt-surface-soft);
+    color: var(--mt-text-2);
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .reports-root table:not([data-cards]) td:first-child {
+    box-shadow: 1px 0 0 var(--mt-border), 4px 0 6px -4px rgba(40, 100, 217, 0.18);
+  }
+
+  /* -------------------------------- 9. Tailwind colour remap (old -> theme) */
+  /* Text */
+  .text-slate-900,
+  .text-slate-800,
+  .text-slate-700 {
+    color: var(--mt-text);
+  }
+  .text-slate-600,
+  .text-slate-500,
+  .text-slate-400 {
+    color: var(--mt-text-2);
+  }
+  .text-emerald-600,
+  .text-emerald-700,
+  .text-emerald-800,
+  .text-green-600,
+  .text-green-700 {
+    color: var(--mt-success);
+  }
+  .text-rose-500,
+  .text-rose-600,
+  .text-rose-700,
+  .text-rose-800,
+  .text-red-600,
+  .text-red-700 {
+    color: var(--mt-danger);
+  }
+  .text-sky-600,
+  .text-sky-700,
+  .text-sky-800,
+  .text-blue-600,
+  .text-blue-700,
+  .text-indigo-600,
+  .text-indigo-700,
+  .text-teal-700,
+  [class*="text-[#0d4a3a]"] {
+    color: var(--mt-primary);
+  }
+  .text-violet-600,
+  .text-violet-700,
+  .text-purple-600,
+  .text-purple-700 {
+    color: var(--mt-profit);
+  }
+
+  /* Pastel fills for status chips and info rows */
+  .bg-emerald-50,
+  .bg-green-50 {
+    background-color: var(--mt-success-bg);
+  }
+  .bg-rose-50,
+  .bg-red-50 {
+    background-color: var(--mt-danger-bg);
+  }
+  .bg-sky-50,
+  .bg-blue-50,
+  .bg-indigo-50 {
+    background-color: var(--mt-sales-bg) !important;
+  }
+  .bg-violet-50,
+  .bg-purple-50 {
+    background-color: var(--mt-profit-bg);
+  }
+
+  /* Hairlines */
+  .border-slate-100,
+  .border-slate-200,
+  .border-slate-300,
+  [class*="border-black/"] {
+    border-color: var(--mt-border);
+  }
+  .divide-slate-100 > :not(:last-child),
+  .divide-slate-200 > :not(:last-child) {
+    border-color: var(--mt-border);
+  }
+
+  /* ----------------- 10. Older brand-green and warm-neutral colours -> theme */
+  /* The app used a dark green brand (#0d4a3a family) and warm greys (#f6f4ef family). Exact class
+     tokens only, so hover: / opacity variants keep their own behaviour. */
+  :is([class~="bg-[#0d4a3a]"], [class~="bg-[#0B3D32]"], [class~="bg-[#064E3B]"], [class~="bg-[#064e3b]"], [class~="bg-[#0a3d30]"], [class~="bg-[#0a382c]"], [class~="bg-[#072720]"], [class~="bg-[#043d2e]"]):not(.mt-hero):not(.fixed) {
+    background-color: var(--mt-primary);
+  }
+  :is([class~="text-[#0B3D32]"], [class~="text-[#064E3B]"], [class~="text-[#0b4d3a]"]) {
+    color: var(--mt-text);
+  }
+  :is([class~="text-[#05603A]"], [class~="text-[#059669]"], [class~="text-[#15803d]"]) {
+    color: var(--mt-success);
+  }
+  :is([class~="text-[#D92D20]"], [class~="text-[#E11D48]"]) {
+    color: var(--mt-danger);
+  }
+  :is([class~="border-[#0d4a3a]"], [class~="border-[#0B3D32]"]) {
+    border-color: var(--mt-primary);
+  }
+  :is([class~="ring-[#0d4a3a]"], [class~="ring-[#0B3D32]"], [class~="ring-[#064E3B]"]) {
+    --tw-ring-color: var(--mt-primary);
+  }
+  :is([class~="bg-[#faf8f5]"], [class~="bg-[#faf9f6]"]) {
+    background-color: var(--mt-surface);
+  }
+  [class~="bg-[#f6f4ef]"] {
+    background-color: var(--mt-bg);
+  }
+  [class~="bg-[#ebe8e1]"] {
+    background-color: #e9edfb;
+  }
+  [class~="bg-[#e9f1ec]"] {
+    background-color: var(--mt-primary-soft);
+  }
+  [class*="bg-gradient-to-"]:is([class~="from-[#0d4a3a]"], [class~="from-[#0B3D32]"], [class~="from-[#064E3B]"]):not(.mt-hero) {
+    background-image: none;
+    background-color: var(--mt-primary);
+  }
+
+  /* Green-tinted gradient panels become flat pastel success surfaces; sticky bars follow the page. */
+  [class*="bg-gradient-to-"]:is([class*="from-emerald-"], [class*="from-green-"], [class*="from-teal-"], [class*="from-mint"]):not(.mt-hero) {
+    background-image: none;
+    background-color: var(--mt-success-bg);
+  }
+  :is([class~="border-emerald-100"], [class~="border-emerald-200"], [class~="border-emerald-300"], [class~="border-green-200"], [class~="border-teal-200"]) {
+    border-color: rgba(8, 124, 85, 0.18);
+  }
+  .sticky:is(.bg-slate-50, .bg-slate-100, [class~="bg-[#f6f4ef]"]) {
+    background-color: var(--mt-bg);
+  }
+}

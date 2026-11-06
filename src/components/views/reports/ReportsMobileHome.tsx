@@ -571,10 +571,10 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
 
                       {/* Title & Subtitle */}
                       <div className="min-w-0">
-                        <div className="font-bold text-sm text-slate-900 truncate group-hover:text-blue-600 transition-colors">
+                        <div className="font-bold text-sm text-slate-900 leading-snug break-words group-hover:text-blue-600 transition-colors">
                           {item.title}
                         </div>
-                        <div className="text-xs text-slate-500 mt-0.5 truncate">
+                        <div className="text-xs text-slate-500 mt-0.5 leading-snug break-words">
                           {item.subtitle}
                         </div>
                       </div>

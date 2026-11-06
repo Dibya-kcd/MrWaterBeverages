@@ -54,6 +54,7 @@ import {
   PhoneSearch,
   SplitBar,
 } from './mobile/PhoneKit';
+import { SubPageBack, SubPageMenu, type SubPageCard } from './mobile/SubPageMenu';
 
 export type MarginSubTab = 'pnl' | 'products' | 'batches' | 'customers' | 'days' | 'netProfit';
 export type ProfitViewBasis = 'exGst' | 'inclGst';
@@ -509,7 +510,10 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
   purchaseStats,
 }) => {
   const [subTab, setSubTab] = useState<MarginSubTab>(initialSubTab || 'pnl');
-  const [mobileActiveSubPage, setMobileActiveSubPage] = useState<MarginSubTab | null>(null);
+  // Phone: a deep link (e.g. "Net Profit" from the Reports home) opens that page directly; otherwise start on the list.
+  const [mobileActiveSubPage, setMobileActiveSubPage] = useState<MarginSubTab | null>(
+    initialSubTab && initialSubTab !== 'pnl' ? initialSubTab : null,
+  );
   const [viewBasis, setViewBasis] = useState<ProfitViewBasis>('exGst');
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<'profit' | 'margin' | 'sales' | 'cases'>('profit');
@@ -1134,7 +1138,6 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
   const searchHint =
     subTab === 'products' ? 'Search product…' : subTab === 'batches' ? 'Search batch, product or supplier…' : 'Search customer…';
   const tabOptions = tabs.map((t) => ({ id: t.id, label: t.label }));
-  const phoneTabOptions = tabs.map((t) => ({ id: t.id, label: t.shortLabel }));
   const basisOptions: { id: ProfitViewBasis; label: string }[] = [
     { id: 'exGst', label: 'Ex-GST (operating profit)' },
     { id: 'inclGst', label: 'Incl-GST (billed value)' },
@@ -1154,60 +1157,60 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
   const paidPct = pnl.collected > 0 ? `${((pnl.collected / (pnl.billedSalesNet || 1)) * 100).toFixed(0)}% paid` : '0% paid';
   const rs = (n: number) => `₹${money(n)}`;
 
-  const mobileMenuCards = [
+  const mobileMenuCards: SubPageCard<MarginSubTab>[] = [
     {
-      id: 'pnl' as MarginSubTab,
-      title: 'P&L & GST Summary',
-      summary: `Taxable sales ${rs(pnl.taxableSalesNet)} · Output GST ${rs(pnl.totalOutputGstNet)} · Margin ${pnl.activeMarginPct.toFixed(1)}%`,
-      badge: rs(pnl.activeGrossProfit),
-      badgeTone: profitNeg ? 'text-rose-700 bg-rose-50 border-rose-200' : 'text-emerald-700 bg-emerald-50 border-emerald-200',
-      icon: <Layers className="w-5 h-5 text-indigo-600" />,
-      iconBg: 'bg-indigo-50 border-indigo-100',
+      id: 'pnl',
+      title: 'P&L and GST Summary',
+      summary: `Taxable sales ${rs(pnl.taxableSalesNet)} · output GST ${rs(pnl.totalOutputGstNet)} · margin ${pnl.activeMarginPct.toFixed(1)}%. Step-by-step profit and loss with the GST flow`,
+      badge: `${profitNeg ? 'Loss' : 'Profit'} ${rs(pnl.activeGrossProfit)}`,
+      badgeTone: profitNeg ? 'red' : 'green',
+      icon: Layers,
+      tone: 'indigo',
     },
     {
-      id: 'netProfit' as MarginSubTab,
-      title: 'Net Profit & Staff Pay',
-      summary: 'Commercial net profit after operating expenses, write-downs and staff pay',
+      id: 'netProfit',
+      title: 'Net Profit and Staff Pay',
+      summary: 'Profit after fuel, rent, salary and other running costs, plus how much can be shared as staff pay',
       badge: 'Open report',
-      badgeTone: 'text-emerald-700 bg-emerald-50 border-emerald-200',
-      icon: <Wallet className="w-5 h-5 text-emerald-600" />,
-      iconBg: 'bg-emerald-50 border-emerald-100',
+      badgeTone: 'green',
+      icon: Wallet,
+      tone: 'emerald',
     },
     {
-      id: 'products' as MarginSubTab,
-      title: 'Product Margins & Profit',
-      summary: `${productRows.length} product SKUs · landed cost, ASP and ex-GST operating profit`,
-      badge: `${productRows.length} items`,
-      badgeTone: 'text-blue-700 bg-blue-50 border-blue-200',
-      icon: <Package className="w-5 h-5 text-blue-600" />,
-      iconBg: 'bg-blue-50 border-blue-100',
+      id: 'products',
+      title: 'Product Margins and Profit',
+      summary: `${productRows.length} product${productRows.length === 1 ? '' : 's'} · landed cost, average selling price and profit per case for each`,
+      badge: `${productRows.length} item${productRows.length === 1 ? '' : 's'}`,
+      badgeTone: 'blue',
+      icon: Package,
+      tone: 'blue',
     },
     {
-      id: 'batches' as MarginSubTab,
-      title: 'Batch & Lot Margins',
-      summary: `${batchRows.length} batches · purchase batch landed cost versus sold prices`,
-      badge: `${batchRows.length} lots`,
-      badgeTone: 'text-amber-800 bg-amber-50 border-amber-200',
-      icon: <Boxes className="w-5 h-5 text-amber-600" />,
-      iconBg: 'bg-amber-50 border-amber-100',
+      id: 'batches',
+      title: 'Batch and Lot Margins',
+      summary: `${batchRows.length} batch${batchRows.length === 1 ? '' : 'es'} · what each purchase lot cost against the price it sold at`,
+      badge: `${batchRows.length} lot${batchRows.length === 1 ? '' : 's'}`,
+      badgeTone: 'amber',
+      icon: Boxes,
+      tone: 'amber',
     },
     {
-      id: 'customers' as MarginSubTab,
+      id: 'customers',
       title: 'Customer Account Margins',
-      summary: `${customerRows.length} customers · revenue, cost and true profit per party`,
-      badge: `${customerRows.length} buyers`,
-      badgeTone: 'text-purple-700 bg-purple-50 border-purple-200',
-      icon: <Users className="w-5 h-5 text-purple-600" />,
-      iconBg: 'bg-purple-50 border-purple-100',
+      summary: `${customerRows.length} customer${customerRows.length === 1 ? '' : 's'} · sales, cost and true profit earned from each party`,
+      badge: `${customerRows.length} buyer${customerRows.length === 1 ? '' : 's'}`,
+      badgeTone: 'purple',
+      icon: Users,
+      tone: 'purple',
     },
     {
-      id: 'days' as MarginSubTab,
-      title: 'Daily Sales & Margins',
-      summary: `${dayRows.length} days of activity with daily invoice volume and margin %`,
-      badge: `${dayRows.length} days`,
-      badgeTone: 'text-cyan-700 bg-cyan-50 border-cyan-200',
-      icon: <TrendingUp className="w-5 h-5 text-cyan-600" />,
-      iconBg: 'bg-cyan-50 border-cyan-100',
+      id: 'days',
+      title: 'Daily Sales and Margins',
+      summary: `${dayRows.length} day${dayRows.length === 1 ? '' : 's'} with sales · invoices, billed amount, profit and margin % for each day`,
+      badge: `${dayRows.length} day${dayRows.length === 1 ? '' : 's'}`,
+      badgeTone: 'cyan',
+      icon: TrendingUp,
+      tone: 'cyan',
     },
   ];
 
@@ -1247,63 +1250,23 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
               </button>
             )}
 
-            {/* List of sub-pages as card rows */}
-            <div className="pt-1 space-y-2.5">
-              <div className="flex items-center justify-between px-1">
-                <span className="text-xs font-extrabold uppercase tracking-wider text-slate-500">
-                  Detailed Breakdown Pages
-                </span>
-                <span className="text-xs font-semibold text-slate-400">6 sections</span>
-              </div>
-
-              {mobileMenuCards.map((card) => (
-                <button
-                  key={card.id}
-                  type="button"
-                  onClick={() => {
-                    setSubTab(card.id);
-                    setMobileActiveSubPage(card.id);
-                  }}
-                  className="w-full bg-white rounded-2xl border border-blue-100/80 p-3.5 shadow-2xs hover:shadow-xs hover:border-blue-200 active:scale-[0.99] transition-all text-left flex items-center justify-between gap-3 group cursor-pointer"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 ${card.iconBg}`}>
-                      {card.icon}
-                    </div>
-                    <div className="min-w-0">
-                      <h4 className="text-sm font-bold text-slate-900 group-hover:text-blue-600 transition-colors leading-tight">
-                        {card.title}
-                      </h4>
-                      <p className="text-xs text-slate-500 line-clamp-1 mt-0.5 font-medium">
-                        {card.summary}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${card.badgeTone}`}>
-                      {card.badge}
-                    </span>
-                    <ChevronRight size={18} className="text-slate-400 group-hover:text-blue-600 group-hover:translate-x-0.5 transition-all" />
-                  </div>
-                </button>
-              ))}
-            </div>
+            {/* Every section is a full-width card row: full name + full summary, opens as its own page */}
+            <SubPageMenu<MarginSubTab>
+              heading="Sales, margin & P&L sections"
+              cards={mobileMenuCards}
+              onOpen={(id) => {
+                setSubTab(id);
+                setMobileActiveSubPage(id);
+              }}
+            />
           </>
         ) : (
           <>
-            <div className="flex items-center justify-between gap-2 py-1">
-              <button
-                type="button"
-                onClick={() => setMobileActiveSubPage(null)}
-                className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white border border-blue-100 text-xs font-bold text-slate-700 shadow-2xs hover:bg-slate-50 active:scale-95 transition-all cursor-pointer"
-              >
-                <ArrowLeft size={14} className="text-blue-600" />
-                <span>All Sales & P&L Sections</span>
-              </button>
-              <span className="text-xs font-bold text-slate-500 uppercase tracking-wide">
-                {tabs.find((t) => t.id === mobileActiveSubPage)?.label}
-              </span>
-            </div>
+            <SubPageBack
+              backLabel="All sales, margin & P&L sections"
+              title={mobileMenuCards.find((c) => c.id === mobileActiveSubPage)?.title || ''}
+              onBack={() => setMobileActiveSubPage(null)}
+            />
 
             {showControls && <Chips<ProfitViewBasis> label="Profit basis" options={phoneBasisOptions} value={viewBasis} onChange={setViewBasis} />}
             {showSearch && (
@@ -2156,7 +2119,6 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
           periodLabel={periodLabel}
         />
       )}
-      </div>
 
       {/* Interactive Product Profit & Pricing Modal */}
       <ProductProfitPricingModal

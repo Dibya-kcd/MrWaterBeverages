@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import type { ReportPeriod } from '../reportPeriod';
 import { 
   ChevronLeft, 
   FileSpreadsheet, 
@@ -558,3 +559,82 @@ export const PhoneFilterBottomSheet: React.FC<{
   );
 };
 
+
+
+/* ---------- Date period section for the filter sheet (same as Daily Collection) ---------- */
+
+/** Everything a report needs to let the phone filter sheet change the date period. */
+export interface PhonePeriodControl {
+  period: ReportPeriod;
+  onPeriodChange: (p: ReportPeriod) => void;
+  startDate: string;
+  endDate: string;
+  onCustomRangeChange: (start: string, end: string) => void;
+}
+
+const PERIOD_PRESETS: { id: ReportPeriod; label: string }[] = [
+  { id: 'today', label: 'Today' },
+  { id: 'yesterday', label: 'Yesterday' },
+  { id: 'last7', label: 'Last 7 days' },
+  { id: 'thisMonth', label: 'This month' },
+  { id: 'all', label: 'All time' },
+  { id: 'customRange', label: 'Custom range' },
+];
+
+/** The default period for reports. A different period counts as an active filter. */
+export const isPeriodFilterActive = (period: ReportPeriod): boolean => period !== 'thisMonth' && period !== 'all';
+
+/** "Date Period" block: preset buttons plus From / To pickers for a custom range. */
+export const PhonePeriodPicker: React.FC<PhonePeriodControl> = ({
+  period,
+  onPeriodChange,
+  startDate,
+  endDate,
+  onCustomRangeChange,
+}) => (
+  <div className="space-y-2">
+    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Date Period</label>
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      {PERIOD_PRESETS.map((p) => {
+        const on = period === p.id;
+        return (
+          <button
+            key={p.id}
+            type="button"
+            aria-pressed={on}
+            onClick={() => (p.id === 'customRange' ? onCustomRangeChange(startDate, endDate) : onPeriodChange(p.id))}
+            className={`px-3 py-2 rounded-xl text-xs font-bold border transition-colors text-center cursor-pointer ${
+              on ? 'bg-blue-600 text-white border-blue-600 shadow-xs' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+            }`}
+          >
+            {p.label}
+          </button>
+        );
+      })}
+    </div>
+    {period === 'customRange' && (
+      <div className="grid grid-cols-2 gap-2 pt-1">
+        <div>
+          <label className="text-[11px] font-semibold text-slate-500 block mb-1">From Date</label>
+          <input
+            type="date"
+            value={startDate}
+            max={endDate || undefined}
+            onChange={(e) => onCustomRangeChange(e.target.value, endDate)}
+            className="w-full text-xs font-bold p-2 border border-slate-200 rounded-xl bg-slate-50 text-slate-800"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] font-semibold text-slate-500 block mb-1">To Date</label>
+          <input
+            type="date"
+            value={endDate}
+            min={startDate || undefined}
+            onChange={(e) => onCustomRangeChange(startDate, e.target.value)}
+            className="w-full text-xs font-bold p-2 border border-slate-200 rounded-xl bg-slate-50 text-slate-800"
+          />
+        </div>
+      </div>
+    )}
+  </div>
+);

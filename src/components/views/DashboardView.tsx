@@ -5,6 +5,7 @@ import {
   BarChart3,
   Building2,
   Calendar,
+  CalendarClock,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -13,14 +14,17 @@ import {
   Eye,
   EyeOff,
   Filter,
+  Hourglass,
   IndianRupee,
   Layers,
   Package,
+  PackageMinus,
   RotateCcw,
   Sparkles,
   TrendingUp,
   Truck,
   Users,
+  Wallet,
   Warehouse as WarehouseIcon,
 } from "lucide-react";
 import { useLedger } from "../../context/LedgerContext";
@@ -29,6 +33,7 @@ import { collectExpiryAlerts } from "../../utils/fefo";
 import { trackedStage } from "./ExpiryReturnsTracker";
 import { billBalance, billNetTotal, returnedQtyByProduct } from "../../utils/salesReturns";
 import { StatBlock } from "../common/StatBlock";
+import { MetricCard, MetricGrid } from "../mobile/MobileKit";
 import { buildMonthlyIncentiveReport, isClaimLinkedNote } from "../../utils/supplierSchemes";
 
 import {
@@ -807,7 +812,7 @@ export const DashboardView: React.FC = () => {
   return (
     <div id="view-dashboard" className="space-y-4 min-w-0 max-w-full pb-2">
       {/* Green hero — sales for selected period + quick actions */}
-      <section className="rounded-3xl bg-gradient-to-br from-[#0d4a3a] via-[#0f5c49] to-[#0a3d30] text-white p-4 sm:p-5 shadow-lg relative">
+      <section data-tone="sales" className="mt-hero rounded-3xl bg-gradient-to-br from-[#0d4a3a] via-[#0f5c49] to-[#0a3d30] text-white p-4 sm:p-5 shadow-lg relative">
         <div className="flex items-start justify-between gap-2">
           <p className="text-sm text-white/80 font-medium">
             Hello,{' '}
@@ -1049,30 +1054,24 @@ export const DashboardView: React.FC = () => {
       </section>
 
       {/* KPI strip — period-aware */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3.5">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Collected</div>
-          <div className="text-lg font-bold text-emerald-700 mt-1 tabular-nums">₹{money(periodPaid)}</div>
-          <div className="text-[11px] text-slate-500 mt-0.5">{shortFilterLabel}</div>
-        </div>
-        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3.5">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Outstanding</div>
-          <div className="text-lg font-bold text-slate-900 mt-1 tabular-nums">₹{money(periodOutstanding)}</div>
-        </div>
-        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3.5">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Expiring soon</div>
-          <div className="text-lg font-bold text-slate-900 mt-1 tabular-nums">
-            {expiredLots.length + criticalLots.length + warningLots.length}
-          </div>
-          <div className="text-[11px] text-slate-500 mt-0.5">within 60 days</div>
-        </div>
-        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3.5">
-          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Low stock</div>
-          <div className="text-lg font-bold text-slate-900 mt-1 tabular-nums">
-            {lowStockProducts.length}
-          </div>
-        </div>
-      </div>
+      <MetricGrid>
+        <MetricCard
+          tone="received"
+          icon={Wallet}
+          label="Collected"
+          value={`₹${money(periodPaid)}`}
+          sub={shortFilterLabel}
+          valueClassName="text-emerald-700"
+        />
+        <MetricCard tone="due" icon={Hourglass} label="Outstanding" value={`₹${money(periodOutstanding)}`} />
+        <MetricCard
+          icon={CalendarClock}
+          label="Expiring soon"
+          value={expiredLots.length + criticalLots.length + warningLots.length}
+          sub="within 60 days"
+        />
+        <MetricCard icon={PackageMinus} label="Low stock" value={lowStockProducts.length} />
+      </MetricGrid>
 
       {(products.length === 0 || customers.length === 0 || bills.length === 0) && (
         <section className="bg-white rounded-2xl border border-black/5 shadow-sm p-4 sm:p-5">

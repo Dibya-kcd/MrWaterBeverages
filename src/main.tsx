@@ -12,6 +12,7 @@ import App from './App';
 import { LedgerProvider } from './context/LedgerContext';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import './index.css';
+import './mobile-theme.css';
 import registerServiceWorker from './registerServiceWorker';
 import { installAuthFetch } from './lib/authFetch';
 

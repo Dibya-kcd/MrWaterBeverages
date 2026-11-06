@@ -48,6 +48,8 @@ interface PurchasesReportProps {
   filteredGrns: any[];
   warehouses: Warehouse[];
   period: string;
+  /** Lets the phone Filter sheet change the date period (same as Daily collection). */
+  periodControl?: PhonePeriodControl;
   /** Label of the period chosen at the top of Reports (e.g. "November 2026"). Falls back to `period`. */
   periodLabel?: string;
   onNavigateInventory: () => void;
@@ -106,6 +108,7 @@ export const PurchasesReport: React.FC<PurchasesReportProps> = ({
   filteredGrns,
   warehouses,
   period,
+  periodControl,
   periodLabel,
   onNavigateInventory,
 }) => {
@@ -210,9 +213,17 @@ export const PurchasesReport: React.FC<PurchasesReportProps> = ({
     [shownLines],
   );
 
+  const periodActive = !!periodControl && isPeriodFilterActive(periodControl.period);
+  const filterCount = (viewMode !== 'daywise' ? 1 : 0) + (godown !== 'all' ? 1 : 0) + (periodActive ? 1 : 0);
+
   const resetFilters = () => {
     setGodown('all');
     setSearch('');
+  };
+  const resetSheet = () => {
+    resetFilters();
+    setViewMode('daywise');
+    periodControl?.onPeriodChange('thisMonth');
   };
 
   const forceOpen = q.length > 0;
@@ -300,16 +311,18 @@ export const PurchasesReport: React.FC<PurchasesReportProps> = ({
           onSearch={setSearch}
           placeholder="Search supplier or invoice no…"
           onOpenFilter={() => setIsFilterSheetOpen(true)}
-          activeFilterCount={(viewMode !== 'daywise' ? 1 : 0) + (godown !== 'all' ? 1 : 0)}
+          activeFilterCount={filterCount}
         />
 
         <PhoneFilterBottomSheet
           isOpen={isFilterSheetOpen}
           onClose={() => setIsFilterSheetOpen(false)}
           title="Filter Inward & Purchases"
-          activeCount={(viewMode !== 'daywise' ? 1 : 0) + (godown !== 'all' ? 1 : 0)}
-          onReset={resetFilters}
+          activeCount={filterCount}
+          onReset={resetSheet}
         >
+          {periodControl && <PhonePeriodPicker {...periodControl} />}
+
           {/* View Mode */}
           <div className="space-y-2">
             <label className="text-xs font-bold uppercase tracking-wider text-slate-500">

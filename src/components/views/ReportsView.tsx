@@ -441,6 +441,22 @@ export const ReportsView: React.FC = () => {
     }
   };
 
+  /** Lets a report's phone Filter sheet change the date period (same as Daily collection). */
+  const periodControl = {
+    period,
+    onPeriodChange: (p: ReportPeriod) => setPeriod(p),
+    startDate,
+    endDate,
+    onCustomRangeChange: (start: string, end: string) => {
+      setStartDate(start);
+      setEndDate(end);
+      setPeriod("customRange");
+    },
+  };
+
+  // Stock and party credit are "as on today" snapshots: a date period does not apply to them.
+  const isSnapshotReport = activeReport === "inventory" || activeReport === "receivables";
+
   // Render report content based on activeReport
   const renderActiveReportContent = () => {
     if (activeReport === "overview") {
@@ -551,6 +567,7 @@ export const ReportsView: React.FC = () => {
           filteredGrns={filteredGrns}
           warehouses={warehouses}
           period={period}
+          periodControl={periodControl}
           periodLabel={periodLabel}
           onNavigateInventory={() => setTab("inventory")}
         />
@@ -580,6 +597,7 @@ export const ReportsView: React.FC = () => {
           filteredTrips={filteredTrips}
           tripBreakdown={tripBreakdown}
           period={period}
+          periodControl={periodControl}
           periodLabel={periodLabel}
           warehouses={warehouses}
           onNavigateTrips={() => setTab("trips")}
@@ -638,16 +656,24 @@ export const ReportsView: React.FC = () => {
                 <span>Reports</span>
               </button>
 
-              {/* Date period pill button opening the Filter Bottom Sheet modal */}
-              <button
-                type="button"
-                onClick={() => setMobilePeriodOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/90 border border-blue-100/90 text-slate-800 font-bold text-xs shadow-xs hover:bg-white active:scale-95 transition-all cursor-pointer"
-              >
-                <Calendar size={14} className="text-blue-600" />
-                <span className="truncate max-w-[140px]">{periodLabel}</span>
-                <ChevronDown size={14} className="text-slate-400 shrink-0" />
-              </button>
+              {/* Date period pill button opening the Filter Bottom Sheet modal.
+                  Stock and party credit are "as on today", so they show a fixed label instead. */}
+              {isSnapshotReport ? (
+                <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/70 border border-blue-100/90 text-slate-600 font-bold text-xs">
+                  <Calendar size={14} className="text-slate-400" />
+                  <span>As on today</span>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setMobilePeriodOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/90 border border-blue-100/90 text-slate-800 font-bold text-xs shadow-xs hover:bg-white active:scale-95 transition-all cursor-pointer"
+                >
+                  <Calendar size={14} className="text-blue-600" />
+                  <span className="truncate max-w-[140px]">{periodLabel}</span>
+                  <ChevronDown size={14} className="text-slate-400 shrink-0" />
+                </button>
+              )}
             </div>
 
             {/* Active sub-report content */}

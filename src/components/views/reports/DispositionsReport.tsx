@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Gift } from 'lucide-react';
+import { ClipboardList, Gift, HandCoins, Layers, PackageX, ReceiptText } from 'lucide-react';
 import { useLedger } from '../../../context/LedgerContext';
 import { InventoryDisposition, InventoryDispositionType, SupplierCreditNote } from '../../../types';
 import { money } from '../../../utils/billing';
@@ -24,8 +24,8 @@ import {
   reportCard,
   type StatTone,
 } from './ReportKit';
+import { SubPageBack, SubPageMenu, type SubPageCard } from './mobile/SubPageMenu';
 import {
-  Chips,
   EmptyNote,
   HeroCard,
   LegendDot,
@@ -121,6 +121,8 @@ export const DispositionsReport: React.FC<Props> = ({
   const { inventoryDispositions, supplierCreditNotes, inventoryBatches, products, warehouses } =
     useLedger();
   const [subTab, setSubTab] = useState<SubTab>('summary');
+  /** Phone only: which section is open as its own page (null = the list of section cards). */
+  const [phoneOpen, setPhoneOpen] = useState<SubTab | null>(null);
   const [search, setSearch] = useState('');
 
   const filtered = useMemo(() => {
@@ -506,10 +508,62 @@ export const DispositionsReport: React.FC<Props> = ({
   const countFor = (id: SubTab) =>
     id === 'free' ? freeRows.length : id === 'writeoffs' ? writeoffRows.length : id === 'claims' ? claimRows.length : id === 'batches' ? batchTracking.length : id === 'creditnotes' ? kpis.scnCount : undefined;
   const tabOptionsWithCount = tabOptions.map((t) => ({ ...t, count: countFor(t.id) }));
-  const phoneTabs = tabOptions.map((t) => {
-    const c = countFor(t.id);
-    return { id: t.id, label: c !== undefined && c > 0 ? `${t.label} ${c}` : t.label };
-  });
+  const phoneCards: SubPageCard<SubTab>[] = [
+    {
+      id: 'summary',
+      title: 'Summary of Losses and Claims',
+      summary: `Free issues ${money0(kpis.freeCost)} · write-offs ${money0(kpis.writeoffCost)} · returns ${money0(kpis.returnCost)} · claims settled ${money0(kpis.claimedSettled)}`,
+      badge: `Loss ${money0(kpis.totalLossCost)}`,
+      badgeTone: kpis.totalLossCost > 0 ? 'red' : 'green',
+      icon: Layers,
+      tone: 'indigo',
+    },
+    {
+      id: 'free',
+      title: 'Free Issues (near-expiry and scheme)',
+      summary: 'Stock given away free to move near-expiry cases or to honour a scheme, valued at cost',
+      badge: `${freeRows.length} record${freeRows.length === 1 ? '' : 's'} · ${money0(kpis.freeCost)}`,
+      badgeTone: 'blue',
+      icon: Gift,
+      tone: 'sky',
+    },
+    {
+      id: 'writeoffs',
+      title: 'Write-offs (expired and damaged)',
+      summary: 'Stock thrown out because it expired or broke. This cost reduces your profit',
+      badge: `${writeoffRows.length} record${writeoffRows.length === 1 ? '' : 's'} · ${money0(kpis.writeoffCost)}`,
+      badgeTone: 'red',
+      icon: PackageX,
+      tone: 'rose',
+    },
+    {
+      id: 'claims',
+      title: 'Supplier Claims (returns to company)',
+      summary: `Goods sent back to the supplier or company and the credit still to come · ${kpis.openClaims} claim${kpis.openClaims === 1 ? '' : 's'} open`,
+      badge: `Pending ${money0(kpis.claimedPending)}`,
+      badgeTone: kpis.claimedPending > 0 ? 'amber' : 'green',
+      icon: HandCoins,
+      tone: 'amber',
+    },
+    {
+      id: 'batches',
+      title: 'Batch and Lot Tracking',
+      summary: 'Each lot with how much of it was returned, free or written off, and how much is still in stock',
+      badge: `${batchTracking.length} lot${batchTracking.length === 1 ? '' : 's'}`,
+      badgeTone: 'purple',
+      icon: ClipboardList,
+      tone: 'purple',
+    },
+    {
+      id: 'creditnotes',
+      title: 'Scheme Credit Notes from Suppliers',
+      summary: `Credit notes for supplier schemes · expected ${money0(kpis.scnExpected)}, received ${money0(kpis.scnActual)}`,
+      badge: `${kpis.scnCount} note${kpis.scnCount === 1 ? '' : 's'}`,
+      badgeTone: 'cyan',
+      icon: ReceiptText,
+      tone: 'cyan',
+    },
+  ];
 
   const emptyTextFor = (tab: SubTab) =>
     isFiltered
@@ -611,6 +665,8 @@ export const DispositionsReport: React.FC<Props> = ({
     <>
       {/* ============================ PHONE ============================ */}
       <div className="md:hidden space-y-3" id="report-dispositions-phone">
+        {phoneOpen === null ? (
+          <>
         <PhoneHeader title="Returns, free & claims" sub="Returns, samples & write-offs summary" />
 
         <HeroCard tone="navy" label="Trading loss (free + write-off)" value={money0(kpis.totalLossCost)}>
@@ -633,9 +689,26 @@ export const DispositionsReport: React.FC<Props> = ({
           <MiniStat label="Scheme CNs" value={money0(kpis.scnActual)} tone="green" />
         </div>
 
-        <Chips<SubTab> label="Returns, free and claims views" options={phoneTabs} value={subTab} onChange={setSubTab} />
-        {showSearch && <PhoneSearch value={search} onChange={setSearch} placeholder="Search product, lot or supplier…" />}
+        <SubPageMenu<SubTab>
+          heading="Returns, free & claims sections"
+          cards={phoneCards}
+          onOpen={(id) => {
+            setSubTab(id);
+            setSearch('');
+            setPhoneOpen(id);
+          }}
+        />
+          </>
+        ) : (
+          <>
+            <SubPageBack backLabel="All returns, free & claims" title={phoneCards.find((c) => c.id === phoneOpen)?.title || ''} onBack={() => setPhoneOpen(null)} />
+            {showSearch && <PhoneSearch value={search} onChange={setSearch} placeholder="Search product, lot or supplier…" />}
+          </>
+        )}
 
+
+        {phoneOpen !== null && (
+          <>
         {subTab === 'summary' && (
           <RowCard>
             <div className="p-3 space-y-2 text-[13px]">
@@ -718,6 +791,9 @@ export const DispositionsReport: React.FC<Props> = ({
               );
             })
           ))}
+
+          </>
+        )}
 
         <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} disabled={!hasAny} />
       </div>
