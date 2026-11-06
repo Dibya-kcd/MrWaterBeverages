@@ -48,6 +48,8 @@ import { todayISO } from "../../utils/dateLocal";
 interface SalesmanSaleWorkflowProps {
   confirmedBill: Bill | null;
   setConfirmedBill: (bill: Bill | null) => void;
+  /** Opens the invoice preview / print modal for a bill (shows the Print button on the confirmation screen). */
+  onOpenInvoiceModal?: (bill: Bill, defaultFormat?: 'gst' | 'non_gst') => void;
   cart: {
     items: BillItem[];
     date?: string;
@@ -90,6 +92,7 @@ interface SalesmanSaleWorkflowProps {
 export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
   confirmedBill,
   setConfirmedBill,
+  onOpenInvoiceModal,
   cart,
   activeTrip,
   products,
@@ -452,6 +455,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
       <div id="confirmed-sale-screen" className="space-y-4 max-w-none lg:max-w-2xl mx-auto py-2 pb-52 lg:pb-4">
         <InvoiceSuccessCard
           bill={confirmedBill}
+          onOpenInvoiceModal={onOpenInvoiceModal}
           onCreateNextBill={handleNextInvoice}
           onOpenHistory={() => {
             setConfirmedBill(null);
