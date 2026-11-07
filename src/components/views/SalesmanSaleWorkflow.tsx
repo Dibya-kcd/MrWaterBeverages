@@ -41,7 +41,7 @@ import {
 } from '../../utils/speechRecognition';
 import { useLedger } from '../../context/LedgerContext';
 import { useLanguage } from '../../i18n/LanguageContext';
-import { searchHaystack } from '../../utils/displayName';
+import { searchHaystack, getCustomerOdiaName } from '../../utils/displayName';
 import { useAutoOdiaNameMap, nameFromMap } from '../../hooks/useAutoOdiaName';
 import { useBeatFilter } from '../../hooks/useBeatFilter';
 import { BeatFilterBar } from '../common/BeatFilterBar';
@@ -131,7 +131,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
 }) => {
   const { t, isOdia, language } = useLanguage();
   const productNameMap = useAutoOdiaNameMap(products || []);
-  const customerNameMap = useAutoOdiaNameMap(customers || []);
+  const customerNameMap = useAutoOdiaNameMap(customers || [], 'person');
 
   // Read-only ledger data for smart assist (does not change sale / stock behaviour)
   const { inventoryBatches, bills, customers: ledgerCustomers, findBillingCustomer, getCustomerLedger } = useLedger();
@@ -659,8 +659,15 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           <div className="p-3 rounded-xl border-2 border-emerald-500 bg-emerald-50/80 flex items-center justify-between gap-3">
             <div className="min-w-0 flex-1">
               <div className="text-[11px] font-black uppercase text-emerald-800">{t('salesman.billedTo')}</div>
-              <div className="flex items-center gap-2 min-w-0">
-                <div className="text-base sm:text-lg font-black text-slate-900 truncate">{selectedRetailer}</div>
+              <div className="flex items-center gap-2">
+                <div className="text-base sm:text-lg font-black text-slate-900 truncate min-w-0">
+                  <div>{selectedRetailer}</div>
+                  {isOdia && (
+                    <div className="text-xs font-bold text-emerald-800 font-odia truncate mt-0.5">
+                      {getCustomerOdiaName(selectedRetailer, customers || ledgerCustomers || [])}
+                    </div>
+                  )}
+                </div>
                 {/* Cart icon beside customer name */}
                 <button
                   type="button"
@@ -759,7 +766,14 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                       className="w-full min-h-[48px] p-3 text-left hover:bg-sky-50 active:bg-blue-100 flex items-center justify-between cursor-pointer transition-colors"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="text-sm sm:text-base font-black text-slate-900 truncate">{nameFromMap(customerNameMap, cust, language)}</div>
+                        <div className="text-sm sm:text-base font-black text-slate-900 truncate">
+                          <div>{cust.name}</div>
+                          {isOdia && (cust.nameOr || nameFromMap(customerNameMap, cust, language)) && (
+                            <div className="text-xs font-bold text-sky-800 font-odia truncate mt-0.5">
+                              {cust.nameOr || nameFromMap(customerNameMap, cust, language)}
+                            </div>
+                          )}
+                        </div>
                         <div className="text-xs text-slate-500 font-bold flex items-center gap-2 flex-wrap mt-0.5">
                           {cust.phone && <span>Ph: {cust.phone}</span>}
                           {cust.balanceDue > 0 && (
@@ -1102,7 +1116,12 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                     className={`font-extrabold text-slate-900 break-words whitespace-normal leading-snug ${isLowVision ? 'text-lg' : 'text-[14.5px]'}`}
                     style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
                   >
-                    {nameFromMap(productNameMap, prod, language)}
+                    <div>{prod.name}</div>
+                    {isOdia && (prod.nameOr || nameFromMap(productNameMap, prod, language)) && (
+                      <div className="text-xs font-bold text-sky-800 font-odia mt-0.5">
+                        {prod.nameOr || nameFromMap(productNameMap, prod, language)}
+                      </div>
+                    )}
                   </h3>
                   <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                     <SizeChip volume={prod.volume} pack={prod.pack} name={prod.name} />

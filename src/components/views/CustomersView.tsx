@@ -20,7 +20,6 @@ import {
 import { useLedger } from "../../context/LedgerContext";
 import { useLanguage } from "../../i18n/LanguageContext";
 import { useAutoOdiaNameMap, nameFromMap } from "../../hooks/useAutoOdiaName";
-import { translateManyToOdia, getCachedOdiaName } from "../../utils/odiaAutoTranslate";
 import {
   Bill,
   Customer,
@@ -242,44 +241,6 @@ export const CustomersView: React.FC = () => {
   } = useLedger();
   const { language } = useLanguage();
   const customerNameMap = useAutoOdiaNameMap(customers || []);
-  const [translatingCustomers, setTranslatingCustomers] = useState(false);
-  const [customerTranslateMsg, setCustomerTranslateMsg] = useState<string | null>(null);
-  const missingCustomerOdia = useMemo(
-    () => (customers || []).filter((c) => c.name?.trim() && !(c as any).nameOr?.trim()).length,
-    [customers]
-  );
-  const translateAllCustomersToOdia = async () => {
-    const need = (customers || []).filter((c) => c.name?.trim() && !(c as any).nameOr?.trim());
-    if (need.length === 0) {
-      setCustomerTranslateMsg("All customers already have an Odia name.");
-      setTimeout(() => setCustomerTranslateMsg(null), 3000);
-      return;
-    }
-    setTranslatingCustomers(true);
-    setCustomerTranslateMsg(`Translating 0 / ${need.length}…`);
-    try {
-      const map = await translateManyToOdia(need.map((c) => c.name.trim()), 2);
-      let saved = 0;
-      for (const c of need) {
-        const odia = map.get(c.name.trim()) || getCachedOdiaName(c.name);
-        if (odia && odia.trim() && odia.trim().toLowerCase() !== c.name.trim().toLowerCase()) {
-          updateCustomer({ ...c, nameOr: odia.trim(), updatedAt: new Date().toISOString() } as any);
-          saved += 1;
-          setCustomerTranslateMsg(`Saving ${saved} / ${need.length}…`);
-        }
-      }
-      setCustomerTranslateMsg(
-        saved > 0
-          ? `Done — saved Odia names for ${saved} customer${saved === 1 ? "" : "s"}.`
-          : "No new Odia names saved. Check internet and try again."
-      );
-    } catch {
-      setCustomerTranslateMsg("Translation failed. Check internet connection.");
-    } finally {
-      setTranslatingCustomers(false);
-      setTimeout(() => setCustomerTranslateMsg(null), 5000);
-    }
-  };
 
   const [partyTab, setPartyTab] = useState<PartyTab>("customers");
   const [searchTerm, setSearchTerm] = useState("");
@@ -1799,33 +1760,6 @@ export const CustomersView: React.FC = () => {
             className="w-full pl-10 pr-4 py-2.5 rounded-full bg-white border border-black/8 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25 focus:border-[#0d4a3a]/40"
           />
         </div>
-
-        {partyTab === "customers" && (
-          <div className="mb-3 space-y-1.5">
-            <button
-              type="button"
-              onClick={translateAllCustomersToOdia}
-              disabled={translatingCustomers || missingCustomerOdia === 0}
-              className={`w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border text-sm font-bold transition-colors cursor-pointer ${
-                translatingCustomers || missingCustomerOdia === 0
-                  ? "bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed"
-                  : "bg-amber-50 border-amber-300 text-amber-950 hover:bg-amber-100"
-              }`}
-            >
-              {translatingCustomers ? <Loader2 className="w-4 h-4 animate-spin" /> : <Languages className="w-4 h-4" />}
-              <span>
-                {translatingCustomers
-                  ? "Translating to Odia…"
-                  : missingCustomerOdia === 0
-                    ? "All customers have Odia names"
-                    : `Translate all customers to Odia (${missingCustomerOdia})`}
-              </span>
-            </button>
-            {customerTranslateMsg && (
-              <p className="text-xs font-semibold text-center text-slate-600">{customerTranslateMsg}</p>
-            )}
-          </div>
-        )}
 
         {partyTab === "customers" && (
           <div className="flex items-center gap-1.5 mb-3.5 overflow-x-auto pb-1 text-xs">

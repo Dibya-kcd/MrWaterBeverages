@@ -22,6 +22,7 @@ import {
 import { SizeChip } from './SizeChip';
 import { sizeTheme } from '../../utils/sizeColor';
 import { money } from '../../utils/billing';
+import { getProductOdiaName, getCustomerOdiaName } from '../../utils/displayName';
 import type { BillItem, ExistingCustomer, PriceType, Product, Trip } from '../../types';
 
 /** Same props as the desktop SalesmanCartModal so the parent does not change. */
@@ -79,6 +80,7 @@ export const SalesmanCartSheet: React.FC<SalesmanCartSheetProps> = ({
   setSelectedRetailer,
   retailerPhone,
   setRetailerPhone,
+  customers = [],
   amountPaidDraft,
   setAmountPaidDraft,
   invoiceDiscountDraft,
@@ -243,9 +245,9 @@ export const SalesmanCartSheet: React.FC<SalesmanCartSheetProps> = ({
             <ArrowLeft size={22} />
           </button>
           <div className="min-w-0 flex-1">
-            <div className="text-base font-black leading-tight">Cart</div>
+            <div className="text-base font-black leading-tight">{isOdia ? 'କାର୍ଟ (Cart)' : 'Cart'}</div>
             <div className="text-[11px] font-semibold text-emerald-100/90 truncate">
-              {cart.items.length} item{cart.items.length === 1 ? '' : 's'} · {totalCases} case{totalCases === 1 ? '' : 's'}
+              {cart.items.length} {isOdia ? 'ଆଇଟମ୍' : (cart.items.length === 1 ? 'item' : 'items')} · {totalCases} {isOdia ? 'କେସ୍' : (totalCases === 1 ? 'case' : 'cases')}
               {activeTrip?.vehicle ? ` · ${activeTrip.vehicle}` : ''}
             </div>
           </div>
@@ -323,13 +325,20 @@ export const SalesmanCartSheet: React.FC<SalesmanCartSheetProps> = ({
             <Store size={19} />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-black text-slate-900 truncate">{selectedRetailer || 'Choose customer'}</div>
+            <div className="text-sm font-black text-slate-900 truncate">{selectedRetailer || (isOdia ? 'ଗ୍ରାହକ ବାଛନ୍ତୁ' : 'Choose customer')}</div>
+            {isOdia && (
+              <div className="text-xs font-bold text-sky-800 font-odia truncate mt-0.5">
+                {selectedRetailer === WALK_IN || !selectedRetailer
+                  ? 'ସ୍ପଟ୍ କ୍ୟାଶ୍ / ୱାକ୍-ଇନ୍ ଗ୍ରାହକ'
+                  : getCustomerOdiaName(selectedRetailer, customers || [])}
+              </div>
+            )}
             <div className="text-xs font-semibold text-slate-500 truncate">
               {retailerPhone
                 ? `${retailerPhone}${autoSendWhatsApp ? ' · bill sent on WhatsApp' : ''}`
                 : isWalkIn
-                ? 'Walk-in sale'
-                : 'No phone number'}
+                ? (isOdia ? 'ୱାକ୍-ଇନ୍ ବିକ୍ରି' : 'Walk-in sale')
+                : (isOdia ? 'ଫୋନ୍ ନମ୍ବର ନାହିଁ' : 'No phone number')}
             </div>
           </div>
           <button
@@ -386,8 +395,15 @@ export const SalesmanCartSheet: React.FC<SalesmanCartSheetProps> = ({
                   }`}
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-[15px] font-black text-slate-900 leading-snug break-words">{item.productName}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[15px] font-black text-slate-900 leading-snug break-words">
+                        <div>{item.productName}</div>
+                        {isOdia && (prod?.nameOr || getProductOdiaName(item.productId || item.productName, products)) && (
+                          <div className="text-xs font-bold text-sky-800 font-odia mt-0.5">
+                            {prod?.nameOr || getProductOdiaName(item.productId || item.productName, products)}
+                          </div>
+                        )}
+                      </div>
                       <div className="mt-1 flex items-center gap-1.5 flex-wrap">
                         <SizeChip volume={prod?.volume} pack={prod?.pack} name={item.productName} />
                         <span
@@ -608,11 +624,11 @@ export const SalesmanCartSheet: React.FC<SalesmanCartSheetProps> = ({
           {/* Payment */}
           {cart.items.length > 0 && (
             <div className="rounded-2xl border border-slate-200 bg-white p-3 space-y-3">
-              <div className="text-sm font-black text-slate-900">Payment today</div>
+              <div className="text-sm font-black text-slate-900">{isOdia ? 'ଆଜିର ପେମେଣ୍ଟ (Payment today)' : 'Payment today'}</div>
               <div className="flex gap-2">
-                {modeBtn('credit', 'Credit', <Clock size={16} />, 'bg-amber-600 border-amber-600 text-white')}
-                {modeBtn('partial', 'Partial', null, 'bg-sky-600 border-sky-600 text-white')}
-                {modeBtn('full', 'Full cash', <CheckCircle2 size={16} />, 'bg-emerald-600 border-emerald-600 text-white')}
+                {modeBtn('credit', isOdia ? 'ବାକି (Credit)' : 'Credit', <Clock size={16} />, 'bg-amber-600 border-amber-600 text-white')}
+                {modeBtn('partial', isOdia ? 'କିଛି ପେମେଣ୍ଟ' : 'Partial', null, 'bg-sky-600 border-sky-600 text-white')}
+                {modeBtn('full', isOdia ? 'ପୂରା କ୍ୟାଶ୍' : 'Full cash', <CheckCircle2 size={16} />, 'bg-emerald-600 border-emerald-600 text-white')}
               </div>
 
               {payMode === 'partial' && (
@@ -694,10 +710,12 @@ export const SalesmanCartSheet: React.FC<SalesmanCartSheetProps> = ({
           className="w-full min-h-[54px] rounded-2xl bg-emerald-600 active:bg-emerald-700 text-white text-base font-black flex items-center justify-center gap-2 shadow-lg disabled:opacity-40"
         >
           <Check size={20} strokeWidth={3} />
-          Finalize sale · ₹{money(finalCartTotal)}
+          {isOdia ? `ବିଲ୍ ତିଆରି କରନ୍ତୁ · ₹${money(finalCartTotal)}` : `Finalize sale · ₹${money(finalCartTotal)}`}
         </button>
         {!selectedRetailer.trim() && (
-          <p className="mt-1.5 text-center text-xs font-bold text-rose-600">Choose a customer to finalize.</p>
+          <p className="mt-1.5 text-center text-xs font-bold text-rose-600">
+            {isOdia ? 'ବିଲ୍ ତିଆରି ପାଇଁ ଗ୍ରାହକ ବାଛନ୍ତୁ।' : 'Choose a customer to finalize.'}
+          </p>
         )}
       </footer>
 

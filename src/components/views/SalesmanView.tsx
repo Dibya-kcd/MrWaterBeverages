@@ -53,10 +53,13 @@ import {
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { useLanguage } from '../../i18n/LanguageContext';
+import { LanguageToggle } from '../common/LanguageToggle';
+import { OdiaName } from '../common/OdiaName';
 import { normCustName, splitSameNameShops } from '../../context/ledgerHelpers';
 import { Bill, BillItem, ExistingCustomer, PriceType, Product, Trip } from '../../types';
 import { billTotals, buildBillText, computeLine, normalizeGstFraction, money, schemeLabel, whatsappLink, resolveProductGstRate, resolveProductHsn, formatProductVolPack, volumeFromName } from '../../utils/billing';
 import { downloadInvoicePdf } from '../../utils/invoicePdf';
+import { getProductOdiaName, getCustomerOdiaName } from '../../utils/displayName';
 import { isSpeechRecognitionSupported, speakAssistiveText, startSpeechRecognition } from '../../utils/speechRecognition';
 import { CustomerSelector } from '../common/CustomerSelector';
 import { AddCustomerModal } from '../common/AddCustomerModal';
@@ -1216,7 +1219,7 @@ export const SalesmanView: React.FC = () => {
                 </div>
                 <div className="min-w-0">
                   <div className="text-[11px] font-black uppercase tracking-wider text-amber-500">
-                    ROUTE DASHBOARD
+                    {t('salesman.routeDashboard')}
                   </div>
                   <h1 className="text-xl sm:text-2xl font-black text-slate-900 truncate leading-tight">
                     {currentUser?.name || userSalesmanName || activeSalesman?.name || 'Sales Staff'}
@@ -1226,20 +1229,21 @@ export const SalesmanView: React.FC = () => {
                     <span className="truncate">
                       {activeTrip?.vehicle
                         ? `${activeTrip.vehicle}${activeTrip.route ? ' • ' + activeTrip.route : ''}`
-                        : 'No active vehicle run'}
+                        : t('salesman.noActiveVehicle')}
                     </span>
                   </div>
                 </div>
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
+                <LanguageToggle />
                 <button
                   type="button"
                   id="salesman-home-btn-logout"
                   onClick={() => logout()}
                   className="size-11 rounded-2xl border-2 border-rose-200 text-rose-600 hover:bg-rose-50 hover:border-rose-300 flex items-center justify-center cursor-pointer transition-colors shadow-xs"
-                  title="Sign Out"
-                  aria-label="Sign Out"
+                  title={t('salesman.signOut')}
+                  aria-label={t('salesman.signOut')}
                 >
                   <LogOut size={20} />
                 </button>
@@ -1267,11 +1271,11 @@ export const SalesmanView: React.FC = () => {
                       className="truncate text-base sm:text-lg font-black tracking-tight"
                       style={{ color: palette.ink }}
                     >
-                      {salesmanTab === 'sell' && 'New Sale'}
+                      {salesmanTab === 'sell' && t('salesman.newSale')}
                       {salesmanTab === 'vanStock' && t('salesman.tab.vanStock')}
-                      {salesmanTab === 'bills' && 'My Bills'}
-                      {salesmanTab === 'customerDue' && 'Payments'}
-                      {salesmanTab === 'trips' && 'Trips'}
+                      {salesmanTab === 'bills' && t('salesman.myBills')}
+                      {salesmanTab === 'customerDue' && t('salesman.payments')}
+                      {salesmanTab === 'trips' && t('salesman.tab.trips')}
                     </span>
                     {activeTrip && (
                       <span className="px-2.5 py-0.5 text-[11px] font-black rounded-full bg-emerald-600 text-white shrink-0 flex items-center gap-1">
@@ -1284,13 +1288,14 @@ export const SalesmanView: React.FC = () => {
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
+                <LanguageToggle />
                 <button
                   type="button"
                   id="salesman-header-btn-logout"
                   onClick={() => logout()}
                   className="size-9 rounded-xl border-2 border-rose-200 text-rose-600 hover:bg-rose-50 hover:border-rose-300 flex items-center justify-center cursor-pointer transition-colors shadow-xs"
-                  title="Sign Out"
-                  aria-label="Sign Out"
+                  title={t('salesman.signOut')}
+                  aria-label={t('salesman.signOut')}
                 >
                   <LogOut size={17} />
                 </button>
@@ -1318,7 +1323,7 @@ export const SalesmanView: React.FC = () => {
                 <span>Invoice Cart: {cart.items.length} beverage item(s)</span>
                 {selectedRetailer && (
                   <span className="text-xs text-amber-800 font-bold hidden sm:inline">
-                    for {selectedRetailer}
+                    for <OdiaName name={selectedRetailer} kind="person" className="inline" odiaClassName="ml-1 font-odia" />
                   </span>
                 )}
               </div>
@@ -1506,7 +1511,7 @@ export const SalesmanView: React.FC = () => {
                     </div>
                     <div className="min-w-0">
                       <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-amber-600 transition-colors">
-                        1. New Sale
+                        {t('salesman.newSale')}
                       </div>
                       <div className="text-xs text-slate-500 truncate mt-0.5">
                         Create bill for retailer
@@ -1688,7 +1693,7 @@ export const SalesmanView: React.FC = () => {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-black text-sm text-slate-900">
-                              {bill.retailer}
+                              <OdiaName name={bill.retailer} kind="person" />
                             </span>
                             <span className="font-mono text-xs font-bold text-slate-500">
                               #{bill.id}
@@ -1901,7 +1906,7 @@ export const SalesmanView: React.FC = () => {
                           <div className="flex items-start justify-between gap-2 mb-1.5">
                             <div className="min-w-0 flex-1">
                               <h3 className="font-extrabold text-sm text-slate-900 break-words leading-snug" title={p.name}>
-                                {p.name}
+                                <OdiaName name={p.name} nameOr={p.nameOr} />
                               </h3>
                               <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                                 {p.sku && (
@@ -2128,7 +2133,7 @@ export const SalesmanView: React.FC = () => {
                               </span>
                             )}
                           </div>
-                          <div className="font-black text-sm mt-0.5 text-slate-800">{bill.retailer}</div>
+                          <div className="font-black text-sm mt-0.5 text-slate-800"><OdiaName name={bill.retailer} kind="person" /></div>
                           <div className="text-xs font-semibold text-slate-500 mt-0.5">
                             {bill.items.reduce((sum, i) => sum + (i.qty || 0), 0)} cases • {bill.items.length} line items
                             {bill.phone ? ` • Tel: ${bill.phone}` : ''}

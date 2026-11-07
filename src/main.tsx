@@ -28,11 +28,11 @@ if (rootElement) {
   ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
       <ErrorBoundary fallbackTitle="Application Error">
-        <LanguageProvider>
-          <LedgerProvider>
+        <LedgerProvider>
+          <LanguageProvider>
             <App />
-          </LedgerProvider>
-        </LanguageProvider>
+          </LanguageProvider>
+        </LedgerProvider>
       </ErrorBoundary>
     </React.StrictMode>
   );

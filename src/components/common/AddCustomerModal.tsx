@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   X,
   UserPlus,
@@ -18,6 +18,7 @@ import { Customer } from '../../types';
 import { useLedger } from '../../context/LedgerContext';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { useBeats } from '../../hooks/useBeats';
+import { SUGGESTED_BEAT_NAMES } from '../../utils/beats';
 import {
   isSpeechRecognitionSupported,
   startSpeechRecognition,
@@ -47,7 +48,27 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
   isLowVision = false,
 }) => {
   const { addCustomer, palette, customers: registeredCustomers } = useLedger();
-  const { activeBeats, myBeats } = useBeats();
+  const { beats, activeBeats, myBeats } = useBeats();
+
+  // Combine all active beats, salesman's beats, standard Odisha beats, and existing customer routes
+  const availableBeatNames = useMemo(() => {
+    const names = new Set<string>();
+    // 1. My assigned beats (if signed-in salesman)
+    (myBeats || []).forEach((b) => {
+      if (b.name && b.name.trim()) names.add(b.name.trim());
+    });
+    // 2. All active beats from orgProfile / beats config
+    (activeBeats || []).forEach((b) => {
+      if (b.name && b.name.trim()) names.add(b.name.trim());
+    });
+    // 3. Standard suggested Odisha beat routes
+    SUGGESTED_BEAT_NAMES.forEach((n) => names.add(n));
+    // 4. Any routes already assigned to registered customers
+    (registeredCustomers || []).forEach((c) => {
+      if (c.route && c.route.trim()) names.add(c.route.trim());
+    });
+    return Array.from(names);
+  }, [myBeats, activeBeats, registeredCustomers]);
 
   const { t, isOdia } = useLanguage();
   const [name, setName] = useState('');
@@ -56,6 +77,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
   const [contactPerson, setContactPerson] = useState('');
   const [address, setAddress] = useState('');
   const [route, setRoute] = useState('');
+  const [isCustomRoute, setIsCustomRoute] = useState(false);
   const [gstin, setGstin] = useState('');
   const [openingBalance, setOpeningBalance] = useState('0');
   const [creditLimit, setCreditLimit] = useState('0');
@@ -75,8 +97,10 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
       setPhone(initialPhone || '');
       setContactPerson('');
       setAddress('');
-      // a salesman's new shop goes into his own beat by default
-      setRoute(defaultRoute || myBeats[0]?.name || (activeBeats[0]?.name ? activeBeats[0].name : ''));
+      // Route priority: explicitly passed defaultRoute -> first assigned beat -> first available beat
+      const initialR = defaultRoute || myBeats[0]?.name || (availableBeatNames[0] ? availableBeatNames[0] : 'Kuchinda Town');
+      setRoute(initialR);
+      setIsCustomRoute(Boolean(initialR && !availableBeatNames.includes(initialR)));
       setGstin('');
       setOpeningBalance('0');
       setCreditLimit('0');
@@ -84,7 +108,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
       setErrorMsg(null);
       setIsSubmitting(false);
     }
-  }, [isOpen, initialName, initialPhone, defaultRoute, activeBeats, myBeats]);
+  }, [isOpen, initialName, initialPhone, defaultRoute, availableBeatNames, myBeats]);
 
   useEffect(() => {
     return () => {
@@ -176,7 +200,9 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
         address: cleanAddress || undefined,
         city: cleanRoute || undefined,
         route: cleanRoute || undefined,
-        beatId: activeBeats.find((b) => b.name === cleanRoute)?.id,
+        beatId:
+          activeBeats.find((b) => b.name.trim().toLowerCase() === cleanRoute.toLowerCase())?.id ||
+          beats.find((b) => b.name.trim().toLowerCase() === cleanRoute.toLowerCase())?.id,
         gstin: cleanGstin || undefined,
         openingBalance: openBal,
         creditLimit: credLim,
@@ -349,25 +375,93 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
             </div>
 
             <div className="space-y-1.5">
-              <label className="block text-xs font-black uppercase tracking-wider text-slate-700">
-                Route / Beat
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-black uppercase tracking-wider text-slate-700">
+                  Route / Beat
+                </label>
+                {isCustomRoute ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomRoute(false);
+                      setRoute(availableBeatNames[0] || 'Kuchinda Town');
+                    }}
+                    className="text-[11px] font-bold text-sky-700 hover:underline cursor-pointer"
+                  >
+                    ← Pick from list
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomRoute(true);
+                      setRoute('');
+                    }}
+                    className="text-[11px] font-bold text-sky-700 hover:underline cursor-pointer"
+                  >
+                    + Custom route
+                  </button>
+                )}
+              </div>
               <div className="relative flex items-center">
                 <Truck size={18} className="absolute left-3 text-slate-400 pointer-events-none" />
-                <input
-                  type="text"
-                  list="route-beat-suggestions"
-                  value={route}
-                  onChange={(e) => setRoute(e.target.value)}
-                  placeholder="e.g. Market Route / Beat A"
-                  className="w-full pl-10 pr-3 py-2 rounded-xl border border-slate-300 font-bold text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-slate-900 bg-white"
-                />
-                <datalist id="route-beat-suggestions">
-                  {activeBeats.map((b) => (
-                    <option key={b.name} value={b.name} />
-                  ))}
-                </datalist>
+                {isCustomRoute ? (
+                  <input
+                    type="text"
+                    value={route}
+                    onChange={(e) => setRoute(e.target.value)}
+                    placeholder="Enter custom route or village name"
+                    className="w-full pl-10 pr-3 py-2 rounded-xl border border-slate-300 font-bold text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-slate-900 bg-white"
+                  />
+                ) : (
+                  <select
+                    value={availableBeatNames.includes(route) ? route : (route ? '__current__' : (availableBeatNames[0] || ''))}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '__custom__') {
+                        setIsCustomRoute(true);
+                        setRoute('');
+                      } else {
+                        setIsCustomRoute(false);
+                        setRoute(val);
+                      }
+                    }}
+                    className="w-full pl-10 pr-8 py-2 rounded-xl border border-slate-300 font-bold text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-slate-900 bg-white cursor-pointer"
+                  >
+                    {availableBeatNames.map((bName) => (
+                      <option key={bName} value={bName}>
+                        {bName}
+                      </option>
+                    ))}
+                    {route && !availableBeatNames.includes(route) && (
+                      <option value="__current__">{route}</option>
+                    )}
+                    <option value="__custom__">+ Enter Custom / Other Route...</option>
+                  </select>
+                )}
               </div>
+              {/* Quick Beat Chips for 1-tap switching */}
+              {!isCustomRoute && (
+                <div className="flex flex-wrap gap-1 pt-1">
+                  {availableBeatNames.slice(0, 6).map((bName) => (
+                    <button
+                      key={bName}
+                      type="button"
+                      onClick={() => {
+                        setRoute(bName);
+                        setIsCustomRoute(false);
+                      }}
+                      className={`px-2 py-0.5 rounded-md text-[11px] font-bold border transition-colors cursor-pointer ${
+                        route.toLowerCase() === bName.toLowerCase()
+                          ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      {bName}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 

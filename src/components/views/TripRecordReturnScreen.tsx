@@ -16,6 +16,7 @@ import { Bill, PaymentRecord, Product, Trip, TripShortageReason, Warehouse } fro
 import { billBelongsToTrip } from '../../utils/billing';
 import { billBalance } from '../../utils/salesReturns';
 import { SizeChip } from '../common/SizeChip';
+import { OdiaName } from '../common/OdiaName';
 import { sizeTheme } from '../../utils/sizeColor';
 
 interface TripRecordReturnScreenProps {
@@ -411,7 +412,7 @@ export const TripRecordReturnScreen: React.FC<TripRecordReturnScreenProps> = ({
                       className="py-2.5 px-3"
                       style={{ borderLeftWidth: 6, borderLeftStyle: 'solid', borderLeftColor: sizeTheme(prod?.volume, prod?.name).hex }}
                     >
-                      <div className="font-bold text-slate-900 leading-snug">{prod?.name || `Product #${pid}`}</div>
+                      <div className="font-bold text-slate-900 leading-snug">{prod?.name ? <OdiaName name={prod.name} nameOr={prod.nameOr} /> : `Product #${pid}`}</div>
                       <div className="mt-1 flex items-center gap-1.5 flex-wrap">
                         <SizeChip volume={prod?.volume} name={prod?.name} pack={prod?.pack} />
                         {prod?.unitsPerCrate && (

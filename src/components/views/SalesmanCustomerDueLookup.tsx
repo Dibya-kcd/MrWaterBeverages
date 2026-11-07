@@ -25,6 +25,7 @@ import { money } from '../../utils/billing';
 import { useLedger } from '../../context/LedgerContext';
 import { isSpeechRecognitionSupported, startSpeechRecognition } from '../../utils/speechRecognition';
 import { billBalance } from '../../utils/salesReturns';
+import { OdiaName } from '../common/OdiaName';
 import { todayISO, toLocalISODate } from "../../utils/dateLocal";
 
 export interface CustomerDueRecord {
@@ -528,7 +529,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
                 <div className="min-w-0 flex-1 space-y-1.5">
                   <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="font-black text-slate-900 text-base sm:text-lg leading-tight">
-                      {cust.name}
+                      <OdiaName name={cust.name} kind="person" />
                     </h3>
 
                     {hasDue ? (
@@ -651,7 +652,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
 
             {/* Customer Details Pill */}
             <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
-              <div className="font-black text-base text-slate-900">{sharingCustomer.name}</div>
+              <div className="font-black text-base text-slate-900"><OdiaName name={sharingCustomer.name} kind="person" /></div>
               <div className="flex items-center justify-between text-xs font-bold text-slate-600">
                 <span>{sharingCustomer.phone || 'No phone registered'}</span>
                 <span className={sharingCustomer.balanceDue > 0 ? 'text-rose-700 font-black' : 'text-emerald-700 font-black'}>
@@ -797,7 +798,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
 
             {/* Customer Summary Pill */}
             <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
-              <div className="font-black text-sm text-slate-900">{payingCustomer.name}</div>
+              <div className="font-black text-sm text-slate-900"><OdiaName name={payingCustomer.name} kind="person" /></div>
               <div className="flex items-center justify-between text-xs font-bold">
                 <span className="text-slate-500">
                   {payingCustomer.phone ? `Phone: ${payingCustomer.phone}` : 'Retail Account'}

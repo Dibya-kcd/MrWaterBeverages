@@ -5,7 +5,6 @@ import { Package, Plus, Search, Trash2, X, Languages, Loader2 } from "lucide-rea
 import { useLedger } from "../../context/LedgerContext";
 import { useLanguage } from "../../i18n/LanguageContext";
 import { useAutoOdiaNameMap, nameFromMap } from "../../hooks/useAutoOdiaName";
-import { translateManyToOdia, getCachedOdiaName } from "../../utils/odiaAutoTranslate";
 import { CategoryKey, Product } from "../../types";
 import { CATS } from "../../constants/initialData";
 import { CASE_PACK_SIZES, gstRateFromHsn, money, resolveProductGstRate, resolveProductHsn, volumeFromName, detectPack } from "../../utils/billing";
@@ -70,47 +69,6 @@ export const ProductsView: React.FC = () => {
   const [form, setForm] = useState(emptyProductForm());
   const [formError, setFormError] = useState<string | null>(null);
   const [toDelete, setToDelete] = useState<Product | null>(null);
-  const [translatingAll, setTranslatingAll] = useState(false);
-  const [translateMsg, setTranslateMsg] = useState<string | null>(null);
-
-  const missingOdiaCount = useMemo(
-    () => (products || []).filter((p) => p.name?.trim() && !p.nameOr?.trim()).length,
-    [products]
-  );
-
-  const translateAllToOdia = useCallback(async () => {
-    const need = (products || []).filter((p) => p.name?.trim() && !p.nameOr?.trim());
-    if (need.length === 0) {
-      setTranslateMsg("All products already have an Odia name.");
-      setTimeout(() => setTranslateMsg(null), 3000);
-      return;
-    }
-    setTranslatingAll(true);
-    setTranslateMsg(`Translating 0 / ${need.length}…`);
-    try {
-      const names = need.map((p) => p.name.trim());
-      const map = await translateManyToOdia(names, 2);
-      let saved = 0;
-      for (const p of need) {
-        const odia = map.get(p.name.trim()) || getCachedOdiaName(p.name);
-        if (odia && odia.trim() && odia.trim().toLowerCase() !== p.name.trim().toLowerCase()) {
-          updateProductFields(p.id, { nameOr: odia.trim() });
-          saved += 1;
-          setTranslateMsg(`Saving ${saved} / ${need.length}…`);
-        }
-      }
-      setTranslateMsg(
-        saved > 0
-          ? `Done — saved Odia names for ${saved} product${saved === 1 ? "" : "s"}.`
-          : "Translation finished but no new Odia names could be saved. Check internet and try again."
-      );
-    } catch (e) {
-      setTranslateMsg("Translation failed. Check internet connection and try again.");
-    } finally {
-      setTranslatingAll(false);
-      setTimeout(() => setTranslateMsg(null), 5000);
-    }
-  }, [products, updateProductFields]);
 
   const filtered = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
@@ -526,7 +484,6 @@ export const ProductsView: React.FC = () => {
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
               {products.length} product{products.length === 1 ? "" : "s"}
-              {missingOdiaCount > 0 ? ` · ${missingOdiaCount} without Odia name` : ""}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -539,39 +496,6 @@ export const ProductsView: React.FC = () => {
               <Plus className="w-5 h-5" strokeWidth={2.5} />
             </button>
           </div>
-        </div>
-
-        {/* Bulk translate English product names → Odia (saved on each product as nameOr) */}
-        <div className="mt-2 mb-1 space-y-1.5">
-          <button
-            type="button"
-            onClick={translateAllToOdia}
-            disabled={translatingAll || missingOdiaCount === 0}
-            className={`w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border text-sm font-bold transition-colors cursor-pointer ${
-              translatingAll || missingOdiaCount === 0
-                ? "bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed"
-                : "bg-amber-50 border-amber-300 text-amber-950 hover:bg-amber-100"
-            }`}
-          >
-            {translatingAll ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Languages className="w-4 h-4" />
-            )}
-            <span>
-              {translatingAll
-                ? "Translating to Odia…"
-                : missingOdiaCount === 0
-                  ? "All products have Odia names"
-                  : `Translate all to Odia (${missingOdiaCount})`}
-            </span>
-          </button>
-          {translateMsg && (
-            <p className="text-xs font-semibold text-center text-slate-600 px-1">{translateMsg}</p>
-          )}
-          <p className="text-[11px] text-slate-500 text-center leading-snug">
-            Fills the Odia name for products that only have English. Needs internet the first time. You can edit any name later.
-          </p>
         </div>
 
         <div className="relative mt-3 mb-3">

@@ -78,3 +78,12 @@ When language is **Odia**, voice/mic buttons are **hidden** on:
 - Add customer modal (name & phone mic)
 
 English mode keeps voice search as before.
+
+
+## Update: salesman-only Odia, sound-alike names
+
+- **Only the salesman login can use Odia.** `LanguageProvider` now sits inside `LedgerProvider` and forces English for the owner/admin and the login screen. The language toggle lives only in the salesman view.
+- **Names are written in Odia, not translated.** `src/utils/odiaTransliterate.ts` writes any English product/customer name in Odia script (Purple → ପର୍ପଲ୍, Gold → ଗୋଲ୍ଡ, Sharma Stores → ଶର୍ମା ଷ୍ଟୋର୍ସ). Add brand words to the `WORDS` list there to fix a spelling. A saved `nameOr` always wins. The web translator (which gave "Bengal" for Purple) is removed.
+- **English + Odia are shown together** for products and customers (`<OdiaName />`) in sale, cart, van stock, bills, trips, load sheet, return and customer-due screens.
+- **Fixed screen text** (Sale, Payment, Trips, Stock, buttons, hints) is translated by `src/i18n/domTranslate.ts` using `src/i18n/odiaPhrases.ts`. To translate another text, add the exact English text and its Odia to `PHRASES_OR`.
+- The owner "Translate all to Odia" buttons were removed.

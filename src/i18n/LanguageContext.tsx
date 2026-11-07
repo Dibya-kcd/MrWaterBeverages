@@ -1,5 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { LanguageCode, translate, getAvailableLanguages } from './translations';
+import { useLedger } from '../context/LedgerContext';
+import { startOdiaDomTranslation } from './domTranslate';
 
 const STORAGE_KEY = 'mrwater_app_language';
 
@@ -23,8 +25,15 @@ interface LanguageContextValue {
 
 const LanguageContext = createContext<LanguageContextValue | null>(null);
 
+/**
+ * Odia is for the SALESMAN login only. The owner / admin screens (and the login screen) always stay in English,
+ * whatever language the salesman chose on this device. Must be rendered inside <LedgerProvider>.
+ */
 export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [language, setLanguageState] = useState<LanguageCode>(() => readStoredLanguage());
+  const { currentUser } = useLedger();
+  const isSalesmanUser = currentUser?.role === 'salesman';
+  const [chosen, setLanguageState] = useState<LanguageCode>(() => readStoredLanguage());
+  const language: LanguageCode = isSalesmanUser ? chosen : 'en';
 
   const setLanguage = useCallback((lang: LanguageCode) => {
     setLanguageState(lang);
@@ -33,19 +42,20 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     } catch {
       // ignore quota / private mode
     }
-    // Update <html lang="..."> for accessibility & fonts
-    if (typeof document !== 'undefined') {
-      document.documentElement.lang = lang === 'or' ? 'or' : 'en';
-      document.documentElement.dataset.lang = lang;
-    }
   }, []);
 
-  // Apply on first mount
+  // <html lang> + font follow the language actually shown
   useEffect(() => {
     if (typeof document !== 'undefined') {
       document.documentElement.lang = language === 'or' ? 'or' : 'en';
       document.documentElement.dataset.lang = language;
     }
+  }, [language]);
+
+  // Fixed English texts on the salesman screens are shown in Odia (owner screens never reach this).
+  useEffect(() => {
+    if (language !== 'or') return;
+    return startOdiaDomTranslation();
   }, [language]);
 
   const t = useCallback(

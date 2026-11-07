@@ -30,6 +30,7 @@ import {
 import { BillItem, PriceType, Product, Trip, ExistingCustomer } from '../../types';
 import { money } from '../../utils/billing';
 import { speakAssistiveText } from '../../utils/speechRecognition';
+import { getProductOdiaName, getCustomerOdiaName } from '../../utils/displayName';
 
 interface SalesmanCartModalProps {
   isOpen: boolean;
@@ -316,10 +317,12 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
             </button>
             <div className="min-w-0">
               <h2 className="text-[17px] font-extrabold leading-tight truncate">
-                {isBrowsingBeverages ? 'Add beverages' : 'Cart'}
+                {isBrowsingBeverages
+                  ? isOdia ? 'ପାନୀୟ ଯୋଡନ୍ତୁ (Add beverages)' : 'Add beverages'
+                  : isOdia ? 'କାର୍ଟ (Cart)' : 'Cart'}
               </h2>
               <p className={`text-[11.5px] font-semibold truncate ${lv ? 'text-black' : 'text-emerald-200'}`}>
-                {cart.items.length} {cart.items.length === 1 ? 'item' : 'items'} · {totalCases} cases · {activeTrip?.vehicle || 'Van Stock'}
+                {cart.items.length} {isOdia ? 'ଆଇଟମ୍' : (cart.items.length === 1 ? 'item' : 'items')} · {totalCases} {isOdia ? 'କେସ୍' : 'cases'} · {activeTrip?.vehicle || (isOdia ? 'ଭ୍ୟାନ୍ ଷ୍ଟକ୍' : 'Van Stock')}
               </p>
             </div>
           </div>
@@ -558,7 +561,14 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <div className="flex items-center gap-1.5 flex-wrap">
-                            <h4 className="font-black text-sm sm:text-base leading-snug">{prod.name}</h4>
+                            <h4 className="font-black text-sm sm:text-base leading-snug">
+                              <div>{prod.name}</div>
+                              {isOdia && (prod.nameOr || getProductOdiaName(prod.id, products)) && (
+                                <div className="text-xs font-bold text-sky-800 font-odia mt-0.5">
+                                  {prod.nameOr || getProductOdiaName(prod.id, products)}
+                                </div>
+                              )}
+                            </h4>
                             {(nameCounts.get(prod.name.trim().toLowerCase()) || 0) > 1 && (
                               <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
                                 ⚠️ Check Size/Pack
@@ -708,8 +718,15 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
                 )}
               </div>
+              {isOdia && (
+                <div className="text-xs font-bold text-sky-800 font-odia truncate mt-0.5">
+                  {selectedRetailer === 'Spot Cash / Walk-in Customer' || !selectedRetailer
+                    ? 'ସ୍ପଟ୍ କ୍ୟାଶ୍ / ୱାକ୍-ଇନ୍ ଗ୍ରାହକ'
+                    : getCustomerOdiaName(selectedRetailer, customers)}
+                </div>
+              )}
               <div className={`text-[11.5px] font-semibold truncate ${lv ? 'opacity-80' : 'text-slate-500'}`}>
-                {retailerPhone ? `${retailerPhone}${autoSendWhatsApp ? ' · bill sent on WhatsApp' : ''}` : 'No phone number'}
+                {retailerPhone ? `${retailerPhone}${autoSendWhatsApp ? ' · bill sent on WhatsApp' : ''}` : (isOdia ? 'ଫୋନ୍ ନମ୍ବର ନାହିଁ' : 'No phone number')}
               </div>
             </div>
             {selectedRetailer !== 'Spot Cash / Walk-in Customer' && (
@@ -782,8 +799,15 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   >
                     {/* Row 1: name, size, tier, line total */}
                     <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="font-extrabold text-[14.5px] leading-snug break-words">{item.productName}</div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-extrabold text-[14.5px] leading-snug break-words">
+                          <div>{item.productName}</div>
+                          {isOdia && (prod?.nameOr || getProductOdiaName(item.productId || item.productName, products)) && (
+                            <div className="text-xs font-bold text-sky-800 font-odia mt-0.5">
+                              {prod?.nameOr || getProductOdiaName(item.productId || item.productName, products)}
+                            </div>
+                          )}
+                        </div>
                         <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                           <SizeChip volume={prod?.volume} pack={prod?.pack} name={item.productName} />
                           <span className={`px-1.5 py-0.5 text-[10.5px] font-extrabold rounded-md ${item.priceType === 'Retail' ? 'bg-sky-100 text-sky-800' : 'bg-purple-100 text-purple-800'}`}>

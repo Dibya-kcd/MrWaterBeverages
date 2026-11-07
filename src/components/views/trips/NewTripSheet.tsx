@@ -1,5 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, ArrowLeft, CheckCircle2, Lock, Plus, Truck, X } from 'lucide-react';
+import { OdiaName } from '../../common/OdiaName';
+import {
+  AlertTriangle, ArrowLeft, CheckCircle2, Lock, Plus, Truck, X } from 'lucide-react';
 import { Bill, Product, Salesman, Warehouse } from '../../../types';
 import { todayISO, toLocalISODate } from '../../../utils/dateLocal';
 import {
@@ -533,7 +535,7 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
                   <div key={r.key} className="px-3 py-2.5 flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-[14px] font-bold text-slate-900 leading-snug break-words">
-                        {r.name}
+                        <OdiaName name={r.name} />
                       </div>
                       {r.note && (
                         <div

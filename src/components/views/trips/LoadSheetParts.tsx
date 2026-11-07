@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowLeft, Check, CheckCircle2, Lock, Minus, Plus, Searc
 import { Product, Warehouse } from '../../../types';
 import { SizeChip } from '../../common/SizeChip';
 import { sizeTheme } from '../../../utils/sizeColor';
+import { OdiaName } from '../../common/OdiaName';
 
 /**
  * Shared phone-first building blocks for every "load a van" screen (owner and salesman, new trip
@@ -375,7 +376,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
       <div key={p.id} className={`flex items-center justify-between gap-2 py-2 px-1.5 border-b border-black/5 ${n > 0 ? 'bg-emerald-50 rounded-xl' : ''}`}>
         <div className="min-w-0 flex-1">
           <div className="text-[13.5px] font-bold text-slate-900 leading-snug break-words">
-            {p.name} <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
+            <OdiaName name={p.name} nameOr={p.nameOr} /> <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
           </div>
           <div className={`text-[11.5px] ${over ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
             {stockLine(p)}
@@ -567,7 +568,7 @@ export const ReviewSheet: React.FC<{
         {rows.map((r) => (
           <div key={r.key} className="flex items-center justify-between gap-3 px-3 py-2.5" style={{ borderLeft: `6px solid ${sizeTheme(r.product?.volume, r.name).hex}`, borderRadius: 4 }}>
             <div className="min-w-0">
-              <div className="text-[13.5px] font-bold text-slate-900 leading-snug break-words">{r.name}</div>
+              <div className="text-[13.5px] font-bold text-slate-900 leading-snug break-words"><OdiaName name={r.name} /></div>
               {r.note && (
                 <div className={`text-[11.5px] ${r.noteTone === 'bad' ? 'text-rose-700 font-bold' : r.noteTone === 'changed' ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
                   {r.note}

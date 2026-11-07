@@ -1,4 +1,5 @@
 import { useLanguage } from '../../i18n/LanguageContext';
+import { OdiaName } from './OdiaName';
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Search,
@@ -534,7 +535,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
                             isSelected && highContrastMode ? 'text-black' : ''
                           }`}
                         >
-                          {c.name}
+                          <OdiaName name={c.name} kind="person" />
                         </span>
                         {isSelected && (
                           <span className="text-[11px] uppercase font-black px-2 py-0.5 rounded bg-black text-white">

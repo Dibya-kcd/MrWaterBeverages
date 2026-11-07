@@ -5,6 +5,7 @@ import { money } from '../../../utils/billing';
 import { useLedger } from '../../../context/LedgerContext';
 import { SizeChip } from '../../common/SizeChip';
 import { sizeStripe } from '../../../utils/sizeColor';
+import { OdiaName } from '../../common/OdiaName';
 
 export interface TripCardRow {
   productId: number;
@@ -190,7 +191,7 @@ export const TripListCard: React.FC<TripListCardProps> = ({
               return (
                 <li key={r.productId} className="px-3 py-2.5" style={sizeStripe(productOf(r.productId)?.volume, r.name)}>
                   <div className="text-[13px] font-semibold text-slate-900 leading-snug break-words">
-                    {r.name}{' '}
+                    <OdiaName name={r.name} />{' '}
                     <SizeChip volume={productOf(r.productId)?.volume} pack={productOf(r.productId)?.pack} name={r.name} />
                   </div>
                   <div className="mt-1 text-[11px] text-slate-500 flex flex-wrap gap-x-3">

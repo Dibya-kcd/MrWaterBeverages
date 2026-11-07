@@ -27,19 +27,44 @@ export interface BeatRoute {
 
 export const BEAT_ROUTES: BeatRoute[] = [
   {
-    id: 'beat_kuchinda_main',
-    name: 'Kuchinda Beat',
+    id: 'beat_kuchinda_town',
+    name: 'Kuchinda Town',
     hub: 'Kuchinda',
-    label: 'Kuchinda hub → Jamankira · Keseibahal · Kusumi · Laida · Kolabira · Subarnpali',
+    label: 'Kuchinda Town (Market & Town Centre)',
     active: true,
-    stops: [
-      { name: 'Jamankira', code: 'JMK' },
-      { name: 'Keseibahal', code: 'KSB' },
-      { name: 'Kusumi', code: 'KSM' },
-      { name: 'Laida', code: 'LDA' },
-      { name: 'Kolabira', code: 'KLB' },
-      { name: 'Subarnpali', code: 'SBP' },
-    ],
+    stops: [{ name: 'Kuchinda Market', code: 'KCH' }],
+  },
+  {
+    id: 'beat_keseibahal',
+    name: 'Keseibahal',
+    hub: 'Kuchinda',
+    label: 'Keseibahal Route',
+    active: true,
+    stops: [{ name: 'Keseibahal', code: 'KSB' }],
+  },
+  {
+    id: 'beat_jamankira',
+    name: 'Jamankira',
+    hub: 'Kuchinda',
+    label: 'Jamankira Route',
+    active: true,
+    stops: [{ name: 'Jamankira', code: 'JMK' }],
+  },
+  {
+    id: 'beat_laida',
+    name: 'Laida',
+    hub: 'Kuchinda',
+    label: 'Laida Route',
+    active: true,
+    stops: [{ name: 'Laida', code: 'LDA' }],
+  },
+  {
+    id: 'beat_kusumi',
+    name: 'Kusumi',
+    hub: 'Kuchinda',
+    label: 'Kusumi Route',
+    active: true,
+    stops: [{ name: 'Kusumi', code: 'KSM' }],
   },
 ];
 

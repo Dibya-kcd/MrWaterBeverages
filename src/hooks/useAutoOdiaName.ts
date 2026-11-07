@@ -1,105 +1,43 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useLanguage } from '../i18n/LanguageContext';
-import {
-  getCachedOdiaName,
-  resolveDisplayNameSync,
-  translateManyToOdia,
-  translateToOdia,
-} from '../utils/odiaAutoTranslate';
+import { resolveDisplayNameSync } from '../utils/odiaAutoTranslate';
+import type { NameKind } from '../utils/odiaTransliterate';
 
 type Named = { name?: string; nameOr?: string } | null | undefined;
 
-/**
- * Returns the name to show for one product/customer.
- * When language is Odia: nameOr → cached translation → live translate → English.
- */
-export function useAutoOdiaName(entity: Named): string {
+/** Name to show for one product / customer (Odia only in the salesman view when Odia is selected). */
+export function useAutoOdiaName(entity: Named, kind: NameKind = 'product'): string {
   const { language } = useLanguage();
-  const english = (entity?.name || '').trim();
-  const manual = (entity?.nameOr || '').trim();
-
-  const initial = resolveDisplayNameSync(entity, language);
-  const [display, setDisplay] = useState(initial);
-
-  useEffect(() => {
-    setDisplay(resolveDisplayNameSync(entity, language));
-    if (language !== 'or' || !english || manual) return;
-
-    let cancelled = false;
-    const cached = getCachedOdiaName(english);
-    if (cached) {
-      setDisplay(cached);
-      return;
-    }
-
-    translateToOdia(english).then((odia) => {
-      if (!cancelled && odia) setDisplay(odia);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [language, english, manual]);
-
-  return display;
+  return resolveDisplayNameSync(entity, language, kind);
 }
 
-/**
- * For lists: pass all entities, get a stable Map of englishName → displayName.
- * Triggers background translation for any missing Odia names when language is Odia.
- */
+/** englishName → display name for a whole list (products: kind "product", customers: kind "person"). */
 export function useAutoOdiaNameMap(
-  entities: Array<{ name?: string; nameOr?: string }>
+  entities: Array<{ name?: string; nameOr?: string }>,
+  kind: NameKind = 'product'
 ): Map<string, string> {
   const { language } = useLanguage();
-  const signature = useMemo(
-    () =>
-      entities
-        .map((e) => `${(e.name || '').trim()}|${(e.nameOr || '').trim()}`)
-        .join('\n'),
-    [entities]
-  );
-
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    if (language !== 'or') return;
-
-    const needTranslate = entities
-      .map((e) => (e.name || '').trim())
-      .filter((n) => n && !entities.find((e) => e.name === n && e.nameOr?.trim()) && !getCachedOdiaName(n));
-
-    if (needTranslate.length === 0) return;
-
-    let cancelled = false;
-    translateManyToOdia(needTranslate, 3).then(() => {
-      if (!cancelled) setTick((t) => t + 1);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [language, signature]);
-
   return useMemo(() => {
     const map = new Map<string, string>();
+    if (language !== 'or') return map;
     entities.forEach((e) => {
       const en = (e.name || '').trim();
-      if (!en) return;
-      map.set(en, resolveDisplayNameSync(e, language));
+      if (en) map.set(en, resolveDisplayNameSync(e, language, kind));
     });
     return map;
-    // tick forces recompute after translations land
-  }, [entities, language, signature, tick]);
+  }, [entities, language, kind]);
 }
 
-/** Helper for map lookup with fallback */
+/** Map lookup with fallback to the English name. */
 export function nameFromMap(
   map: Map<string, string>,
   entity: { name?: string; nameOr?: string } | null | undefined,
-  language: 'en' | 'or'
+  language: 'en' | 'or',
+  kind: NameKind = 'product'
 ): string {
   if (!entity) return '';
   const en = (entity.name || '').trim();
   if (language !== 'or') return en;
   if (entity.nameOr?.trim()) return entity.nameOr.trim();
-  return map.get(en) || en;
+  return map.get(en) || resolveDisplayNameSync(entity, language, kind) || en;
 }

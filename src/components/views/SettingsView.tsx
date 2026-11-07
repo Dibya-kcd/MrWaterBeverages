@@ -28,7 +28,6 @@ import {
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { useLanguage } from '../../i18n/LanguageContext';
-import type { LanguageCode } from '../../i18n/translations';
 import { BeatsSettings } from './BeatsSettings';
 import { FontSize, GstMode, PriceType, StickyTotalPosition, Salesman } from '../../types';
 import { validateOrgProfile, summarizeErrors, normalizeGstin } from '../../utils/validation';
@@ -92,7 +91,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
     resetToDefault,
   } = useLedger();
 
-  const { language, setLanguage, t } = useLanguage();
+  const { t } = useLanguage();
 
   // Active section filter for navigation (default: business)
   const [activeSection, setActiveSection] = useState<SettingsSection>(
@@ -1401,36 +1400,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   />
                 </button>
               </div>
-
-              {/* Language Switcher */}
-              <div className="pt-3 border-t border-neutral-100">
-                <div className="mb-2.5">
-                  <span className="text-sm font-semibold text-neutral-800 block">{t('settings.display.language')}</span>
-                  <span className="text-xs text-neutral-500">{t('settings.display.languageDesc')}</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2.5">
-                  {([
-                    { id: 'en' as LanguageCode, title: t('settings.display.languageEn'), desc: 'English' },
-                    { id: 'or' as LanguageCode, title: t('settings.display.languageOr'), desc: 'ଓଡ଼ିଆ' },
-                  ]).map((opt) => (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => setLanguage(opt.id)}
-                      className={`p-3.5 border rounded-xl text-left transition-all cursor-pointer ${
-                        language === opt.id
-                          ? 'border-[#064E3B] bg-emerald-50/50 text-[#064E3B] ring-1 ring-[#064E3B]'
-                          : 'border-neutral-200 hover:border-neutral-300 text-neutral-700 bg-white'
-                      }`}
-                    >
-                      <div className="text-sm font-bold">{opt.title}</div>
-                      <div className="text-xs text-neutral-500 mt-0.5">{opt.desc}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-            </div>
+</div>
           </div>
         )}
 
