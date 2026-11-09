@@ -3,7 +3,6 @@ import { notify } from "../../utils/toast";
 import { SizeChip } from "../common/SizeChip";
 import { sizeTheme, packTheme } from "../../utils/sizeColor";
 import {
-  ArrowLeft,
   Calendar,
   Check,
   CheckCircle2,
@@ -14,6 +13,7 @@ import {
   Minus,
   Package,
   Plus,
+  RotateCcw,
   Search,
   ShoppingCart,
   Sparkles,
@@ -25,7 +25,14 @@ import {
 import { useLedger } from '../../context/LedgerContext';
 import { normCustName } from '../../context/ledgerHelpers';
 import { Bill, BillItem, Customer, PaymentMode, Product, Promotion, PriceType } from '../../types';
-import { applyCartSchemes, computeLine, money, schemeLabel } from '../../utils/billing';
+import { useBeats } from '../../hooks/useBeats';
+import { NewTripSheet, NewTripPayload } from './trips/NewTripSheet';
+import { useCreateTrip } from './trips/useCreateTrip';
+import { beatOfCustomer } from '../../utils/beats';
+import { useLanguage } from '../../i18n/LanguageContext';
+import { ActionBar } from '../ui/HomeKit';
+import { applyCartSchemes, computeLine, money, schemeLabel, volumeFromName } from '../../utils/billing';
+import { CATS } from '../../constants/initialData';
 import { SchemeSelectorModal } from '../billing/SchemeSelectorModal';
 import { CustomerPredictiveSearch } from '../billing/CustomerPredictiveSearch';
 import { todayISO } from "../../utils/dateLocal";
@@ -49,16 +56,19 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   onOpenInvoiceModal,
   onOpenHistory,
 }) => {
+  const { t } = useLanguage();
   const {
     products,
     bills,
     warehouses,
     defaultWarehouse,
     trips,
+    salesmen,
     addTrip,
     getVehicleStock,
     customers,
     existingCustomers,
+    getCustomerLedger,
     addCustomer,
     finalizeBill,
     warehouseStock,
@@ -170,14 +180,16 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
 
   // Van Trip modal state (for starting a new delivery van dispatch)
   const [showNewTripModal, setShowNewTripModal] = useState<boolean>(false);
-  const [newTripVehicle, setNewTripVehicle] = useState('Delivery Van #1');
-  const [newTripSalesman, setNewTripSalesman] = useState('Van Salesman');
-  const [newTripWhId, setNewTripWhId] = useState<string>(defaultWarehouseId);
 
   // Search inside "Select Beverages & Crates" modal
   const [beverageSearch, setBeverageSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedPackFilter, setSelectedPackFilter] = useState<'all' | 'can' | 'pet' | 'glass' | 'tetra'>('all');
+  // Size chips (All / each size you actually stock / Soda): view-only filter, nothing is saved.
+  // 'all' | 'soda' | the size in ml as text, e.g. '500'
+  const [selectedSize, setSelectedSize] = useState<string>('all');
+  const { beats, activeBeats } = useBeats();
+  const createTrip = useCreateTrip();
 
   const nameCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -190,6 +202,29 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
 
   // Success message after save
   const [savedBill, setSavedBill] = useState<Bill | null>(null);
+
+  // Cancel & Reset flow: completely clears all cart items, discounts, customer selections and closes modals
+  const handleResetSale = useCallback(() => {
+    setSelectedItems({});
+    setItemOrder([]);
+    setCustomRates({});
+    setRateInputDrafts({});
+    setCustomSchemes({});
+    setSelectedCustomerId('');
+    setCustomerName('');
+    setCustomerPhone('');
+    setCustomerGstin('');
+    setPaymentAmount('');
+    setCart({
+      retailer: '',
+      phone: '',
+      date: todayISO(),
+      items: [],
+      warehouseId: defaultWarehouseId,
+    });
+    setShowProductSelector(false);
+    setShowCartReview(false);
+  }, [defaultWarehouseId, setCart]);
 
   // All available customers combined
   const customerOptions = useMemo(() => {
@@ -295,22 +330,15 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     checkAndPromptProducts(customerName, val);
   };
 
-  // Quick dispatch new delivery van trip
-  const handleSaveNewTrip = () => {
-    if (!newTripVehicle.trim()) return;
-    const createdTrip = addTrip(
-      newTripVehicle.trim(),
-      saleDate,
-      {},
-      newTripWhId || defaultWarehouseId,
-      [],
-      newTripSalesman.trim() || undefined
-    );
+  // Load a new van with the same load-sheet screen the Trips page uses, then sell from it
+  const handleCreateTrip = (payload: NewTripPayload): string | null => {
+    const res = createTrip.create(payload);
+    if (res.ok === false) return res.error;
     setShowNewTripModal(false);
-    setStockSource(`trip_${createdTrip.id}`);
-    setNewTripVehicle(`Delivery Van #${trips.length + 2}`);
-    setNewTripSalesman('Van Salesman');
-    checkAndPromptProducts(customerName, `trip_${createdTrip.id}`);
+    setStockSource(`trip_${res.trip.id}`);
+    notify(`${payload.vehicle} loaded with ${res.total} cs${res.godowns > 1 ? ` from ${res.godowns} godowns` : ''}.`);
+    checkAndPromptProducts(customerName, `trip_${res.trip.id}`);
+    return null;
   };
 
   // Quick save new customer
@@ -373,9 +401,39 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     return products.filter((p) => getProductStock(p.id) > 0).length;
   }, [products, getProductStock]);
 
+  // Same size the product card shows: the saved volume, else the size written in the name.
+  const sizeOf = (p: { volume?: number; name?: string }): number => {
+    const v = Number(p.volume);
+    return v > 0 ? v : (p.name ? volumeFromName(p.name) || 0 : 0);
+  };
+  const isSodaProduct = (p: { category?: string; name?: string }): boolean =>
+    p.category === 'vibe' || /soda|cola|carbonat/i.test(`${p.category || ''} ${p.name || ''}`);
+
+  // One chip per size that really exists in the catalogue, so every chip matches what the cards show.
+  const sizeOptions = useMemo(() => {
+    const set = new Set<number>();
+    products.forEach((p) => {
+      const v = sizeOf(p);
+      if (v > 0) set.add(v);
+    });
+    return Array.from(set).sort((a, b) => a - b).map((v) => ({ id: String(v), label: sizeTheme(v).label }));
+  }, [products]);
+
+  // If the chosen size disappears (stock edited, catalogue changed), go back to All.
+  useEffect(() => {
+    if (selectedSize !== 'all' && selectedSize !== 'soda' && !sizeOptions.some((o) => o.id === selectedSize)) {
+      setSelectedSize('all');
+    }
+  }, [sizeOptions, selectedSize]);
+
   // Filtered products inside "Select Beverages & Crates"
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
+      if (selectedSize === 'soda') {
+        if (!isSodaProduct(p)) return false;
+      } else if (selectedSize !== 'all') {
+        if (String(sizeOf(p)) !== selectedSize) return false;
+      }
       if (selectedPackFilter !== 'all') {
         const pTheme = packTheme(p.pack, p.name);
         const pLabel = pTheme.label.toLowerCase();
@@ -409,7 +467,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
       }
       return true;
     });
-  }, [products, beverageSearch, selectedCategory, selectedPackFilter, inStockOnly, getProductStock, selectedItems]);
+  }, [products, beverageSearch, selectedCategory, selectedPackFilter, selectedSize, inStockOnly, getProductStock, selectedItems]);
 
   // Set custom price per case
   const handleSetProductRate = (productId: number, rate: number) => {
@@ -627,49 +685,62 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   }, [stockSource, trips, warehouses]);
 
   return (
-    <div className="w-full max-w-none lg:max-w-4xl mx-auto space-y-4 pb-16 min-w-0 overflow-x-hidden">
+    <div className="hh-view w-full space-y-4 pb-16 min-w-0 overflow-x-hidden">
       {/* Top Header with Responsive Floating Cart Icon */}
       <div className="flex items-center justify-between gap-3 sticky top-0 bg-[var(--canvas)] z-30 py-2.5 -my-2 border-b border-slate-200/60">
-        <button
-          type="button"
-          onClick={onBack}
-          className="flex items-center gap-2.5 text-left group cursor-pointer min-w-0"
-        >
-          <ArrowLeft className="w-5 h-5 text-slate-700 group-hover:text-slate-900 group-hover:-translate-x-0.5 transition-transform shrink-0" />
+        <div className="flex items-center gap-2.5 min-w-0">
           <div className="min-w-0">
-            <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 leading-tight">
-              New sale
-            </h1>
+            <h2 className="text-base sm:text-lg font-bold tracking-tight text-slate-900 leading-tight">
+              Order & Invoice Details
+            </h2>
+            <p className="text-[11px] text-slate-500 truncate hidden sm:block">
+              Select customer, godown stock, and water products to generate bill
+            </p>
           </div>
-        </button>
+        </div>
 
-        {/* Floating Cart Button with Live Number & Subtotal */}
-        <button
-          type="button"
-          id="btn-floating-cart"
-          onClick={() => setShowCartReview(true)}
-          className={`inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-full font-bold text-xs sm:text-sm shadow-md transition-all cursor-pointer shrink-0 ${
-            totalCartQty > 0
-              ? 'bg-[#0d4a3a] text-white hover:bg-[#0a382c] shadow-emerald-950/20 active:scale-95'
-              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-          }`}
-          title="Review cart and finalize bill"
-        >
-          <div className="relative">
-            <ShoppingCart className="w-4 h-4 sm:w-5 sm:h-5" />
+        <div className="flex items-center gap-2 shrink-0">
+          {(selectedCustomerId || totalCartQty > 0) && (
+            <button
+              type="button"
+              id="btn-reset-new-customer"
+              onClick={handleResetSale}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold transition-all cursor-pointer shadow-2xs"
+              title="Reset order & select a new customer"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Reset</span>
+            </button>
+          )}
+
+          {/* Floating Cart Button with Live Number & Subtotal */}
+          <button
+            type="button"
+            id="btn-floating-cart"
+            onClick={() => setShowCartReview(true)}
+            className={`inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-full font-bold text-xs sm:text-sm shadow-md transition-all cursor-pointer shrink-0 ${
+              totalCartQty > 0
+                ? 'bg-[var(--primary)] text-white hover:bg-[var(--primary)] shadow-emerald-950/20 active:scale-95'
+                : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+            }`}
+            title="Review cart and finalize bill"
+          >
+            <div className="relative">
+              <ShoppingCart className="w-4 h-4 sm:w-5 sm:h-5" />
+              {totalCartQty > 0 && (
+                <span className="absolute -top-2 -right-2 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-black flex items-center justify-center border border-white">
+                  {totalCartQty}
+                </span>
+              )}
+            </div>
+            <span className="hidden xs:inline">Review Cart</span>
             {totalCartQty > 0 && (
-              <span className="absolute -top-2 -right-2 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-white text-[10px] font-black flex items-center justify-center border border-white">
-                {totalCartQty}
+              <span className="font-mono text-emerald-200 font-bold ml-0.5">
+                ₹{money(grandTotal)}
               </span>
             )}
-          </div>
-          <span className="hidden xs:inline">Review Cart</span>
-          {totalCartQty > 0 && (
-            <span className="font-mono text-emerald-200 font-bold ml-0.5">
-              ₹{money(grandTotal)}
-            </span>
-          )}
-        </button>
+          </button>
+        </div>
       </div>
 
       {/* Main Configuration Card — compliant with Image 2 */}
@@ -814,11 +885,6 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
             <span>Select Beverages & Crates</span>
           </span>
           <div className="flex items-center gap-2">
-            {totalCartQty > 0 && (
-              <span className="text-xs font-bold px-3 py-1 rounded-full bg-emerald-700 text-white shadow-xs">
-                {Object.keys(selectedItems).length} beverage(s) · {totalCartQty} cs
-              </span>
-            )}
             <ChevronDown className="w-4 h-4 text-slate-400 group-hover:text-emerald-700 shrink-0" />
           </div>
         </button>
@@ -832,7 +898,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
           onClick={() => setShowProductSelector(false)}
         >
           <div
-            className="w-full h-full sm:h-auto sm:max-h-[92vh] sm:max-w-3xl md:max-w-4xl bg-white sm:border border-slate-200 rounded-none sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150"
+            className="w-full h-full sm:h-auto sm:max-h-[92vh] sm:max-w-3xl md:max-w-4xl lg:max-w-6xl bg-white sm:border border-slate-200 rounded-none sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Header */}
@@ -863,8 +929,39 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
               </button>
             </div>
 
+            {/* Filters + beverage list share one body, so on a short screen they scroll together and the list is never squeezed out */}
+            <div className="hh-picker__body">
             {/* Search & Category Filter Bar */}
-            <div className="p-3 sm:p-3.5 border-b border-slate-200 space-y-2 bg-white shrink-0">
+            <div className="hh-picker__filters p-3 sm:p-3.5 border-b border-slate-200 space-y-2 bg-white shrink-0">
+              {customerName.trim() && (() => {
+                const cust = (customers || []).find((c) => c.name === customerName);
+                const beatName = (cust && (beatOfCustomer(cust, beats)?.name || cust.city)) || '';
+                let due = 0;
+                try { due = Math.max(0, getCustomerLedger(customerName, customerPhone).rawBalance); } catch { /* ignore */ }
+                return (
+                  <div className="hh-partycard">
+                    <span className="hh-partycard__main">
+                      <span className="hh-partycard__name">{customerName}</span>
+                      <span className="hh-partycard__sub">
+                        {beatName && <>{t('sell.beat')}: {beatName} · </>}
+                        <span className={due > 0 ? 'hh-partycard__due' : ''}>{t('sell.currentDue')}: ₹{money(due)}</span>
+                      </span>
+                    </span>
+                    <button type="button" className="hh-linkbtn hh-linkbtn--primary" onClick={() => setShowProductSelector(false)}>{t('sell.change')}</button>
+                  </div>
+                );
+              })()}
+              <div className="hh-chips" role="group" aria-label={t('sell.sizeFilter')}>
+                {[
+                  { id: 'all', label: t('sell.sizeAll') },
+                  ...sizeOptions,
+                  { id: 'soda', label: t('sell.sizeSoda') },
+                ].map(({ id, label }) => (
+                  <button key={id} type="button" className="hh-chip" data-active={selectedSize === id ? 'true' : 'false'} aria-pressed={selectedSize === id} onClick={() => setSelectedSize(id)}>
+                    {label}
+                  </button>
+                ))}
+              </div>
               <div className="relative">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
@@ -895,11 +992,11 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                       onClick={() => setSelectedCategory(cat)}
                       className={`px-3 py-1 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer transition-colors ${
                         selectedCategory === cat
-                          ? 'bg-[#0d4a3a] text-white shadow-2xs'
+                          ? 'bg-[var(--primary)] text-white shadow-2xs'
                           : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                       }`}
                     >
-                      {cat === 'all' ? 'All Beverages' : cat}
+                      {cat === 'all' ? 'All Beverages' : (CATS as Record<string, { name: string }>)[cat]?.name || cat}
                     </button>
                   ))}
                 </div>
@@ -982,7 +1079,8 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
             </div>
 
             {/* Beverage Cards Grid (Smart Quantity Card, Custom Rate & Scheme Selector) */}
-            <div className="flex-1 overflow-y-auto p-3 sm:p-4 bg-slate-50/60">
+            <div className="hh-picker__lists flex-1 min-h-0 flex">
+            <div className="hh-picker__list flex-1 min-w-0 overflow-y-auto p-3 sm:p-4 bg-slate-50/60">
               {filteredProducts.length === 0 ? (
                 <div className="text-center py-16 px-4 text-slate-500 text-sm space-y-3">
                   <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto text-slate-400">
@@ -1004,7 +1102,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                     <button
                       type="button"
                       onClick={() => setInStockOnly(false)}
-                      className="px-3.5 py-1.5 rounded-xl bg-[#0d4a3a] text-white text-xs font-bold hover:bg-[#0a382c] cursor-pointer shadow-xs"
+                      className="px-3.5 py-1.5 rounded-xl bg-[var(--primary)] text-white text-xs font-bold hover:bg-[var(--primary)] cursor-pointer shadow-xs"
                     >
                       Show All Catalog ({products.length} products)
                     </button>
@@ -1276,7 +1374,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                                   e.stopPropagation();
                                   setItemQty(prod.id, 1);
                                 }}
-                                className="flex-1 min-h-[42px] px-3.5 py-2 rounded-xl bg-[#0d4a3a] hover:bg-[#0a382c] active:scale-[0.98] text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer"
+                                className="flex-1 min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary)] active:scale-[0.98] text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer"
                               >
                                 <Plus className="w-4 h-4" />
                                 <span>Add Case</span>
@@ -1310,12 +1408,12 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                             <div className="space-y-2">
                               <div className="flex items-center justify-between gap-1.5 flex-wrap sm:flex-nowrap">
                                 {/* Stepper with direct quantity input */}
-                                <div className="flex items-center gap-1 bg-white p-1 rounded-xl border-2 border-emerald-600 shadow-2xs">
+                                <div className="hh-stepper">
                                   <button
                                     type="button"
                                     onClick={() => setItemQty(prod.id, inCartQty - 1)}
-                                    className="w-8 h-8 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 active:scale-90 flex items-center justify-center cursor-pointer transition-colors"
-                                    title="Decrease quantity"
+                                    className="hh-stepper__btn"
+                                    aria-label="Decrease quantity"
                                   >
                                     <Minus className="w-4 h-4" />
                                   </button>
@@ -1327,14 +1425,14 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                                       const val = parseInt(e.target.value, 10);
                                       setItemQty(prod.id, isNaN(val) ? 0 : Math.max(0, val));
                                     }}
-                                    className="w-12 h-8 text-center font-black text-sm text-slate-900 bg-slate-50 rounded-md border border-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-700 tabular-nums"
+                                    className="hh-stepper__input"
                                     title="Type custom quantity"
                                   />
                                   <button
                                     type="button"
                                     onClick={() => setItemQty(prod.id, inCartQty + 1)}
-                                    className="w-8 h-8 rounded-lg bg-[#0d4a3a] text-white hover:bg-[#0a382c] active:scale-90 flex items-center justify-center shadow-2xs cursor-pointer transition-transform"
-                                    title="Increase quantity"
+                                    className="hh-stepper__btn hh-stepper__btn--plus"
+                                    aria-label="Increase quantity"
                                   >
                                     <Plus className="w-4 h-4" />
                                   </button>
@@ -1388,36 +1486,55 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                 </div>
               )}
             </div>
-
-            {/* Footer with Subtotal & Done Button */}
-            <div className="p-3.5 sm:p-4 bg-white border-t border-slate-200 flex items-center justify-between gap-3 shrink-0 shadow-lg">
-              <div>
-                <span className="text-xs text-slate-500 font-semibold block">Total selection ({totalCartQty} crates)</span>
-                <span className="text-base sm:text-lg font-black text-slate-900 font-mono">
-                  ₹{money(grandTotal)}
-                </span>
+            {/* Live bill panel (desktop): what is on the bill right now */}
+            <aside className="hh-cartpane" aria-label={t('sell.yourBill')}>
+              <h3 className="hh-card__title">{t('sell.yourBill')}</h3>
+              {lineItems.length === 0 ? (
+                <p className="hh-empty">{t('sell.emptyBill')}</p>
+              ) : (
+                <ul className="hh-cartpane__list">
+                  {lineItems.map((it) => (
+                    <li key={String(it.key ?? it.productId)} className="hh-cartpane__row">
+                      <span className="hh-cartpane__name">{it.productName}</span>
+                      <span className="hh-cartpane__qty">× {it.qty}</span>
+                      <span className="hh-cartpane__amt">₹{money(it.amount)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="hh-cartpane__total">
+                <span className="hh-label">{t('sell.total')}</span>
+                <span className="hh-actionbar__total">₹{money(grandTotal)}</span>
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowProductSelector(false)}
-                  className="px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-slate-600 hover:bg-slate-100 border border-slate-200 cursor-pointer"
-                >
-                  Done
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowProductSelector(false);
-                    setShowCartReview(true);
-                  }}
-                  className="px-4 sm:px-5 py-2.5 rounded-xl bg-[#0d4a3a] hover:bg-[#0a382c] active:scale-[0.98] text-white text-xs sm:text-sm font-bold shadow-xs cursor-pointer flex items-center gap-1.5 transition-transform"
-                >
-                  <ShoppingCart className="w-4 h-4" />
-                  <span>Review Cart ({totalCartQty})</span>
-                </button>
-              </div>
+            </aside>
             </div>
+            </div>
+
+            {/* Footer: item count, total, GST note, free-case badge, Cancel + Review & Finalise (never hidden) */}
+            <ActionBar
+              flow
+              cancelLabel={t('sell.cancel')}
+              onCancel={() => {
+                handleResetSale();
+              }}
+              primaryLabel={t('sell.review')}
+              onPrimary={() => {
+                setShowProductSelector(false);
+                setShowCartReview(true);
+              }}
+              primaryDisabled={totalCartQty === 0}
+            >
+              <div className="hh-actionbar__summary">
+                <div>
+                  <p className="hh-label">{t('sell.itemsCount', { n: totalCartQty })}</p>
+                  <p className="hh-actionbar__total">₹{money(grandTotal)}</p>
+                </div>
+                <div className="hh-actionbar__badges">
+                  {totalTax > 0 && <span className="hh-actionbar__gst">{t('sell.gstIncluded')}</span>}
+                  {totalFreeQty > 0 && <span className="hh-pill hh-pill--received">{t('sell.freeCases', { n: totalFreeQty })}</span>}
+                </div>
+              </div>
+            </ActionBar>
           </div>
         </div>
       )}
@@ -1716,7 +1833,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                   id="btn-finalize-save-bill"
                   onClick={handleSaveBill}
                   disabled={lineItems.length === 0}
-                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[#0d4a3a] hover:bg-[#0a382c] active:scale-95 text-white text-sm font-bold shadow-md transition-all cursor-pointer disabled:opacity-50"
+                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary)] active:scale-95 text-white text-sm font-bold shadow-md transition-all cursor-pointer disabled:opacity-50"
                 >
                   <Check className="w-4 h-4" />
                   <span>Finalize & Save Bill (₹{money(grandTotal)})</span>
@@ -1816,7 +1933,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                 type="button"
                 onClick={handleSaveNewCustomer}
                 disabled={!newCustName.trim()}
-                className="px-5 py-2 rounded-xl bg-[#0d4a3a] text-white text-xs font-semibold hover:bg-[#0a3d30] disabled:opacity-50"
+                className="px-5 py-2 rounded-xl bg-[var(--primary)] text-white text-xs font-semibold hover:bg-[var(--primary-hover)] disabled:opacity-50"
               >
                 Save & Select Customer
               </button>
@@ -1825,101 +1942,25 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
         </div>
       )}
 
-      {/* MODAL: Dispatch / Add New Delivery Van Trip */}
+      {/* New van trip: the full load-sheet screen (products + quantities), so the van has stock to sell */}
       {showNewTripModal && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in"
-          onClick={() => setShowNewTripModal(false)}
-        >
-          <div
-            className="w-full max-w-md bg-white border border-slate-200 rounded-2xl shadow-xl p-5 space-y-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center">
-                  <Truck className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-slate-900 text-base">New Van Trip Dispatch</h3>
-                  <p className="text-xs text-slate-500">Enable selling directly from delivery vehicle stock</p>
-                </div>
-              </div>
-              <button aria-label="Close"
-                type="button"
-                onClick={() => setShowNewTripModal(false)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">
-                  Vehicle / Van Name or Number *
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Delivery Van #1 (MH-12-AB-1234)"
-                  value={newTripVehicle}
-                  onChange={(e) => setNewTripVehicle(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-700/20"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">
-                  Salesman / Driver Name
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Ramesh Kumar"
-                  value={newTripSalesman}
-                  onChange={(e) => setNewTripSalesman(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-700/20"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">
-                  Dispatch From Godown
-                </label>
-                <select
-                  value={newTripWhId}
-                  onChange={(e) => setNewTripWhId(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm bg-white focus:outline-none"
-                >
-                  {warehouses.map((w, idx) => (
-                    <option key={w.id || `wh_opt_${idx}`} value={w.id}>
-                      {w.name} ({w.code || 'Godown'})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setShowNewTripModal(false)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveNewTrip}
-                disabled={!newTripVehicle.trim()}
-                className="px-5 py-2 rounded-xl bg-[#0d4a3a] text-white text-xs font-semibold hover:bg-[#0a3d30] disabled:opacity-50 cursor-pointer shadow-xs"
-              >
-                Dispatch & Select Van
-              </button>
-            </div>
-          </div>
-        </div>
+        <NewTripSheet
+          products={products}
+          warehouses={warehouses}
+          salesmen={salesmen}
+          vehicles={Array.from(new Set(trips.map((t) => (t.vehicle || '').trim()).filter(Boolean))).sort((x, y) => x.localeCompare(y))}
+          routes={activeBeats.map((b) => b.name)}
+          defaultWarehouseId={defaultWarehouseId}
+          warehouseStock={warehouseStock}
+          attachableBills={createTrip.attachable}
+          lockedSalesman={
+            currentUser && typeof currentUser === 'object' && 'role' in currentUser && currentUser.role === 'salesman'
+              ? { id: String((currentUser as any).id), name: String((currentUser as any).name || 'Salesman') }
+              : undefined
+          }
+          onSubmit={handleCreateTrip}
+          onClose={() => setShowNewTripModal(false)}
+        />
       )}
     </div>
   );

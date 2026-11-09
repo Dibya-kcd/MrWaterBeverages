@@ -634,7 +634,7 @@ export const CustomerPredictiveSearch: React.FC<CustomerPredictiveSearchProps> =
                 <button
                   type="button"
                   onClick={handleCreateNew}
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0d4a3a] text-white text-xs font-semibold hover:bg-[#0a382c] shadow-xs cursor-pointer transition-all"
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-[var(--primary)] text-white text-xs font-semibold hover:bg-[var(--primary)] shadow-xs cursor-pointer transition-all"
                 >
                   <UserPlus className="w-3.5 h-3.5" />
                   <span>Create New Customer</span>
@@ -815,7 +815,7 @@ export const CustomerPredictiveSearch: React.FC<CustomerPredictiveSearchProps> =
                   <button
                     type="button"
                     onClick={handleCreateNew}
-                    className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-[#0d4a3a] text-white text-sm font-bold shadow-md cursor-pointer"
+                    className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-[var(--primary)] text-white text-sm font-bold shadow-md cursor-pointer"
                   >
                     <UserPlus className="w-4 h-4" />
                     <span>Create New Customer</span>

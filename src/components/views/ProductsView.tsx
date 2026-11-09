@@ -181,8 +181,8 @@ export const ProductsView: React.FC = () => {
   /* ─── New / Edit product form ─── */
   if (formOpen) {
     return (
-      <div className="fixed inset-0 z-50 bg-[#f6f4ef] flex flex-col">
-        <div className="sticky top-0 z-10 bg-[#f6f4ef] border-b border-black/5 px-4 sm:px-6 py-3 flex items-center justify-between max-w-none lg:max-w-2xl mx-auto w-full">
+      <div className="fixed inset-0 z-50 bg-[var(--bg)] flex flex-col">
+        <div className="sticky top-0 z-10 bg-[var(--bg)] border-b border-black/5 px-4 sm:px-6 py-3 flex items-center justify-between max-w-none lg:max-w-3xl mx-auto w-full">
           <h1 className="text-lg font-bold text-slate-900">
             {editingId != null ? "Edit product" : "New product"}
           </h1>
@@ -196,7 +196,7 @@ export const ProductsView: React.FC = () => {
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto overscroll-contain px-4 sm:px-6 py-4 pb-28 max-w-none lg:max-w-2xl mx-auto w-full space-y-4">
+        <div className="flex-1 overflow-y-auto overscroll-contain px-4 sm:px-6 py-4 pb-28 max-w-none lg:max-w-3xl mx-auto w-full space-y-4">
           {formError && (
             <div className="text-sm font-medium text-rose-700 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2">
               {formError}
@@ -428,11 +428,11 @@ export const ProductsView: React.FC = () => {
           </div>
         </div>
 
-        <div className="sticky bottom-0 bg-[#f6f4ef] border-t border-black/5 px-4 sm:px-6 py-3">
+        <div className="sticky bottom-0 bg-[var(--bg)] border-t border-black/5 px-4 sm:px-6 py-3">
           <button
             type="button"
             onClick={handleSave}
-            className="w-full max-w-none lg:max-w-2xl mx-auto block py-3.5 rounded-2xl bg-[#0d4a3a] text-white font-semibold text-base shadow-sm cursor-pointer active:scale-[0.99]"
+            className="w-full max-w-none lg:max-w-3xl mx-auto block py-3.5 rounded-2xl bg-[var(--primary)] text-white font-semibold text-base shadow-sm cursor-pointer active:scale-[0.99]"
           >
             Save product
           </button>
@@ -445,7 +445,7 @@ export const ProductsView: React.FC = () => {
                 setFormOpen(false);
                 setToDelete(target);
               }}
-              className="w-full max-w-none lg:max-w-2xl mx-auto mt-2 flex items-center justify-center gap-2 py-3 rounded-2xl border border-red-200 bg-white text-red-600 font-semibold text-sm cursor-pointer active:scale-[0.99]"
+              className="w-full max-w-none lg:max-w-3xl mx-auto mt-2 flex items-center justify-center gap-2 py-3 rounded-2xl border border-red-200 bg-white text-red-600 font-semibold text-sm cursor-pointer active:scale-[0.99]"
             >
               <Trash2 className="w-4 h-4" />
               Delete product
@@ -475,8 +475,8 @@ export const ProductsView: React.FC = () => {
 
   /* ─── Catalogue list ─── */
   return (
-    <div className="min-h-[100dvh] bg-[#f6f4ef] pb-24">
-      <div className="px-4 sm:px-6 pt-2 pb-4 max-w-none lg:max-w-2xl mx-auto">
+    <div className="hh-view w-full min-w-0 pb-24">
+      <div className="w-full min-w-0">
         <div className="flex items-center justify-between mb-1">
           <div>
             <h1 className="text-xl sm:text-3xl font-bold tracking-tight text-slate-900">
@@ -490,7 +490,7 @@ export const ProductsView: React.FC = () => {
             <button
               type="button"
               onClick={openAdd}
-              className="size-10 sm:size-11 rounded-full bg-[#0d4a3a] text-white flex items-center justify-center shadow-md cursor-pointer active:scale-95"
+              className="size-10 sm:size-11 rounded-full bg-[var(--primary)] text-white flex items-center justify-center shadow-md cursor-pointer active:scale-95"
               aria-label="Add product"
             >
               <Plus className="w-5 h-5" strokeWidth={2.5} />
@@ -505,7 +505,7 @@ export const ProductsView: React.FC = () => {
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             placeholder="Search name, brand, SKU"
-            className="w-full pl-10 pr-4 py-2.5 rounded-full bg-white border border-black/8 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25 focus:border-[#0d4a3a]/40"
+            className="w-full pl-10 pr-4 py-2.5 rounded-full bg-white border border-black/8 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25 focus:border-[var(--primary)]/40"
           />
         </div>
 
@@ -533,7 +533,7 @@ export const ProductsView: React.FC = () => {
             </p>
           </div>
         ) : (
-          <ul className="space-y-2">
+          <ul className="hh-list-grid">
             {filtered.map((p) => (
               <li key={p.id}>
                 <button
@@ -542,7 +542,7 @@ export const ProductsView: React.FC = () => {
                   style={{ borderLeftWidth: 6, borderLeftColor: sizeTheme(p.volume, p.name).hex }}
                   className="w-full text-left bg-white rounded-2xl border border-black/5 shadow-sm px-3 sm:px-4 py-3 flex items-center gap-2.5 sm:gap-3 hover:border-black/10 cursor-pointer active:scale-[0.99] transition"
                 >
-                  <div className="hidden min-[400px]:flex size-10 rounded-xl bg-[#ebe8e1] text-[#0d4a3a] items-center justify-center shrink-0">
+                  <div className="hidden min-[400px]:flex size-10 rounded-xl bg-[#ebe8e1] text-[var(--primary)] items-center justify-center shrink-0">
                     <Package className="w-5 h-5" />
                   </div>
                   <div className="min-w-0 flex-1">
@@ -620,7 +620,7 @@ function Toggle({
       aria-checked={on}
       onClick={() => onChange(!on)}
       className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer shrink-0 ${
-        on ? "bg-[#0d4a3a]" : "bg-slate-300"
+        on ? "bg-[var(--primary)]" : "bg-slate-300"
       }`}
     >
       <span
@@ -664,7 +664,7 @@ function Chip({
       onClick={onClick}
       className={`px-3.5 py-1.5 rounded-full text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
         active
-          ? "bg-[#0d4a3a] text-white shadow-sm"
+          ? "bg-[var(--primary)] text-white shadow-sm"
           : "bg-white text-slate-600 border border-black/8"
       }`}
     >

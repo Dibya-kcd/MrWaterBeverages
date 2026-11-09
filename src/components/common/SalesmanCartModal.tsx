@@ -301,7 +301,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
         {/* Header: one line — back / title, always-visible total, menu, close */}
         <div
           className={`px-3 sm:px-4 pb-3 flex items-center justify-between gap-2 shrink-0 ${
-            lv ? 'bg-yellow-400 text-black' : 'bg-[#0B3D32] text-white'
+            lv ? 'bg-yellow-400 text-black' : 'bg-[var(--primary)] text-white'
           }`}
           style={{ paddingTop: 'max(0.75rem, env(safe-area-inset-top, 0px))' }}
         >
@@ -329,7 +329,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
 
           <div className="flex items-center gap-1.5 shrink-0 relative">
             <span
-              className={`text-[17px] font-black px-3 py-1.5 rounded-xl ${lv ? 'bg-black text-yellow-300' : 'bg-white text-[#0B3D32]'}`}
+              className={`text-[17px] font-black px-3 py-1.5 rounded-xl ${lv ? 'bg-black text-yellow-300' : 'bg-white text-[var(--primary)]'}`}
               aria-live="polite"
             >
               ₹{money(finalCartTotal)}

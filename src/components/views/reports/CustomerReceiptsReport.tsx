@@ -199,7 +199,7 @@ export const CustomerReceiptsReport: React.FC<CustomerReceiptsReportProps> = ({ 
 
       {view === 'customer' && (
         <label className="flex items-center gap-2 text-[13px] font-medium text-slate-700 px-1 select-none cursor-pointer">
-          <input type="checkbox" checked={includeUnpaid} onChange={(e) => setIncludeUnpaid(e.target.checked)} className="size-4 accent-[#0d4a3a]" />
+          <input type="checkbox" checked={includeUnpaid} onChange={(e) => setIncludeUnpaid(e.target.checked)} className="size-4 accent-[var(--primary)]" />
           Also show customers who owe but paid nothing in this period
         </label>
       )}

@@ -44,7 +44,7 @@ export const PaymentReportsPanel: React.FC = () => {
             aria-selected={report === t.id}
             onClick={() => setReport(t.id)}
             className={`flex-1 px-3 py-2 rounded-lg whitespace-nowrap cursor-pointer transition-all ${
-              report === t.id ? 'bg-[#064e3b] text-white font-bold shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+              report === t.id ? 'bg-[var(--primary)] text-white font-bold shadow-xs' : 'text-slate-600 hover:bg-slate-100'
             }`}
           >
             {t.label}

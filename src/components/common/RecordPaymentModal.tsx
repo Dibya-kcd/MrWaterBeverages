@@ -10,6 +10,9 @@ import {
 } from 'lucide-react';
 import { Bill, ExistingCustomer, PaymentMode, PaymentRecord } from '../../types';
 import { money } from '../../utils/billing';
+import { useLanguage } from '../../i18n/LanguageContext';
+import { NumberPad, SegmentedPeriod } from '../ui/HomeKit';
+import { InvoicePicker } from './InvoicePicker';
 import { validatePaymentForm, summarizeErrors } from '../../utils/validation';
 import { billBalance } from '../../utils/salesReturns';
 import { todayISO, toLocalISODate } from "../../utils/dateLocal";
@@ -80,6 +83,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     return toLocalISODate(d);
   })();
 
+  const { t } = useLanguage();
   const [customerName, setCustomerName] = useState(initialCustomerName);
   const [billId, setBillId] = useState<number | undefined>(initialBillId);
   const [amount, setAmount] = useState<string>(initialAmount !== undefined ? String(initialAmount) : '');
@@ -87,6 +91,8 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
   const [paymentMode, setPaymentMode] = useState<PaymentMode>(initialMode);
   const [referenceNote, setReferenceNote] = useState<string>(initialNote);
   const [error, setError] = useState<string | null>(null);
+  // On-screen number pad is optional: phones and tablets use their own numeric keyboard unless this is on
+  const [showPad, setShowPad] = useState<boolean>(false);
 
   // The customer and bill lists are rebuilt (new array every time) whenever any background sync,
   // auto-save or realtime update arrives. They are only READ here, through refs. Listing them as
@@ -162,7 +168,8 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
       customerName &&
       b.retailer.trim().toLowerCase() === customerName.trim().toLowerCase()
   );
-  const customerUnpaidBills = customerBills.filter((b) => billBalance(b) > 0);
+  const customerLiveBills = customerBills.filter((b) => b.status !== 'cancelled' && !(b as any).cancellation);
+  const customerUnpaidBills = customerLiveBills.filter((b) => billBalance(b) > 0);
 
   const handleCustomerChange = (name: string) => {
     setCustomerName(name);
@@ -245,6 +252,17 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
     onClose();
   };
 
+  // Number pad: only edits the same `amount` text the input edits (same validation and save path).
+  const handlePadKey = (key: string) => {
+    setAmount((prev) => {
+      const cur = String(prev ?? '');
+      if (key === 'back') return cur.slice(0, -1);
+      if (key === '.') return cur.includes('.') ? cur : (cur === '' ? '0.' : cur + '.');
+      if (/^\d+\.\d{2}$/.test(cur)) return cur;
+      return cur === '0' ? key : cur + key;
+    });
+  };
+
   const MODES: { id: PaymentMode; label: string; icon: string }[] = [
     { id: 'cash', label: 'Cash', icon: '💵' },
     { id: 'upi', label: 'UPI / QR', icon: '📱' },
@@ -261,7 +279,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
       aria-labelledby="record-payment-title"
     >
       <div
-        className="w-full max-w-lg rounded-2xl shadow-2xl border-2 overflow-hidden bg-white my-auto"
+        className="w-full max-w-lg lg:max-w-4xl rounded-2xl shadow-2xl border-2 overflow-hidden bg-white my-auto"
         style={{ borderColor: palette.line }}
       >
         {/* Header */}
@@ -291,10 +309,21 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+        <form onSubmit={handleSubmit} className="p-5 grid gap-4 lg:grid-cols-2 lg:gap-x-8 lg:items-start">
           {error && (
-            <div className="p-3 rounded-lg text-xs font-bold text-rose-800 bg-rose-50 border border-rose-200">
+            <div className="lg:col-span-2 p-3 rounded-lg text-xs font-bold text-rose-800 bg-rose-50 border border-rose-200">
               {error}
+            </div>
+          )}
+
+          <div className="space-y-4 min-w-0">
+          {customerName.trim() && (
+            <div className="hh-collect__party">
+              <p className="hh-label">{customerName.trim()}</p>
+              <div className="hh-collect__party-row">
+                <p className="hh-collect__due">₹{money(matchedCustomer ? Math.max(0, matchedCustomer.balanceDue) : 0)}</p>
+                <span className="hh-collect__due-label">{t('collect.totalDue')}</span>
+              </div>
             </div>
           )}
 
@@ -342,31 +371,22 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
             )}
           </div>
 
-          {/* Optional Bill / Invoice Selection */}
-          {customerBills.length > 0 && !paymentToEdit && (
-            <div className="space-y-1">
-              <label className="block text-xs font-bold text-slate-700">
-                Apply Payment Towards
-              </label>
-              <select
-                value={billId || ''}
-                onChange={(e) => handleBillSelect(e.target.value)}
-                className="w-full px-3 py-2 text-xs font-medium border-2 rounded-xl focus:outline-none bg-white"
-                style={{ borderColor: palette.line }}
-              >
-                <option value="">General Account / Oldest Balance Dues</option>
-                {customerBills.map((b) => {
-                  const due = billBalance(b);
-                  return (
-                    <option key={b.id} value={b.id}>
-                      Invoice #{b.id} ({b.date}) - Total: ₹{money(b.total)} {due > 0 ? `[Due: ₹${money(due)}]` : '[Settled]'}
-                    </option>
-                  );
-                })}
-              </select>
-            </div>
+          {/* Invoice chooser: shown as soon as a customer with unpaid invoices is picked */}
+          {customerUnpaidBills.length > 0 && !paymentToEdit && (
+            <InvoicePicker
+              bills={customerLiveBills}
+              selectedId={billId}
+              amount={Number(String(amount).replace(/,/g, '')) || 0}
+              onSelect={(id, due) => {
+                setBillId(id);
+                if (due > 0) setAmount(String(Math.round(due * 100) / 100));
+              }}
+            />
           )}
 
+          </div>
+
+          <div className="space-y-4 min-w-0">
           {/* PAYMENT DATE (Accurately Maintained) */}
           <div className="space-y-1.5 bg-sky-50/60 p-3.5 rounded-xl border border-sky-200">
             <div className="flex items-center justify-between">
@@ -427,13 +447,13 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
             <div className="relative">
               <IndianRupee size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
-                type="number" inputMode="decimal"
+                type="number" inputMode={showPad ? 'none' : 'decimal'}
                 step="0.01"
                 min="0.01"
                 placeholder="0.00"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                className="w-full pl-9 pr-3 py-2.5 text-base font-black border-2 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600"
+                className="hh-collect__amount w-full pl-9 pr-3 py-2.5 font-black border-2 rounded-xl"
                 style={{ borderColor: palette.line }}
                 required
               />
@@ -445,9 +465,9 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setAmount(String(matchedCustomer.balanceDue))}
-                  className="px-2.5 py-1 text-[11px] font-bold rounded-md bg-emerald-50 text-emerald-800 border border-emerald-300 hover:bg-emerald-100 cursor-pointer"
+                  className="hh-pill hh-pill--received min-h-[44px] px-4 cursor-pointer"
                 >
-                  Full Due (₹{money(matchedCustomer.balanceDue)})
+                  {t('collect.payFull')} (₹{money(matchedCustomer.balanceDue)})
                 </button>
                 <button
                   type="button"
@@ -460,28 +480,34 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
             )}
           </div>
 
+          <div className="lg:hidden">
+            <button
+              type="button"
+              onClick={() => setShowPad((v) => !v)}
+              aria-pressed={showPad}
+              className={`hh-chip ${showPad ? '' : 'border border-slate-200'}`}
+              data-active={showPad}
+            >
+              {showPad ? 'Hide number pad' : 'Number pad'}
+            </button>
+            {showPad && (
+              <div className="hh-pad-wrap mt-3">
+                <NumberPad onKey={handlePadKey} backspaceLabel={t('collect.backspace')} />
+              </div>
+            )}
+          </div>
+
           {/* Payment Mode */}
           <div className="space-y-1.5">
             <label className="block text-xs font-bold text-slate-700">
               Payment Mode
             </label>
-            <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
-              {MODES.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => setPaymentMode(m.id)}
-                  className={`p-2 rounded-xl border-2 text-center text-xs font-bold cursor-pointer transition-all ${
-                    paymentMode === m.id
-                      ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  <div className="text-sm">{m.icon}</div>
-                  <div className="text-[10.5px] mt-0.5 truncate">{m.label}</div>
-                </button>
-              ))}
-            </div>
+            <SegmentedPeriod
+              ariaLabel={t('collect.mode')}
+              options={MODES.map((m) => ({ id: m.id, label: m.label }))}
+              value={paymentMode}
+              onChange={(id) => setPaymentMode(id as PaymentMode)}
+            />
           </div>
 
           {/* Reference / Cheque No / Notes */}
@@ -499,21 +525,17 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
             />
           </div>
 
-          {/* Action Buttons */}
-          <div className="pt-3 border-t flex items-center justify-end gap-2" style={{ borderColor: palette.line }}>
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-xs font-bold rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-700 cursor-pointer"
-            >
-              Cancel
+          </div>
+
+          {/* Action Buttons: big green save, Cancel stays visible */}
+          <div className="lg:col-span-2 pt-3 border-t space-y-2" style={{ borderColor: palette.line }}>
+            <button type="submit" className="hh-btn hh-btn--success w-full" style={{ minHeight: 56, fontSize: 17 }}>
+              <Check size={20} aria-hidden="true" />
+              <span>{paymentToEdit ? t('collect.saveChanges') : t('collect.saveReceipt')}</span>
             </button>
-            <button
-              type="submit"
-              className="px-5 py-2 text-xs sm:text-sm font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer shadow-sm flex items-center gap-1.5"
-            >
-              <Check size={16} />
-              <span>{paymentToEdit ? 'Save Changes' : 'Record Payment'}</span>
+            {!paymentToEdit && <p className="text-center text-xs" style={{ color: 'var(--text-2)' }}>{t('collect.whatsappNote')}</p>}
+            <button type="button" onClick={onClose} className="hh-btn hh-btn--ghost w-full">
+              {t('sell.cancel')}
             </button>
           </div>
         </form>

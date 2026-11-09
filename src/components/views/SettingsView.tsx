@@ -25,10 +25,14 @@ import {
   Warehouse as WarehouseIcon,
   Pencil,
   Key,
+  LogOut,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { BeatsSettings } from './BeatsSettings';
+import { LoginPageEditor } from './LoginPageEditor';
+import { UserAvatar, useAvatarId } from '../common/UserAvatar';
+import { AVATAR_IDS, writeAvatar } from '../../utils/avatar';
 import { FontSize, GstMode, PriceType, StickyTotalPosition, Salesman } from '../../types';
 import { validateOrgProfile, summarizeErrors, normalizeGstin } from '../../utils/validation';
 
@@ -51,7 +55,7 @@ const INDIAN_STATES = [
   '37 Andhra Pradesh',
 ];
 
-type SettingsSection = 'business' | 'billing' | 'fleet' | 'beats' | 'staff' | 'display' | 'cloud' | 'backups';
+type SettingsSection = 'business' | 'billing' | 'fleet' | 'beats' | 'staff' | 'display' | 'login' | 'cloud' | 'backups';
 
 export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'warehouses' }> = ({ initialSection }) => {
   const {
@@ -89,7 +93,9 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
     cleanDatabase,
     clearTransactions,
     resetToDefault,
+    logout,
   } = useLedger();
+  const avatarId = useAvatarId();
 
   const { t } = useLanguage();
 
@@ -505,24 +511,24 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
   };
 
   return (
-    <div className="min-h-full w-full bg-[#F6F6F2] py-3 sm:py-8 px-2.5 sm:px-6 lg:px-8 text-neutral-900 font-sans">
-      <div className="max-w-none lg:max-w-3xl mx-auto space-y-3 sm:space-y-6">
+    <div id="view-settings" className="hh-view w-full min-w-0 text-neutral-900 font-sans">
+      <div className="w-full space-y-3 sm:space-y-5">
         {/* Page Header */}
-        <div className="mb-2">
-          <h1 className="text-xl sm:text-3xl font-bold tracking-tight text-neutral-900">Settings</h1>
-          <p className="hidden sm:block text-sm text-neutral-500 mt-1">Business, GST, billing rules, staff</p>
+        <div className="hh-pagehead">
+          <h1>Settings</h1>
+          <p className="hidden sm:block">Business, GST, billing rules, staff</p>
         </div>
 
         {/* Success Toast */}
         {toastMessage && (
-          <div className="fixed top-6 right-6 z-50 bg-[#064E3B] text-white px-4 py-2.5 rounded-xl shadow-xl text-sm font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-200">
+          <div className="fixed top-6 right-6 z-50 bg-[var(--primary)] text-white px-4 py-2.5 rounded-xl shadow-xl text-sm font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-200">
             <Check className="w-4 h-4 text-emerald-300 shrink-0" />
             <span>{toastMessage}</span>
           </div>
         )}
 
         {/* Segmented Filter Tabs */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs -mx-2.5 px-2.5 sm:mx-0 sm:px-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="hh-tabstrip flex items-center gap-1.5 overflow-x-auto pb-1 text-xs -mx-2.5 px-2.5 sm:mx-0 sm:px-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {[
             { id: 'business' as const, label: t('settings.section.business') },
             { id: 'billing' as const, label: t('settings.section.billing') },
@@ -530,6 +536,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
             ...(currentUser?.role === 'admin' ? [{ id: 'beats' as const, label: t('settings.section.beats') }] : []),
             { id: 'staff' as const, label: t('settings.section.staff') },
             { id: 'display' as const, label: t('settings.section.display') },
+            ...(currentUser?.role === 'admin' ? [{ id: 'login' as const, label: 'Login page' }] : []),
             { id: 'cloud' as const, label: t('settings.section.cloud') },
             { id: 'backups' as const, label: t('settings.section.backups') },
           ].map((tab) => (
@@ -537,7 +544,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
               key={tab.id}
               type="button"
               onClick={() => setActiveSection(tab.id)}
-              className={`px-3.5 py-1.5 rounded-xl font-medium transition-colors whitespace-nowrap cursor-pointer ${
+              className={`shrink-0 px-3.5 py-1.5 rounded-xl font-medium transition-colors whitespace-nowrap cursor-pointer ${
                 activeSection === tab.id
                   ? 'bg-neutral-900 text-white shadow-xs'
                   : 'bg-white border border-neutral-200 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-50'
@@ -558,7 +565,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
               <span className="hidden sm:inline text-xs text-neutral-400">Organisation & Tax Profile</span>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3 sm:gap-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-5 gap-y-3 sm:gap-y-4">
               {/* BUSINESS NAME */}
               <div>
                 <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
@@ -569,7 +576,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.name}
                   onChange={(e) => setProfileForm({ ...profileForm, name: e.target.value })}
                   placeholder="Shree Beverages Distributors"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -591,7 +598,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                     });
                   }}
                   placeholder="27AAKCS1234F1Z5"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -606,7 +613,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.pan}
                   onChange={(e) => setProfileForm({ ...profileForm, pan: e.target.value.toUpperCase() })}
                   placeholder="AAKCS1234F"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -621,7 +628,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.fssai}
                   onChange={(e) => setProfileForm({ ...profileForm, fssai: e.target.value })}
                   placeholder="11521034000123"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -635,7 +642,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.phone}
                   onChange={(e) => setProfileForm({ ...profileForm, phone: e.target.value })}
                   placeholder="9822012345"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -649,7 +656,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.email}
                   onChange={(e) => setProfileForm({ ...profileForm, email: e.target.value })}
                   placeholder="sales@shreebeverages.com"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -662,7 +669,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   <select
                     value={profileForm.state}
                     onChange={(e) => setProfileForm({ ...profileForm, state: e.target.value })}
-                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs cursor-pointer"
+                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs cursor-pointer"
                   >
                     {INDIAN_STATES.map((st) => (
                       <option key={st} value={st}>
@@ -684,7 +691,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.address}
                   onChange={(e) => setProfileForm({ ...profileForm, address: e.target.value })}
                   placeholder="Plot 14, MIDC Bhosari, Pune 411026"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -698,7 +705,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.city}
                   onChange={(e) => setProfileForm({ ...profileForm, city: e.target.value })}
                   placeholder="Pune, Maharashtra"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -711,7 +718,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.ownerName}
                   onChange={(e) => setProfileForm({ ...profileForm, ownerName: e.target.value })}
                   placeholder="Proprietor / Signatory Name"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -725,7 +732,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.bankName}
                   onChange={(e) => setProfileForm({ ...profileForm, bankName: e.target.value })}
                   placeholder="HDFC Bank"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -739,7 +746,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.accountNumber}
                   onChange={(e) => setProfileForm({ ...profileForm, accountNumber: e.target.value })}
                   placeholder="50200012345678"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -754,7 +761,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.ifsc}
                   onChange={(e) => setProfileForm({ ...profileForm, ifsc: e.target.value.toUpperCase() })}
                   placeholder="HDFC0001234"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -768,7 +775,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.upiId}
                   onChange={(e) => setProfileForm({ ...profileForm, upiId: e.target.value })}
                   placeholder="shreebev@upi"
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
 
@@ -782,7 +789,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={profileForm.invoiceTerms}
                   onChange={(e) => setProfileForm({ ...profileForm, invoiceTerms: e.target.value })}
                   placeholder="Goods once sold will not be taken back except expiry/damage. Interest @18% after due date."
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                 />
               </div>
             </div>
@@ -801,7 +808,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
 
             <div className="space-y-4">
               {/* ROW 1: PRINT LAYOUT & CREDIT LIMIT CROSSED */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3 sm:gap-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-5 gap-y-3 sm:gap-y-4">
                 <div>
                   <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
                     PRINT LAYOUT
@@ -810,7 +817,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                     <select
                       value={billingForm.printLayout}
                       onChange={(e) => setBillingForm({ ...billingForm, printLayout: e.target.value })}
-                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs cursor-pointer"
+                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs cursor-pointer"
                     >
                       <option value="A4">A4</option>
                       <option value="Thermal 3-inch (80mm)">Thermal 3-inch (80mm)</option>
@@ -828,7 +835,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                     <select
                       value={billingForm.creditLimitCrossed}
                       onChange={(e) => setBillingForm({ ...billingForm, creditLimitCrossed: e.target.value })}
-                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs cursor-pointer"
+                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs cursor-pointer"
                     >
                       <option value="Warn">Warn</option>
                       <option value="Block">Block billing</option>
@@ -851,7 +858,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                     onChange={(e) =>
                       setBillingForm({ ...billingForm, expiryAlertDays: Number(e.target.value) || 0 })
                     }
-                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 focus:outline-none focus:ring-2 focus:ring-[#064E3B] focus:border-transparent transition-all shadow-xs"
+                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent transition-all shadow-xs"
                   />
                 </div>
 
@@ -865,7 +872,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                       })
                     }
                     className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.sellEarliestExpiryFirst ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                      billingForm.sellEarliestExpiryFirst ? 'bg-[var(--primary)]' : 'bg-neutral-300'
                     }`}
                   >
                     <span
@@ -890,7 +897,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                       })
                     }
                     className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.allowSellingWithoutStock ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                      billingForm.allowSellingWithoutStock ? 'bg-[var(--primary)]' : 'bg-neutral-300'
                     }`}
                   >
                     <span
@@ -912,7 +919,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                       })
                     }
                     className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.roundOffGrandTotal ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                      billingForm.roundOffGrandTotal ? 'bg-[var(--primary)]' : 'bg-neutral-300'
                     }`}
                   >
                     <span
@@ -926,7 +933,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
               </div>
 
               {/* ADDITIONAL INVOICING PARAMETERS FROM DATABASE */}
-              <div className="pt-4 border-t border-neutral-100 grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3 sm:gap-y-4">
+              <div className="pt-4 border-t border-neutral-100 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-5 gap-y-3 sm:gap-y-4">
                 <div>
                   <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
                     INVOICE PREFIX CODE
@@ -936,7 +943,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                     value={billingForm.invoicePrefix}
                     onChange={(e) => setBillingForm({ ...billingForm, invoicePrefix: e.target.value.toUpperCase() })}
                     placeholder="INV"
-                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs"
+                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 uppercase focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs"
                   />
                 </div>
 
@@ -948,7 +955,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                     <select
                       value={billingForm.defaultSaleType}
                       onChange={(e) => setBillingForm({ ...billingForm, defaultSaleType: e.target.value as PriceType })}
-                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs cursor-pointer"
+                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs cursor-pointer"
                     >
                       <option value="Retail">Retail (MRP / Direct Retail Rate)</option>
                       <option value="Wholesale">Wholesale (Bulk Kirana Shop Rate)</option>
@@ -965,7 +972,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                     <select
                       value={billingForm.defaultGstMode}
                       onChange={(e) => setBillingForm({ ...billingForm, defaultGstMode: e.target.value as GstMode })}
-                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs cursor-pointer"
+                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs cursor-pointer"
                     >
                       <option value="inclusive">GST Inclusive (Rate includes Tax)</option>
                       <option value="off">GST Off / Non-Tax Bill</option>
@@ -989,7 +996,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                         maxSalesmanDiscountPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
                       })
                     }
-                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs"
+                    className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs"
                   />
                 </div>
               </div>
@@ -1006,7 +1013,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                       })
                     }
                     className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.showBatchOnInvoice ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                      billingForm.showBatchOnInvoice ? 'bg-[var(--primary)]' : 'bg-neutral-300'
                     }`}
                   >
                     <span
@@ -1030,7 +1037,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                       })
                     }
                     className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.gstOnFreeCases ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                      billingForm.gstOnFreeCases ? 'bg-[var(--primary)]' : 'bg-neutral-300'
                     }`}
                   >
                     <span
@@ -1054,7 +1061,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                       })
                     }
                     className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.autoApplyPromotions ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                      billingForm.autoApplyPromotions ? 'bg-[var(--primary)]' : 'bg-neutral-300'
                     }`}
                   >
                     <span
@@ -1073,14 +1080,14 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
         )}
 
         {/* ========================================================================= */}
-        {/* SAVE SETTINGS ACTION BUTTON (DEEP FOREST GREEN #064E3B)                  */}
+        {/* SAVE SETTINGS ACTION BUTTON                  */}
         {/* ========================================================================= */}
         <div>
           <button
             type="button"
             disabled={isSaving}
             onClick={handleSaveAll}
-            className="w-full bg-[#064E3B] hover:bg-[#043d2e] text-white font-semibold py-3 px-6 rounded-xl transition-all cursor-pointer text-sm shadow-xs flex items-center justify-center gap-2 disabled:opacity-50"
+            className="w-full bg-[var(--primary)] hover:bg-[var(--primary)] text-white font-semibold py-3 px-6 rounded-xl transition-all cursor-pointer text-sm shadow-xs flex items-center justify-center gap-2 disabled:opacity-50"
           >
             {isSaving ? <span>Saving settings to database...</span> : <span>Save settings</span>}
           </button>
@@ -1156,14 +1163,14 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   placeholder="Name"
                   value={newWhName}
                   onChange={(e) => setNewWhName(e.target.value)}
-                  className="bg-white border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs"
+                  className="bg-white border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs"
                 />
 
                 <div className="relative">
                   <select
                     value={newWhType}
                     onChange={(e) => setNewWhType(e.target.value as 'vehicle' | 'warehouse')}
-                    className="w-full bg-white border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-800 appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs cursor-pointer"
+                    className="w-full bg-white border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-800 appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs cursor-pointer"
                   >
                     <option value="vehicle">Vehicle</option>
                     <option value="warehouse">Warehouse</option>
@@ -1177,7 +1184,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={newWhRegNo}
                   onChange={(e) => setNewWhRegNo(e.target.value)}
                   disabled={newWhType === 'warehouse'}
-                  className="bg-white border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs disabled:bg-neutral-100 disabled:opacity-60"
+                  className="bg-white border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-800 uppercase placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs disabled:bg-neutral-100 disabled:opacity-60"
                 />
               </div>
 
@@ -1217,9 +1224,24 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   </span>
                 </div>
 
-                <span className="bg-[#DCFCE7] text-[#166534] text-xs font-semibold px-2.5 py-1 rounded-md flex items-center gap-1">
-                  <span>owner</span>
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="bg-[#DCFCE7] text-[#166534] text-xs font-semibold px-2.5 py-1 rounded-md flex items-center gap-1">
+                    <span>owner</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm('Are you sure you want to log out?')) {
+                        if (typeof logout === 'function') logout();
+                      }
+                    }}
+                    className="text-xs font-medium px-2.5 py-1 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 transition-colors flex items-center gap-1 cursor-pointer"
+                    title="Sign out of account"
+                  >
+                    <LogOut className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Sign Out</span>
+                  </button>
+                </div>
               </div>
 
               {/* Database Salesmen & Staff */}
@@ -1284,7 +1306,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                 placeholder="staff@email.com or phone"
                 value={newStaffIdentifier}
                 onChange={(e) => setNewStaffIdentifier(e.target.value)}
-                className="flex-1 bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs"
+                className="flex-1 bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs"
               />
 
               <input
@@ -1295,14 +1317,14 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                 placeholder="PIN (4-6 digits)"
                 value={newStaffPin}
                 onChange={(e) => setNewStaffPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                className="w-full sm:w-36 bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs"
+                className="w-full sm:w-36 bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs"
               />
 
               <div className="relative w-full sm:w-36">
                 <select
                   value={newStaffRole}
                   onChange={(e) => setNewStaffRole(e.target.value as any)}
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-[#064E3B] shadow-xs cursor-pointer capitalize"
+                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs cursor-pointer capitalize"
                 >
                   <option value="driver">driver</option>
                   <option value="salesman">salesman</option>
@@ -1316,7 +1338,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
               <button
                 type="submit"
                 disabled={!newStaffIdentifier.trim() || newStaffPin.length < 4}
-                className="bg-[#064E3B] hover:bg-[#043d2e] text-white px-6 py-2.5 rounded-xl font-semibold text-sm transition-colors cursor-pointer shadow-xs disabled:opacity-40"
+                className="bg-[var(--primary)] hover:bg-[var(--primary)] text-white px-6 py-2.5 rounded-xl font-semibold text-sm transition-colors cursor-pointer shadow-xs disabled:opacity-40"
               >
                 Give
               </button>
@@ -1327,6 +1349,8 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
         {/* ========================================================================= */}
         {/* CARD 5: DISPLAY & ACCESSIBILITY                                          */}
         {/* ========================================================================= */}
+        {activeSection === 'login' && currentUser?.role === 'admin' && <LoginPageEditor />}
+
         {activeSection === 'display' && (
           <div className="bg-white rounded-2xl border border-neutral-200/90 p-3.5 sm:p-6 shadow-xs space-y-5">
             <div>
@@ -1349,7 +1373,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   onClick={() => setFontSize(opt.id)}
                   className={`p-3.5 border rounded-xl text-left transition-all cursor-pointer ${
                     fontSize === opt.id
-                      ? 'border-[#064E3B] bg-emerald-50/50 text-[#064E3B] ring-1 ring-[#064E3B]'
+                      ? 'border-[var(--primary)] bg-emerald-50/50 text-[var(--primary)] ring-1 ring-[var(--primary)]'
                       : 'border-neutral-200 hover:border-neutral-300 text-neutral-700 bg-white'
                   }`}
                 >
@@ -1357,6 +1381,32 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   <div className="text-xs text-neutral-500 mt-0.5">{opt.desc}</div>
                 </button>
               ))}
+            </div>
+
+            {/* Avatar (replaces the initial letter in the profile badge) */}
+            <div className="pt-2 border-t border-neutral-100">
+              <span className="text-sm font-semibold text-neutral-800 block">Profile avatar</span>
+              <span className="text-xs text-neutral-500 block mb-2">Shown in the top bar and menu instead of a letter.</span>
+              <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Profile avatar">
+                {AVATAR_IDS.map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="radio"
+                    aria-checked={avatarId === id}
+                    aria-label={id === 'initial' ? 'Use initial letter' : id === 'admin' ? 'Admin Person Avatar' : id === 'user' ? 'Person Avatar' : id}
+                    title={id === 'admin' ? 'Admin Person Avatar (Recommended)' : id === 'user' ? 'Person Avatar' : id}
+                    onClick={() => writeAvatar(id)}
+                    className={`size-11 rounded-xl flex items-center justify-center font-bold cursor-pointer transition-all ${
+                      avatarId === id
+                        ? 'bg-emerald-800 text-white ring-2 ring-offset-2 ring-emerald-800'
+                        : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
+                    }`}
+                  >
+                    <UserAvatar id={id} initial={(orgProfile?.name || 'H').charAt(0).toUpperCase()} size={20} />
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Accessibility Switches */}
@@ -1370,7 +1420,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   type="button"
                   onClick={() => setHighContrast(!highContrast)}
                   className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                    highContrast ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                    highContrast ? 'bg-[var(--primary)]' : 'bg-neutral-300'
                   }`}
                 >
                   <span
@@ -1390,7 +1440,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   type="button"
                   onClick={toggleLowVisionMode}
                   className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                    lowVisionMode ? 'bg-[#064E3B]' : 'bg-neutral-300'
+                    lowVisionMode ? 'bg-[var(--primary)]' : 'bg-neutral-300'
                   }`}
                 >
                   <span
@@ -1449,7 +1499,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   setToastMessage(res.message);
                   setTimeout(() => setToastMessage(null), 3500);
                 }}
-                className="px-4 py-2 bg-[#064E3B] hover:bg-[#043d2e] text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
+                className="px-4 py-2 bg-[var(--primary)] hover:bg-[var(--primary)] text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
               >
                 <Cloud className="w-3.5 h-3.5" />
                 <span>Sync All Data to Cloud</span>
@@ -1583,7 +1633,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={editStaffName}
                   onChange={(e) => setEditStaffName(e.target.value)}
                   placeholder="e.g. Rajesh Kumar"
-                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-[#064E3B]"
+                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                 />
               </div>
 
@@ -1597,7 +1647,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={editStaffPhone}
                   onChange={(e) => setEditStaffPhone(e.target.value)}
                   placeholder="10-digit mobile number or login"
-                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 font-mono focus:outline-none focus:ring-2 focus:ring-[#064E3B]"
+                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 font-mono focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                 />
               </div>
 
@@ -1610,7 +1660,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={editStaffVehicle}
                   onChange={(e) => setEditStaffVehicle(e.target.value)}
                   placeholder="e.g. Van 1, Mobile Delivery Unit, Depot A"
-                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-[#064E3B]"
+                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                 />
               </div>
 
@@ -1625,7 +1675,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={editStaffNewPin}
                   onChange={(e) => setEditStaffNewPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
                   placeholder="Leave blank to keep existing PIN"
-                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 font-mono focus:outline-none focus:ring-2 focus:ring-[#064E3B]"
+                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2 text-sm text-neutral-900 font-mono focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                 />
                 <p className="text-[11px] text-neutral-500 mt-1">
                   Enter 4 to 6 digits only if resetting their login password/PIN.
@@ -1638,7 +1688,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   id="staffActiveToggle"
                   checked={editStaffActive}
                   onChange={(e) => setEditStaffActive(e.target.checked)}
-                  className="rounded border-neutral-300 text-[#064E3B] focus:ring-0 cursor-pointer"
+                  className="rounded border-neutral-300 text-[var(--primary)] focus:ring-0 cursor-pointer"
                 />
                 <label htmlFor="staffActiveToggle" className="text-xs font-medium text-neutral-700 cursor-pointer">
                   Account is Active (can log in and create sales orders)
@@ -1656,7 +1706,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                 <button
                   type="submit"
                   disabled={isStaffSubmitting}
-                  className="px-5 py-2 text-xs font-semibold text-white bg-[#064E3B] hover:bg-[#043d2e] rounded-xl shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+                  className="px-5 py-2 text-xs font-semibold text-white bg-[var(--primary)] hover:bg-[var(--primary)] rounded-xl shadow-xs transition-colors cursor-pointer disabled:opacity-50"
                 >
                   {isStaffSubmitting ? 'Saving...' : 'Save Changes'}
                 </button>
@@ -1714,7 +1764,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                   value={targetPin}
                   onChange={(e) => setTargetPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
                   placeholder="e.g. 1234 or 987654"
-                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2.5 text-base text-center text-neutral-900 font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-[#064E3B]"
+                  className="w-full bg-neutral-50 border border-neutral-300 rounded-xl px-3.5 py-2.5 text-base text-center text-neutral-900 font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                 />
                 <p className="text-[11px] text-neutral-500 mt-1.5 leading-relaxed">
                   {pinModalStaff.name} will sign in using phone <strong>{pinModalStaff.phone}</strong> and this PIN.

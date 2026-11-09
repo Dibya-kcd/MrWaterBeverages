@@ -7,13 +7,14 @@ import {
   EyeOff,
   AlertCircle,
   ArrowRight,
-  Truck,
   RotateCcw,
   Delete,
-  Package,
-  Receipt,
-  Tag,
+  CheckCircle2,
 } from 'lucide-react';
+import { BrandMark } from './BrandMark';
+import { LandingIcon } from './LandingIcon';
+import { LanguageToggle } from './LanguageToggle';
+import { useLandingContent } from '../../constants/landingContent';
 import { useLedger } from '../../context/LedgerContext';
 import { speakAssistiveText } from '../../utils/speechRecognition';
 
@@ -31,6 +32,7 @@ export const AuthScreen: React.FC = () => {
     orgProfile,
   } = useLedger();
 
+  const content = useLandingContent();
   const [view, setView] = useState<ViewMode>('landing');
   const [showDemo, setShowDemo] = useState(false);
   const [showOwnerDemo, setShowOwnerDemo] = useState(false);
@@ -187,536 +189,312 @@ export const AuthScreen: React.FC = () => {
     </Suspense>
   ) : null;
 
-  // ─── LANDING (marketing) ───────────────────────────────────────────────
+  const legacyName = orgProfile?.name && orgProfile.name !== 'MrWater' ? orgProfile.name : '';
+  const brand = content.brandName.trim() || legacyName || 'Hydrate Hub';
+  const brandLetter = brand.charAt(0).toUpperCase() || 'H';
+
+  // ─── LANDING ───────────────────────────────────────────────────────────
   if (view === 'landing') {
     return (
-      <div
-        id="auth-landing"
-        className="min-h-screen w-full flex flex-col relative overflow-hidden"
-        style={{
-          background: 'linear-gradient(165deg, #0a3d32 0%, #0d4f3c 40%, #0f5c45 100%)',
-        }}
-      >
+      <div id="auth-landing" className="hh-land">
         {demoOverlay}
-        <div
-          className="absolute inset-0 opacity-[0.04] pointer-events-none"
-          style={{
-            backgroundImage: `radial-gradient(circle at 20% 30%, #fff 1px, transparent 1px),
-                              radial-gradient(circle at 80% 70%, #fff 1px, transparent 1px)`,
-            backgroundSize: '48px 48px',
-          }}
-        />
-
-        <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-5 py-10 sm:py-14">
-          {/* Logo */}
-          <div className="flex items-center gap-2.5 mb-8 sm:mb-10">
-            <div
-              className="w-11 h-11 rounded-full flex items-center justify-center text-white font-black text-xl shadow-lg"
-              style={{ backgroundColor: '#F59E0B' }}
-            >
-              C
+        <div className="hh-land__blob hh-land__blob--a" aria-hidden="true" />
+        <div className="hh-land__blob hh-land__blob--b" aria-hidden="true" />
+        <div className="hh-land__wrap">
+          <header className="hh-land__bar">
+            <div className="hh-land__brand">
+              <BrandMark letter={brandLetter} className="size-10 text-base" />
+              <span>{brand}</span>
             </div>
-            <span className="text-2xl font-bold tracking-tight text-white">Crate</span>
-          </div>
+            <div className="hh-land__barright">
+              <LanguageToggle />
+              <button type="button" onClick={() => setView('signin')} className="hh-cta hh-cta--ghost" style={{ minHeight: 40, padding: '8px 16px' }}>
+                {content.signInButton}
+              </button>
+            </div>
+          </header>
 
-          {/* Headline */}
-          <h1
-            className="text-center font-black leading-[1.15] tracking-tight text-white mb-4"
-            style={{ fontSize: 'clamp(2rem, 6vw, 3.25rem)', maxWidth: '18ch' }}
-          >
-            Every crate,
-            <br />
-            every rupee,{' '}
-            <span style={{ color: '#F59E0B' }}>accounted.</span>
-          </h1>
+          <main className="hh-land__hero">
+            <div>
+              {content.badge.trim() && <span className="hh-badge">{content.badge}</span>}
+              <h1 className="hh-land__h1">
+                {content.headlineLine1}
+                <br />
+                {content.headlineLine2}{' '}
+                <span className="hh-land__accent">{content.headlineAccent}</span>
+              </h1>
+              <p className="hh-land__sub">{content.subtitle}</p>
 
-          <p className="text-center text-white/80 text-sm sm:text-base max-w-md mb-10 leading-relaxed">
-            The distribution app for beverage wholesalers — from
-            supplier invoice to the last shop on the beat.
-          </p>
+              <div className="hh-land__cta">
+                <button type="button" id="btn-goto-signin" onClick={() => setView('signin')} className="hh-cta hh-cta--primary">
+                  {content.signInButton}
+                  <ArrowRight size={18} aria-hidden="true" />
+                </button>
+              </div>
+              <div className="hh-land__links">
+                <button type="button" id="btn-open-salesman-demo" onClick={() => setShowDemo(true)} className="hh-link">
+                  {content.salesmanDemoButton}
+                </button>
+                <button type="button" id="btn-open-owner-demo" onClick={() => setShowOwnerDemo(true)} className="hh-link">
+                  {content.ownerDemoButton}
+                </button>
+              </div>
+            </div>
 
-          {/* Feature cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg mb-12">
-            {[
-              {
-                icon: <Receipt size={20} />,
-                title: 'GST & non-GST billing',
-                desc: 'Tax invoice, bill of supply, CGST/SGST/IGST auto.',
-              },
-              {
-                icon: <Package size={20} />,
-                title: 'Batch & expiry stock',
-                desc: 'FEFO picking and expiry alerts.',
-              },
-              {
-                icon: <Tag size={20} />,
-                title: 'Promotions & BOGO',
-                desc: 'Group offers applied at billing.',
-              },
-              {
-                icon: <Truck size={20} />,
-                title: 'Trips',
-                desc: 'Load, sell on route, settle at day end.',
-              },
-            ].map((f) => (
-              <div
-                key={f.title}
-                className="rounded-2xl p-4 border border-white/10 backdrop-blur-sm"
-                style={{ backgroundColor: 'rgba(255,255,255,0.08)' }}
-              >
-                <div className="flex items-start gap-3">
-                  <div
-                    className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-                    style={{ backgroundColor: 'rgba(245,158,11,0.2)', color: '#F59E0B' }}
-                  >
-                    {f.icon}
-                  </div>
-                  <div>
-                    <div className="text-white font-semibold text-sm mb-0.5">{f.title}</div>
-                    <div className="text-white/60 text-xs leading-snug">{f.desc}</div>
+            {/* Decorative preview: sample figures only */}
+            <div className="hh-phone" aria-hidden="true">
+              <div className="hh-phone__screen">
+                <div className="hh-phone__head">
+                  <span>{brand}</span>
+                  <span className="hh-phone__chip">Sample</span>
+                </div>
+                <div className="hh-phone__hero">
+                  <small>Today's sales</small>
+                  <b>₹48,250</b>
+                  <div className="hh-phone__bars">
+                    {[40, 62, 48, 80, 58, 94, 70].map((h, i) => <i key={i} style={{ height: `${h}%` }} />)}
                   </div>
                 </div>
+                <div className="hh-phone__row">
+                  <div className="hh-phone__tile"><small>Collected</small><b>₹31,900</b></div>
+                  <div className="hh-phone__tile"><small>Crates out</small><b>126</b></div>
+                </div>
+                <div className="hh-phone__bill"><span>Sharma General Store</span><span>Paid</span></div>
+              </div>
+            </div>
+          </main>
+
+          <section className="hh-land__features" aria-label="Features">
+            {content.features.map((f, i) => (
+              <div key={i} className="hh-feat">
+                <span className="hh-feat__icon"><LandingIcon name={f.icon} /></span>
+                <h3>{f.title}</h3>
+                <p>{f.desc}</p>
               </div>
             ))}
-          </div>
+          </section>
 
-          {/* CTA */}
-          <button
-            type="button"
-            id="btn-goto-signin"
-            onClick={() => setView('signin')}
-            className="w-full max-w-xs py-3.5 rounded-2xl font-bold text-base text-white shadow-xl transition-all active:scale-[0.98] hover:brightness-110 cursor-pointer"
-            style={{ backgroundColor: '#0B3D32', border: '1px solid rgba(255,255,255,0.15)' }}
-          >
-            Sign in
-          </button>
-
-          <button
-            type="button"
-            id="btn-open-salesman-demo"
-            onClick={() => setShowDemo(true)}
-            className="mt-3 w-full max-w-xs py-3 rounded-2xl font-semibold text-sm text-white/90 transition-all active:scale-[0.98] hover:bg-white/10 cursor-pointer"
-            style={{ border: '1px solid rgba(255,255,255,0.25)' }}
-          >
-            New here? See how the salesman app works
-          </button>
-
-          <button
-            type="button"
-            id="btn-open-owner-demo"
-            onClick={() => setShowOwnerDemo(true)}
-            className="mt-3 w-full max-w-xs py-3 rounded-2xl font-semibold text-sm text-white/90 transition-all active:scale-[0.98] hover:bg-white/10 cursor-pointer"
-            style={{ border: '1px solid rgba(255,255,255,0.25)' }}
-          >
-            Owner? See how the whole app works
-          </button>
-
-          <p className="mt-5 text-white/50 text-xs">
-            {orgProfile?.name || 'Crate'} · Route sales & cloud invoicing
-          </p>
+          <footer className="hh-land__foot">
+            {brand}{content.footer.trim() ? ` · ${content.footer}` : ''}
+          </footer>
         </div>
       </div>
     );
   }
 
-  // ─── SIGN-IN FORM ─────────────────────────────────────────────────────
+  // ─── SIGN-IN ───────────────────────────────────────────────────────────
+  const errorBox = (id: string, msg: string) => (
+    <div id={id} className="p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2" role="alert">
+      <AlertCircle size={16} className="shrink-0 text-rose-600 mt-0.5" />
+      <span>{msg}</span>
+    </div>
+  );
+  const demoHint = (id: string, onClick: () => void, text: string) => (
+    <button type="button" id={id} onClick={onClick} className="hh-cta hh-cta--ghost w-full" style={{ minHeight: 44, fontSize: '0.875rem' }}>
+      {text}
+    </button>
+  );
+
   return (
-    <div
-      id="auth-screen"
-      className="min-h-screen w-full flex flex-col items-center justify-center px-4 py-8 select-none"
-      style={{ backgroundColor: '#F7F5F0' }}
-    >
+    <div id="auth-screen" className="hh-sign">
       {demoOverlay}
-      <div className="w-full max-w-[400px] mx-auto">
-        {/* Logo */}
-        <div className="flex items-center gap-2 mb-8">
-          <div
-            className="w-9 h-9 rounded-full flex items-center justify-center text-white font-black text-lg shadow-sm"
-            style={{ backgroundColor: '#F59E0B' }}
-          >
-            C
+
+      <aside className="hh-sign__panel" aria-hidden="true">
+        <div className="flex items-center gap-3 relative z-[1]">
+          <BrandMark letter={brandLetter} className="size-11 text-lg" />
+          <span className="font-extrabold text-xl">{brand}</span>
+        </div>
+        <div className="relative z-[1]">
+          <h2>{content.panelHeadline}</h2>
+          <ul>
+            {content.panelPoints.filter((p) => p.trim()).map((p, i) => (
+              <li key={i}><CheckCircle2 size={18} /><span>{p}</span></li>
+            ))}
+          </ul>
+        </div>
+        <div className="relative z-[1] text-sm text-white/70">{content.footer}</div>
+      </aside>
+
+      <main className="hh-sign__main">
+        <div className="hh-sign__card">
+          <div className="hh-sign__mobilebrand">
+            <BrandMark letter={brandLetter} className="size-10 text-base" />
+            <span>{brand}</span>
           </div>
-          <span className="text-xl font-bold tracking-tight" style={{ color: '#1a2e1f' }}>
-            Crate
-          </span>
-        </div>
 
-        {/* Header */}
-        <h1 className="text-2xl sm:text-[1.75rem] font-bold tracking-tight mb-1.5" style={{ color: '#1a2e1f' }}>
-          Welcome back
-        </h1>
-        <p className="text-sm text-slate-500 mb-7 leading-relaxed">
-          The first account becomes the owner. Staff sign up, then the owner gives them a role.
-        </p>
+          <h1 className="hh-sign__title">{content.signInTitle}</h1>
+          <p className="hh-sign__sub">{content.signInSubtitle}</p>
 
-        {/* Role switcher */}
-        <div className="flex gap-2 mb-6">
-          <button
-            type="button"
-            id="tab-admin-login"
-            onClick={() => {
-              setAuthMode('admin');
-              setAdminError(null);
-            }}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-semibold transition-all cursor-pointer border ${
-              authMode === 'admin'
-                ? 'bg-[#0B3D32] text-white border-[#0B3D32] shadow-sm'
-                : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
-            }`}
-          >
-            <ShieldCheck size={16} />
-            Owner / Admin
-          </button>
-          <button
-            type="button"
-            id="tab-salesman-login"
-            onClick={() => {
-              setAuthMode('salesman');
-              setSalesmanError(null);
-            }}
-            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-semibold transition-all cursor-pointer border ${
-              authMode === 'salesman'
-                ? 'bg-[#0B3D32] text-white border-[#0B3D32] shadow-sm'
-                : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
-            }`}
-          >
-            <UserCheck size={16} />
-            Staff / Salesman
-          </button>
-        </div>
-
-        {authMode === 'admin' ? (
-          <form id="admin-login-form" onSubmit={handleAdminSubmit} className="space-y-4">
-            <button
-              type="button"
-              id="btn-open-owner-demo-signin"
-              onClick={() => setShowOwnerDemo(true)}
-              className="w-full py-2.5 rounded-xl text-sm font-semibold border cursor-pointer transition-colors hover:bg-amber-50"
-              style={{ borderColor: '#F59E0B', color: '#92400E', backgroundColor: '#FFFBEB' }}
-            >
-              New here? See how the whole app works
+          <div className="hh-seg" role="tablist" aria-label="Sign in as">
+            <button type="button" id="tab-admin-login" role="tab" aria-selected={authMode === 'admin'}
+              onClick={() => { setAuthMode('admin'); setAdminError(null); }}>
+              <ShieldCheck size={16} aria-hidden="true" />Owner / Admin
             </button>
-            <div>
-              <label
-                htmlFor="input-admin-email"
-                className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5"
-              >
-                Email
-              </label>
-              <input
-                type="email"
-                id="input-admin-email"
-                required
-                autoComplete="username"
-                placeholder="you@company.com"
-                value={adminEmail}
-                onChange={(e) => setAdminEmail(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/30 focus:border-[#0B3D32] transition-shadow"
-              />
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label
-                  htmlFor="input-admin-password"
-                  className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500"
-                >
-                  Password
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setShowAdminPass(!showAdminPass)}
-                  className="text-xs font-medium text-slate-500 hover:text-[#0B3D32] flex items-center gap-1 cursor-pointer"
-                >
-                  {showAdminPass ? <EyeOff size={13} /> : <Eye size={13} />}
-                  {showAdminPass ? 'Hide' : 'Show'}
-                </button>
-              </div>
-              <input
-                type={showAdminPass ? 'text' : 'password'}
-                id="input-admin-password"
-                required
-                autoComplete="current-password"
-                placeholder="••••••••"
-                value={adminPassword}
-                onChange={(e) => setAdminPassword(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/30 focus:border-[#0B3D32] transition-shadow"
-              />
-            </div>
-
-            {adminError && (
-              <div
-                id="admin-error-alert"
-                className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2"
-                role="alert"
-              >
-                <AlertCircle size={16} className="shrink-0 text-rose-600 mt-0.5" />
-                <span>{adminError}</span>
-              </div>
-            )}
-
-            <button
-              type="submit"
-              id="btn-admin-login-submit"
-              disabled={adminLoading}
-              className="w-full py-3.5 rounded-xl font-semibold text-sm text-white transition-all active:scale-[0.98] cursor-pointer disabled:opacity-60 shadow-sm"
-              style={{ backgroundColor: '#0B3D32' }}
-            >
-              {adminLoading ? 'Signing in…' : 'Sign in'}
+            <button type="button" id="tab-salesman-login" role="tab" aria-selected={authMode === 'salesman'}
+              onClick={() => { setAuthMode('salesman'); setSalesmanError(null); }}>
+              <UserCheck size={16} aria-hidden="true" />Staff / Salesman
             </button>
+          </div>
 
-            <button
-              type="button"
-              id="btn-continue-google"
-              onClick={() => {
-                setAdminError('Google sign-in is not configured in this build. Use email & password or demo login.');
-              }}
-              className="w-full py-3 rounded-xl font-semibold text-sm bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
-            >
-              Continue with Google
-            </button>
-
-            {DEMO_LOGIN_ENABLED && (
-            <button
-              type="button"
-              id="btn-explore-demo"
-              onClick={handleQuickDemoAdmin}
-              className="w-full py-3 rounded-xl font-semibold text-sm transition-colors cursor-pointer"
-              style={{
-                backgroundColor: '#E8F5E9',
-                color: '#1B5E20',
-              }}
-            >
-              Explore with demo login
-            </button>
-            )}
-
-            <p className="text-center text-sm text-slate-500 pt-1">
-              New here?{' '}
-              <button
-                type="button"
-                className="font-semibold text-[#0B3D32] hover:underline cursor-pointer"
-                onClick={() => {
-                  setAdminError(
-                    'Accounts are provisioned by the owner. Use demo login or contact your admin.'
-                  );
-                }}
-              >
-                Create an account
-              </button>
-            </p>
-          </form>
-        ) : (
-          <div id="salesman-login-card" className="space-y-4">
-            <p className="text-xs text-slate-500 -mt-1 mb-1">
-              Field staff sign in with registered mobile &amp; 4–6 digit PIN.
-            </p>
-
-            <button
-              type="button"
-              id="btn-open-salesman-demo-signin"
-              onClick={() => setShowDemo(true)}
-              className="w-full py-2.5 rounded-xl text-sm font-semibold border cursor-pointer transition-colors hover:bg-amber-50"
-              style={{ borderColor: '#F59E0B', color: '#92400E', backgroundColor: '#FFFBEB' }}
-            >
-              New here? See how the app works
-            </button>
-
-            {salesmen.length > 0 && (
+          {authMode === 'admin' ? (
+            <form id="admin-login-form" onSubmit={handleAdminSubmit} className="space-y-4">
               <div>
-                <label className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 block mb-1.5">
-                  Quick select
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  {salesmen.map((sm) => {
-                    const isSelected = salesmanPhone === sm.phone;
-                    return (
-                      <button
-                        key={sm.phone}
-                        type="button"
-                        onClick={() => handleSelectSalesman(sm.phone)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-[#0B3D32] text-white border-[#0B3D32]'
-                            : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
-                        }`}
-                      >
-                        {sm.name || sm.phone}
-                      </button>
-                    );
-                  })}
+                <label htmlFor="input-admin-email" className="hh-label">Email</label>
+                <input type="email" id="input-admin-email" required autoComplete="username" placeholder="you@company.com"
+                  value={adminEmail} onChange={(e) => setAdminEmail(e.target.value)} className="hh-input" />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label htmlFor="input-admin-password" className="hh-label" style={{ marginBottom: 0 }}>Password</label>
+                  <button type="button" onClick={() => setShowAdminPass(!showAdminPass)}
+                    className="text-xs font-semibold text-[var(--text-2)] hover:text-[var(--primary)] flex items-center gap-1 cursor-pointer">
+                    {showAdminPass ? <EyeOff size={14} /> : <Eye size={14} />}
+                    {showAdminPass ? 'Hide' : 'Show'}
+                  </button>
                 </div>
+                <input type={showAdminPass ? 'text' : 'password'} id="input-admin-password" required autoComplete="current-password"
+                  placeholder="••••••••" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className="hh-input" />
               </div>
-            )}
 
-            <div>
-              <label
-                htmlFor="input-salesman-phone"
-                className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5"
-              >
-                Mobile number
-              </label>
-              <input
-                type="tel"
-                id="input-salesman-phone"
-                inputMode="numeric"
-                placeholder="10-digit mobile (e.g. 9606987658)"
-                value={salesmanPhone}
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  const digits = raw.replace(/\D/g, '');
-                  let normalized = digits;
-                  if (digits.length > 10 && digits.startsWith('91')) {
-                    normalized = digits.slice(2, 12);
-                  } else if (digits.length > 10 && digits.startsWith('0')) {
-                    normalized = digits.slice(1, 11);
-                  } else if (digits.length > 10) {
-                    normalized = digits.slice(-10);
-                  }
-                  setSalesmanPhone(normalized);
-                  setSalesmanError(null);
-                }}
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/30 focus:border-[#0B3D32]"
-              />
-              {(() => {
-                const targetClean = salesmanPhone.replace(/\D/g, '').slice(-10);
-                if (!targetClean) return null;
-                const sm = salesmen.find((s) => s.phone.replace(/\D/g, '').slice(-10) === targetClean);
-                if (sm && sm.hasPin === false) {
-                  return (
-                    <div className="mt-2 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800 flex items-start gap-2">
-                      <AlertCircle size={15} className="text-amber-600 mt-0.5 shrink-0" />
-                      <div>
-                        <span className="font-semibold">{sm.name}</span> does not have a PIN configured yet.
-                        <span className="block text-[11px] text-amber-700 mt-0.5">Please ask the Administrator to set a 4-digit PIN in Staff Settings.</span>
-                      </div>
-                    </div>
-                  );
-                }
-                return null;
-              })()}
-            </div>
+              {adminError && errorBox('admin-error-alert', adminError)}
 
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                  Security PIN
-                </label>
-                <button
-                  type="button"
-                  onClick={() => setShowPin(!showPin)}
-                  className="text-xs font-medium text-slate-500 hover:text-[#0B3D32] flex items-center gap-1 cursor-pointer"
-                >
-                  {showPin ? <EyeOff size={13} /> : <Eye size={13} />}
-                  {showPin ? 'Hide' : 'Show'}
+              <button type="submit" id="btn-admin-login-submit" disabled={adminLoading}
+                className="hh-cta hh-cta--primary w-full disabled:opacity-60">
+                {adminLoading ? 'Signing in…' : 'Sign in'}
+              </button>
+
+              <button type="button" id="btn-continue-google"
+                onClick={() => setAdminError('Google sign-in is not configured in this build. Use email & password or demo login.')}
+                className="hh-cta hh-cta--ghost w-full">
+                Continue with Google
+              </button>
+
+              {DEMO_LOGIN_ENABLED && (
+                <button type="button" id="btn-explore-demo" onClick={handleQuickDemoAdmin}
+                  className="hh-cta w-full" style={{ background: '#e8f5e9', color: '#1b5e20', border: 0 }}>
+                  Explore with demo login
                 </button>
-              </div>
-              <div className="relative">
-                <Lock
-                  size={16}
-                  className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
-                />
-                <input
-                  type={showPin ? 'text' : 'password'}
-                  inputMode="numeric"
-                  maxLength={6}
-                  placeholder="••••"
-                  value={salesmanPin}
+              )}
+
+              {demoHint('btn-open-owner-demo-signin', () => setShowOwnerDemo(true), content.ownerDemoButton)}
+
+              <p className="text-center text-sm text-[var(--text-2)] pt-1">
+                New here?{' '}
+                <button type="button" className="font-bold text-[var(--primary)] hover:underline cursor-pointer"
+                  onClick={() => setAdminError('Accounts are provisioned by the owner. Use demo login or contact your admin.')}>
+                  Create an account
+                </button>
+              </p>
+            </form>
+          ) : (
+            <div id="salesman-login-card" className="space-y-4">
+              <p className="text-xs text-[var(--text-2)]">Field staff sign in with registered mobile &amp; 4–6 digit PIN.</p>
+
+              {salesmen.length > 0 && (
+                <div>
+                  <span className="hh-label">Quick select</span>
+                  <div className="flex flex-wrap gap-2">
+                    {salesmen.map((sm) => {
+                      const isSelected = salesmanPhone === sm.phone;
+                      return (
+                        <button key={sm.phone} type="button" onClick={() => handleSelectSalesman(sm.phone)}
+                          className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                            isSelected ? 'bg-[var(--primary)] text-white border-[var(--primary)]'
+                                       : 'bg-white text-[var(--text-2)] border-[var(--border)] hover:border-[var(--primary)]'}`}>
+                          {sm.name || sm.phone}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label htmlFor="input-salesman-phone" className="hh-label">Mobile number</label>
+                <input type="tel" id="input-salesman-phone" inputMode="numeric" placeholder="10-digit mobile number"
+                  value={salesmanPhone}
                   onChange={(e) => {
-                    setSalesmanPin(e.target.value.replace(/\D/g, '').slice(0, 6));
+                    const digits = e.target.value.replace(/\D/g, '');
+                    let normalized = digits;
+                    if (digits.length > 10 && digits.startsWith('91')) normalized = digits.slice(2, 12);
+                    else if (digits.length > 10 && digits.startsWith('0')) normalized = digits.slice(1, 11);
+                    else if (digits.length > 10) normalized = digits.slice(-10);
+                    setSalesmanPhone(normalized);
                     setSalesmanError(null);
                   }}
-                  className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 bg-white text-sm font-medium tracking-widest text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/30 focus:border-[#0B3D32]"
-                />
+                  className="hh-input" />
+                {(() => {
+                  const targetClean = salesmanPhone.replace(/\D/g, '').slice(-10);
+                  if (!targetClean) return null;
+                  const sm = salesmen.find((x) => x.phone.replace(/\D/g, '').slice(-10) === targetClean);
+                  if (sm && sm.hasPin === false) {
+                    return (
+                      <div className="hh-notice mt-2 flex items-start gap-2">
+                        <AlertCircle size={15} className="shrink-0 mt-0.5" />
+                        <div>
+                          <span className="font-bold">{sm.name}</span> does not have a PIN configured yet.
+                          <span className="block text-[11px] mt-0.5">Please ask the Administrator to set a 4-digit PIN in Staff Settings.</span>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
-            </div>
 
-            <div className="grid grid-cols-3 gap-2">
-              {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
-                <button
-                  key={d}
-                  type="button"
-                  onClick={() => handleKeypadPress(d)}
-                  className="h-14 rounded-xl border border-slate-200 bg-white text-xl font-bold text-slate-800 hover:bg-slate-50 active:bg-[#0B3D32] active:text-white transition-colors cursor-pointer"
-                >
-                  {d}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label htmlFor="input-salesman-pin" className="hh-label" style={{ marginBottom: 0 }}>Security PIN</label>
+                  <button type="button" onClick={() => setShowPin(!showPin)}
+                    className="text-xs font-semibold text-[var(--text-2)] hover:text-[var(--primary)] flex items-center gap-1 cursor-pointer">
+                    {showPin ? <EyeOff size={14} /> : <Eye size={14} />}
+                    {showPin ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+                <div className="relative">
+                  <Lock size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                  <input id="input-salesman-pin" type={showPin ? 'text' : 'password'} inputMode="numeric" maxLength={6} placeholder="••••"
+                    value={salesmanPin}
+                    onChange={(e) => { setSalesmanPin(e.target.value.replace(/\D/g, '').slice(0, 6)); setSalesmanError(null); }}
+                    className="hh-input tracking-widest" style={{ paddingLeft: 42 }} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
+                  <button key={d} type="button" onClick={() => handleKeypadPress(d)} className="hh-key">{d}</button>
+                ))}
+                <button type="button" onClick={handleKeypadClear} className="hh-key hh-key--soft"><RotateCcw size={16} />Clear</button>
+                <button type="button" onClick={() => handleKeypadPress('0')} className="hh-key">0</button>
+                <button type="button" onClick={handleKeypadBackspace} className="hh-key hh-key--soft"><Delete size={18} />Delete</button>
+              </div>
+
+              {salesmanError && errorBox('salesman-error-alert', salesmanError)}
+
+              <button type="button" id="btn-salesman-login-submit" onClick={() => handleSalesmanSubmit()}
+                disabled={salesmanLoading || !salesmanPhone || salesmanPin.length < 4}
+                className="hh-cta hh-cta--primary w-full disabled:opacity-50 disabled:cursor-not-allowed">
+                {salesmanLoading ? 'Verifying…' : (<>Sign in to van route<ArrowRight size={16} /></>)}
+              </button>
+
+              {DEMO_LOGIN_ENABLED && (
+                <button type="button" onClick={handleQuickDemoAdmin} className="hh-cta w-full"
+                  style={{ background: '#e8f5e9', color: '#1b5e20', border: 0 }}>
+                  Explore with demo login (Admin)
                 </button>
-              ))}
-              <button
-                type="button"
-                onClick={handleKeypadClear}
-                className="h-14 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-600 hover:bg-rose-50 hover:text-rose-700 transition-colors flex flex-col items-center justify-center cursor-pointer"
-              >
-                <RotateCcw size={16} />
-                Clear
-              </button>
-              <button
-                type="button"
-                onClick={() => handleKeypadPress('0')}
-                className="h-14 rounded-xl border border-slate-200 bg-white text-xl font-bold text-slate-800 hover:bg-slate-50 active:bg-[#0B3D32] active:text-white transition-colors cursor-pointer"
-              >
-                0
-              </button>
-              <button
-                type="button"
-                onClick={handleKeypadBackspace}
-                className="h-14 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-600 hover:bg-amber-50 hover:text-amber-800 transition-colors flex flex-col items-center justify-center cursor-pointer"
-              >
-                <Delete size={18} />
-                Delete
-              </button>
-            </div>
-
-            {salesmanError && (
-              <div
-                id="salesman-error-alert"
-                className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-start gap-2"
-                role="alert"
-              >
-                <AlertCircle size={16} className="shrink-0 text-rose-600 mt-0.5" />
-                <span>{salesmanError}</span>
-              </div>
-            )}
-
-            <button
-              type="button"
-              id="btn-salesman-login-submit"
-              onClick={() => handleSalesmanSubmit()}
-              disabled={salesmanLoading || !salesmanPhone || salesmanPin.length < 4}
-              className="w-full py-3.5 rounded-xl font-semibold text-sm text-white transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-sm"
-              style={{ backgroundColor: '#0B3D32' }}
-            >
-              {salesmanLoading ? (
-                'Verifying…'
-              ) : (
-                <>
-                  Sign in to van route
-                  <ArrowRight size={16} />
-                </>
               )}
-            </button>
 
-            {DEMO_LOGIN_ENABLED && (
-            <button
-              type="button"
-              onClick={handleQuickDemoAdmin}
-              className="w-full py-3 rounded-xl font-semibold text-sm transition-colors cursor-pointer"
-              style={{ backgroundColor: '#E8F5E9', color: '#1B5E20' }}
-            >
-              Explore with demo login (Admin)
-            </button>
-            )}
-          </div>
-        )}
+              {demoHint('btn-open-salesman-demo-signin', () => setShowDemo(true), content.salesmanDemoButton)}
+            </div>
+          )}
 
-        <button
-          type="button"
-          onClick={() => setView('landing')}
-          className="mt-8 w-full text-center text-xs font-medium text-slate-400 hover:text-slate-600 cursor-pointer"
-        >
-          ← Back to home
-        </button>
-      </div>
+          <button type="button" onClick={() => setView('landing')}
+            className="mt-8 w-full text-center text-xs font-semibold text-[var(--text-2)] hover:text-[var(--text)] cursor-pointer">
+            ← Back to home
+          </button>
+        </div>
+      </main>
     </div>
   );
 };

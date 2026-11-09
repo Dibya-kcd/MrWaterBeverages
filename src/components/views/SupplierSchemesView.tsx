@@ -381,12 +381,12 @@ export const SupplierSchemesView: React.FC = () => {
   ];
 
   return (
-    <div id="view-supplier-schemes" className="space-y-4 min-w-0">
+    <div id="view-supplier-schemes" className="hh-view space-y-4 min-w-0">
       {/* Header */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-1.5 min-w-0">
           <HandCoins className="w-5 h-5 text-slate-700 shrink-0" aria-hidden="true" />
-          <h2 className="text-lg font-semibold text-slate-900 truncate">Supplier credits</h2>
+          <h1 className="truncate">Supplier credits</h1>
           <InfoTip title="Supplier credits">
             <p>
               Purchase-side benefits from your suppliers. This is separate from customer <strong>Promotions</strong>,

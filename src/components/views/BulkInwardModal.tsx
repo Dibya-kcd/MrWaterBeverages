@@ -1267,7 +1267,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
           }`}
         >
           <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
-            <div className="p-1.5 bg-[#ebe8e1] text-[#0d4a3a] rounded-xl shrink-0">
+            <div className="p-1.5 bg-[#ebe8e1] text-[var(--primary)] rounded-xl shrink-0">
               <Boxes size={18} className="sm:w-5 sm:h-5" />
             </div>
             <div className="min-w-0">
@@ -1281,7 +1281,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                     Excel · CSV · PDF · Image
                   </span>
                 ) : (
-                  <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-[#ebe8e1] text-[#0d4a3a] shrink-0">
+                  <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-[#ebe8e1] text-[var(--primary)] shrink-0">
                     {rows.length} {rows.length === 1 ? 'product' : 'products'} · {totalReceivedQty} cs
                   </span>
                 )}
@@ -3170,7 +3170,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                       ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
                       : hasCasesMismatch
                       ? 'bg-amber-600 hover:bg-amber-700 text-white cursor-pointer'
-                      : 'bg-[#0d4a3a] hover:bg-[#0a3d30] text-white cursor-pointer'
+                      : 'bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white cursor-pointer'
                   }`}
                 >
                   {hasCasesMismatch ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}

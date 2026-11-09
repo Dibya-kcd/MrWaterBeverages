@@ -17,8 +17,14 @@ export interface CustomerBeatFields {
   name?: string;
 }
 
-/** The five places the owner named first; the sixth is added in Settings. */
-export const SUGGESTED_BEAT_NAMES = ["Kuchinda Town", "Keseibahal", "Jamankira", "Laida", "Kusumi"];
+export const SUGGESTED_BEAT_NAMES = [
+  "Kuchinda Town",
+  "Kusumi/Kuntra",
+  "Keseibahal/Mahulpali",
+  "Jamankira/Bhojpur/Rengalbeda",
+  "Laida/Fasimal/Subarnpali",
+  "Kolabira/Malidihi/Junani",
+];
 
 export const DEFAULT_BEAT_HUB = "Kuchinda";
 

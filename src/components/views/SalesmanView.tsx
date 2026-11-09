@@ -83,6 +83,7 @@ export const SalesmanView: React.FC = () => {
     defaultWarehouse,
     warehouseStock,
     addTrip,
+    remainingStock,
     finalizeBill,
     getVehicleStock,
     cart,
@@ -147,7 +148,13 @@ export const SalesmanView: React.FC = () => {
   const relevantTrips = useMemo(() => {
     let list = trips;
     if (currentUser?.role === 'salesman') {
-      list = trips.filter((t) => matchesMe(t));
+      const matched = trips.filter((t) => matchesMe(t));
+      if (matched.length > 0) {
+        list = matched;
+      } else {
+        const unassigned = trips.filter((t) => !t.salesmanId && !t.salesman);
+        list = unassigned.length > 0 ? unassigned : trips;
+      }
     }
     // Always sort newest trips first (by date descending, then id descending)
     return [...list].sort((a, b) => {
@@ -179,7 +186,7 @@ export const SalesmanView: React.FC = () => {
   // Trips displayed in the selector list: ONLY show active out trips! Never show closed trips by default!
   const displayedTrips = useMemo(() => {
     if (showTripHistory) return relevantTrips;
-    return anyOutTrips;
+    return anyOutTrips.length > 0 ? anyOutTrips : relevantTrips;
   }, [showTripHistory, relevantTrips, anyOutTrips]);
 
   // Trip history: search + "show more" so every past run can be reached, not just the latest few
@@ -198,33 +205,35 @@ export const SalesmanView: React.FC = () => {
   }, [displayedTrips, tripSearch, showTripHistory]);
   const shownTrips = showTripHistory ? matchedTrips.slice(0, tripLimit) : matchedTrips;
 
-  // Selected vehicle/trip selection: ONLY default to an 'out' trip! Never a closed trip!
+  // Selected vehicle/trip selection: prioritize active out trips, then any available trip
   const [selectedTripId, setSelectedTripId] = useState<number | null>(() => {
-    return todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? null;
+    return todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? relevantTrips[0]?.id ?? trips[0]?.id ?? null;
   });
 
   // Keep selectedTripId valid if trips change
   useEffect(() => {
     if (selectedTripId !== null) {
-      const exists = relevantTrips.some((t) => t.id === selectedTripId);
+      const exists = trips.some((t) => Number(t.id) === Number(selectedTripId));
       if (!exists) {
-        const nextId = todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? null;
+        const nextId = todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? relevantTrips[0]?.id ?? trips[0]?.id ?? null;
         setSelectedTripId(nextId);
       }
-    } else if (todayOutTrips.length > 0 || anyOutTrips.length > 0) {
-      const nextId = todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? null;
+    } else if (trips.length > 0) {
+      const nextId = todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? relevantTrips[0]?.id ?? trips[0]?.id ?? null;
       if (nextId !== null) {
         setSelectedTripId(nextId);
       }
     }
-  }, [relevantTrips, selectedTripId, todayOutTrips, anyOutTrips]);
+  }, [relevantTrips, selectedTripId, todayOutTrips, anyOutTrips, trips]);
 
-  // CRITICAL: activeTrip MUST strictly be an open trip (status === 'out'). A closed trip is NEVER active.
+  // Active Trip: seamlessly link by selectedTripId or default to the most relevant open run
   const activeTrip: Trip | null = useMemo(() => {
-    if (selectedTripId === null) return null;
-    const found = trips.find((t) => t.id === selectedTripId);
-    return found && found.status === 'out' ? found : null;
-  }, [trips, selectedTripId]);
+    if (selectedTripId !== null) {
+      const found = trips.find((t) => Number(t.id) === Number(selectedTripId));
+      if (found) return found;
+    }
+    return todayOutTrips[0] ?? anyOutTrips[0] ?? relevantTrips[0] ?? trips[0] ?? null;
+  }, [trips, selectedTripId, todayOutTrips, anyOutTrips, relevantTrips]);
 
   // Quick Trip / Van Load Creator State
   const [showNewVanModal, setShowNewVanModal] = useState(false);
@@ -848,15 +857,27 @@ export const SalesmanView: React.FC = () => {
     const prod = products.find((p) => p.id === productId);
     if (!prod) return;
     const { available } = getVehicleStock(activeTrip, prod.id);
+    const depotAvailable = Math.max(0, typeof remainingStock === 'function' ? remainingStock(prod.id) : 999);
 
     const existingItem = cart.items.find((it) => it.productId === productId);
     const currentQty = existingItem ? existingItem.qty : 0;
     const targetQty = currentQty + delta;
 
-    if (delta > 0 && currentQty >= available) {
-      triggerFeedback(`Vehicle only has ${available} cases of ${prod.name} remaining.`, 'warn');
-      if (isLowVision) speakAssistiveText(`Vehicle limit reached. Only ${available} cases available.`);
-      return;
+    if (delta > 0) {
+      if (available > 0 && currentQty >= available) {
+        triggerFeedback(`Vehicle only has ${available} cases of ${prod.name} remaining.`, 'warn');
+        if (isLowVision) speakAssistiveText(`Vehicle limit reached. Only ${available} cases available.`);
+        return;
+      }
+      if (available <= 0) {
+        if (depotAvailable > 0 && currentQty >= depotAvailable) {
+          triggerFeedback(`Depot has only ${depotAvailable} cases of ${prod.name} available.`, 'warn');
+          return;
+        } else if (depotAvailable <= 0) {
+          triggerFeedback(`Both vehicle and depot are out of stock for ${prod.name}.`, 'warn');
+          return;
+        }
+      }
     }
 
     if (targetQty <= 0) {
@@ -2189,7 +2210,7 @@ export const SalesmanView: React.FC = () => {
               setConfirmedBill={setConfirmedBill}
               cart={cart}
               activeTrip={activeTrip}
-              availableTrips={anyOutTrips}
+              availableTrips={anyOutTrips.length > 0 ? anyOutTrips : relevantTrips.length > 0 ? relevantTrips : trips}
               onSelectTripId={(id) => {
                 setSelectedTripId(id);
                 if (isLowVision) speakAssistiveText(`Switched to vehicle ${(trips.find(t => t.id === id))?.vehicle || 'van'}.`);

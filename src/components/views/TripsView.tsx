@@ -319,7 +319,7 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
   }
 
   return (
-    <div id="view-trips" className="mw-workspace w-full min-w-0 max-w-none lg:max-w-3xl mx-auto space-y-4 pb-24">
+    <div id="view-trips" className="mw-workspace w-full min-w-0 max-w-none mx-auto space-y-4 pb-24">
       {/* Header */}
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">Trips</h1>
@@ -327,7 +327,7 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
           type="button"
           id="btn-dispatch-trip"
           onClick={() => setShowNewTrip(true)}
-          className="inline-flex items-center gap-1.5 min-h-11 px-4 rounded-full bg-[#0d4a3a] hover:bg-[#0a3d30] text-white text-sm font-semibold shadow-sm cursor-pointer active:scale-[0.98]"
+          className="inline-flex items-center gap-1.5 min-h-11 px-4 rounded-full bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-sm font-semibold shadow-sm cursor-pointer active:scale-[0.98]"
         >
           <Plus size={17} /> New trip
         </button>
@@ -372,7 +372,7 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
         <div className="space-y-3">
           {activeTrips.length === 0 ? (
             <div className="rounded-2xl border border-black/8 bg-white px-6 py-12 text-center">
-              <div className="mx-auto size-12 rounded-2xl bg-[#e9f1ec] text-[#0d4a3a] flex items-center justify-center mb-3">
+              <div className="mx-auto size-12 rounded-2xl bg-[#e9f1ec] text-[var(--primary)] flex items-center justify-center mb-3">
                 <Truck size={22} />
               </div>
               <h2 className="text-base font-bold text-slate-900">No active trips</h2>
@@ -380,7 +380,7 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
               <button
                 type="button"
                 onClick={() => setShowNewTrip(true)}
-                className="mt-4 inline-flex items-center gap-1.5 min-h-11 px-5 rounded-full bg-[#0d4a3a] text-white text-sm font-semibold cursor-pointer"
+                className="mt-4 inline-flex items-center gap-1.5 min-h-11 px-5 rounded-full bg-[var(--primary)] text-white text-sm font-semibold cursor-pointer"
               >
                 <Plus size={16} /> New trip
               </button>
@@ -410,7 +410,7 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
                 setHistoryLimit(HISTORY_PAGE);
               }}
               placeholder="Search vehicle, beat, date, trip no."
-              className="w-full pl-10 pr-3 py-3 rounded-full border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25"
+              className="w-full pl-10 pr-3 py-3 rounded-full border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25"
             />
           </div>
 
@@ -613,3 +613,5 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
     </div>
   );
 };
+
+export default TripsView;

@@ -246,6 +246,15 @@ function persistDiskCollections() {
 // In-memory collections fallback cache, pre-seeded from disk
 const inMemoryCollections: Record<string, any> = loadDiskCollections();
 
+export function reloadDiskCollections(): Record<string, any> {
+  const loaded = loadDiskCollections();
+  for (const k of Object.keys(inMemoryCollections)) {
+    delete inMemoryCollections[k];
+  }
+  Object.assign(inMemoryCollections, loaded);
+  return inMemoryCollections;
+}
+
 // Helper for generic collections persistence
 async function getCollectionData(key: string): Promise<any> {
   // 1. Check in-memory / disk cache first (instant local-first resolution)
@@ -931,6 +940,15 @@ async function startServer() {
       aiModels: getCandidateModels(),
       timestamp: new Date().toISOString(),
     });
+  });
+
+  app.post("/api/admin/reload-disk", (_req, res) => {
+    try {
+      const collections = reloadDiskCollections();
+      res.json({ ok: true, keys: Object.keys(collections) });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
   });
 
   // AI Invoice Recognition Endpoint (Image, PDF, or text/CSV/Excel content).

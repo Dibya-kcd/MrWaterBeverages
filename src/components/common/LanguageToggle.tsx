@@ -23,7 +23,7 @@ export const LanguageToggle: React.FC<{
         aria-label={code === 'en' ? 'English' : 'Odia'}
         className={`${pad} font-black rounded-lg transition-colors cursor-pointer min-h-[32px] ${
           active
-            ? 'bg-[#0d4a3a] text-white shadow-sm'
+            ? 'bg-[var(--primary)] text-white shadow-sm'
             : 'bg-transparent text-slate-600 hover:bg-slate-100'
         }`}
       >

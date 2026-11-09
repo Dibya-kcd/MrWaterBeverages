@@ -36,7 +36,7 @@ export const PaymentAuditModal: React.FC<{
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/60 overflow-y-auto" role="dialog" aria-modal="true">
       <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl overflow-hidden my-auto">
-        <div className="px-5 py-4 flex items-center justify-between bg-[#0d4a3a] text-white">
+        <div className="px-5 py-4 flex items-center justify-between bg-[var(--primary)] text-white">
           <div className="flex items-center gap-2">
             <History size={18} />
             <div>

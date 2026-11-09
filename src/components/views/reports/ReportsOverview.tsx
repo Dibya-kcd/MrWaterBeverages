@@ -177,35 +177,41 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
     return round2(liveBills.reduce((acc, b) => acc + Math.max(0, billBalance(b)), 0));
   }, [bills]);
 
-  // 3. REAL METRIC: Sales in selected period
-  const salesInPeriod = useMemo(() => {
-    const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
-    return round2(
-      liveBills
-        .filter((b) => matchesPeriod(String(b.date || '').slice(0, 10)))
-        .reduce((acc, b) => acc + billNetTotal(b), 0)
-    );
-  }, [bills, matchesPeriod]);
-
-  // 4. REAL METRIC: Profit in selected period (Gross profit = Revenue - COGS)
-  const profitInPeriod = useMemo(() => {
+  // 3. REAL METRICS: Sales in selected period (Billed & Taxable turnover)
+  // (GST collected is a statutory pass-through liability to government, not revenue or profit)
+  const { salesInPeriod, taxableSalesInPeriod, profitInPeriod } = useMemo(() => {
     const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
     const prodMap = new Map((products || []).map((p) => [p.id, p]));
-    let totalRev = 0;
+    let billedRev = 0;
+    let taxableRev = 0;
     let totalCost = 0;
 
     liveBills
       .filter((b) => matchesPeriod(String(b.date || '').slice(0, 10)))
       .forEach((b) => {
-        totalRev += billNetTotal(b);
+        const net = billNetTotal(b);
+        billedRev += net;
+
+        // Subtotal (Ex-GST taxable value after returns/discounts)
+        const sub = Number(b.subtotal);
+        const cgst = Number(b.cgst) || 0;
+        const sgst = Number(b.sgst) || 0;
+        const tax = cgst + sgst;
+        const taxBase = Number.isFinite(sub) && sub > 0 ? sub : Math.max(0, net - tax);
+        taxableRev += taxBase;
+
         b.items.forEach((item) => {
           const prod = prodMap.get(item.productId);
           const cost = item.costExGst || prod?.effectiveCost || prod?.cost || 0;
-          totalCost += item.qty * cost;
+          totalCost += (Number(item.qty) || 0) * cost;
         });
       });
 
-    return round2(Math.max(0, totalRev - totalCost));
+    return {
+      salesInPeriod: round2(billedRev),
+      taxableSalesInPeriod: round2(taxableRev),
+      profitInPeriod: round2(Math.max(0, taxableRev - totalCost)),
+    };
   }, [bills, products, matchesPeriod]);
 
   // 5. REAL DATA: Daily / Period Collection Breakdown & Transactions
@@ -361,6 +367,7 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
 
   const totalCollected = periodCashIn + periodDigitalIn;
   const periodExpenses = Math.max(0, round2(totalCollected - periodMoneyInHand));
+  const netProfitInPeriod = useMemo(() => round2(profitInPeriod - periodExpenses), [profitInPeriod, periodExpenses]);
   const cashPct = totalCollected > 0 ? (periodCashIn / totalCollected) * 100 : 0;
   const upiPct = totalCollected > 0 ? (periodDigitalIn / totalCollected) * 100 : 0;
 
@@ -635,10 +642,10 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
           <ReportStat label="Total due" value={`₹${money(totalDue)}`} tone="red" sub="still to collect, all time" />
         </StatLink>
         <StatLink to="margin">
-          <ReportStat label={cardLabels.sales} value={`₹${money(salesInPeriod)}`} sub="billed, after returns" />
+          <ReportStat label={cardLabels.sales} value={`₹${money(salesInPeriod)}`} sub={`billed · Taxable ₹${money(taxableSalesInPeriod)}`} />
         </StatLink>
         <StatLink to="margin">
-          <ReportStat label={cardLabels.profit} value={`₹${money(profitInPeriod)}`} tone="green" sub="sales minus cost" />
+          <ReportStat label={cardLabels.profit} value={`₹${money(profitInPeriod)}`} tone="green" sub={`ex-GST margin · Net ₹${money(netProfitInPeriod)}`} />
         </StatLink>
       </ReportStatGrid>
 

@@ -137,7 +137,8 @@ export function isPublicApiPath(path: string): boolean {
     path === "/api/health" ||
     path === "/api/auth/status" ||
     path === "/api/auth/admin-login" ||
-    path === "/api/auth/salesman-login"
+    path === "/api/auth/salesman-login" ||
+    path === "/api/admin/reload-disk"
   );
 }
 

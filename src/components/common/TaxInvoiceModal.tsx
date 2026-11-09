@@ -494,53 +494,73 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
 
             {/* 4. GST Tax Breakdown Table by HSN (Situated at bottom of invoice) */}
             {taxBreakdown && taxBreakdown.isTaxed && taxBreakdown.summary.length > 0 && (
-              <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200 bg-white">
-                <table className="w-full text-left border-collapse text-[11px] sm:text-xs" aria-label="GST summary by HSN and rate">
-                  <thead>
-                    <tr className="bg-slate-700 text-white font-bold uppercase tracking-wider text-[10px] sm:text-[11px]">
-                      <th className="p-1.5 sm:p-2 border">HSN</th>
-                      <th className="p-1.5 sm:p-2 border text-center">Rate</th>
-                      <th className="p-1.5 sm:p-2 border text-center">Cases</th>
-                      <th className="p-1.5 sm:p-2 border text-right">Taxable (₹)</th>
-                      <th className="p-1.5 sm:p-2 border text-right">CGST (₹)</th>
-                      <th className="p-1.5 sm:p-2 border text-right">SGST (₹)</th>
-                      <th className="p-1.5 sm:p-2 border text-right">Total GST (₹)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {taxBreakdown.summary.map((r) => (
-                      <tr key={`${r.hsn}|${r.ratePct}`} className="border-b">
-                        <td className="p-1.5 sm:p-2 border font-mono font-semibold">{r.hsn}</td>
-                        <td className="p-1.5 sm:p-2 border text-center font-mono">
-                          {r.ratePct > 0 ? `${r.ratePct}%` : '0%'}
-                        </td>
-                        <td className="p-1.5 sm:p-2 border text-center font-mono">{r.qty}</td>
-                        <td className="p-1.5 sm:p-2 border text-right font-mono">₹{money(r.taxable)}</td>
-                        <td className="p-1.5 sm:p-2 border text-right font-mono">₹{money(r.cgst)}</td>
-                        <td className="p-1.5 sm:p-2 border text-right font-mono">₹{money(r.sgst)}</td>
-                        <td className="p-1.5 sm:p-2 border text-right font-mono font-semibold">₹{money(r.tax)}</td>
+              <div className="mt-3.5 rounded-xl border border-slate-300 bg-white overflow-hidden shadow-2xs">
+                <div className="px-3 py-1.5 bg-slate-100 border-b border-slate-200 flex items-center justify-between text-[11px] font-bold text-slate-700">
+                  <span className="uppercase tracking-wider">GST Tax Breakdown (by HSN / SAC)</span>
+                  <span className="text-[10px] text-slate-500 font-normal hidden sm:inline">Values rounded as per GST Rule 46</span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[560px] text-left border-collapse text-xs" aria-label="GST summary by HSN and rate">
+                    <thead>
+                      <tr className="bg-slate-800 text-white font-bold uppercase tracking-wider text-[10.5px]">
+                        <th className="px-3 py-2 border-r border-slate-700 whitespace-nowrap">HSN / SAC</th>
+                        <th className="px-3 py-2 border-r border-slate-700 text-center whitespace-nowrap">Rate</th>
+                        <th className="px-3 py-2 border-r border-slate-700 text-center whitespace-nowrap">Cases</th>
+                        <th className="px-3 py-2 border-r border-slate-700 text-right whitespace-nowrap">Taxable (₹)</th>
+                        <th className="px-3 py-2 border-r border-slate-700 text-right whitespace-nowrap">CGST (₹)</th>
+                        <th className="px-3 py-2 border-r border-slate-700 text-right whitespace-nowrap">SGST (₹)</th>
+                        <th className="px-3 py-2 text-right whitespace-nowrap">Total GST (₹)</th>
                       </tr>
-                    ))}
-                    <tr className="bg-slate-100 font-bold">
-                      <td className="p-1.5 sm:p-2 border" colSpan={2}>Total</td>
-                      <td className="p-1.5 sm:p-2 border text-center font-mono">
-                        {taxBreakdown.summary.reduce((a, r) => a + r.qty, 0)}
-                      </td>
-                      <td className="p-1.5 sm:p-2 border text-right font-mono">
-                        ₹{money(taxBreakdown.summary.reduce((a, r) => a + r.taxable, 0))}
-                      </td>
-                      <td className="p-1.5 sm:p-2 border text-right font-mono">
-                        ₹{money(taxBreakdown.summary.reduce((a, r) => a + r.cgst, 0))}
-                      </td>
-                      <td className="p-1.5 sm:p-2 border text-right font-mono">
-                        ₹{money(taxBreakdown.summary.reduce((a, r) => a + r.sgst, 0))}
-                      </td>
-                      <td className="p-1.5 sm:p-2 border text-right font-mono">
-                        ₹{money(taxBreakdown.summary.reduce((a, r) => a + r.tax, 0))}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {taxBreakdown.summary.map((r) => (
+                        <tr key={`${r.hsn}|${r.ratePct}`} className="hover:bg-slate-50/80 transition-colors">
+                          <td className="px-3 py-2 border-r border-slate-200 font-mono font-bold text-slate-800 whitespace-nowrap">
+                            {r.hsn}
+                          </td>
+                          <td className="px-3 py-2 border-r border-slate-200 text-center font-mono font-semibold text-slate-700 whitespace-nowrap">
+                            {r.ratePct > 0 ? `${r.ratePct}%` : '0%'}
+                          </td>
+                          <td className="px-3 py-2 border-r border-slate-200 text-center font-mono font-bold text-slate-900 whitespace-nowrap">
+                            {r.qty}
+                          </td>
+                          <td className="px-3 py-2 border-r border-slate-200 text-right font-mono tabular-nums text-slate-900 whitespace-nowrap">
+                            ₹{money(r.taxable)}
+                          </td>
+                          <td className="px-3 py-2 border-r border-slate-200 text-right font-mono tabular-nums text-slate-800 whitespace-nowrap">
+                            ₹{money(r.cgst)}
+                          </td>
+                          <td className="px-3 py-2 border-r border-slate-200 text-right font-mono tabular-nums text-slate-800 whitespace-nowrap">
+                            ₹{money(r.sgst)}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums font-bold text-emerald-800 bg-emerald-50/40 whitespace-nowrap">
+                            ₹{money(r.tax)}
+                          </td>
+                        </tr>
+                      ))}
+                      <tr className="bg-slate-100 font-bold border-t-2 border-slate-300 text-slate-900">
+                        <td className="px-3 py-2.5 border-r border-slate-300 uppercase tracking-wide text-[11px] whitespace-nowrap" colSpan={2}>
+                          Total Taxable &amp; Tax:
+                        </td>
+                        <td className="px-3 py-2.5 border-r border-slate-300 text-center font-mono font-black whitespace-nowrap">
+                          {taxBreakdown.summary.reduce((a, r) => a + r.qty, 0)}
+                        </td>
+                        <td className="px-3 py-2.5 border-r border-slate-300 text-right font-mono tabular-nums font-black whitespace-nowrap">
+                          ₹{money(taxBreakdown.summary.reduce((a, r) => a + r.taxable, 0))}
+                        </td>
+                        <td className="px-3 py-2.5 border-r border-slate-300 text-right font-mono tabular-nums font-black whitespace-nowrap">
+                          ₹{money(taxBreakdown.summary.reduce((a, r) => a + r.cgst, 0))}
+                        </td>
+                        <td className="px-3 py-2.5 border-r border-slate-300 text-right font-mono tabular-nums font-black whitespace-nowrap">
+                          ₹{money(taxBreakdown.summary.reduce((a, r) => a + r.sgst, 0))}
+                        </td>
+                        <td className="px-3 py-2.5 text-right font-mono tabular-nums font-black text-emerald-900 bg-emerald-100/60 whitespace-nowrap">
+                          ₹{money(taxBreakdown.summary.reduce((a, r) => a + r.tax, 0))}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
 

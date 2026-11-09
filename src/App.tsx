@@ -6,7 +6,8 @@ import { ToastHost } from "./components/common/ToastHost";
 import { AppHeader } from "./components/common/AppHeader";
 import { AuthScreen } from "./components/common/AuthScreen";
 import { MobileNav } from "./components/common/MobileNav";
-import { Nav, DesktopSidebar } from "./components/common/Nav";
+import { Nav, DesktopSidebar, TabletRail } from "./components/common/Nav";
+import { TopBar } from "./components/common/TopBar";
 import { OfflineIndicator } from "./components/common/OfflineIndicator";
 import { UpdatePrompt } from "./components/common/UpdatePrompt";
 import { useLedger } from "./context/LedgerContext";
@@ -80,7 +81,7 @@ const CratesDepositsView = lazyWithRetry(() => import("./components/views/Crates
 
 const ScreenLoading: React.FC = () => (
   <div className="flex items-center justify-center py-24" role="status" aria-label="Loading">
-    <div className="h-8 w-8 rounded-full border-4 border-slate-200 border-t-[#0d4a3a] animate-spin" />
+    <div className="h-8 w-8 rounded-full border-4 border-slate-200 border-t-[var(--primary)] animate-spin" />
   </div>
 );
 
@@ -93,6 +94,7 @@ export const App: React.FC = () => {
     currentUser,
     notice,
     dismissNotice,
+    highContrast,
   } = useLedger();
   const syncStatus = useSyncExternalStore(subscribeToSyncStatus, getSyncStatus);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -164,14 +166,14 @@ export const App: React.FC = () => {
     >
       <style>{`
         :focus-visible, .focus-ring:focus-visible {
-          outline: 3px solid ${palette.focus} !important;
+          outline: 2px solid ${highContrast ? palette.focus : "var(--primary)"} !important;
           outline-offset: 2px !important;
         }
         input, select, button {
           font-family: inherit;
         }
         @media print {
-          #desktop-sidebar, #mobile-menu-sheet, #mobile-nav, #app-header, #accessibility-bar, #sync-alert-banner, button, .no-print {
+          #desktop-sidebar, #tablet-rail, #app-topbar, #mobile-menu-sheet, #mobile-nav, #app-header, #accessibility-bar, #sync-alert-banner, button, .no-print {
             display: none !important;
           }
         }
@@ -188,14 +190,14 @@ export const App: React.FC = () => {
           </Suspense>
         </div>
       ) : (
-        /* Crate shell — desktop sidebar + mobile bottom nav */
-        <div className="flex flex-col lg:flex-row min-h-dvh min-h-screen w-full max-w-[100vw] overflow-x-hidden">
+        /* Shell: phone = header + floating bottom bar, tablet = icon rail, desktop = sidebar + top bar (see shell.css) */
+        <div className="flex flex-row min-h-dvh min-h-screen w-full max-w-[100vw] overflow-x-hidden">
           <DesktopSidebar />
+          <TabletRail onOpenMenu={() => setMenuOpen(true)} />
           <Nav open={menuOpen} onClose={() => setMenuOpen(false)} />
-          <div className="app-main flex flex-col flex-1 min-h-0 min-w-0 w-full max-w-full pb-[calc(4.5rem+env(safe-area-inset-bottom,0px))] lg:pb-0 overflow-x-hidden overflow-y-auto">
-            <div className="lg:hidden">
-              <AppHeader onMenuClick={() => setMenuOpen(true)} />
-            </div>
+          <div className="app-main hh-main flex flex-col flex-1 min-h-0 min-w-0 w-full max-w-full overflow-x-hidden overflow-y-auto">
+            <AppHeader onMenuClick={() => setMenuOpen(true)} />
+            <TopBar />
             {syncStatus &&
               (!syncStatus.isOnline || syncStatus.pendingCount > 0 || (syncStatus.hasPersistentFailure && syncStatus.consecutiveFailures > 0)) && (
                 <aside
@@ -353,7 +355,7 @@ export const App: React.FC = () => {
               tabIndex={-1}
             >
               <ErrorBoundary fallbackTitle="View Rendering Error">
-                <div className="flex-1 w-full max-w-none lg:max-w-[1200px] mx-auto px-2.5 sm:px-4 lg:px-6 py-3 sm:py-4 lg:py-5">
+                <div className="hh-page flex-1">
                 <Suspense fallback={<ScreenLoading />}>
                 {tab === "dashboard" && <DashboardView />}
                 {tab === "customers" && <CustomersView />}
@@ -382,9 +384,7 @@ export const App: React.FC = () => {
                 </div>
               </ErrorBoundary>
             </main>
-            <div className="lg:hidden">
-              <MobileNav onOpenMenu={() => setMenuOpen(true)} />
-            </div>
+            <MobileNav onOpenMenu={() => setMenuOpen(true)} />
           </div>
         </div>
       )}
@@ -398,7 +398,7 @@ export const App: React.FC = () => {
         <div
           role="alert"
           aria-live="assertive"
-          className="fixed left-3 right-3 bottom-[4.5rem] sm:left-auto sm:right-5 sm:bottom-5 sm:max-w-sm z-[9999] pointer-events-auto"
+          className="fixed left-3 right-3 bottom-[6.5rem] sm:left-auto sm:right-5 sm:bottom-5 sm:max-w-sm z-[9999] pointer-events-auto"
         >
           <div className="bg-slate-900/95 text-white border border-amber-400/80 rounded-xl shadow-2xl px-3 py-2.5 text-xs backdrop-blur-sm flex gap-2 items-start">
             <div className="whitespace-pre-line leading-snug flex-1 min-w-0 max-h-28 overflow-y-auto">

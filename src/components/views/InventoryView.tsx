@@ -340,7 +340,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
     <div id="view-inventory" className="mw-workspace flex flex-col gap-4 sm:gap-5 w-full min-w-0 max-w-full">
       {/* Toast Notification */}
       {notification && (
-        <div className="flex items-center gap-2 p-3 bg-[#0d4a3a] text-white rounded-2xl shadow-md animate-fade-in text-sm font-semibold">
+        <div className="flex items-center gap-2 p-3 bg-[var(--primary)] text-white rounded-2xl shadow-md animate-fade-in text-sm font-semibold">
           <CheckCircle2 size={18} />
           <span>{notification}</span>
         </div>
@@ -390,7 +390,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                     : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
-                <Icon size={15} className={`shrink-0 ${active ? 'text-[#0d4a3a]' : 'text-slate-400'}`} />
+                <Icon size={15} className={`shrink-0 ${active ? 'text-[var(--primary)]' : 'text-slate-400'}`} />
                 <span className="truncate max-w-full">{t.label}</span>
                 {t.count !== undefined && (
                   <span
@@ -399,8 +399,8 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                         ? 'absolute top-0.5 right-1 sm:static bg-amber-500 text-white sm:bg-black/5 sm:text-slate-500'
                         : 'hidden sm:inline-block'
                     } text-[10px] sm:text-[10px] font-bold px-1 sm:px-1.5 py-px sm:py-0.5 rounded-full tabular-nums ${
-                      active ? 'sm:!bg-[#ebe8e1] sm:!text-[#0d4a3a]' : ''
-                    } ${t.id === 'dispositions' ? '' : active ? 'bg-[#ebe8e1] text-[#0d4a3a]' : 'bg-black/5 text-slate-500'}`}
+                      active ? 'sm:!bg-[#ebe8e1] sm:!text-[var(--primary)]' : ''
+                    } ${t.id === 'dispositions' ? '' : active ? 'bg-[#ebe8e1] text-[var(--primary)]' : 'bg-black/5 text-slate-500'}`}
                   >
                     {t.count}
                   </span>
@@ -484,7 +484,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
           .sort((a, b) => a.p.name.localeCompare(b.p.name));
 
         return (
-          <div className="flex flex-col gap-4 max-w-none lg:max-w-3xl mx-auto w-full">
+          <div className="flex flex-col gap-4 max-w-none mx-auto w-full">
             <div className="flex flex-col sm:flex-row gap-2">
               <div className="relative flex-1">
                 <Search
@@ -496,13 +496,13 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   placeholder="Search product"
-                  className="w-full pl-9 pr-3 py-2 sm:py-2.5 rounded-full border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25"
+                  className="w-full pl-9 pr-3 py-2 sm:py-2.5 rounded-full border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25"
                 />
               </div>
               <select
                 value={selectedWarehouse}
                 onChange={(e) => setSelectedWarehouse(e.target.value)}
-                className="w-full sm:w-48 px-3 py-2.5 rounded-full border border-black/10 bg-white text-sm font-medium cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25"
+                className="w-full sm:w-48 px-3 py-2.5 rounded-full border border-black/10 bg-white text-sm font-medium cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25"
               >
                 <option value="all">All locations</option>
                 {warehouses.map((w) => (
@@ -656,7 +656,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         });
 
         return (
-          <div className="flex flex-col gap-4 max-w-none lg:max-w-3xl mx-auto w-full">
+          <div className="flex flex-col gap-4 max-w-none mx-auto w-full">
             {sortedGrns.length === 0 ? (
               <div className="rounded-2xl border border-black/8 bg-white shadow-sm px-6 py-12 text-center">
                 <p className="text-sm font-semibold text-slate-800">No purchases yet</p>
@@ -667,7 +667,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                       setSelectedGrnToEdit(null);
                       setIsInwardModalOpen(true);
                     }}
-                    className="px-4 py-2 rounded-full bg-[#0d4a3a] text-white text-sm font-semibold cursor-pointer"
+                    className="px-4 py-2 rounded-full bg-[var(--primary)] text-white text-sm font-semibold cursor-pointer"
                   >
                     New purchase
                   </button>
@@ -703,7 +703,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                         setSelectedGrnToEdit(null);
                         setIsInwardModalOpen(true);
                       }}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0d4a3a] text-xs font-semibold text-white hover:bg-[#0a3d30] cursor-pointer shadow-xs"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--primary)] text-xs font-semibold text-white hover:bg-[var(--primary-hover)] cursor-pointer shadow-xs"
                     >
                       <Plus size={13} />
                       <span>New purchase</span>
@@ -840,7 +840,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                                 setSelectedGrnToEdit(g);
                                 setIsInwardModalOpen(true);
                               }}
-                              className="inline-flex items-center justify-center gap-1.5 px-2 sm:px-3 py-2 rounded-xl bg-white border border-black/10 text-xs sm:text-sm font-semibold text-[#0d4a3a] cursor-pointer hover:bg-[#0d4a3a]/5"
+                              className="inline-flex items-center justify-center gap-1.5 px-2 sm:px-3 py-2 rounded-xl bg-white border border-black/10 text-xs sm:text-sm font-semibold text-[var(--primary)] cursor-pointer hover:bg-[var(--primary)]/5"
                             >
                               <Edit2 size={14} />
                               Edit
@@ -1003,7 +1003,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                       [opts.key]: e.target.value,
                     }))
                   }
-                  className="w-full sm:max-w-[5rem] sm:ml-auto block px-2 py-1.5 rounded-lg border border-black/10 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                  className="w-full sm:max-w-[5rem] sm:ml-auto block px-2 py-1.5 rounded-lg border border-black/10 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                 />
               </div>
               <div className="sm:text-right">
@@ -1032,7 +1032,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
             : '—';
 
         return (
-          <div className="flex flex-col gap-3 max-w-none lg:max-w-3xl mx-auto w-full">
+          <div className="flex flex-col gap-3 max-w-none mx-auto w-full">
             {/* Toolbar: godown + search + how-it-works */}
             <div className="flex flex-col sm:flex-row gap-2">
               <div className="flex items-center gap-1.5 sm:w-56">
@@ -1043,7 +1043,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                     setAuditWhId(e.target.value);
                     setAuditCounts({});
                   }}
-                  className="flex-1 min-w-0 px-3 py-2 sm:py-2.5 rounded-full border border-black/10 bg-white text-sm font-medium text-slate-800 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25"
+                  className="flex-1 min-w-0 px-3 py-2 sm:py-2.5 rounded-full border border-black/10 bg-white text-sm font-medium text-slate-800 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25"
                 >
                   {warehouses.map((w) => (
                     <option key={w.id} value={w.id}>
@@ -1063,7 +1063,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                   value={auditSearch}
                   onChange={(e) => setAuditSearch(e.target.value)}
                   placeholder="Search product or batch"
-                  className="w-full pl-9 pr-3 py-2 sm:py-2.5 rounded-full border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25"
+                  className="w-full pl-9 pr-3 py-2 sm:py-2.5 rounded-full border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25"
                 />
               </div>
             </div>
@@ -1112,20 +1112,20 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
             {/* Save bar — fixed above the bottom nav on phone/tablet so it is always reachable on a long list.
                 (position: sticky does not engage here because ancestors use overflow:auto.) */}
             <div className="lg:hidden h-14" aria-hidden="true" />
-            <div className="fixed inset-x-0 z-30 bottom-[calc(4rem+env(safe-area-inset-bottom,0px))] lg:static lg:z-auto px-3 sm:px-6 lg:px-0 py-2 bg-[#f6f4ef]/95 backdrop-blur border-t border-black/5 lg:border-0 lg:bg-transparent lg:backdrop-blur-none lg:py-0">
-              <div className="max-w-none lg:max-w-3xl mx-auto flex flex-row gap-2 items-center">
+            <div className="fixed inset-x-0 z-30 bottom-[calc(4rem+env(safe-area-inset-bottom,0px))] lg:static lg:z-auto px-3 sm:px-6 lg:px-0 py-2 bg-[var(--bg)]/95 backdrop-blur border-t border-black/5 lg:border-0 lg:bg-transparent lg:backdrop-blur-none lg:py-0">
+              <div className="max-w-none mx-auto flex flex-row gap-2 items-center">
                 <input
                   type="text"
                   value={auditNote}
                   onChange={(e) => setAuditNote(e.target.value)}
                   placeholder="Note (optional)"
-                  className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                  className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                 />
                 <button
                   type="button"
                   onClick={handleSaveAudit}
                   disabled={countedLines === 0}
-                  className="shrink-0 px-4 sm:px-5 py-2.5 rounded-xl bg-[#0d4a3a] text-white font-semibold text-sm cursor-pointer hover:bg-[#0a3d30] disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                  className="shrink-0 px-4 sm:px-5 py-2.5 rounded-xl bg-[var(--primary)] text-white font-semibold text-sm cursor-pointer hover:bg-[var(--primary-hover)] disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
                 >
                   Save{countedLines > 0 ? ` (${countedLines})` : ''}
                 </button>
@@ -1223,7 +1223,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         );
 
         return (
-          <div className="flex flex-col gap-3 max-w-none lg:max-w-3xl mx-auto w-full">
+          <div className="flex flex-col gap-3 max-w-none mx-auto w-full">
             <div className="rounded-2xl border border-black/8 bg-white shadow-sm p-3 sm:p-5 space-y-3 sm:space-y-4">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="text-sm font-bold text-slate-800">Move stock between godowns</h2>
@@ -1240,7 +1240,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                   <select
                     value={fromId}
                     onChange={(e) => setXferFromId(e.target.value)}
-                    className="w-full px-2.5 sm:px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm font-medium cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                    className="w-full px-2.5 sm:px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm font-medium cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                   >
                     <option value="">Choose…</option>
                     {warehouses.map((w) => (
@@ -1257,7 +1257,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                   <select
                     value={toId}
                     onChange={(e) => setXferToId(e.target.value)}
-                    className="w-full px-2.5 sm:px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm font-medium cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                    className="w-full px-2.5 sm:px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm font-medium cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                   >
                     <option value="">Choose…</option>
                     {warehouses.map((w) => (
@@ -1321,7 +1321,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                             ),
                           );
                         }}
-                        className={`w-16 sm:w-20 shrink-0 px-2 py-1.5 rounded-lg border text-sm text-right font-semibold tabular-nums focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30 ${
+                        className={`w-16 sm:w-20 shrink-0 px-2 py-1.5 rounded-lg border text-sm text-right font-semibold tabular-nums focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30 ${
                           over ? 'border-rose-400 bg-rose-50' : 'border-black/10'
                         }`}
                       />
@@ -1349,7 +1349,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                   if (pid) addProductLine(pid);
                 }}
                 disabled={!fromId}
-                className="w-full px-3 py-2.5 rounded-xl border border-dashed border-black/15 bg-slate-50/80 text-sm text-slate-600 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30 disabled:opacity-50"
+                className="w-full px-3 py-2.5 rounded-xl border border-dashed border-black/15 bg-slate-50/80 text-sm text-slate-600 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30 disabled:opacity-50"
               >
                 <option value="">
                   {fromId ? '+ Add product…' : 'Select From warehouse first…'}
@@ -1378,14 +1378,14 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                 onChange={(e) => setXferNote(e.target.value)}
                 placeholder="Note (optional) — e.g. Shift to Chakan godown"
                 aria-label="Transfer note"
-                className="w-full px-3 py-2.5 rounded-xl border border-black/10 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                className="w-full px-3 py-2.5 rounded-xl border border-black/10 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
               />
 
               <button
                 type="button"
                 disabled={xferBusy || xferLines.length === 0 || !fromId || !toId}
                 onClick={executeTransfer}
-                className="w-full py-3 rounded-xl bg-[#0d4a3a] text-white font-bold text-sm cursor-pointer hover:bg-[#0a3d30] disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full py-3 rounded-xl bg-[var(--primary)] text-white font-bold text-sm cursor-pointer hover:bg-[var(--primary-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Transfer stock
               </button>

@@ -49,7 +49,7 @@ export const RecordRefundModal: React.FC<Props> = ({
       aria-modal="true"
     >
       <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl overflow-hidden my-auto">
-        <div className="px-5 py-4 flex items-center justify-between bg-[#0d4a3a] text-white">
+        <div className="px-5 py-4 flex items-center justify-between bg-[var(--primary)] text-white">
           <div className="flex items-center gap-2">
             <Undo2 size={18} />
             <div>
@@ -94,7 +94,7 @@ export const RecordRefundModal: React.FC<Props> = ({
                   type="button"
                   onClick={() => setMode(m.id)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${
-                    mode === m.id ? "bg-[#0d4a3a] text-white border-[#0d4a3a]" : "bg-white text-slate-700 border-slate-300"
+                    mode === m.id ? "bg-[var(--primary)] text-white border-[var(--primary)]" : "bg-white text-slate-700 border-slate-300"
                   }`}
                 >
                   {m.label}
@@ -116,7 +116,7 @@ export const RecordRefundModal: React.FC<Props> = ({
             <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-slate-300 text-sm font-semibold text-slate-700">
               Cancel
             </button>
-            <button type="button" onClick={submit} className="flex-1 py-2.5 rounded-xl bg-[#0d4a3a] text-white text-sm font-semibold">
+            <button type="button" onClick={submit} className="flex-1 py-2.5 rounded-xl bg-[var(--primary)] text-white text-sm font-semibold">
               Record refund
             </button>
           </div>

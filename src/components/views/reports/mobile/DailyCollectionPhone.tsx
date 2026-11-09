@@ -158,7 +158,7 @@ export const DailyCollectionPhone: React.FC<DailyCollectionPhoneProps> = ({
           <button
             type="button"
             onClick={onRecordPayment}
-            className="shrink-0 min-h-[44px] px-3.5 rounded-2xl border border-black/10 bg-white text-[14px] font-bold text-[#0b4d3a] inline-flex items-center gap-1.5 cursor-pointer active:bg-emerald-50"
+            className="shrink-0 min-h-[44px] px-3.5 rounded-2xl border border-black/10 bg-white text-[14px] font-bold text-[var(--primary)] inline-flex items-center gap-1.5 cursor-pointer active:bg-emerald-50"
           >
             <Plus size={16} aria-hidden="true" /> Payment
           </button>

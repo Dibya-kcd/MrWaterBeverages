@@ -195,7 +195,7 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
               type="button"
               id="btn-create-next-invoice-bottom"
               onClick={onCreateNextBill}
-              className="flex-1 min-h-[50px] rounded-xl font-black text-[15px] bg-[#0B3D32] hover:bg-[#072720] text-white cursor-pointer flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
+              className="flex-1 min-h-[50px] rounded-xl font-black text-[15px] bg-[var(--primary)] hover:bg-[var(--primary)] text-white cursor-pointer flex items-center justify-center gap-2 active:scale-[0.98] transition-transform"
             >
               <Plus size={19} strokeWidth={3} />
               <span>New sale</span>

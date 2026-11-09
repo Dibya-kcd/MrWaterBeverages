@@ -266,7 +266,7 @@ export const PromotionsView: React.FC = () => {
   };
 
   return (
-    <div id="view-promotions" className="mw-workspace min-w-0 max-w-full space-y-4 pb-2">
+    <div id="view-promotions" className="hh-view mw-workspace min-w-0 max-w-full space-y-4 pb-2">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div>
@@ -335,7 +335,7 @@ export const PromotionsView: React.FC = () => {
                     });
                     setShowAddPromo(true);
                   }}
-                  className="w-full py-2.5 rounded-xl bg-[#0B3D32] hover:bg-[#0a342b] text-white text-sm font-semibold cursor-pointer transition-colors"
+                  className="w-full py-2.5 rounded-xl bg-[var(--primary)] hover:bg-[#0a342b] text-white text-sm font-semibold cursor-pointer transition-colors"
                 >
                   Create an offer
                 </button>
@@ -363,7 +363,7 @@ export const PromotionsView: React.FC = () => {
                       required
                       value={draftPromo.name}
                       onChange={(e) => setDraftPromo({ ...draftPromo, name: e.target.value })}
-                      className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20 focus:border-[#0B3D32]"
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20 focus:border-[var(--primary)]"
                       placeholder="e.g. Diwali Deal"
                     />
                   </div>
@@ -393,7 +393,7 @@ export const PromotionsView: React.FC = () => {
                           }}
                           className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors text-center ${
                             draftPromo.type === t.id
-                              ? 'bg-[#0B3D32] text-white border-[#0B3D32]'
+                              ? 'bg-[var(--primary)] text-white border-[var(--primary)]'
                               : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
                           }`}
                         >
@@ -413,7 +413,7 @@ export const PromotionsView: React.FC = () => {
                         max={100}
                         value={draftPromo.percent}
                         onChange={(e) => setDraftPromo({ ...draftPromo, percent: Number(e.target.value) })}
-                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                       />
                     </div>
                   )}
@@ -427,7 +427,7 @@ export const PromotionsView: React.FC = () => {
                         min={0}
                         value={draftPromo.flatPerCase}
                         onChange={(e) => setDraftPromo({ ...draftPromo, flatPerCase: Number(e.target.value) })}
-                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                        className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                       />
                     </div>
                   )}
@@ -442,7 +442,7 @@ export const PromotionsView: React.FC = () => {
                           min={1}
                           value={draftPromo.buyQty}
                           onChange={(e) => setDraftPromo({ ...draftPromo, buyQty: Number(e.target.value) })}
-                          className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                          className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                         />
                       </div>
                       <div>
@@ -452,7 +452,7 @@ export const PromotionsView: React.FC = () => {
                           min={1}
                           value={draftPromo.freeQty}
                           onChange={(e) => setDraftPromo({ ...draftPromo, freeQty: Number(e.target.value) })}
-                          className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                          className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                         />
                       </div>
                     </div>
@@ -476,7 +476,7 @@ export const PromotionsView: React.FC = () => {
                             min={1}
                             value={draftPromo.buyQty}
                             onChange={(e) => setDraftPromo({ ...draftPromo, buyQty: Number(e.target.value) })}
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                           />
                         </div>
                         <div>
@@ -494,7 +494,7 @@ export const PromotionsView: React.FC = () => {
                                 freeProductQty: Number(e.target.value),
                               })
                             }
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                           />
                         </div>
                       </div>
@@ -512,7 +512,7 @@ export const PromotionsView: React.FC = () => {
                               freeProductId: e.target.value ? Number(e.target.value) : undefined,
                             })
                           }
-                          className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                         >
                           <option value="">-- Choose Free Product --</option>
                           {products.map((p) => (
@@ -573,7 +573,7 @@ export const PromotionsView: React.FC = () => {
                             min={1}
                             value={draftPromo.buyQty}
                             onChange={(e) => setDraftPromo({ ...draftPromo, buyQty: Number(e.target.value) })}
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                             placeholder="e.g. 2"
                           />
                         </div>
@@ -592,7 +592,7 @@ export const PromotionsView: React.FC = () => {
                                 freeProductQty: Number(e.target.value),
                               })
                             }
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                             placeholder="e.g. 1"
                           />
                         </div>
@@ -610,7 +610,7 @@ export const PromotionsView: React.FC = () => {
                               freeItemRule: e.target.value as any,
                             })
                           }
-                          className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                         >
                           <option value="CHEAPEST_IN_GROUP">
                             CHEAPEST_IN_GROUP (Default - Protects profit margin)
@@ -641,7 +641,7 @@ export const PromotionsView: React.FC = () => {
                                 freeProductId: e.target.value ? Number(e.target.value) : undefined,
                               })
                             }
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                           >
                             <option value="">-- Choose Free Product --</option>
                             {products.map((p) => (
@@ -703,7 +703,7 @@ export const PromotionsView: React.FC = () => {
                                 productGroup: prev.productGroup?.length === allIds.length ? [] : allIds,
                               }));
                             }}
-                            className="text-[11px] font-semibold text-[#0B3D32] hover:underline"
+                            className="text-[11px] font-semibold text-[var(--primary)] hover:underline"
                           >
                             {draftPromo.productIds.length === products.length ? 'Deselect all' : 'Select all'}
                           </button>
@@ -750,7 +750,7 @@ export const PromotionsView: React.FC = () => {
                             onChange={(e) =>
                               setDraftPromo({ ...draftPromo, requiredDistinctTypes: Number(e.target.value) })
                             }
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                           />
                         </div>
                         <div>
@@ -764,7 +764,7 @@ export const PromotionsView: React.FC = () => {
                             onChange={(e) =>
                               setDraftPromo({ ...draftPromo, minQtyPerType: Number(e.target.value) })
                             }
-                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                            className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                           />
                         </div>
                       </div>
@@ -782,7 +782,7 @@ export const PromotionsView: React.FC = () => {
                               freeQty: Number(e.target.value),
                             })
                           }
-                          className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                         />
                       </div>
                     </div>
@@ -832,7 +832,7 @@ export const PromotionsView: React.FC = () => {
 
                   <button
                     type="submit"
-                    className="w-full py-2.5 rounded-xl bg-[#0B3D32] hover:bg-[#0a342b] text-white text-sm font-semibold cursor-pointer transition-colors flex items-center justify-center gap-1.5"
+                    className="w-full py-2.5 rounded-xl bg-[var(--primary)] hover:bg-[#0a342b] text-white text-sm font-semibold cursor-pointer transition-colors flex items-center justify-center gap-1.5"
                   >
                     <CheckCircle2 size={16} />
                     {editingPromoId ? 'Save changes' : 'Publish offer'}
@@ -873,7 +873,7 @@ export const PromotionsView: React.FC = () => {
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search offers…"
-                  className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#0B3D32]/20"
+                  className="w-full pl-9 pr-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20"
                 />
               </div>
             </div>
@@ -927,7 +927,7 @@ export const PromotionsView: React.FC = () => {
                           className={`px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-colors ${
                             live
                               ? 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                              : 'bg-[#0B3D32] border-[#0B3D32] text-white hover:brightness-110'
+                              : 'bg-[var(--primary)] border-[var(--primary)] text-white hover:brightness-110'
                           }`}
                         >
                           {live ? 'Pause' : 'Activate'}

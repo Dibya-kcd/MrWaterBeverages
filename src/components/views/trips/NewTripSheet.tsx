@@ -72,7 +72,6 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
   lockedSalesman,
   initialVehicle = '',
 }) => {
-  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [vehicle, setVehicle] = useState(initialVehicle);
   const [route, setRoute] = useState('');
   const [salesmanId, setSalesmanId] = useState(lockedSalesman?.id || '');
@@ -153,28 +152,19 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
       .filter((l) => l.qty > 0),
   });
 
-  const goToProducts = () => {
+  const confirm = () => {
     setError(null);
     if (!vehicle.trim()) {
       setError('Enter the vehicle (van) for this trip.');
+      document.getElementById('vehicle-name')?.focus();
       return;
     }
-    setStep(2);
-  };
-
-  const goToReview = () => {
-    setError(null);
-    setReviewError(null);
     if (totalUnits <= 0) {
       setError('Add at least one product with cases to load.');
       return;
     }
-    setStep(3);
-  };
-
-  const confirm = () => {
     const msg = onSubmit(payload());
-    if (msg) setReviewError(msg);
+    if (msg) setError(msg);
   };
 
   const handleCancel = () => (lines.length > 0 || vehicle.trim() ? setAskDiscard(true) : onClose());
@@ -204,18 +194,7 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const stepTitle =
-    step === 1 ? 'Trip details' : step === 2 ? 'Add products' : 'Review & confirm';
-  const stepSub =
-    step === 1
-      ? lockedSalesman
-        ? `${lockedSalesman.name} · signed in`
-        : 'Vehicle, salesman, date'
-      : step === 2
-        ? totalUnits > 0
-          ? `${totalUnits} cs · ${lines.filter((l) => Number(l.qty) > 0).length} items`
-          : 'Pick products for the van'
-        : 'Check everything, then confirm';
+  const loadedLines = lines.filter((l) => Number(l.qty) > 0);
 
   return (
     <div
@@ -230,446 +209,287 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
         <div className="mx-auto max-w-xl px-3 py-2 flex items-center gap-2.5">
           <button
             type="button"
-            onClick={() => {
-              if (step === 1) handleCancel();
-              else if (step === 2) setStep(1);
-              else setStep(2);
-            }}
-            aria-label={step === 1 ? 'Close' : 'Back'}
+            onClick={handleCancel}
+            aria-label="Close"
             className="size-11 shrink-0 rounded-xl border border-black/15 bg-white flex items-center justify-center text-slate-700 cursor-pointer"
           >
-            {step === 1 ? <X size={20} /> : <ArrowLeft size={20} />}
+            <X size={20} />
           </button>
           <div className="min-w-0 flex-1">
             <h2
               id="new-load-sheet-title"
               className="flex items-center gap-2 text-[17px] font-black text-slate-900 leading-tight"
             >
-              <Truck size={18} className="text-[#0d4a3a]" /> {stepTitle}
+              <Truck size={18} className="shrink-0 text-[var(--primary)]" />
+              <span className="truncate">New trip</span>
             </h2>
-            <p className="text-xs text-slate-500 truncate">{stepSub}</p>
+            <p className="text-xs text-slate-500 truncate">
+              {totalUnits > 0
+                ? `${totalUnits} cs · ${loadedLines.length} item${loadedLines.length === 1 ? '' : 's'} loaded`
+                : lockedSalesman
+                  ? `${lockedSalesman.name} · signed in`
+                  : 'Pick the van, then add products'}
+            </p>
           </div>
         </div>
-        <StepProgress step={step} />
       </div>
 
-      {/* Body */}
-      <div id="new-trip-scroll" className="flex-1 overflow-y-auto overscroll-contain">
+      {/* Body: one screen — van details on top, products below */}
+      <div id="new-trip-scroll" className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
         <div className="mx-auto max-w-xl px-3 pt-3 pb-6 space-y-3">
-          {error && (
-            <div
-              role="alert"
-              className="flex items-start gap-2 p-3 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 text-[13px] font-bold"
-            >
-              <AlertTriangle size={17} className="shrink-0 mt-0.5" />
-              {error}
-            </div>
-          )}
-
-          {/* ---------- STEP 1: Trip details ---------- */}
-          {step === 1 && (
-            <section className="rounded-2xl border border-black/10 bg-white p-3 space-y-3">
-              <div>
-                <label htmlFor="vehicle-name" className={fieldLabel}>
-                  Vehicle (van) *
-                </label>
-                <input
-                  id="vehicle-name"
-                  value={vehicle}
-                  onChange={(e) => setVehicle(e.target.value)}
-                  placeholder="e.g. EV"
-                  autoComplete="off"
-                  autoCapitalize="characters"
-                  className={fieldBox}
-                />
-                {vehicles.length > 0 && (
-                  <div className="mt-1.5 flex gap-1.5 overflow-x-auto no-scrollbar">
-                    {vehicles.slice(0, 8).map((v) => (
-                      <button
-                        key={v}
-                        type="button"
-                        onClick={() => setVehicle(v)}
-                        className={chip(vehicle.trim().toLowerCase() === v.trim().toLowerCase())}
-                      >
-                        {v}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div>
-                <label htmlFor="trip-route" className={fieldLabel}>
-                  Route / beat <span className="normal-case font-medium text-slate-400">(optional)</span>
-                </label>
-                <input
-                  id="trip-route"
-                  value={route}
-                  onChange={(e) => setRoute(e.target.value)}
-                  placeholder="e.g. Jamankira"
-                  autoComplete="off"
-                  className={fieldBox}
-                />
-                {routes.length > 0 && (
-                  <div className="mt-1.5 flex gap-1.5 overflow-x-auto no-scrollbar">
-                    {routes.slice(0, 10).map((r) => (
-                      <button
-                        key={r}
-                        type="button"
-                        onClick={() => setRoute(route === r ? '' : r)}
-                        className={chip(route === r)}
-                      >
-                        {r}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label htmlFor="trip-salesman-select" className={fieldLabel}>
-                    Salesman
-                  </label>
-                  {lockedSalesman ? (
-                    <div
-                      className={`${fieldBox} flex items-center justify-between bg-slate-100 border-dashed text-slate-600`}
+          {/* 1. Van */}
+          <section className="rounded-2xl border border-black/10 bg-white p-3 space-y-3">
+            <div>
+              <label htmlFor="vehicle-name" className={fieldLabel}>
+                Vehicle (van) *
+              </label>
+              <input
+                id="vehicle-name"
+                value={vehicle}
+                onChange={(e) => setVehicle(e.target.value)}
+                placeholder="e.g. EV"
+                autoComplete="off"
+                autoCapitalize="characters"
+                className={fieldBox}
+              />
+              {vehicles.length > 0 && (
+                <div className="mt-1.5 flex gap-1.5 overflow-x-auto no-scrollbar">
+                  {vehicles.slice(0, 8).map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setVehicle(v)}
+                      className={chip(vehicle.trim().toLowerCase() === v.trim().toLowerCase())}
                     >
-                      <span className="truncate">{lockedSalesman.name}</span>
-                      <Lock size={14} className="shrink-0 text-slate-400" />
-                    </div>
-                  ) : (
-                    <select
-                      id="trip-salesman-select"
-                      value={salesmanId}
-                      onChange={(e) => {
-                        const id = e.target.value;
-                        setSalesmanId(id);
-                        const sm = salesmen.find((x) => x.id === id);
-                        if (sm?.defaultVehicle && !vehicle) setVehicle(sm.defaultVehicle);
-                      }}
-                      className={fieldBox}
-                    >
-                      <option value="">None</option>
-                      {salesmen
-                        .filter((x) => x.active !== false)
-                        .map((x) => (
-                          <option key={x.id} value={x.id}>
-                            {x.name}
-                          </option>
-                        ))}
-                    </select>
-                  )}
+                      {v}
+                    </button>
+                  ))}
                 </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 min-[400px]:grid-cols-2 gap-2.5">
+              <div className="min-w-0">
+                <label htmlFor="trip-salesman-select" className={fieldLabel}>
+                  Salesman
+                </label>
+                {lockedSalesman ? (
+                  <div
+                    className={`${fieldBox} flex items-center justify-between gap-2 bg-slate-100 border-dashed text-slate-600`}
+                  >
+                    <span className="truncate">{lockedSalesman.name}</span>
+                    <Lock size={14} className="shrink-0 text-slate-400" />
+                  </div>
+                ) : (
+                  <select
+                    id="trip-salesman-select"
+                    value={salesmanId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setSalesmanId(id);
+                      const sm = salesmen.find((x) => x.id === id);
+                      if (sm?.defaultVehicle && !vehicle) setVehicle(sm.defaultVehicle);
+                    }}
+                    className={fieldBox}
+                  >
+                    <option value="">None</option>
+                    {salesmen
+                      .filter((x) => x.active !== false)
+                      .map((x) => (
+                        <option key={x.id} value={x.id}>
+                          {x.name}
+                        </option>
+                      ))}
+                  </select>
+                )}
+              </div>
+              <div className="min-w-0">
+                <label htmlFor="trip-date" className={fieldLabel}>
+                  Date
+                </label>
+                <input
+                  id="trip-date"
+                  type="date"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value || todayISO())}
+                  className={`${fieldBox} min-w-0`}
+                />
+              </div>
+            </div>
+
+            {/* Rarely changed options stay tucked away */}
+            <details className="group rounded-xl border border-black/10 bg-slate-50 px-3 py-2">
+              <summary className="flex items-center justify-between gap-2 cursor-pointer select-none text-[13px] font-bold text-slate-700 list-none">
+                <span className="truncate">
+                  More options
+                  <span className="font-medium text-slate-500">
+                    {route.trim() ? ` · ${route.trim()}` : ''}
+                    {autoAttach && billsReady > 0 ? ` · ${billsReady} bill${billsReady === 1 ? '' : 's'} attach` : ''}
+                  </span>
+                </span>
+                <span className="shrink-0 text-slate-400 group-open:rotate-180 transition-transform">▾</span>
+              </summary>
+              <div className="mt-3 space-y-3">
                 <div>
-                  <label htmlFor="trip-date" className={fieldLabel}>
-                    Date
+                  <label htmlFor="trip-route" className={fieldLabel}>
+                    Route / beat <span className="normal-case font-medium text-slate-400">(optional)</span>
                   </label>
                   <input
-                    id="trip-date"
-                    type="date"
-                    value={date}
-                    onChange={(e) => setDate(e.target.value || todayISO())}
+                    id="trip-route"
+                    value={route}
+                    onChange={(e) => setRoute(e.target.value)}
+                    placeholder="e.g. Jamankira"
+                    autoComplete="off"
                     className={fieldBox}
                   />
+                  {routes.length > 0 && (
+                    <div className="mt-1.5 flex gap-1.5 overflow-x-auto no-scrollbar">
+                      {routes.slice(0, 10).map((r) => (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => setRoute(route === r ? '' : r)}
+                          className={chip(route === r)}
+                        >
+                          {r}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </div>
-              <div className="flex gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setDate(todayISO())}
-                  className={chip(date === todayISO())}
-                >
-                  Today
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDate(yesterday)}
-                  className={chip(date === yesterday)}
-                >
-                  Yesterday
-                </button>
-              </div>
-
-              <label className="flex items-center gap-2.5 text-[13px] font-semibold text-slate-700 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={autoAttach}
-                  onChange={(e) => setAutoAttach(e.target.checked)}
-                  className="size-5 rounded accent-[#0d4a3a]"
-                />
-                <span>Attach bills of this date</span>
-                {autoAttach && billsReady > 0 && (
-                  <span className="ml-auto text-[12px] font-bold text-[#0d4a3a]">
-                    {billsReady} ready
-                  </span>
-                )}
-              </label>
-            </section>
-          )}
-
-          {/* ---------- STEP 2: Products ---------- */}
-          {step === 2 && (
-            <>
-              <div className="rounded-2xl border border-black/10 bg-white p-3 flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="text-[13px] font-bold text-slate-900 truncate">
-                    {vehicle.trim() || '—'} · {salesmanLabel || 'No salesman'}
-                  </div>
-                  <div className="text-[11px] text-slate-500">
-                    {date}
-                    {route.trim() ? ` · ${route.trim()}` : ''}
-                    {autoAttach ? ` · ${billsReady} bills` : ''}
-                  </div>
+                <div className="flex gap-1.5">
+                  <button type="button" onClick={() => setDate(todayISO())} className={chip(date === todayISO())}>
+                    Today
+                  </button>
+                  <button type="button" onClick={() => setDate(yesterday)} className={chip(date === yesterday)}>
+                    Yesterday
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setStep(1)}
-                  className="shrink-0 text-[12px] font-bold text-[#0d4a3a] underline cursor-pointer"
-                >
-                  Edit details
-                </button>
+                <label className="flex items-center gap-2.5 text-[13px] font-semibold text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={autoAttach}
+                    onChange={(e) => setAutoAttach(e.target.checked)}
+                    className="size-5 shrink-0 rounded accent-[var(--primary)]"
+                  />
+                  <span className="min-w-0">Attach bills of this date</span>
+                  {autoAttach && billsReady > 0 && (
+                    <span className="ml-auto shrink-0 text-[12px] font-bold text-[var(--primary)]">
+                      {billsReady} ready
+                    </span>
+                  )}
+                </label>
               </div>
+            </details>
+          </section>
 
-              {lines.filter((l) => Number(l.qty) > 0).length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-black/15 bg-white py-10 px-4 text-center">
-                  <p className="text-[15px] font-bold text-slate-700">No products yet</p>
-                  <p className="text-[13px] text-slate-500 mt-1">
-                    Tap “Add products” below to load the van.
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-2.5">
-                  {lines
-                    .filter((l) => Number(l.qty) > 0)
-                    .map((l) => {
-                      const p = productOf(l.productId);
-                      const over = (Number(l.qty) || 0) > stockIn(l.warehouseId, l.productId);
-                      return (
-                        <LoadLineCard
-                          key={l.key}
-                          product={p}
-                          fallbackName={productName(l.productId)}
-                          qty={l.qty}
-                          onQty={(v) => patch(l.key, { qty: v })}
-                          onMinus={() =>
-                            patch(l.key, {
-                              qty: String(Math.max(0, (Number(l.qty) || 0) - 1)),
-                            })
-                          }
-                          onPlus={() =>
-                            patch(l.key, { qty: String((Number(l.qty) || 0) + 1) })
-                          }
-                          onRemove={() =>
-                            setLines((prev) => prev.filter((x) => x.key !== l.key))
-                          }
-                          godown={{
+          {/* 2. Products */}
+          {loadedLines.length === 0 ? (
+            <button
+              type="button"
+              onClick={() => setShowAdd(true)}
+              className="w-full rounded-2xl border-2 border-dashed border-[var(--primary)]/50 bg-white py-9 px-4 text-center cursor-pointer active:bg-emerald-50"
+            >
+              <span className="mx-auto mb-2 flex size-12 items-center justify-center rounded-full bg-[var(--primary)] text-white">
+                <Plus size={24} />
+              </span>
+              <span className="block text-[16px] font-black text-slate-900">Add products to load</span>
+              <span className="block text-[13px] text-slate-500 mt-0.5">Tap here, pick the cases, press Done</span>
+            </button>
+          ) : (
+            <div className="space-y-2.5">
+              {loadedLines.map((l) => {
+                const p = productOf(l.productId);
+                const over = (Number(l.qty) || 0) > stockIn(l.warehouseId, l.productId);
+                return (
+                  <LoadLineCard
+                    key={l.key}
+                    product={p}
+                    fallbackName={productName(l.productId)}
+                    qty={l.qty}
+                    onQty={(v) => patch(l.key, { qty: v })}
+                    onMinus={() => patch(l.key, { qty: String(Math.max(0, (Number(l.qty) || 0) - 1)) })}
+                    onPlus={() => patch(l.key, { qty: String((Number(l.qty) || 0) + 1) })}
+                    onRemove={() => setLines((prev) => prev.filter((x) => x.key !== l.key))}
+                    godown={
+                      warehouses.length > 1
+                        ? {
                             value: l.warehouseId,
                             options: warehouses,
                             onChange: (id) => patch(l.key, { warehouseId: id }),
                             stockText: `${stockIn(l.warehouseId, l.productId)} cs`,
-                          }}
-                          warning={over ? 'More than available in this godown' : undefined}
-                          problem={over}
-                        />
-                      );
-                    })}
-                </div>
-              )}
-
-              {shortProducts.length > 0 && (
-                <div
-                  role="alert"
-                  className="flex items-start gap-2 p-3 rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 text-[12.5px] font-bold"
-                >
-                  <AlertTriangle size={16} className="shrink-0 mt-0.5" />
-                  <span>
-                    Attached bills need more cases than you loaded:{' '}
-                    {shortProducts
-                      .map(
-                        ([pid, billed]) =>
-                          `${productName(Number(pid))} needs ${billed} (loading ${addedQty[Number(pid)] || 0})`,
-                      )
-                      .join('; ')}
-                    . Add the cases or untick “Attach bills of this date”.
-                  </span>
-                </div>
-              )}
-              <p className="text-center text-[11px] text-slate-400">
-                Batches are picked automatically, earliest expiry first.
-              </p>
-            </>
+                          }
+                        : undefined
+                    }
+                    facts={
+                      warehouses.length > 1
+                        ? undefined
+                        : [{ label: 'In stock', value: `${stockIn(l.warehouseId, l.productId)} cs`, bad: over }]
+                    }
+                    warning={over ? 'More than available in this godown' : undefined}
+                    problem={over}
+                  />
+                );
+              })}
+            </div>
           )}
 
-          {/* ---------- STEP 3: Review (inline, same data as ReviewSheet) ---------- */}
-          {step === 3 && (
-            <div className="space-y-3">
-              <div className="rounded-2xl border border-black/10 bg-white p-3 grid grid-cols-2 gap-x-3 gap-y-2">
-                {[
-                  { label: 'Vehicle', value: vehicle.trim() },
-                  { label: 'Route', value: route.trim() },
-                  { label: 'Salesman', value: salesmanLabel },
-                  { label: 'Date', value: date },
-                  { label: 'Bills attaching', value: autoAttach ? `${billsReady}` : 'none' },
-                  {
-                    label: 'Godowns',
-                    value:
-                      godownCount > 1
-                        ? `${godownCount} godowns`
-                        : whName(lines[0]?.warehouseId || defaultWarehouseId),
-                  },
-                ].map((f) => (
-                  <div key={f.label} className="min-w-0">
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                      {f.label}
-                    </div>
-                    <div className="text-[14px] font-bold text-slate-900 truncate">
-                      {f.value || '—'}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="rounded-2xl border border-black/10 bg-white divide-y divide-black/5">
-                {reviewRows.map((r) => (
-                  <div key={r.key} className="px-3 py-2.5 flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="text-[14px] font-bold text-slate-900 leading-snug break-words">
-                        <OdiaName name={r.name} />
-                      </div>
-                      {r.note && (
-                        <div
-                          className={`text-[11.5px] font-semibold mt-0.5 ${
-                            r.noteTone === 'bad' ? 'text-rose-700' : 'text-slate-500'
-                          }`}
-                        >
-                          {r.note}
-                        </div>
-                      )}
-                    </div>
-                    <div className="text-[16px] font-black tabular-nums text-slate-900 shrink-0">
-                      {r.qty} <span className="text-[11px] font-bold text-slate-500">cs</span>
-                    </div>
-                  </div>
-                ))}
-                <div className="px-3 py-2.5 flex items-center justify-between bg-slate-50">
-                  <span className="text-[12px] font-bold uppercase tracking-wide text-slate-500">
-                    Total
-                  </span>
-                  <span className="text-[17px] font-black tabular-nums text-[#0d4a3a]">
-                    {totalUnits} cs
-                  </span>
-                </div>
-              </div>
-
-              {shortProducts.length > 0 && (
-                <div
-                  role="alert"
-                  className="flex items-start gap-2 p-3 rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 text-[12.5px] font-bold"
-                >
-                  <AlertTriangle size={16} className="shrink-0 mt-0.5" />
-                  Some attached bills sell more than you are loading — fix this before confirming.
-                </div>
-              )}
-
-              {reviewError && (
-                <div
-                  role="alert"
-                  className="flex items-start gap-2 p-3 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 text-[13px] font-bold"
-                >
-                  <AlertTriangle size={17} className="shrink-0 mt-0.5" />
-                  {reviewError}
-                </div>
-              )}
+          {shortProducts.length > 0 && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 p-3 rounded-2xl border border-amber-200 bg-amber-50 text-amber-900 text-[12.5px] font-bold"
+            >
+              <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+              <span className="min-w-0 break-words">
+                Attached bills need more cases than you loaded:{' '}
+                {shortProducts
+                  .map(
+                    ([pid, billed]) =>
+                      `${productName(Number(pid))} needs ${billed} (loading ${addedQty[Number(pid)] || 0})`,
+                  )
+                  .join('; ')}
+                . Add the cases or untick “Attach bills of this date” under More options.
+              </span>
             </div>
           )}
         </div>
       </div>
 
-      {/* Bottom bars per step */}
-      {step === 1 && (
-        <ActionBar
-          actions={[
-            {
-              key: 'cancel',
-              label: 'Cancel',
-              icon: <X size={20} />,
-              tone: 'cancel',
-              onClick: handleCancel,
-              id: 'btn-new-trip-cancel',
-            },
-            {
-              key: 'next',
-              label: 'Next: Add products',
-              icon: <Plus size={20} />,
-              tone: 'primary',
-              onClick: goToProducts,
-              grow: 2.2,
-              id: 'btn-new-trip-next',
-            },
-          ]}
-        />
+      {/* Errors stay visible right above the buttons */}
+      {error && (
+        <div className="shrink-0 bg-[#faf8f5] px-3 pt-2">
+          <div
+            role="alert"
+            className="mx-auto max-w-xl flex items-start gap-2 p-3 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 text-[13px] font-bold"
+          >
+            <AlertTriangle size={17} className="shrink-0 mt-0.5" />
+            <span className="min-w-0 break-words">{error}</span>
+          </div>
+        </div>
       )}
 
-      {step === 2 && (
-        <ActionBar
-          actions={[
-            {
-              key: 'back',
-              label: 'Back',
-              icon: <ArrowLeft size={20} />,
-              tone: 'neutral',
-              onClick: () => setStep(1),
-              id: 'btn-new-trip-back',
-            },
-            {
-              key: 'add',
-              label: 'Add products',
-              icon: <Plus size={20} />,
-              tone: 'add',
-              onClick: () => setShowAdd(true),
-              grow: 1.3,
-              id: 'btn-new-trip-add',
-            },
-            {
-              key: 'review',
-              label: totalUnits > 0 ? `Review · ${totalUnits} cs` : 'Review',
-              icon: <CheckCircle2 size={20} />,
-              tone: 'primary',
-              onClick: goToReview,
-              grow: 1.5,
-              id: 'btn-submit-trip',
-            },
-          ]}
-        />
-      )}
-
-      {step === 3 && (
-        <ActionBar
-          actions={[
-            {
-              key: 'back',
-              label: 'Edit more',
-              icon: <ArrowLeft size={20} />,
-              tone: 'neutral',
-              onClick: () => {
-                setReviewError(null);
-                setStep(2);
-              },
-              id: 'btn-new-trip-edit-more',
-            },
-            {
-              key: 'confirm',
-              label: 'Confirm & Load',
-              icon: <CheckCircle2 size={20} />,
-              tone: 'primary',
-              onClick: confirm,
-              grow: 2.2,
-              id: 'btn-new-trip-confirm',
-            },
-          ]}
-        />
-      )}
+      <ActionBar
+        actions={[
+          {
+            key: 'add',
+            label: loadedLines.length > 0 ? 'Add more' : 'Add products',
+            icon: <Plus size={20} />,
+            tone: 'add',
+            onClick: () => setShowAdd(true),
+            grow: 1,
+            id: 'btn-new-trip-add',
+          },
+          {
+            key: 'confirm',
+            label: totalUnits > 0 ? `Start trip · ${totalUnits} cs` : 'Start trip',
+            icon: <CheckCircle2 size={20} />,
+            tone: 'primary',
+            onClick: confirm,
+            grow: 1.4,
+            id: 'btn-submit-trip',
+          },
+        ]}
+      />
 
       {showAdd && (
         <AddProductsSheet

@@ -726,7 +726,7 @@ export const InwardConsignmentModal: React.FC<InwardConsignmentModalProps> = ({
   });
 
   const fieldCls =
-    'w-full px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25';
+    'w-full px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25';
   const labelCls = 'block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1';
 
   return (
@@ -874,7 +874,7 @@ export const InwardConsignmentModal: React.FC<InwardConsignmentModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowProviderFields((prev) => !prev)}
-                  className="text-xs font-semibold text-[#0d4a3a] hover:underline cursor-pointer"
+                  className="text-xs font-semibold text-[var(--primary)] hover:underline cursor-pointer"
                 >
                   {showProviderFields ? 'Hide more details' : '+ More details (address, phone, POS)'}
                 </button>
@@ -956,7 +956,7 @@ export const InwardConsignmentModal: React.FC<InwardConsignmentModalProps> = ({
                   setDraftLine(defaultLineState());
                   setShowAddForm(true);
                 }}
-                className="shrink-0 px-3.5 py-2 rounded-xl bg-[#0d4a3a] text-white text-xs font-bold hover:bg-[#0a3d30] cursor-pointer shadow-sm"
+                className="shrink-0 px-3.5 py-2 rounded-xl bg-[var(--primary)] text-white text-xs font-bold hover:bg-[var(--primary-hover)] cursor-pointer shadow-sm"
               >
                 + Add Another Product
               </button>
@@ -975,7 +975,7 @@ export const InwardConsignmentModal: React.FC<InwardConsignmentModalProps> = ({
           >
             <div className="flex items-center justify-between mb-3 pb-2 border-b border-black/5">
               <div className="font-semibold text-sm flex items-center gap-2 text-slate-900">
-                <Package size={16} className={editingIndex !== null ? 'text-amber-600' : 'text-[#0d4a3a]'} />
+                <Package size={16} className={editingIndex !== null ? 'text-amber-600' : 'text-[var(--primary)]'} />
                 <span>
                   {editingIndex !== null
                     ? `✏️ Edit Item #${editingIndex + 1}: ${draftLine.productName}`
@@ -1665,7 +1665,7 @@ export const InwardConsignmentModal: React.FC<InwardConsignmentModalProps> = ({
             disabled={reviewItems.length === 0 || !targetWarehouseId}
             onClick={handleConfirmAndPost}
             title={!targetWarehouseId ? 'Select a warehouse first — there is no default' : undefined}
-            className="px-5 py-2.5 rounded-full bg-[#0d4a3a] hover:bg-[#0a3d30] text-white text-sm font-semibold shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.99]"
+            className="px-5 py-2.5 rounded-full bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-sm font-semibold shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.99]"
           >
             {!targetWarehouseId ? 'Select godown' : 'Save purchase'}
           </button>

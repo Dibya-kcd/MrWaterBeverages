@@ -1,0 +1,1003 @@
+/* ============================================================================
+   Hydrate Hub - APP SHELL per breakpoint + shared components (hh-*)
+   Tokens come from index.css. One component adapts per breakpoint; there are no per-device copies.
+
+     Phone   0-767px     floating bottom bar, app header
+     Tablet  768-1023px  96px icon rail
+     Desktop 1024px+     260px sidebar + top bar
+
+   Loaded after index.css and mobile-theme.css (see main.tsx). Specificity is kept low and no !important
+   is used: the legacy global rules that used to beat these classes are wrapped in :where().
+   ============================================================================ */
+
+/* ----------------------------------------------------------- page background */
+.app-shell {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(520px 340px at 0% 0%, color-mix(in srgb, var(--blob-peach) 38%, transparent), transparent 72%),
+    radial-gradient(560px 380px at 100% 0%, color-mix(in srgb, var(--blob-lavender) 34%, transparent), transparent 72%);
+  background-repeat: no-repeat;
+  background-attachment: scroll;
+}
+
+/* ------------------------------------------------------------------ shared */
+.hh-iconbtn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+.hh-iconbtn:hover {
+  background: var(--primary-soft);
+}
+.hh-dot {
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--r-pill);
+  background: var(--due);
+  border: 2px solid var(--surface);
+}
+
+.hh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: var(--touch);
+  padding: 0 20px;
+  border-radius: var(--r-control-lg);
+  border: 1px solid transparent;
+  font-weight: 700;
+  font-size: calc(15px * var(--app-font-scale, 1));
+  line-height: 1.2;
+  cursor: pointer;
+  text-align: center;
+}
+.hh-btn--primary {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: 0 8px 18px -10px color-mix(in srgb, var(--primary) 70%, transparent);
+}
+.hh-btn--primary:hover {
+  background: var(--primary-hover);
+}
+.hh-btn--success {
+  background: var(--received);
+  color: #fff;
+}
+.hh-btn--danger-outline {
+  background: var(--surface);
+  color: var(--due);
+  border: 2px solid var(--due);
+}
+.hh-btn--ghost {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+.hh-btn:disabled,
+.hh-btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Visible keyboard focus: 2px primary + 2px offset on every control */
+:where(button, a, input, select, textarea, [role="button"], [role="tab"], [tabindex]):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------- phone header */
+.hh-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: calc(10px + env(safe-area-inset-top, 0px)) var(--page-pad) 6px;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: transparent;
+}
+.hh-header__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: var(--touch);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+.hh-header__name {
+  display: block;
+  font-size: calc(17px * var(--app-font-scale, 1));
+  font-weight: 800;
+  color: var(--text);
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+.hh-header__greet {
+  display: block;
+  font-size: calc(12px * var(--app-font-scale, 1));
+  font-weight: 500;
+  color: var(--text-2);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+@media (min-width: 768px) {
+  .hh-header {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------- phone floating bottom bar */
+.hh-bottombar {
+  position: fixed;
+  left: max(20px, env(safe-area-inset-left, 0px));
+  right: max(20px, env(safe-area-inset-right, 0px));
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  z-index: 40;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 31px;
+  box-shadow: var(--shadow);
+}
+.hh-bottombar__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: 54px;
+  min-width: 44px;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: 24px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: calc(12px * var(--app-font-scale, 1));
+  font-weight: 600;
+  line-height: 1.15;
+  text-align: center;
+  cursor: pointer;
+}
+.hh-bottombar__item span {
+  overflow-wrap: anywhere;
+}
+.hh-bottombar__item[data-active="true"] {
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 700;
+}
+@media (min-width: 768px) {
+  .hh-bottombar {
+    display: none;
+  }
+}
+
+/* --------------------------------------------------------- phone menu sheet */
+.hh-sheet__scrim {
+  background: color-mix(in srgb, var(--text) 38%, transparent);
+  border: 0;
+}
+.hh-sheet {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card) var(--r-card) 0 0;
+  box-shadow: var(--shadow-up);
+  padding: 16px var(--page-pad) calc(20px + env(safe-area-inset-bottom, 0px));
+}
+@media (min-width: 640px) {
+  .hh-sheet {
+    border-radius: var(--r-card);
+    margin-bottom: 16px;
+  }
+}
+.hh-sheet__title {
+  font-size: calc(var(--fs-card-title) * var(--app-font-scale, 1));
+  font-weight: 800;
+  color: var(--text);
+}
+.hh-sheet__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--gap-card);
+}
+@media (min-width: 640px) {
+  .hh-sheet__grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.hh-sheet__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 88px;
+  padding: 12px 6px;
+  border-radius: var(--r-tile);
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--text);
+  text-align: center;
+  cursor: pointer;
+}
+.hh-sheet__item svg {
+  color: var(--primary);
+}
+.hh-sheet__item span {
+  font-size: calc(13px * var(--app-font-scale, 1));
+  font-weight: 700;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.hh-sheet__item[data-active="true"] {
+  background: var(--primary-soft);
+  border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  color: var(--primary);
+}
+.hh-sheet__item--danger {
+  background: var(--due-bg);
+  color: var(--due);
+  border-color: color-mix(in srgb, var(--due) 20%, transparent);
+}
+.hh-sheet__item--danger svg {
+  color: var(--due);
+}
+
+/* ------------------------------------------------------------ tablet rail */
+.hh-rail {
+  display: none;
+}
+@media (min-width: 768px) and (max-width: 1023px) {
+  .hh-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    width: 96px;
+    flex: 0 0 96px;
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    padding: 16px 8px calc(16px + env(safe-area-inset-bottom, 0px));
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    z-index: 40;
+  }
+}
+.hh-rail__logo {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 8px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  min-height: var(--touch);
+}
+.hh-rail__nav {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.hh-rail__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 64px;
+  padding: 8px 4px;
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: calc(12px * var(--app-font-scale, 1));
+  font-weight: 600;
+  line-height: 1.15;
+  text-align: center;
+  cursor: pointer;
+}
+.hh-rail__item span {
+  overflow-wrap: anywhere;
+}
+.hh-rail__item:hover {
+  background: var(--surface-soft);
+}
+.hh-rail__item[data-active="true"] {
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 700;
+}
+
+/* --------------------------------------------------------- desktop sidebar */
+.hh-sidebar {
+  display: none;
+}
+@media (min-width: 1024px) {
+  .hh-sidebar {
+    display: flex;
+    flex-direction: column;
+    width: 260px;
+    flex: 0 0 260px;
+    position: sticky;
+    top: 0;
+    height: 100dvh;
+    padding: 24px 14px 18px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    z-index: 40;
+    overflow: hidden;
+  }
+}
+.hh-sidebar__brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 8px 20px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.hh-sidebar__name {
+  font-size: calc(19px * var(--app-font-scale, 1));
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.hh-sidebar__nav {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.hh-sidebar__item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--text-2);
+  font-size: calc(15px * var(--app-font-scale, 1));
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.hh-sidebar__item span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.hh-sidebar__item svg {
+  flex: 0 0 22px;
+}
+.hh-sidebar__item:hover {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+.hh-sidebar__item[data-active="true"] {
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 700;
+}
+.hh-sidebar__foot {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 12px;
+}
+.hh-usercard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--r-tile);
+  background: var(--primary-soft);
+}
+.hh-usercard__avatar {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-pill);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--primary);
+  color: #fff;
+  font-weight: 800;
+}
+.hh-usercard__name {
+  display: block;
+  font-weight: 800;
+  font-size: calc(14px * var(--app-font-scale, 1));
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.hh-usercard__sub {
+  display: block;
+  font-size: calc(12px * var(--app-font-scale, 1));
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+/* ----------------------------------------------------------- desktop top bar */
+.hh-topbar {
+  display: none;
+}
+@media (min-width: 1024px) {
+  .hh-topbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 24px var(--page-pad) 4px;
+    position: relative;
+    z-index: 20;
+  }
+}
+.hh-search {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 auto;
+  max-width: 420px;
+  min-height: 48px;
+  padding: 0 16px;
+  border-radius: var(--r-control-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: calc(15px * var(--app-font-scale, 1));
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.hh-topbar__slot {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+.hh-topbar .hh-btn {
+  min-height: 48px;
+}
+
+/* ------------------------------------------------------------- page area */
+.hh-page {
+  width: 100%;
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 8px var(--page-pad) 16px;
+}
+@media (min-width: 768px) {
+  .hh-page {
+    padding-top: 24px;
+    padding-bottom: 24px;
+  }
+}
+@media (min-width: 1024px) {
+  .hh-page {
+    padding-top: 8px;
+  }
+}
+/* Leave room for the floating bar on phones */
+.hh-main {
+  padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+}
+@media (min-width: 768px) {
+  .hh-main {
+    padding-bottom: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hh-bottombar,
+  .hh-rail,
+  .hh-sidebar,
+  [class*="hh-"] {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* ============================================================================
+   Shared components (HomeKit.tsx)
+   ============================================================================ */
+:root {
+  --ring-from: #5b9bff;
+}
+.hh-label {
+  font-size: calc(12px * var(--app-font-scale, 1));
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.hh-card {
+  background: var(--surface);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow);
+  padding: 20px;
+  min-width: 0;
+}
+.hh-card__title {
+  font-size: calc(var(--fs-card-title) * var(--app-font-scale, 1));
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 14px;
+}
+.hh-empty {
+  font-size: calc(var(--fs-body) * var(--app-font-scale, 1));
+  color: var(--text-2);
+}
+
+/* tones */
+.hh-tone-sales, .hh-tone-blue { background: var(--sales-bg); color: var(--sales); }
+.hh-tone-profit, .hh-tone-purple { background: var(--profit-bg); color: var(--profit); }
+.hh-tone-received, .hh-tone-green { background: var(--received-bg); color: var(--received); }
+.hh-tone-due { background: var(--due-bg); color: var(--due); }
+.hh-tone-warning, .hh-tone-orange { background: var(--warning-bg); color: var(--warning); }
+
+/* hero */
+.hh-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--surface);
+  border-radius: var(--r-hero);
+  box-shadow: var(--shadow);
+  padding: 20px;
+  min-width: 0;
+}
+.hh-hero__text { flex: 1 1 0; min-width: 0; container-type: inline-size; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.hh-hero__amount {
+  font-size: calc(var(--fs-hero) * var(--app-font-scale, 1));
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.hh-hero__sub { font-size: calc(var(--fs-body) * var(--app-font-scale, 1)); color: var(--text-2); overflow-wrap: anywhere; }
+.hh-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-radius: var(--r-pill);
+  font-size: calc(12px * var(--app-font-scale, 1));
+  font-weight: 700;
+  line-height: 1.3;
+  white-space: normal;
+}
+.hh-hero .hh-pill { margin-top: 8px; }
+.hh-pill--due { background: var(--due-bg); color: var(--due); }
+.hh-pill--received { background: var(--received-bg); color: var(--received); }
+.hh-pill--profit { background: var(--profit-bg); color: var(--profit); }
+
+.hh-ring { position: relative; flex: 0 0 auto; }
+.hh-ring__pct {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 800; color: var(--text);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .hh-ring__arc { transition: stroke-dashoffset 0.8s ease; }
+  .hh-bars__bar { transition: height 0.5s ease; }
+}
+
+/* shortcuts */
+.hh-shortcut {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  min-height: 84px; padding: 10px 6px; border: 0; border-radius: var(--r-tile); cursor: pointer; text-align: center;
+}
+.hh-shortcut__label { font-size: calc(13px * var(--app-font-scale, 1)); font-weight: 800; line-height: 1.2; overflow-wrap: anywhere; }
+@media (min-width: 768px) {
+  .hh-shortcut { flex-direction: row; justify-content: flex-start; gap: 10px; padding: 0 14px; min-height: 76px; text-align: left; }
+  .hh-shortcut__label { font-size: calc(15px * var(--app-font-scale, 1)); }
+}
+
+/* metrics */
+.hh-metric { border-radius: var(--r-tile); padding: 14px 16px; min-width: 0; }
+.hh-metric__label { color: inherit; }
+.hh-metric__value {
+  font-size: calc(var(--fs-metric) * var(--app-font-scale, 1)); font-weight: 800; color: var(--text);
+  font-variant-numeric: tabular-nums; line-height: 1.15; overflow-wrap: anywhere;
+}
+.hh-metric__sub { font-size: calc(12px * var(--app-font-scale, 1)); color: var(--text-2); }
+
+/* segmented period */
+.hh-segmented {
+  display: inline-flex; align-items: center; gap: 2px; padding: 4px; border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface)); max-width: 100%; flex-wrap: wrap;
+}
+.hh-segmented__btn {
+  min-height: 40px; min-width: 44px; padding: 0 16px; border: 0; border-radius: var(--r-pill); background: transparent;
+  color: var(--text-2); font-weight: 600; font-size: calc(14px * var(--app-font-scale, 1)); cursor: pointer;
+}
+.hh-segmented__btn[data-active="true"] { background: var(--surface); color: var(--text); font-weight: 800; box-shadow: var(--shadow-sm); }
+
+/* bills */
+.hh-bills { list-style: none; margin: 0; padding: 0; }
+.hh-bills > li + li { border-top: 1px solid var(--border); }
+.hh-bill {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 10px 0;
+  background: transparent; border: 0; text-align: left; cursor: pointer;
+}
+.hh-bill__icon { flex: 0 0 40px; height: 40px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; background: var(--primary-soft); color: var(--primary); }
+.hh-bill__main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.hh-bill__party { font-weight: 800; font-size: calc(15px * var(--app-font-scale, 1)); color: var(--text); overflow-wrap: anywhere; }
+.hh-bill__no { font-size: calc(12px * var(--app-font-scale, 1)); color: var(--text-2); }
+.hh-bill__right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.hh-bill__amount { font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+@media (min-width: 768px) { .hh-bill__right { flex-direction: row; align-items: center; gap: 14px; } }
+
+.hh-tablewrap { overflow-x: auto; max-width: 100%; }
+.hh-table { width: 100%; border-collapse: collapse; min-width: 560px; font-size: calc(14px * var(--app-font-scale, 1)); }
+.hh-table th, .hh-table td { text-align: left; padding: 14px 8px; border-top: 1px solid var(--border); color: var(--text); }
+.hh-table thead th {
+  border-top: 0; font-size: calc(12px * var(--app-font-scale, 1)); font-weight: 700; color: var(--text-2);
+  text-transform: none; letter-spacing: 0.02em; padding-top: 0;
+}
+.hh-table tbody th { font-weight: 800; }
+.hh-num { font-weight: 800; font-variant-numeric: tabular-nums; }
+.hh-linkbtn { background: transparent; border: 0; padding: 0; min-height: 44px; font-weight: 800; color: var(--text); text-align: left; cursor: pointer; }
+
+/* beats */
+.hh-beats { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.hh-beat__head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.hh-beat__name { font-weight: 700; color: var(--text); overflow-wrap: anywhere; }
+.hh-beat__amt { font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+.hh-beat__track { height: 8px; border-radius: var(--r-pill); background: var(--due-bg); overflow: hidden; }
+.hh-beat__bar { height: 100%; border-radius: var(--r-pill); background: var(--due); }
+
+/* chart */
+.hh-bars { display: flex; align-items: stretch; gap: 12px; height: 220px; }
+.hh-bars__col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.hh-bars__plot { flex: 1 1 auto; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
+.hh-bars__bar { width: 100%; max-width: 48px; border-radius: 12px; background: color-mix(in srgb, var(--primary) 22%, var(--surface)); }
+.hh-bars__bar[data-last="true"] { background: linear-gradient(180deg, var(--ring-from), var(--primary)); }
+.hh-bars__label { font-size: calc(12px * var(--app-font-scale, 1)); font-weight: 700; color: var(--text-2); }
+
+/* attention */
+.hh-attn { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.hh-attn__row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 10px 12px; border: 0; border-radius: 16px; text-align: left; cursor: pointer; }
+.hh-attn__row--due { background: var(--due-bg); }
+.hh-attn__row--warning { background: var(--warning-bg); }
+.hh-attn__row--info { background: var(--primary-soft); }
+.hh-attn__dot { flex: 0 0 28px; height: 28px; border-radius: 9px; }
+.hh-attn__row--due .hh-attn__dot { background: var(--due); }
+.hh-attn__row--warning .hh-attn__dot { background: var(--warning); }
+.hh-attn__row--info .hh-attn__dot { background: var(--primary); }
+.hh-attn__text { display: flex; flex-direction: column; min-width: 0; }
+.hh-attn__title { font-weight: 800; color: var(--text); font-size: calc(14px * var(--app-font-scale, 1)); overflow-wrap: anywhere; }
+.hh-attn__sub { font-size: calc(12px * var(--app-font-scale, 1)); color: var(--text-2); }
+.hh-alertstrip {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 10px 14px; border: 0;
+  border-radius: 16px; background: var(--alert-bg); color: var(--alert-text); font-weight: 700; text-align: left; cursor: pointer;
+  font-size: calc(14px * var(--app-font-scale, 1));
+}
+.hh-alertstrip__dot { flex: 0 0 10px; height: 10px; border-radius: 50%; background: var(--warning); }
+
+/* stepper */
+.hh-stepper { display: inline-flex; align-items: center; gap: 10px; padding: 4px; border-radius: var(--r-pill); background: var(--surface-soft); }
+.hh-stepper__btn {
+  width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: var(--shadow-sm);
+}
+.hh-stepper__btn--plus { background: var(--primary); border-color: var(--primary); color: #fff; }
+.hh-stepper__btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.hh-stepper__val { min-width: 32px; text-align: center; font-size: calc(20px * var(--app-font-scale, 1)); font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+
+/* number pad */
+.hh-pad { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.hh-pad__key {
+  height: 58px; border-radius: 18px; border: 0; background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm);
+  font-size: calc(24px * var(--app-font-scale, 1)); font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.hh-pad__key:active { background: var(--primary-soft); }
+
+/* action bar */
+.hh-actionbar {
+  position: sticky; bottom: 0; z-index: 30; background: var(--surface); border-radius: var(--r-card) var(--r-card) 0 0;
+  box-shadow: var(--shadow-up); padding: 14px var(--page-pad) calc(14px + env(safe-area-inset-bottom, 0px));
+}
+.hh-actionbar__btns { display: grid; grid-template-columns: 1fr 1.6fr; gap: 12px; margin-top: 10px; }
+.hh-actionbar__btns .hh-btn { min-height: 52px; }
+
+/* ============================================================================
+   Home layout (DashboardView): ONE markup, three layouts via grid areas
+   ============================================================================ */
+.hh-home .hh-show-desktop, .hh-home .hh-only-tablet, .hh-home .hh-only-phone { display: none; }
+@media (max-width: 767px) { .hh-home .hh-hide-phone { display: none; } .hh-home .hh-only-phone { display: block; } }
+@media (min-width: 768px) and (max-width: 1023px) { .hh-home .hh-only-tablet { display: block; } .hh-home .hh-only-tablet.hh-btn { display: inline-flex; } }
+@media (min-width: 1024px) { .hh-home .hh-hide-desktop { display: none; } .hh-home .hh-show-desktop { display: block; } }
+
+.hh-home { display: flex; flex-direction: column; gap: var(--gap-card); }
+.hh-home__title { display: flex; flex-direction: column; gap: 12px; }
+.hh-home__title h1 { color: var(--text); }
+.hh-home__title-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+@media (min-width: 768px) {
+  .hh-home__title { flex-direction: row; align-items: center; justify-content: space-between; }
+  .hh-home__title-actions { justify-content: flex-end; }
+}
+.hh-card__head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.hh-card__head .hh-card__title { margin-bottom: 0; }
+.hh-linkbtn--primary { color: var(--primary); font-weight: 700; }
+
+/* top block */
+.hh-home__top { display: grid; gap: var(--gap-card); grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "hero" "shortcuts" "metrics"; }
+.hh-area-hero { grid-area: hero; min-width: 0; }
+.hh-area-shortcuts { grid-area: shortcuts; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.hh-area-metrics { grid-area: metrics; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap-card); }
+@media (min-width: 768px) and (max-width: 1023px) {
+  .hh-home__top { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); grid-template-areas: "hero shortcuts" "metrics metrics"; }
+  .hh-area-shortcuts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap-card); }
+  .hh-area-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (min-width: 1024px) {
+  .hh-home__top { grid-template-columns: minmax(0, 520px) minmax(0, 1fr); grid-template-areas: "hero metrics"; }
+  .hh-area-metrics { align-content: stretch; }
+}
+
+/* lower block */
+.hh-home__lower { display: grid; gap: var(--gap-card); grid-template-columns: minmax(0, 1fr); grid-template-areas: "alert" "bills"; }
+.hh-area-alert { grid-area: alert; }
+.hh-area-chart { grid-area: chart; }
+.hh-area-beats { grid-area: beats; }
+.hh-area-attn { grid-area: attn; }
+.hh-area-bills { grid-area: bills; }
+@media (max-width: 767px) { .hh-area-bills .hh-bills > li:nth-child(n + 4) { display: none; } }
+@media (min-width: 768px) and (max-width: 1023px) {
+  .hh-home__lower { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); grid-template-areas: "bills beats"; align-items: start; }
+}
+@media (min-width: 1024px) {
+  .hh-home__lower { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1.3fr) minmax(0, 1fr); grid-template-areas: "chart beats attn" "bills bills bills"; }
+}
+.hh-getstarted__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.hh-getstarted__list .hh-linkbtn { min-height: 44px; }
+
+.hh-home__lower > div > .hh-card { height: 100%; }
+
+@media (max-width: 767px) {
+  .hh-segmented { display: flex; flex-wrap: nowrap; width: 100%; }
+  .hh-segmented > .hh-segmented__btn, .hh-segmented > .relative { flex: 1 1 0; min-width: 0; }
+  .hh-segmented > .relative > .hh-segmented__btn { width: 100%; }
+  .hh-segmented__btn { padding: 0 6px; }
+}
+
+/* Sell: summary row of the action bar; fixed above the floating nav on phones so Cancel / Review are never hidden */
+.hh-actionbar__summary { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.hh-actionbar__total { font-size: calc(var(--fs-metric) * var(--app-font-scale, 1)); font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.hh-actionbar__badges { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.hh-actionbar__gst { font-size: calc(12px * var(--app-font-scale, 1)); font-weight: 700; color: var(--text-2); }
+@media (max-width: 767px) {
+  .hh-actionbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 45; }
+  #view-billing, .hh-sell-pad { padding-bottom: 150px; }
+}
+
+/* Collect (RecordPaymentModal) */
+.hh-collect__party { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-card); padding: 14px 16px; box-shadow: var(--shadow-sm); }
+.hh-collect__party-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.hh-collect__due { font-size: calc(var(--fs-metric) * var(--app-font-scale, 1)); font-weight: 800; color: var(--due); font-variant-numeric: tabular-nums; }
+.hh-collect__due-label { font-size: calc(13px * var(--app-font-scale, 1)); font-weight: 600; color: var(--text-2); }
+.hh-collect__amount { font-size: calc(28px * var(--app-font-scale, 1)); color: var(--received); border-color: var(--border); border-radius: var(--r-control-lg); }
+@media (min-width: 1024px) { .hh-pad-wrap { display: none; } }
+.hh-pad-wrap { max-width: 420px; margin-inline: auto; }
+
+/* ---------------------------------------------------------------- touch targets */
+/* Every tappable control is at least 44px tall (and wide). Buttons with an explicit size-* utility are
+   icon chips that already set their own square; they are left alone. */
+:where(button:not([class*="size-"]):not(.hh-stepper__btn)),
+:where(select, [role="button"]) {
+  min-height: var(--touch);
+}
+:where(button:not([class*="size-"]):not([class*="min-w-0"])) {
+  min-width: var(--touch);
+}
+.hh-stepper__input { width: 56px; height: 44px; text-align: center; font-weight: 800; font-size: calc(18px * var(--app-font-scale, 1)); border: 0; background: transparent; color: var(--text); box-shadow: none; padding: 0; }
+.hh-stepper__input:focus-visible { outline-offset: 0; border-radius: 12px; }
+
+@media (max-width: 767px) { .hh-actionbar.hh-actionbar--flow { position: static; border-radius: 0; box-shadow: var(--shadow-up); } }
+.hh-actionbar--flow { position: static; }
+
+/* Large-font / long-text safety: amounts never break mid-number; they shrink to fit instead */
+.hh-hero__amount, .hh-metric__value, .hh-bill__amount, .hh-collect__due, .hh-actionbar__total { white-space: nowrap; overflow-wrap: normal; }
+.hh-segmented__btn { white-space: nowrap; }
+@media (max-width: 767px) {
+  .hh-metric__value { font-size: min(calc(var(--fs-metric) * var(--app-font-scale, 1)), 6.2vw); }
+  .hh-hero { gap: 12px; padding: 16px; }
+  .hh-ring { width: 88px !important; height: 88px !important; }
+  .hh-ring svg { width: 100%; height: 100%; }
+  .hh-ring__pct { font-size: 17px; }
+  .hh-segmented__btn { font-size: min(calc(14px * var(--app-font-scale, 1)), 3.6vw); }
+}
+
+/* Sell: party card, size chips, live bill panel */
+.hh-partycard { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: var(--r-card); background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow-sm); }
+.hh-partycard__main { display: flex; flex-direction: column; min-width: 0; }
+.hh-partycard__name { font-weight: 800; font-size: calc(16px * var(--app-font-scale, 1)); color: var(--text); overflow-wrap: anywhere; }
+.hh-partycard__sub { font-size: calc(13px * var(--app-font-scale, 1)); color: var(--text-2); overflow-wrap: anywhere; }
+.hh-partycard__due { color: var(--due); font-weight: 700; }
+.hh-chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.hh-chip { flex: 0 0 auto; min-height: 44px; padding: 0 18px; border-radius: var(--r-pill); border: 0; background: var(--surface-soft); color: var(--text-2); font-weight: 700; font-size: calc(14px * var(--app-font-scale, 1)); cursor: pointer; white-space: nowrap; }
+.hh-chip[data-active="true"] { background: var(--primary); color: #fff; }
+.hh-cartpane { display: none; }
+@media (min-width: 1024px) {
+  .hh-cartpane { display: flex; flex-direction: column; gap: 10px; width: 300px; flex: 0 0 300px; padding: 20px; background: var(--surface); border-left: 1px solid var(--border); overflow-y: auto; }
+}
+.hh-cartpane__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; flex: 1 1 auto; }
+.hh-cartpane__row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: baseline; font-size: calc(14px * var(--app-font-scale, 1)); }
+.hh-cartpane__name { font-weight: 700; color: var(--text); overflow-wrap: anywhere; }
+.hh-cartpane__qty { color: var(--text-2); }
+.hh-cartpane__amt { font-weight: 800; font-variant-numeric: tabular-nums; }
+.hh-cartpane__total { display: flex; align-items: baseline; justify-content: space-between; padding-top: 12px; border-top: 1px solid var(--border); }
+
+
+/* ============================================================================
+   Unified page system
+   Every screen sits in the same .hh-page container (max 1480px, same gutters), so Home, Parties,
+   Products, Sale, Payments, Settings ... line up edge to edge and use the full desktop width.
+   Per-screen max-w-* caps, beige page boxes and extra padding were removed from the views.
+   ============================================================================ */
+.hh-view {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Page title: one size/weight/colour on every screen (Tailwind text-* classes on h1 are overridden here) */
+.app-content h1 {
+  color: var(--text);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  margin: 0;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+/* Subtitle straight under a page title */
+.app-content h1 + p,
+.hh-pagehead p {
+  margin: 4px 0 0;
+  font-size: calc(14px * var(--app-font-scale, 1));
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.hh-pagehead {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* Titles inside a sticky bar (detail screens, New sale) are compact so the bar stays slim */
+.app-content .sticky h1 {
+  font-size: calc(18px * var(--app-font-scale, 1));
+  font-weight: 700;
+  line-height: 1.25;
+}
+@media (min-width: 768px) {
+  .app-content .sticky h1 { font-size: calc(20px * var(--app-font-scale, 1)); }
+}
+/* An h1 used as a big money figure (payment details) keeps a number style, not a page-title style */
+.app-content h1[class*="font-mono"] {
+  font-size: clamp(28px, 4vw, 36px);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+/* Card / section titles */
+.app-content h2 {
+  color: var(--text);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* List screens (Parties, Products ...): one column on phones, 2 on tablet / desktop, 3 on wide desktop */
+.hh-list-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+}
+.hh-list-grid > li { min-width: 0; }
+.hh-list-grid > li > button { height: 100%; }
+@media (min-width: 768px) {
+  .hh-list-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap-card); }
+}
+@media (min-width: 1600px) {
+  .hh-list-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* Detail screens made of stacked cards: two balanced columns on desktop, source order kept */
+@media (min-width: 1100px) {
+  .hh-detail-cols { column-count: 2; column-gap: var(--gap-card); }
+  .hh-detail-cols > * { break-inside: avoid; margin: 0 0 var(--gap-card); }
+}
+
+/* Search boxes and filter rows on list screens span the same width as the grid below them */
+.hh-view input[type="search"] { max-width: 100%; }
+
+
+/* ---- Overlap safety (dashboard hero + metric cards) ---- */
+.hh-hero__amount { max-width: 100%; font-size: min(calc(var(--fs-hero) * var(--app-font-scale, 1)), 11cqw); }
+.hh-hero { overflow: hidden; }
+.hh-ring { flex: 0 0 auto; }
+@media (max-width: 340px) {
+  .hh-hero { flex-wrap: wrap; justify-content: center; }
+  .hh-hero__text { flex-basis: 100%; }
+}
+.hh-metric { container-type: inline-size; overflow: hidden; }
+.hh-metric__value { max-width: 100%; font-size: min(calc(var(--fs-metric) * var(--app-font-scale, 1)), 10cqw); }
+.hh-metric__sub, .hh-metric__label { overflow-wrap: anywhere; }
+
+/* ---- Phone + tablet overlap safety net (all screens) -------------------------------------------
+   Cause of most overlaps: money amounts in narrow equal-width grid cells. A grid/flex child cannot
+   shrink below its content unless min-width is 0, so the number pushes into its neighbour.
+   1) every cell may shrink, 2) big numerals inside 3-6 column grids scale to the cell's own width,
+   3) long text wraps instead of running under the next element. */
+@media (max-width: 1023px) {
+  [class*="grid-cols-"] > *,
+  .grid > * { min-width: 0; }
+
+  .grid:is(.grid-cols-3, .grid-cols-4, .grid-cols-5, .grid-cols-6) > * { container-type: inline-size; }
+  .grid:is(.grid-cols-3, .grid-cols-4, .grid-cols-5, .grid-cols-6) > * :is(.text-base, .text-lg, .text-xl, .text-2xl, .text-3xl, [class*="text-["]):is(.tabular-nums, .font-black, .font-extrabold, .font-bold) {
+    overflow-wrap: anywhere;
+  }
+  .grid:is(.grid-cols-3, .grid-cols-4) > * .text-lg  { font-size: min(1.125rem, 15cqw); }
+  .grid:is(.grid-cols-3, .grid-cols-4) > * .text-xl  { font-size: min(1.25rem,  14cqw); }
+  .grid:is(.grid-cols-3, .grid-cols-4) > * .text-2xl { font-size: min(1.5rem,   13cqw); }
+  .grid:is(.grid-cols-3, .grid-cols-4) > * .text-3xl { font-size: min(1.875rem, 12cqw); }
+
+  /* flex rows: label on the left, value on the right never collide */
+  .app-content .flex.justify-between > :is(.min-w-0, .truncate) { flex: 1 1 0; }
+  .app-content .flex.justify-between > .tabular-nums { flex: 0 1 auto; text-align: right; overflow-wrap: anywhere; }
+}
+
+/* Beverage picker: filters and list live in one body. Normal screens keep the list scrolling on its own;
+   on short screens (small laptops, landscape phones) the whole body scrolls so the list always has room. */
+.hh-picker__body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.hh-picker__list { min-height: 180px; }
+@media (max-height: 760px) {
+  .hh-picker__body { overflow-y: auto; overscroll-behavior: contain; }
+  .hh-picker__filters { flex-shrink: 0; }
+  .hh-picker__lists { flex: 0 0 auto; min-height: auto; }
+  .hh-picker__list { overflow: visible; flex: 1 1 auto; }
+  .hh-picker__lists .hh-cartpane { position: sticky; top: 0; align-self: flex-start; max-height: 100%; }
+}
+/* Short + wide screens: put the picker's total and buttons on one row so the list gets the height. */
+@media (max-height: 760px) and (min-width: 640px) {
+  .hh-picker__body ~ .hh-actionbar--flow { display: flex; align-items: center; gap: 16px; padding: 8px 16px; }
+  .hh-picker__body ~ .hh-actionbar--flow > :not(.hh-actionbar__btns) { flex: 1 1 auto; min-width: 0; }
+  .hh-picker__body ~ .hh-actionbar--flow .hh-actionbar__btns { margin-top: 0; flex: 0 1 460px; }
+  .hh-picker__body ~ .hh-actionbar--flow .hh-actionbar__btns .hh-btn { min-height: 44px; }
+}

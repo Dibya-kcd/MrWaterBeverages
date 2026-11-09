@@ -65,13 +65,20 @@ export const BillingView: React.FC = () => {
   const [invoiceModalBill, setInvoiceModalBill] = useState<Bill | null>(null);
   const [invoiceModalFormat, setInvoiceModalFormat] = useState<'gst' | 'non_gst' | undefined>(undefined);
 
-  // Respond to global floating shortcut "+ New Bill"
+  // Respond to global shortcuts "+ New Bill" and "Sales History"
   useEffect(() => {
     const onNewBill = () => {
       setBillingSubTab('create');
     };
+    const onHistory = () => {
+      setBillingSubTab('history');
+    };
     window.addEventListener('app-new-bill', onNewBill);
-    return () => window.removeEventListener('app-new-bill', onNewBill);
+    window.addEventListener('app-sales-history', onHistory);
+    return () => {
+      window.removeEventListener('app-new-bill', onNewBill);
+      window.removeEventListener('app-sales-history', onHistory);
+    };
   }, []);
 
   // Compile unique existing customers with purchase history for EditBillModal
@@ -87,7 +94,14 @@ export const BillingView: React.FC = () => {
   const justBill = justFinalizedBillId ? bills.find((b) => b.id === justFinalizedBillId) : null;
 
   return (
-    <div id="view-billing" className="mw-workspace space-y-4 min-w-0 max-w-full overflow-x-hidden">
+    <div id="view-billing" className="hh-view mw-workspace space-y-4 min-w-0 max-w-full overflow-x-hidden">
+      {/* Page title for the history tab (New sale has its own title bar) */}
+      {billingSubTab === 'history' && (
+        <div className="hh-pagehead">
+          <h1>Sales history</h1>
+        </div>
+      )}
+
       {/* Top Two Navigation Buttons — New sale & Sales history */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200/80 pb-3">
         <div className="flex items-center gap-2">
@@ -97,7 +111,7 @@ export const BillingView: React.FC = () => {
             onClick={() => setBillingSubTab('create')}
             className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
               billingSubTab === 'create'
-                ? 'bg-[#0d4a3a] text-white shadow-xs'
+                ? 'bg-[var(--primary)] text-white shadow-xs'
                 : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
             }`}
           >
@@ -110,7 +124,7 @@ export const BillingView: React.FC = () => {
             onClick={() => setBillingSubTab('history')}
             className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
               billingSubTab === 'history'
-                ? 'bg-[#0d4a3a] text-white shadow-xs'
+                ? 'bg-[var(--primary)] text-white shadow-xs'
                 : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
             }`}
           >
@@ -366,3 +380,5 @@ export const BillingView: React.FC = () => {
     </div>
   );
 };
+
+export default BillingView;

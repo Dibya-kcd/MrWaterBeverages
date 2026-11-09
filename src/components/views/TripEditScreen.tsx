@@ -506,7 +506,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                     onReopenTripNow(Number(trip.id));
                     setStatus('out');
                   }}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0d4a3a] hover:bg-[#0a3d30] text-white font-bold text-xs cursor-pointer shadow-sm active:scale-95 transition-all"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white font-bold text-xs cursor-pointer shadow-sm active:scale-95 transition-all"
                 >
                   <RotateCcw size={14} /> Reopen Trip Now
                 </button>
@@ -590,7 +590,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                       id="btn-edit-status-out"
                       onClick={() => setStatus('out')}
                       className={`px-3 py-1.5 rounded-full cursor-pointer transition-all ${
-                        status === 'out' ? 'bg-[#0d4a3a] text-white shadow-xs font-black' : 'text-slate-600 hover:text-slate-900'
+                        status === 'out' ? 'bg-[var(--primary)] text-white shadow-xs font-black' : 'text-slate-600 hover:text-slate-900'
                       }`}
                       title="Set trip to Active / Out on road"
                     >
@@ -618,11 +618,11 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                 checked={autoAttachBills}
                 disabled={readOnly}
                 onChange={(e) => setAutoAttachBills(e.target.checked)}
-                className="size-5 rounded accent-[#0d4a3a]"
+                className="size-5 rounded accent-[var(--primary)]"
               />
               <span>Attach bills of this date</span>
               {pendingBills.length > 0 && (
-                <span className="text-[11px] font-black text-[#0d4a3a] bg-[#ebe8e1] px-2 py-0.5 rounded-full">{pendingBills.length} ready</span>
+                <span className="text-[11px] font-black text-[var(--primary)] bg-[#ebe8e1] px-2 py-0.5 rounded-full">{pendingBills.length} ready</span>
               )}
             </label>
           </section>
@@ -647,7 +647,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   placeholder="Search loaded items…"
-                  className="w-full min-h-[46px] pl-9 pr-9 rounded-xl border border-black/15 bg-white text-[15px] focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                  className="w-full min-h-[46px] pl-9 pr-9 rounded-xl border border-black/15 bg-white text-[15px] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                 />
                 {searchTerm && (
                   <button type="button" onClick={() => setSearchTerm('')} aria-label="Clear search" className="absolute right-1.5 top-1/2 -translate-y-1/2 size-9 flex items-center justify-center text-slate-400 cursor-pointer">
@@ -710,11 +710,11 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
           <section className="rounded-2xl border border-black/10 bg-white p-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-[13px] font-black text-slate-900">
-                <Receipt size={16} className="text-[#0d4a3a]" />
+                <Receipt size={16} className="text-[var(--primary)]" />
                 Bills on this trip ({trip.billIds?.length || 0})
               </div>
               {onManageBills && !readOnly && (
-                <button type="button" onClick={() => onManageBills(trip)} className="min-h-[40px] px-2 text-xs font-black text-[#0d4a3a] underline cursor-pointer">
+                <button type="button" onClick={() => onManageBills(trip)} className="min-h-[40px] px-2 text-xs font-black text-[var(--primary)] underline cursor-pointer">
                   Manage →
                 </button>
               )}
@@ -725,7 +725,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                   const bill = bills.find((b) => b.id === bid);
                   return (
                     <span key={bid} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-800 font-semibold text-xs">
-                      <FileCheck size={13} className="text-[#0d4a3a]" />
+                      <FileCheck size={13} className="text-[var(--primary)]" />
                       #{bid} {bill ? `· ${bill.retailer}` : ''} ({bill?.items?.reduce((s, i) => s + i.qty, 0) || 0} cs)
                     </span>
                   );

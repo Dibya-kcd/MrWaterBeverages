@@ -485,7 +485,7 @@ export const DispositionsView: React.FC = () => {
             setShowForm(true);
             if (!warehouseId && warehouses[0]) setWarehouseId(warehouses[0].id);
           }}
-          className="w-full sm:w-auto justify-center px-4 py-2.5 rounded-2xl bg-[#0d4a3a] hover:bg-[#0a3d30] text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-[0.99]"
+          className="w-full sm:w-auto justify-center px-4 py-2.5 rounded-2xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-[0.99]"
         >
           <Plus className="w-4 h-4" /> New disposition
         </button>
@@ -591,7 +591,7 @@ export const DispositionsView: React.FC = () => {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search product, supplier, batch, CN…"
-            className="w-full pl-9 pr-3 py-2.5 rounded-full border border-black/8 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/25"
+            className="w-full pl-9 pr-3 py-2.5 rounded-full border border-black/8 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25"
           />
         </div>
         <select

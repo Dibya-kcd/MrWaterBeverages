@@ -101,7 +101,7 @@ export const TripListCard: React.FC<TripListCardProps> = ({
         {/* Title row */}
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-2.5 min-w-0">
-            <div className="size-10 rounded-xl bg-[#e9f1ec] text-[#0d4a3a] flex items-center justify-center shrink-0">
+            <div className="size-10 rounded-xl bg-[#e9f1ec] text-[var(--primary)] flex items-center justify-center shrink-0">
               <Truck size={19} />
             </div>
             <div className="min-w-0">
@@ -178,7 +178,7 @@ export const TripListCard: React.FC<TripListCardProps> = ({
           <span>
             Products <span className="text-slate-400">· {rows.length}</span>
           </span>
-          <span className="inline-flex items-center gap-1 text-[#0d4a3a]">
+          <span className="inline-flex items-center gap-1 text-[var(--primary)]">
             {open ? 'Hide' : 'Show'} breakdown {open ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
           </span>
         </button>
@@ -229,7 +229,7 @@ export const TripListCard: React.FC<TripListCardProps> = ({
           <button
             type="button"
             onClick={() => onSettle(trip)}
-            className="flex-1 min-h-11 px-4 rounded-xl bg-[#0d4a3a] hover:bg-[#0a3d30] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99]"
+            className="flex-1 min-h-11 px-4 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99]"
           >
             <CheckCircle2 size={16} /> Day-end settlement
           </button>
@@ -239,7 +239,7 @@ export const TripListCard: React.FC<TripListCardProps> = ({
             type="button"
             onClick={() => onReopen(trip)}
             id={`btn-reopen-trip-${trip.id}`}
-            className="flex-1 min-h-11 px-4 rounded-xl bg-[#0d4a3a] hover:bg-[#0a3d30] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99] shadow-sm"
+            className="flex-1 min-h-11 px-4 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99] shadow-sm"
             title="Reopen trip back to Active to edit load, return, or bill stock"
           >
             <RotateCcw size={16} /> Reopen trip

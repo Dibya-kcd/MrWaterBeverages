@@ -134,7 +134,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
   const customerNameMap = useAutoOdiaNameMap(customers || [], 'person');
 
   // Read-only ledger data for smart assist (does not change sale / stock behaviour)
-  const { inventoryBatches, bills, customers: ledgerCustomers, findBillingCustomer, getCustomerLedger } = useLedger();
+  const { inventoryBatches, bills, customers: ledgerCustomers, findBillingCustomer, getCustomerLedger, remainingStock } = useLedger();
 
   // Local state for search & filtering
   const [searchTerm, setSearchTerm] = useState<string>('');
@@ -151,17 +151,35 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
   const [voiceActionResult, setVoiceActionResult] = useState<{ text: string; type: 'success' | 'warn' } | null>(null);
   const voiceSessionRef = useRef<ActiveSpeechSession | null>(null);
 
-  // Available product categories (strictly from items loaded or available on this vehicle)
+  // Total loaded products on this trip
+  const vanLoadedProductCount = useMemo(() => {
+    if (!activeTrip) return 0;
+    return products.filter((p) => {
+      const { loaded, available } = getVehicleStock(activeTrip, p.id);
+      return (Number(loaded) || 0) > 0 || (Number(available) || 0) > 0;
+    }).length;
+  }, [products, activeTrip, getVehicleStock]);
+
+  // Product source filter: 'van' (only items with loaded stock) vs 'all' (entire catalog)
+  const [productSourceFilter, setProductSourceFilter] = useState<'van' | 'all'>('van');
+  // If the vehicle run has 0 pre-loaded stock, auto-fallback to 'all' so products are never hidden!
+  const effectiveProductFilter = vanLoadedProductCount > 0 ? productSourceFilter : 'all';
+
+  // Available product categories
   const categories = useMemo(() => {
     const set = new Set<string>();
     products.forEach((p) => {
-      const { loaded, available } = getVehicleStock(activeTrip, p.id);
-      if ((loaded > 0 || available > 0) && p.category) {
+      if (effectiveProductFilter === 'van') {
+        const { loaded, available } = getVehicleStock(activeTrip, p.id);
+        if (((Number(loaded) || 0) > 0 || (Number(available) || 0) > 0) && p.category) {
+          set.add(p.category);
+        }
+      } else if (p.category) {
         set.add(p.category);
       }
     });
     return ['ALL', ...Array.from(set)];
-  }, [products, activeTrip, getVehicleStock]);
+  }, [products, activeTrip, getVehicleStock, effectiveProductFilter]);
 
   // Beat filter (a salesman starts on his own beat). With a beat chosen, tapping the empty search box lists that
   // beat's customers so he can pick the next shop without typing.
@@ -177,13 +195,15 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
       .slice(0, 12);
   }, [customers, customerSearchQuery, beatFilter.apply, beatFilter.active]);
 
-  // Filtered products on vehicle: strictly only loaded or available products!
+  // Filtered products: respects vehicle stock when available, with seamless catalog fallback
   const filteredProducts = useMemo(() => {
     return products.filter((prod) => {
-      // ONLY products that are loaded or available on this vehicle run!
-      const { loaded, available } = getVehicleStock(activeTrip, prod.id);
-      if (loaded <= 0 && available <= 0) {
-        return false;
+      // If filtering strictly to van stock:
+      if (effectiveProductFilter === 'van') {
+        const { loaded, available } = getVehicleStock(activeTrip, prod.id);
+        if ((Number(loaded) || 0) <= 0 && (Number(available) || 0) <= 0) {
+          return false;
+        }
       }
 
       // Category filter
@@ -209,7 +229,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
       }
       return true;
     });
-  }, [products, activeTrip, getVehicleStock, selectedCategory, searchTerm, productAlphaFilter]);
+  }, [products, activeTrip, getVehicleStock, effectiveProductFilter, selectedCategory, searchTerm, productAlphaFilter]);
 
   // Total items in cart
   const cartItemCount = cart.items.reduce((sum, it) => sum + it.qty, 0);
@@ -459,7 +479,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
     };
 
     return (
-      <div id="confirmed-sale-screen" className="space-y-4 max-w-none lg:max-w-2xl mx-auto py-2 pb-52 lg:pb-4">
+      <div id="confirmed-sale-screen" className="space-y-4 max-w-none mx-auto py-2 pb-52 lg:pb-4">
         <InvoiceSuccessCard
           bill={confirmedBill}
           onOpenInvoiceModal={onOpenInvoiceModal}
@@ -618,7 +638,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 disabled={cart.items.length === 0}
                 className={`relative shrink-0 size-9 rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
                   cart.items.length > 0
-                    ? 'bg-[#0B3D32] border-[#0B3D32] text-white hover:brightness-110'
+                    ? 'bg-[var(--primary)] border-[var(--primary)] text-white hover:brightness-110'
                     : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
                 }`}
                 title={cart.items.length > 0 ? `Cart · ${cart.items.length} item(s)` : t('salesman.cartEmpty')}
@@ -676,7 +696,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                   disabled={cart.items.length === 0}
                   className={`relative shrink-0 size-9 rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
                     cart.items.length > 0
-                      ? 'bg-[#0B3D32] border-[#0B3D32] text-white hover:brightness-110'
+                      ? 'bg-[var(--primary)] border-[var(--primary)] text-white hover:brightness-110'
                       : 'bg-white border-emerald-200 text-slate-400 cursor-not-allowed'
                   }`}
                   title={cart.items.length > 0 ? `Cart · ${cart.items.length} item(s)` : t('salesman.cartEmpty')}
@@ -1281,7 +1301,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
       <div
         id="salesman-cart-bottom-bar"
         className={`${cart.items.length > 0 ? 'flex' : 'hidden'} sticky bottom-16 z-30 rounded-2xl items-center gap-3 shadow-[0_8px_20px_rgba(11,61,50,0.45)] ${
-          isLowVision ? 'p-3 border-4 border-black bg-yellow-300 text-black' : 'pl-3.5 pr-2.5 py-2.5 bg-[#0B3D32] text-white'
+          isLowVision ? 'p-3 border-4 border-black bg-yellow-300 text-black' : 'pl-3.5 pr-2.5 py-2.5 bg-[var(--primary)] text-white'
         }`}
         role="region"
         aria-label={t('salesman.runningCartTotal')}
@@ -1309,7 +1329,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           onClick={onOpenCart}
           aria-label={`Review cart, ${cart.items.length} items, total rupees ${money(finalCartTotal)}`}
           className={`shrink-0 min-h-[46px] px-4 rounded-xl font-black text-[14.5px] flex items-center justify-center gap-1 cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-40 disabled:cursor-not-allowed ${
-            isLowVision ? 'bg-black text-yellow-300' : 'bg-white text-[#0B3D32] active:bg-slate-100'
+            isLowVision ? 'bg-black text-yellow-300' : 'bg-white text-[var(--primary)] active:bg-slate-100'
           }`}
         >
           <span>{t('salesman.reviewCart')}</span>

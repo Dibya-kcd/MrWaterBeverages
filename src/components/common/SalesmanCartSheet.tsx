@@ -231,7 +231,7 @@ export const SalesmanCartSheet: React.FC<SalesmanCartSheetProps> = ({
     >
       {/* HEADER: back · title + counts · total · menu */}
       <header
-        className="bg-[#0B3D32] text-white shrink-0"
+        className="bg-[var(--primary)] text-white shrink-0"
         style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
       >
         <div className="flex items-center gap-2 px-2 py-2.5">
@@ -252,7 +252,7 @@ export const SalesmanCartSheet: React.FC<SalesmanCartSheetProps> = ({
             </div>
           </div>
           <div
-            className="px-3 py-1.5 rounded-xl bg-white text-[#0B3D32] text-lg font-black leading-none"
+            className="px-3 py-1.5 rounded-xl bg-white text-[var(--primary)] text-lg font-black leading-none"
             aria-live="polite"
           >
             ₹{money(finalCartTotal)}

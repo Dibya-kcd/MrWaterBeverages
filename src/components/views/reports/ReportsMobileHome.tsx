@@ -34,7 +34,7 @@ const BarChartThreeIcon = () => (
 export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
   onSelectReport,
 }) => {
-  const { bills, payments, products } = useLedger();
+  const { bills, payments, products, expenses } = useLedger();
   const [periodDropdownOpen, setPeriodDropdownOpen] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState<
     'today' | 'yesterday' | '7days' | 'month' | 'all'
@@ -74,32 +74,32 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
         return {
           received: 'Received - Today',
           sales: 'Sales - Today',
-          profit: 'Profit - Today',
+          profit: 'Net Profit - Today',
         };
       case 'yesterday':
         return {
           received: 'Received - Yesterday',
           sales: 'Sales - Yesterday',
-          profit: 'Profit - Yesterday',
+          profit: 'Net Profit - Yesterday',
         };
       case '7days':
         return {
           received: 'Received - 7 Days',
           sales: 'Sales - 7 Days',
-          profit: 'Profit - 7 Days',
+          profit: 'Net Profit - 7 Days',
         };
       case 'month':
         return {
           received: 'Received - This Month',
           sales: 'Sales - This Month',
-          profit: 'Profit - This Month',
+          profit: 'Net Profit - This Month',
         };
       case 'all':
       default:
         return {
           received: 'Received - All Time',
           sales: 'Sales - All Time',
-          profit: 'Profit - All Time',
+          profit: 'Net Profit - All Time',
         };
     }
   }, [selectedPeriod]);
@@ -235,36 +235,57 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
     return round2(liveBills.reduce((acc, b) => acc + Math.max(0, billBalance(b)), 0));
   }, [bills]);
 
-  // 4. REAL METRIC: Sales in selected period
-  const salesInPeriod = useMemo(() => {
-    const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
-    return round2(
-      liveBills
-        .filter((b) => matchesPeriod(String(b.date || '').slice(0, 10)))
-        .reduce((acc, b) => acc + billNetTotal(b), 0)
-    );
-  }, [bills, matchesPeriod]);
-
-  // 5. REAL METRIC: Profit in selected period (Gross profit = Revenue - COGS)
-  const profitInPeriod = useMemo(() => {
+  // 4. REAL METRICS: Billed Sales, Taxable Sales & True Operating Profit in selected period
+  // (GST collected is a statutory pass-through liability to government, not revenue or profit)
+  const { salesInPeriod, taxableSalesInPeriod, profitInPeriod } = useMemo(() => {
     const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
     const prodMap = new Map((products || []).map((p) => [p.id, p]));
-    let totalRev = 0;
+    let billedRev = 0;
+    let taxableRev = 0;
     let totalCost = 0;
 
     liveBills
       .filter((b) => matchesPeriod(String(b.date || '').slice(0, 10)))
       .forEach((b) => {
-        totalRev += billNetTotal(b);
+        const net = billNetTotal(b);
+        billedRev += net;
+
+        // Subtotal (Ex-GST taxable value after returns/discounts)
+        const sub = Number(b.subtotal);
+        const cgst = Number(b.cgst) || 0;
+        const sgst = Number(b.sgst) || 0;
+        const tax = cgst + sgst;
+        const taxBase = Number.isFinite(sub) && sub > 0 ? sub : Math.max(0, net - tax);
+        taxableRev += taxBase;
+
         b.items.forEach((item) => {
           const prod = prodMap.get(item.productId);
           const cost = item.costExGst || prod?.effectiveCost || prod?.cost || 0;
-          totalCost += item.qty * cost;
+          totalCost += (Number(item.qty) || 0) * cost;
         });
       });
 
-    return round2(Math.max(0, totalRev - totalCost));
+    // Operating Gross Profit = Taxable Sales (Ex-GST) - Inward Inventory Cost (Ex-GST)
+    const grossProfit = round2(Math.max(0, taxableRev - totalCost));
+
+    return {
+      salesInPeriod: round2(billedRev),
+      taxableSalesInPeriod: round2(taxableRev),
+      profitInPeriod: grossProfit,
+    };
   }, [bills, products, matchesPeriod]);
+
+  // Expenses in selected period (fuel, salary, rent, driver pay, maintenance)
+  const expensesInPeriod = useMemo(() => {
+    return (expenses || [])
+      .filter((e) => matchesPeriod(String(e.date || '').slice(0, 10)))
+      .reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+  }, [expenses, matchesPeriod]);
+
+  // True Net Profit in period (Gross Profit minus operating expenses)
+  const netProfitInPeriod = useMemo(() => {
+    return round2(profitInPeriod - expensesInPeriod);
+  }, [profitInPeriod, expensesInPeriod]);
 
   const periodOptions: { id: typeof selectedPeriod; label: string }[] = [
     { id: 'today', label: 'Today' },
@@ -282,7 +303,7 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
       {/* ========================================================== */}
       {/* 1. DARK BLUE HERO CARD: Reports / Daily Collection         */}
       {/* ========================================================== */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#0B1E48] via-[#08183A] to-[#040E24] p-5 text-white shadow-xl shadow-blue-950/20">
+      <div className="relative rounded-3xl bg-gradient-to-br from-[#0B1E48] via-[#08183A] to-[#040E24] p-5 text-white shadow-xl shadow-blue-950/20 z-10">
         
         {/* Top Header Row: Reports Title + Month Pill + Share Pill */}
         <div className="flex items-center justify-between gap-2">
@@ -443,10 +464,10 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
       {/* ========================================================== */}
       <div className="grid grid-cols-2 gap-2.5">
         
-        {/* Card 1: RECEIVED - THIS MONTH (Pastel Mint Green) */}
+        {/* Card 1: RECEIVED (Pastel Mint Green) */}
         <div
           onClick={() => onSelectReport('daybook')}
-          className="rounded-2xl border border-[#D1F7E2] bg-[#EAFBF3] p-3.5 flex flex-col justify-between hover:border-emerald-300 transition-all cursor-pointer active:scale-[0.98] shadow-xs"
+          className="rounded-2xl border border-[#D1F7E2] bg-[#EAFBF3] p-3.5 flex flex-col justify-between hover:border-emerald-300 transition-all cursor-pointer active:scale-[0.98] shadow-xs min-h-[142px]"
         >
           {/* Circular Icon Badge */}
           <div className="w-10 h-10 rounded-full bg-[#A6F4C5] text-[#05603A] flex items-center justify-center shrink-0 mb-2 shadow-xs">
@@ -459,11 +480,14 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
           </div>
 
           <div>
-            <div className="text-[11px] sm:text-xs font-semibold text-slate-600 line-clamp-1">
+            <div className="text-[11px] sm:text-xs font-semibold text-slate-600 line-clamp-1 h-4 flex items-center">
               {cardLabels.received}
             </div>
-            <div className="text-base sm:text-lg font-extrabold text-[#05603A] tracking-tight tabular-nums mt-0.5">
+            <div className="text-base sm:text-lg font-extrabold text-[#05603A] tracking-tight tabular-nums mt-0.5 leading-tight">
               ₹{money(receivedInPeriod)}
+            </div>
+            <div className="text-[10px] text-slate-500 font-medium mt-0.5 leading-tight line-clamp-1 h-3.5 flex items-center">
+              Total collected
             </div>
           </div>
         </div>
@@ -471,7 +495,7 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
         {/* Card 2: TOTAL DUE (Pastel Blush Pink) */}
         <div
           onClick={() => onSelectReport('receivables')}
-          className="rounded-2xl border border-[#FECDCA] bg-[#FEF3F5] p-3.5 flex flex-col justify-between hover:border-rose-300 transition-all cursor-pointer active:scale-[0.98] shadow-xs"
+          className="rounded-2xl border border-[#FECDCA] bg-[#FEF3F5] p-3.5 flex flex-col justify-between hover:border-rose-300 transition-all cursor-pointer active:scale-[0.98] shadow-xs min-h-[142px]"
         >
           {/* Circular Icon Badge */}
           <div className="w-10 h-10 rounded-full bg-[#FEE4E2] text-[#D92D20] flex items-center justify-center shrink-0 mb-2 shadow-xs">
@@ -482,19 +506,22 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
           </div>
 
           <div>
-            <div className="text-[11px] sm:text-xs font-semibold text-slate-600 line-clamp-1">
+            <div className="text-[11px] sm:text-xs font-semibold text-slate-600 line-clamp-1 h-4 flex items-center">
               Total Due
             </div>
-            <div className="text-base sm:text-lg font-extrabold text-[#D92D20] tracking-tight tabular-nums mt-0.5">
+            <div className="text-base sm:text-lg font-extrabold text-[#D92D20] tracking-tight tabular-nums mt-0.5 leading-tight">
               ₹{money(totalDue)}
+            </div>
+            <div className="text-[10px] text-slate-500 font-medium mt-0.5 leading-tight line-clamp-1 h-3.5 flex items-center">
+              Market recovery
             </div>
           </div>
         </div>
 
-        {/* Card 3: SALES - THIS MONTH (Pastel Ice Blue) */}
+        {/* Card 3: SALES (Pastel Ice Blue) */}
         <div
           onClick={() => onSelectReport('sales')}
-          className="rounded-2xl border border-[#D1E0FF] bg-[#EFF4FE] p-3.5 flex flex-col justify-between hover:border-blue-300 transition-all cursor-pointer active:scale-[0.98] shadow-xs"
+          className="rounded-2xl border border-[#D1E0FF] bg-[#EFF4FE] p-3.5 flex flex-col justify-between hover:border-blue-300 transition-all cursor-pointer active:scale-[0.98] shadow-xs min-h-[142px]"
         >
           {/* Circular Icon Badge */}
           <div className="w-10 h-10 rounded-full bg-[#D1E0FF] text-[#155EEF] flex items-center justify-center shrink-0 mb-2 shadow-xs">
@@ -506,19 +533,22 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
           </div>
 
           <div>
-            <div className="text-[11px] sm:text-xs font-semibold text-slate-600 line-clamp-1">
+            <div className="text-[11px] sm:text-xs font-semibold text-slate-600 line-clamp-1 h-4 flex items-center">
               {cardLabels.sales}
             </div>
-            <div className="text-base sm:text-lg font-extrabold text-[#0F172A] tracking-tight tabular-nums mt-0.5">
+            <div className="text-base sm:text-lg font-extrabold text-[#0F172A] tracking-tight tabular-nums mt-0.5 leading-tight">
               ₹{money(salesInPeriod)}
+            </div>
+            <div className="text-[10px] text-slate-500 font-medium mt-0.5 leading-tight line-clamp-1 h-3.5 flex items-center">
+              Taxable: ₹{money(taxableSalesInPeriod)}
             </div>
           </div>
         </div>
 
-        {/* Card 4: PROFIT - THIS MONTH (Pastel Lavender) */}
+        {/* Card 4: NET PROFIT (Pastel Lavender) */}
         <div
           onClick={() => onSelectReport('netProfit')}
-          className="rounded-2xl border border-[#E9D7FE] bg-[#F9F5FF] p-3.5 flex flex-col justify-between hover:border-purple-300 transition-all cursor-pointer active:scale-[0.98] shadow-xs"
+          className="rounded-2xl border border-[#E9D7FE] bg-[#F9F5FF] p-3.5 flex flex-col justify-between hover:border-purple-300 transition-all cursor-pointer active:scale-[0.98] shadow-xs min-h-[142px]"
         >
           {/* Circular Icon Badge */}
           <div className="w-10 h-10 rounded-full bg-[#E9D7FE] text-[#7F56D9] flex items-center justify-center shrink-0 mb-2 shadow-xs">
@@ -533,11 +563,14 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
           </div>
 
           <div>
-            <div className="text-[11px] sm:text-xs font-semibold text-slate-600 line-clamp-1">
+            <div className="text-[11px] sm:text-xs font-semibold text-slate-600 line-clamp-1 h-4 flex items-center">
               {cardLabels.profit}
             </div>
-            <div className="text-base sm:text-lg font-extrabold text-[#05603A] tracking-tight tabular-nums mt-0.5">
-              ₹{money(profitInPeriod)}
+            <div className="text-base sm:text-lg font-extrabold text-[#05603A] tracking-tight tabular-nums mt-0.5 leading-tight">
+              ₹{money(netProfitInPeriod)}
+            </div>
+            <div className="text-[10px] text-slate-500 font-medium mt-0.5 leading-tight line-clamp-1 h-3.5 flex items-center">
+              Gross: ₹{money(profitInPeriod)}
             </div>
           </div>
         </div>

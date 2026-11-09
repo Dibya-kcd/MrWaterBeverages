@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowRight,
@@ -15,6 +15,7 @@ import {
   EyeOff,
   Filter,
   Hourglass,
+  Receipt,
   IndianRupee,
   Layers,
   Package,
@@ -32,9 +33,34 @@ import { money, statusOf } from "../../utils/billing";
 import { collectExpiryAlerts } from "../../utils/fefo";
 import { trackedStage } from "./ExpiryReturnsTracker";
 import { billBalance, billNetTotal, returnedQtyByProduct } from "../../utils/salesReturns";
+import { createPortal } from "react-dom";
+import { useBeats } from "../../hooks/useBeats";
+import { useNeedsAttention } from "../../hooks/useNeedsAttention";
+import { useLanguage } from "../../i18n/LanguageContext";
+import { buildBeatSummary, invoiceNo } from "../../utils/beatReports";
+import { beatOfCustomer } from "../../utils/beats";
+import { computeNetProfit } from "../../utils/netProfit";
+import { useSalesMarginPnl } from "./reports/SalesMarginPnLReport";
+import {
+  AlertStrip,
+  BillsList,
+  BillsTable,
+  DueByBeatCard,
+  HeroCollectionCard,
+  HubMetricCard,
+  NeedsAttentionCard,
+  SalesBarsCard,
+  SegmentedPeriod,
+  ShortcutTile,
+  type AttentionRow,
+  type BillRowData,
+  type PillStatus,
+} from "../ui/HomeKit";
 import { StatBlock } from "../common/StatBlock";
 import { MetricCard, MetricGrid } from "../mobile/MobileKit";
 import { buildMonthlyIncentiveReport, isClaimLinkedNote } from "../../utils/supplierSchemes";
+import { Bill } from "../../types";
+import { TaxInvoiceModal } from "../common/TaxInvoiceModal";
 
 import {
   PeriodFilter,
@@ -90,7 +116,13 @@ export const DashboardView: React.FC = () => {
     scale,
     setTab,
     currentUser,
+    payments,
+    existingCustomers,
+    expenses,
   } = useLedger();
+  const { t } = useLanguage();
+  const { beats } = useBeats();
+  const attention = useNeedsAttention();
 
   // Helper date strings
   const today = useMemo(() => {
@@ -133,6 +165,25 @@ export const DashboardView: React.FC = () => {
   const [showCustomPicker, setShowCustomPicker] = useState<boolean>(false);
   const [showFilterDropdown, setShowFilterDropdown] = useState<boolean>(false);
   const filterDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  // Modal to view bill/tax invoice when clicking any recent bill
+  const [selectedBillForModal, setSelectedBillForModal] = useState<Bill | null>(null);
+  const [selectedBillFormat, setSelectedBillFormat] = useState<'gst' | 'non_gst'>('gst');
+
+  const handleOpenBill = useCallback((billId: string | number) => {
+    const found = (bills || []).find((b) => String(b.id) === String(billId));
+    if (found) {
+      setSelectedBillForModal(found);
+      setSelectedBillFormat(found.supplyType === 'B2B' || found.isGstInvoice ? 'gst' : 'non_gst');
+    }
+  }, [bills]);
+
+  const handleSeeAllBills = useCallback(() => {
+    setTab("billing");
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('app-sales-history'));
+    }, 50);
+  }, [setTab]);
 
   const applyCycleIndex = (newIndex: number) => {
     const cycle = CYCLE_SEQUENCE[newIndex];
@@ -809,39 +860,162 @@ export const DashboardView: React.FC = () => {
     });
   }, [bills]);
 
-  return (
-    <div id="view-dashboard" className="space-y-4 min-w-0 max-w-full pb-2">
-      {/* Green hero — sales for selected period + quick actions */}
-      <section data-tone="sales" className="mt-hero rounded-3xl bg-gradient-to-br from-[#0d4a3a] via-[#0f5c49] to-[#0a3d30] text-white p-4 sm:p-5 shadow-lg relative">
-        <div className="flex items-start justify-between gap-2">
-          <p className="text-sm text-white/80 font-medium">
-            Hello,{' '}
-            {(currentUser && 'name' in currentUser && (currentUser as { name?: string }).name) ||
-              (currentUser && 'email' in currentUser && String((currentUser as { email?: string }).email || '').split('@')[0]) ||
-              userName}
-          </p>
 
-          {/* Period Filter Dropdown Trigger (Arrowed element) */}
-          <div className="relative shrink-0" ref={filterDropdownRef}>
-            <button
-              type="button"
-              id="btn-cycle-period"
-              onClick={() => setShowFilterDropdown((prev) => !prev)}
-              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-white/15 hover:bg-white/25 active:bg-white/30 text-amber-100 hover:text-white border border-white/20 shadow-xs cursor-pointer transition-all select-none group"
-              aria-expanded={showFilterDropdown}
-              aria-label={`Time filter: ${shortFilterLabel}. Click to change period.`}
-              title="Click to select period or custom date range"
-            >
-              <Clock className="w-3.5 h-3.5 text-emerald-200 group-hover:rotate-45 transition-transform" />
-              <span>{shortFilterLabel}</span>
-              <ChevronDown
-                className={`w-3.5 h-3.5 text-emerald-200 transition-transform duration-200 ${
-                  showFilterDropdown ? 'rotate-180' : ''
-                }`}
-              />
-            </button>
+  /* ---------------- Presentation-only derivations for the redesigned Home ---------------- */
+  const dateInPeriod = useCallback(
+    (date: string) => {
+      if (currentCycle.id === "all" || periodPreset === "all" || (!startDate && !endDate)) return true;
+      const d = String(date || "").slice(0, 10);
+      if (startDate && d < startDate) return false;
+      if (endDate && d > endDate) return false;
+      return true;
+    },
+    [currentCycle.id, periodPreset, startDate, endDate],
+  );
 
-            {/* Dropdown Menu with all time filter features transferred */}
+  // Same engine as Reports > Profit, so Home and Reports agree.
+  const { pnl } = useSalesMarginPnl({ filteredBills: activeBills, products, dateInPeriod, viewBasis: "exGst" });
+  const periodExpenseRows = useMemo(
+    () => (expenses || []).filter((e) => dateInPeriod(String(e.date).slice(0, 10))),
+    [expenses, dateInPeriod],
+  );
+  const periodExpenseTotal = useMemo(
+    () => periodExpenseRows.reduce((sum, e) => sum + Math.max(0, Number(e.amount) || 0), 0),
+    [periodExpenseRows],
+  );
+  const netProfit = useMemo(
+    () => computeNetProfit({ grossProfitAfterLosses: pnl.operatingGrossProfit, expenses: periodExpenseRows }).netProfit,
+    [pnl.operatingGrossProfit, periodExpenseRows],
+  );
+
+  const customersWithDue = useMemo(() => {
+    const names = new Set<string>();
+    activeBills.forEach((b) => {
+      if (billBalance(b) > 0) names.add(String(b.customerId || b.retailer || "").toLowerCase());
+    });
+    return names.size;
+  }, [activeBills]);
+
+  const collectedPct = periodRevenue > 0 ? (periodPaid / periodRevenue) * 100 : 0;
+
+  const beatRows = useMemo(() => {
+    const summary = buildBeatSummary({
+      bills: bills || [],
+      payments: payments || [],
+      customers: customers || [],
+      existingCustomers: existingCustomers || [],
+      beats,
+      inPeriod: dateInPeriod,
+      today,
+    });
+    return summary.rows
+      .filter((r) => r.due > 0)
+      .sort((a, b) => b.due - a.due)
+      .slice(0, 5)
+      .map((r) => ({ name: r.beatName, amount: r.due, display: `₹${money(r.due)}` }));
+  }, [bills, payments, customers, existingCustomers, beats, dateInPeriod, today]);
+
+  const recentBills: BillRowData[] = useMemo(() => {
+    const sorted = [...activeBills]
+      .filter((b) => b.status !== "cancelled" && !(b as { cancelled?: boolean }).cancelled)
+      .sort((a, b) => (b.date || "").localeCompare(a.date || "") || Number(b.id) - Number(a.id))
+      .slice(0, 5);
+    return sorted.map((b) => {
+      const total = billNetTotal(b);
+      const paid = Number(b.amountPaid) || 0;
+      const status: PillStatus = total - paid <= 0 ? "paid" : paid <= 0 ? "due" : "part";
+      const cust = (customers || []).find((c) => (b.customerId ? c.id === b.customerId : c.name === b.retailer));
+      return {
+        id: b.id,
+        party: b.retailer,
+        billNo: invoiceNo(b.id),
+        beat: beatOfCustomer(cust, beats)?.name || "-",
+        amount: `₹${money(total)}`,
+        status,
+      };
+    });
+  }, [activeBills, customers, beats]);
+
+  // Sales for the last 7 days (always the last 7 days, whatever period is picked above)
+  const salesBars = useMemo(() => {
+    const days: { key: string; label: string; value: number }[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const key = getPastDateStr(i);
+      const dt = new Date(`${key}T12:00:00`);
+      days.push({ key, label: dt.toLocaleDateString(undefined, { weekday: "narrow" }), value: 0 });
+    }
+    (bills || []).forEach((b) => {
+      if (b.status === "cancelled" || (b as { cancelled?: boolean }).cancelled) return;
+      const hit = days.find((d) => d.key === (b.date || "").slice(0, 10));
+      if (hit) hit.value += billNetTotal(b);
+    });
+    return days.map((d) => ({ label: d.label, value: d.value, display: `₹${money(d.value)}` }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bills, today]);
+
+  const attentionRows: AttentionRow[] = useMemo(() => {
+    const rows: AttentionRow[] = attention.items.map((it) => ({
+      id: it.id,
+      tone: it.tone,
+      title: t(it.titleKey, { n: it.count }),
+      sub: t(it.subKey),
+      onClick: () => {
+        if (it.session) {
+          try { sessionStorage.setItem(it.session[0], it.session[1]); } catch { /* ignore */ }
+        }
+        setTab(it.tab);
+      },
+    }));
+    if (expiryReturnCounts.toAct > 0)
+      rows.push({ id: "exp-ret", tone: "due", title: t("attn.expiredReturns", { n: expiryReturnCounts.toAct }), sub: t("attn.expiredReturnsSub"), onClick: openExpiryReturns });
+    if (expiryReturnCounts.withCompany > 0)
+      rows.push({ id: "exp-co", tone: "info", title: t("attn.expiredReturnsCompany", { n: expiryReturnCounts.withCompany }), sub: t("attn.expiredReturnsCompanySub"), onClick: openExpiryReturns });
+    if (openClaims.length > 0)
+      rows.push({ id: "claims", tone: "warning", title: t("attn.openClaims", { n: openClaims.length }), sub: `₹${money(openClaimValue)}`, onClick: () => setTab("inventory") });
+    return rows;
+  }, [attention.items, expiryReturnCounts, openClaims.length, openClaimValue, t, setTab]);
+
+  // Desktop: the period switch lives in the top bar (portal), everywhere else it sits in the page.
+  const [isDesktop, setIsDesktop] = useState<boolean>(() => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const on = () => setIsDesktop(mq.matches);
+    mq.addEventListener("change", on);
+    return () => mq.removeEventListener("change", on);
+  }, []);
+  const [slot, setSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setSlot(isDesktop ? document.getElementById("topbar-period-slot") : null);
+  }, [isDesktop]);
+
+  const periodOptions = [
+    { id: "today", label: t("period.today") },
+    { id: "7days", label: t("period.week") },
+    { id: "month", label: t("period.month") },
+    { id: "all", label: t("period.all") },
+  ];
+  const periodValue = showCustomPicker ? "" : periodPreset === "30days" ? "month" : periodPreset;
+
+  const periodSwitch = (
+    <SegmentedPeriod
+      ariaLabel={t("home.periodLabel")}
+      options={periodOptions}
+      value={periodValue}
+      onChange={(id) => handleSelectPreset(id as FilterPeriodPreset)}
+      trailing={
+        <div className="relative" ref={filterDropdownRef}>
+          <button
+            type="button"
+            id="btn-cycle-period"
+            className="hh-segmented__btn"
+            data-active={!periodOptions.some((o) => o.id === periodValue) ? "true" : "false"}
+            aria-haspopup="dialog"
+            aria-expanded={showFilterDropdown}
+            onClick={() => setShowFilterDropdown((prev) => !prev)}
+          >
+            {periodOptions.some((o) => o.id === periodValue) ? t("home.morePeriods") : shortFilterLabel}
+            <ChevronDown className="inline-block ml-1 size-4" aria-hidden="true" />
+          </button>
             {showFilterDropdown && (
               <div
                 role="dialog"
@@ -1010,118 +1184,103 @@ export const DashboardView: React.FC = () => {
                 </div>
               </div>
             )}
+        </div>
+      }
+    />
+  );
+
+  const collectionLabel = periodPreset === "today" ? t("home.collectionToday") : t("home.collectionPeriod", { period: shortFilterLabel });
+  const duePill = periodOutstanding > 0 ? t("home.stillDue", { amount: money(periodOutstanding) }) : t("home.allCollected");
+  const topAlert = attentionRows[0];
+
+  return (
+    <div id="view-dashboard" className="hh-home min-w-0 max-w-full">
+      <div className="hh-home__title">
+        <h1>{t("nav.home")}</h1>
+        <div className="hh-home__title-actions">
+          {!(isDesktop && slot) && periodSwitch}
+          <button type="button" className="hh-btn hh-btn--primary hh-only-tablet" onClick={() => setTab("billing")}>
+            + {t("top.newBill")}
+          </button>
+        </div>
+      </div>
+      {isDesktop && slot && createPortal(periodSwitch, slot)}
+
+      <div className="hh-home__top">
+        <div className="hh-area-hero">
+          <HeroCollectionCard
+            label={collectionLabel}
+            amount={`₹${money(periodPaid)}`}
+            sub={t("home.ofSales", { sales: money(periodRevenue), bills: activeBills.length })}
+            duePill={duePill}
+            pillTone={periodOutstanding > 0 ? "due" : "received"}
+            pct={collectedPct}
+            ringLabel={t("home.collectedPct", { pct: Math.round(collectedPct) })}
+          />
+        </div>
+
+        <div className="hh-area-shortcuts hh-hide-desktop" aria-label={t("home.shortcuts")}>
+          <ShortcutTile tone="blue" icon={<Receipt size={24} />} label={t("shortcut.newBill")} onClick={() => setTab("billing")} />
+          <ShortcutTile tone="green" icon={<Wallet size={24} />} label={t("shortcut.collect")} onClick={() => setTab("payments")} />
+          <ShortcutTile tone="orange" icon={<Truck size={24} />} label={t("shortcut.trip")} onClick={() => setTab("trips")} />
+          <ShortcutTile tone="purple" icon={<Package size={24} />} label={t("shortcut.stock")} onClick={() => setTab("inventory")} />
+        </div>
+
+        <div className="hh-area-metrics">
+          <div className="hh-show-desktop"><HubMetricCard tone="sales" label={t("metric.sales")} value={`₹${money(periodRevenue)}`} sub={t("metric.billsCount", { n: activeBills.length })} /></div>
+          <HubMetricCard tone="profit" label={t("metric.profit")} value={`₹${money(netProfit)}`} sub={t("metric.afterExpenses")} />
+          <div className="hh-show-desktop"><HubMetricCard tone="received" label={t("metric.received")} value={`₹${money(periodPaid)}`} sub={t("metric.collectedSub")} /></div>
+          <HubMetricCard tone="due" label={t("metric.due")} value={`₹${money(periodOutstanding)}`} sub={customersWithDue === 1 ? t("metric.customerOne") : t("metric.customersDue", { n: customersWithDue })} />
+          <div className="hh-only-tablet"><HubMetricCard tone="warning" label={t("metric.expenses")} value={`₹${money(periodExpenseTotal)}`} sub={t("metric.inPeriod")} /></div>
+        </div>
+      </div>
+
+      <div className="hh-home__lower">
+        {topAlert && (
+          <div className="hh-area-alert hh-only-phone">
+            <AlertStrip text={topAlert.title} onClick={topAlert.onClick} />
           </div>
-        </div>
-        <div className="mt-1 flex items-baseline gap-2 flex-wrap">
-          <span className="text-3xl sm:text-4xl font-bold tracking-tight tabular-nums">
-            ₹{money(periodRevenue)}
-          </span>
-        </div>
-        <p className="text-sm text-white/70 mt-0.5">
-          sales · {activeBills.length} bill{activeBills.length === 1 ? '' : 's'}
-          {periodPreset !== 'all' && startDate && endDate
-            ? startDate === endDate
-              ? ` · ${startDate}`
-              : ` · ${startDate} → ${endDate}`
-            : ''}
-        </p>
-
-        <div className="mt-4 grid grid-cols-4 gap-2">
-          {(
-            [
-              { label: 'New sale', tab: 'billing', icon: '🛒' },
-              { label: 'Inventory', tab: 'grn', icon: '📦' },
-              { label: 'Collect', tab: 'payments', icon: '💵' },
-              { label: 'Trips', tab: 'trips', icon: '🚚' },
-            ] as Array<{ label: string; tab: 'billing' | 'grn' | 'payments' | 'trips'; icon: string; onOpen?: () => void }>
-          ).map((a) => (
-            <button
-              key={a.label}
-              type="button"
-              onClick={() => {
-                a.onOpen?.();
-                setTab(a.tab);
-              }}
-              className="flex flex-col items-center justify-center gap-1.5 rounded-2xl bg-white/10 hover:bg-white/15 border border-white/10 py-3 px-1 cursor-pointer transition-colors active:scale-[0.98]"
-            >
-              <span className="text-lg" aria-hidden>
-                {a.icon}
-              </span>
-              <span className="text-[11px] sm:text-xs font-semibold text-amber-200">{a.label}</span>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      {/* KPI strip — period-aware */}
-      <MetricGrid>
-        <MetricCard
-          tone="received"
-          icon={Wallet}
-          label="Collected"
-          value={`₹${money(periodPaid)}`}
-          sub={shortFilterLabel}
-          valueClassName="text-emerald-700"
-        />
-        <MetricCard tone="due" icon={Hourglass} label="Outstanding" value={`₹${money(periodOutstanding)}`} />
-        <MetricCard
-          icon={CalendarClock}
-          label="Expiring soon"
-          value={expiredLots.length + criticalLots.length + warningLots.length}
-          sub="within 60 days"
-        />
-        <MetricCard icon={PackageMinus} label="Low stock" value={lowStockProducts.length} />
-      </MetricGrid>
-
-      {(products.length === 0 || customers.length === 0 || bills.length === 0) && (
-        <section className="bg-white rounded-2xl border border-black/5 shadow-sm p-4 sm:p-5">
-          <h2 className="text-base font-bold text-slate-900 mb-2">Get started</h2>
-          <ol className="space-y-2 text-sm">
-            <li>
-              <button type="button" onClick={() => setTab('settings')} className="text-[#0d4a3a] font-semibold hover:underline cursor-pointer">
-                1. Fill your company & GSTIN
-              </button>
-            </li>
-            <li>
-              <button type="button" onClick={() => setTab('products')} className="text-[#0d4a3a] font-semibold hover:underline cursor-pointer">
-                2. Add products
-              </button>
-            </li>
-            <li>
-              <button type="button" onClick={() => setTab('customers')} className="text-[#0d4a3a] font-semibold hover:underline cursor-pointer">
-                3. Add suppliers & customers
-              </button>
-            </li>
-          </ol>
+        )}
+        <div className="hh-area-chart hh-show-desktop"><SalesBarsCard title={t("chart.sales7")} bars={salesBars} /></div>
+        <div className="hh-area-beats hh-hide-phone"><DueByBeatCard title={t("beat.title")} rows={beatRows} empty={t("beat.empty")} /></div>
+        <div className="hh-area-attn hh-show-desktop"><NeedsAttentionCard id="needs-attention" title={t("attn.title")} rows={attentionRows} empty={t("attn.allClear")} /></div>
+        <section className="hh-card hh-area-bills" aria-label={t("bills.recent")}>
+          <div className="hh-card__head">
+            <h2 className="hh-card__title">{t("bills.recent")}</h2>
+            <button type="button" className="hh-linkbtn hh-linkbtn--primary" onClick={handleSeeAllBills}>{t("bills.seeAll")}</button>
+          </div>
+          {recentBills.length === 0 ? (
+            <p className="hh-empty">{t("bills.empty")}</p>
+          ) : (
+            <>
+              <div className="hh-hide-desktop"><BillsList rows={recentBills} onOpen={handleOpenBill} /></div>
+              <div className="hh-show-desktop"><BillsTable rows={recentBills} onOpen={handleOpenBill} /></div>
+            </>
+          )}
         </section>
+      </div>
+
+      {/* Tax Invoice / Cash Bill Modal on clicking any Recent Bill */}
+      {selectedBillForModal && (
+        <TaxInvoiceModal
+          bill={selectedBillForModal}
+          defaultFormat={selectedBillFormat}
+          onClose={() => setSelectedBillForModal(null)}
+          onEditBill={(b) => {
+            setSelectedBillForModal(null);
+            setTab("billing");
+          }}
+        />
       )}
 
-      {((typeof tripsWithDiscrepancy === 'number' ? tripsWithDiscrepancy : 0) > 0 ||
-        openClaims.length > 0 ||
-        expiryReturnCounts.toAct > 0 ||
-        expiryReturnCounts.withCompany > 0) && (
-        <section className="bg-white rounded-2xl border border-black/5 shadow-sm p-4 space-y-2">
-          <h2 className="text-sm font-bold text-slate-900">Needs attention</h2>
-          {(typeof tripsWithDiscrepancy === 'number' ? tripsWithDiscrepancy : 0) > 0 && (
-            <button type="button" onClick={() => setTab('trips')} className="block w-full text-left text-sm text-amber-800 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 cursor-pointer">
-              {tripsWithDiscrepancy} trip(s) with load discrepancy →
-            </button>
-          )}
-          {expiryReturnCounts.toAct > 0 && (
-            <button type="button" onClick={openExpiryReturns} className="block w-full text-left text-sm text-rose-800 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2 cursor-pointer">
-              {expiryReturnCounts.toAct} customer expired return(s) waiting: send to company or throw out →
-            </button>
-          )}
-          {expiryReturnCounts.withCompany > 0 && (
-            <button type="button" onClick={openExpiryReturns} className="block w-full text-left text-sm text-sky-800 bg-sky-50 border border-sky-100 rounded-xl px-3 py-2 cursor-pointer">
-              {expiryReturnCounts.withCompany} expired return(s) with company: waiting for credit note →
-            </button>
-          )}
-          {openClaims.length > 0 && (
-            <button type="button" onClick={() => setTab('inventory')} className="block w-full text-left text-sm text-slate-700 bg-slate-50 border border-black/5 rounded-xl px-3 py-2 cursor-pointer">
-              {openClaims.length} open claim(s) · ₹{money(openClaimValue)} →
-            </button>
-          )}
+      {(products.length === 0 || customers.length === 0 || bills.length === 0) && (
+        <section className="hh-card hh-getstarted">
+          <h2 className="hh-card__title">{t("home.getStarted")}</h2>
+          <ol className="hh-getstarted__list">
+            <li><button type="button" onClick={() => setTab("settings")} className="hh-linkbtn hh-linkbtn--primary">{t("home.gs1")}</button></li>
+            <li><button type="button" onClick={() => setTab("products")} className="hh-linkbtn hh-linkbtn--primary">{t("home.gs2")}</button></li>
+            <li><button type="button" onClick={() => setTab("customers")} className="hh-linkbtn hh-linkbtn--primary">{t("home.gs3")}</button></li>
+          </ol>
         </section>
       )}
     </div>
@@ -1129,4 +1288,3 @@ export const DashboardView: React.FC = () => {
 };
 
 export default DashboardView;
-

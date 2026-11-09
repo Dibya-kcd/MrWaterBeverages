@@ -825,7 +825,7 @@ export const ReportsView: React.FC = () => {
       {/* center as a categorized catalog. Mobile view unchanged.  */}
       {/* ========================================================== */}
       <div className="hidden md:block">
-        <div className="max-w-6xl mx-auto px-6 lg:px-10 py-6 lg:py-8">
+        <div className="hh-view w-full min-w-0">
           {activeReport === "overview" ? (
             <div className="space-y-5">
               {/* Hub header */}

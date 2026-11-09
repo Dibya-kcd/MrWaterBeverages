@@ -203,7 +203,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
   };
 
   return (
-    <div id="view-billing-history" className="space-y-4">
+    <div id="view-billing-history" className="hh-view space-y-4">
       {/* 1. Interactive KPI Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
         {/* All Invoices Card */}
@@ -213,7 +213,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
           onClick={() => setPaymentFilter('all')}
           className={`p-3 sm:p-3.5 rounded-2xl border text-left transition-all cursor-pointer relative overflow-hidden group select-none ${
             paymentFilter === 'all'
-              ? 'bg-white border-[#0d4a3a] shadow-md ring-2 ring-[#0d4a3a]/15'
+              ? 'bg-white border-[var(--primary)] shadow-md ring-2 ring-[var(--primary)]/15'
               : 'bg-white/80 border-slate-200 hover:border-slate-300 hover:bg-white shadow-2xs'
           }`}
         >
@@ -223,7 +223,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
             </span>
             <span
               className={`text-xs font-bold px-2 py-0.5 rounded-full font-mono transition-colors ${
-                paymentFilter === 'all' ? 'bg-[#0d4a3a] text-white' : 'bg-slate-100 text-slate-600'
+                paymentFilter === 'all' ? 'bg-[var(--primary)] text-white' : 'bg-slate-100 text-slate-600'
               }`}
             >
               {statusCounts.all}
@@ -311,7 +311,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
               onClick={() => setGrouping('table')}
               className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap ${
                 grouping === 'table'
-                  ? 'bg-[#0d4a3a] text-white shadow-xs'
+                  ? 'bg-[var(--primary)] text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
               }`}
             >
@@ -325,7 +325,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
               onClick={() => setGrouping('date')}
               className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap ${
                 grouping === 'date'
-                  ? 'bg-[#0d4a3a] text-white shadow-xs'
+                  ? 'bg-[var(--primary)] text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
               }`}
             >
@@ -339,7 +339,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
               onClick={() => setGrouping('customer')}
               className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap ${
                 grouping === 'customer'
-                  ? 'bg-[#0d4a3a] text-white shadow-xs'
+                  ? 'bg-[var(--primary)] text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
               }`}
             >
@@ -358,7 +358,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
               placeholder="Search invoices, customer, item..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-9 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/20 focus:border-[#0d4a3a] focus:bg-white transition-all shadow-2xs"
+              className="w-full pl-10 pr-9 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20 focus:border-[var(--primary)] focus:bg-white transition-all shadow-2xs"
             />
             {searchQuery && (
               <button
@@ -415,7 +415,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
             <button
               type="button"
               onClick={onNewInvoiceClick}
-              className="mt-5 inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-[#0d4a3a] text-white text-sm font-semibold shadow-xs cursor-pointer active:scale-[0.99]"
+              className="mt-5 inline-flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-[var(--primary)] text-white text-sm font-semibold shadow-xs cursor-pointer active:scale-[0.99]"
             >
               New sale
             </button>
@@ -469,7 +469,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                           <button
                             type="button"
                             onClick={() => onViewInvoice(b)}
-                            className="font-mono text-xs font-bold text-[#0d4a3a] hover:underline cursor-pointer"
+                            className="font-mono text-xs font-bold text-[var(--primary)] hover:underline cursor-pointer"
                             title="Click to view invoice"
                           >
                             #{itemLabel}
@@ -554,7 +554,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                       <button
                         type="button"
                         onClick={() => onViewInvoice(b)}
-                        className="font-bold font-mono text-xs text-[#0d4a3a] hover:underline cursor-pointer"
+                        className="font-bold font-mono text-xs text-[var(--primary)] hover:underline cursor-pointer"
                       >
                         #{itemLabel}
                       </button>
@@ -638,7 +638,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                   {/* Line 1: Date & Chevron */}
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      <Calendar size={15} className="text-[#0d4a3a] shrink-0" />
+                      <Calendar size={15} className="text-[var(--primary)] shrink-0" />
                       <span className="font-bold text-sm sm:text-base text-slate-900">{group.label}</span>
                     </div>
                     {expanded ? (
@@ -696,7 +696,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                               <button
                                 type="button"
                                 onClick={() => onViewInvoice(bill)}
-                                className="font-bold font-mono text-xs text-[#0d4a3a] hover:underline cursor-pointer"
+                                className="font-bold font-mono text-xs text-[var(--primary)] hover:underline cursor-pointer"
                                 title="View Invoice"
                               >
                                 #{itemLabel}
@@ -798,7 +798,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                   {/* Line 1: Customer Name & Chevron */}
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 min-w-0">
-                      <Users size={15} className="text-[#0d4a3a] shrink-0" />
+                      <Users size={15} className="text-[var(--primary)] shrink-0" />
                       <span className="font-bold text-sm sm:text-base text-slate-900 break-words">
                         {group.name}
                       </span>
@@ -855,7 +855,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                               <button
                                 type="button"
                                 onClick={() => onViewInvoice(bill)}
-                                className="font-bold font-mono text-xs text-[#0d4a3a] hover:underline cursor-pointer"
+                                className="font-bold font-mono text-xs text-[var(--primary)] hover:underline cursor-pointer"
                                 title="View Invoice"
                               >
                                 #{itemLabel}

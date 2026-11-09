@@ -61,10 +61,19 @@ export function makeBeatResolver(customers: Customer[], beats: BeatLike[]): Beat
   for (const c of customers || []) {
     byId.set(c.id, c);
     const k = norm(c.name);
-    if (!k) continue;
-    const list = byName.get(k);
-    if (list) list.push(c);
-    else byName.set(k, [c]);
+    if (k) {
+      const list = byName.get(k);
+      if (list) list.push(c);
+      else byName.set(k, [c]);
+    }
+    for (const a of c.aliases || []) {
+      const ak = norm(a);
+      if (ak) {
+        const list = byName.get(ak);
+        if (list) list.push(c);
+        else byName.set(ak, [c]);
+      }
+    }
   }
   const beatIdOf = (c?: Customer): string => (c ? beatOfCustomer(c, beats)?.id || NO_BEAT : NO_BEAT);
 

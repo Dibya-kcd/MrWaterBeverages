@@ -13,7 +13,7 @@ import { OdiaName } from '../../common/OdiaName';
 
 export const fieldLabel = 'block text-[10.5px] font-bold uppercase tracking-wider text-slate-500 mb-1';
 export const fieldBox =
-  'w-full min-h-[46px] px-3 py-2.5 rounded-xl border border-black/15 bg-white text-[15px] font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30 disabled:bg-slate-100 disabled:text-slate-500 disabled:border-dashed';
+  'w-full min-h-[46px] px-3 py-2.5 rounded-xl border border-black/15 bg-white text-[15px] font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30 disabled:bg-slate-100 disabled:text-slate-500 disabled:border-dashed';
 
 /* ------------------------------------------------------------------ */
 /* Totals strip                                                         */
@@ -24,7 +24,7 @@ export const StatsStrip: React.FC<{ items: { label: string; value: string; tone?
       <div key={s.label} className="rounded-xl border border-black/10 bg-white px-1 py-1.5 text-center">
         <div
           className={`text-base font-black leading-tight tabular-nums ${
-            s.tone === 'green' ? 'text-[#0d4a3a]' : s.tone === 'amber' ? 'text-amber-700' : 'text-slate-900'
+            s.tone === 'green' ? 'text-[var(--primary)]' : s.tone === 'amber' ? 'text-amber-700' : 'text-slate-900'
           }`}
         >
           {s.value}
@@ -149,14 +149,14 @@ export const LoadLineCard: React.FC<LoadLineCardProps> = ({
             onChange={(e) => onQty(e.target.value)}
             onFocus={(e) => e.target.select()}
             aria-label={`Cases of ${name}`}
-            className="w-16 h-11 text-center rounded-xl border-2 border-[#0d4a3a]/40 bg-white text-lg font-black tabular-nums text-slate-900 focus:outline-none focus:border-[#0d4a3a]"
+            className="w-16 h-11 text-center rounded-xl border-2 border-[var(--primary)]/40 bg-white text-lg font-black tabular-nums text-slate-900 focus:outline-none focus:border-[var(--primary)]"
           />
           <button
             type="button"
             onClick={onPlus}
             disabled={readOnly}
             aria-label={`More ${name}`}
-            className="size-11 rounded-xl bg-[#0d4a3a] text-white flex items-center justify-center active:scale-95 disabled:cursor-not-allowed cursor-pointer"
+            className="size-11 rounded-xl bg-[var(--primary)] text-white flex items-center justify-center active:scale-95 disabled:cursor-not-allowed cursor-pointer"
           >
             <Plus size={18} />
           </button>
@@ -189,7 +189,7 @@ export const StepProgress: React.FC<{
           <React.Fragment key={n}>
             {n > 1 && (
               <div
-                className={`h-0.5 flex-1 rounded-full ${done || active ? 'bg-[#0d4a3a]' : 'bg-black/10'}`}
+                className={`h-0.5 flex-1 rounded-full ${done || active ? 'bg-[var(--primary)]' : 'bg-black/10'}`}
                 aria-hidden
               />
             )}
@@ -197,9 +197,9 @@ export const StepProgress: React.FC<{
               <div
                 className={`size-7 rounded-full flex items-center justify-center text-[11px] font-black border-2 ${
                   done
-                    ? 'bg-[#0d4a3a] border-[#0d4a3a] text-white'
+                    ? 'bg-[var(--primary)] border-[var(--primary)] text-white'
                     : active
-                      ? 'bg-white border-[#0d4a3a] text-[#0d4a3a]'
+                      ? 'bg-white border-[var(--primary)] text-[var(--primary)]'
                       : 'bg-white border-black/15 text-slate-400'
                 }`}
               >
@@ -207,7 +207,7 @@ export const StepProgress: React.FC<{
               </div>
               <span
                 className={`text-[9.5px] font-bold uppercase tracking-wide ${
-                  active ? 'text-[#0d4a3a]' : done ? 'text-slate-600' : 'text-slate-400'
+                  active ? 'text-[var(--primary)]' : done ? 'text-slate-600' : 'text-slate-400'
                 }`}
               >
                 {labels[n - 1]}
@@ -238,8 +238,8 @@ export interface BarAction {
 const TONE: Record<BarAction['tone'], string> = {
   cancel: 'border-rose-300 bg-rose-50 text-rose-700 active:bg-rose-100',
   neutral: 'border-black/15 bg-white text-slate-800 active:bg-slate-100',
-  add: 'border-dashed border-[#0d4a3a]/60 bg-white text-[#0d4a3a] active:bg-emerald-50',
-  primary: 'border-[#0d4a3a] bg-[#0d4a3a] text-white active:bg-[#0a3d30] shadow-sm',
+  add: 'border-dashed border-[var(--primary)]/60 bg-white text-[var(--primary)] active:bg-emerald-50',
+  primary: 'border-[var(--primary)] bg-[var(--primary)] text-white active:bg-[var(--primary-hover)] shadow-sm',
 };
 
 export const ActionBar: React.FC<{ actions: BarAction[] }> = ({ actions }) => (
@@ -400,9 +400,9 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
               onFocus={(e) => e.target.select()}
               onChange={(e) => setQty(p.id, Math.max(0, parseInt(e.target.value, 10) || 0))}
               aria-label={`Cases of ${p.name}`}
-              className="w-14 h-10 text-center rounded-xl border-2 border-[#0d4a3a]/40 bg-white text-base font-black tabular-nums"
+              className="w-14 h-10 text-center rounded-xl border-2 border-[var(--primary)]/40 bg-white text-base font-black tabular-nums"
             />
-            <button type="button" aria-label={`More ${p.name}`} onClick={() => setQty(p.id, n + 1)} className="size-10 rounded-xl bg-[#0d4a3a] text-white flex items-center justify-center cursor-pointer active:scale-95">
+            <button type="button" aria-label={`More ${p.name}`} onClick={() => setQty(p.id, n + 1)} className="size-10 rounded-xl bg-[var(--primary)] text-white flex items-center justify-center cursor-pointer active:scale-95">
               <Plus size={16} />
             </button>
           </div>
@@ -411,7 +411,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
             type="button"
             aria-label={`Add ${p.name}`}
             onClick={() => setQty(p.id, 1)}
-            className="shrink-0 min-h-[40px] px-3.5 rounded-xl bg-[#0d4a3a] text-white text-[13px] font-black flex items-center gap-1 cursor-pointer active:scale-95"
+            className="shrink-0 min-h-[40px] px-3.5 rounded-xl bg-[var(--primary)] text-white text-[13px] font-black flex items-center gap-1 cursor-pointer active:scale-95"
           >
             <Plus size={15} /> Add
           </button>
@@ -440,7 +440,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search name, size, type…"
-            className="w-full min-h-[46px] pl-9 pr-3 rounded-xl border border-black/15 bg-white text-[15px] focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+            className="w-full min-h-[46px] pl-9 pr-3 rounded-xl border border-black/15 bg-white text-[15px] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
           />
         </div>
         {godowns && godowns.length > 1 && onGodown && (
@@ -493,7 +493,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
           <div className="py-8 text-center text-sm text-slate-500">
             Nothing to show.{' '}
             {inStockOnly && (
-              <button type="button" onClick={() => setInStockOnly(false)} className="font-bold text-[#0d4a3a] underline cursor-pointer">
+              <button type="button" onClick={() => setInStockOnly(false)} className="font-bold text-[var(--primary)] underline cursor-pointer">
                 Show out-of-stock items too
               </button>
             )}
@@ -582,7 +582,7 @@ export const ReviewSheet: React.FC<{
         ))}
         <div className="flex items-center justify-between px-3 py-3 bg-[#ebe8e1] rounded-b-2xl">
           <span className="text-sm font-black text-slate-800">Total · {rows.length} item{rows.length === 1 ? '' : 's'}</span>
-          <span className="text-xl font-black text-[#0d4a3a] tabular-nums">{totalCases} cs</span>
+          <span className="text-xl font-black text-[var(--primary)] tabular-nums">{totalCases} cs</span>
         </div>
       </div>
 

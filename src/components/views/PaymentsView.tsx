@@ -26,11 +26,15 @@ import {
   PaymentMode,
   PaymentRecord,
 } from "../../types";
+import { useLanguage } from "../../i18n/LanguageContext";
+import { SegmentedPeriod } from "../ui/HomeKit";
 import { money, whatsappLink } from "../../utils/billing";
 import { RecordPaymentModal } from "../common/RecordPaymentModal";
+import { InvoicePicker } from "../common/InvoicePicker";
+import { allocateReceipt } from "../../utils/paymentAllocation";
 import { TaxInvoiceModal } from "../common/TaxInvoiceModal";
 import { ConfirmModal, Badge } from "../ui";
-import { billBalance } from "../../utils/salesReturns";
+import { billBalance, billNetTotal } from "../../utils/salesReturns";
 import { todayISO, toLocalISODate } from "../../utils/dateLocal";
 import { PaymentAuditModal } from "../common/PaymentAuditModal";
 import { PartySearchSelect, type PartyOption } from "../common/PartySearchSelect";
@@ -86,6 +90,7 @@ function formatInputDateDisplay(dateStr: string): string {
 /** Default sample preset payments to match user screenshots if no history exists */
 
 export const PaymentsView: React.FC = () => {
+  const { t } = useLanguage();
   const {
     payments,
     recordCustomerPayment,
@@ -93,8 +98,10 @@ export const PaymentsView: React.FC = () => {
     updatePayment,
     deletePayment,
     existingCustomers,
+    getCustomerLedger,
     bills,
     grns,
+    expenses,
     palette,
     orgProfile,
     currentUser,
@@ -114,6 +121,8 @@ export const PaymentsView: React.FC = () => {
   const [isCustomParty, setIsCustomParty] = useState<boolean>(false);
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("cash");
   const [amount, setAmount] = useState<string>("");
+  // Invoice the receipt is tied to (undefined = oldest dues first)
+  const [selectedBillId, setSelectedBillId] = useState<number | undefined>(undefined);
   const [receiptDate, setReceiptDate] = useState<string>(todayStr);
   const [referenceNote, setReferenceNote] = useState<string>("");
   const [formFeedback, setFormFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -143,7 +152,15 @@ export const PaymentsView: React.FC = () => {
   // Real ledger payments only (never show made-up sample receipts, they would distort totals)
   const allPayments = useMemo(() => payments || [], [payments]);
 
-  // Realtime Cash in Box / Till Balance & Financial Overview
+  // Total cash expenses paid out of drawer
+  const cashExpenses = useMemo(() => {
+    return (expenses || []).reduce((sum, e) => {
+      const mode = String(e.mode || "cash").toLowerCase();
+      return mode === "cash" ? sum + (Number(e.amount) || 0) : sum;
+    }, 0);
+  }, [expenses]);
+
+  // Realtime Cash in Box / Till Balance & Financial Overview (net of drawer cash expenses)
   const realtimeCashInBox = useMemo(() => {
     const cashFromBills = bills.reduce((sum, b) => {
       if (b.status === "cancelled" || b.cancellation) return sum;
@@ -151,10 +168,12 @@ export const PaymentsView: React.FC = () => {
       return mode === "cash" ? sum + (Number(b.amountPaid) || 0) : sum;
     }, 0);
     const cashFromPayments = (allPayments || []).reduce((sum, p) => {
+      if (p.isRefund) return sum;
       return String(p.mode || "").toLowerCase() === "cash" ? sum + (Number(p.amount) || 0) : sum;
     }, 0);
-    return Math.max(cashFromBills, cashFromPayments);
-  }, [bills, allPayments]);
+    const grossCash = Math.max(cashFromBills, cashFromPayments);
+    return Math.max(0, grossCash - cashExpenses);
+  }, [bills, allPayments, cashExpenses]);
 
   const totalCollectedAmount = useMemo(() => {
     return bills.reduce((sum, b) => {
@@ -163,10 +182,19 @@ export const PaymentsView: React.FC = () => {
     }, 0);
   }, [bills]);
 
+  // Outstanding Market Due: accurately accounts for customer returns / credit notes
   const totalMarketDue = useMemo(() => {
     return bills.reduce((sum, b) => {
       if (b.status === "cancelled" || b.cancellation) return sum;
-      return sum + Math.max(0, (Number(b.total) || 0) - (Number(b.amountPaid) || 0));
+      return sum + Math.max(0, billBalance(b));
+    }, 0);
+  }, [bills]);
+
+  // Total Billed Sales: net of sales returns, exactly synchronized with Dashboard and Reports
+  const totalBilledSales = useMemo(() => {
+    return bills.reduce((sum, b) => {
+      if (b.status === "cancelled" || b.cancellation) return sum;
+      return sum + billNetTotal(b);
     }, 0);
   }, [bills]);
 
@@ -201,6 +229,7 @@ export const PaymentsView: React.FC = () => {
         phone: c.phone,
         due: c.balanceDue,
         advance: c.advance || 0,
+        customerId: c.id,
       });
     });
 
@@ -223,6 +252,20 @@ export const PaymentsView: React.FC = () => {
       return a.name.localeCompare(b.name);
     });
   }, [existingCustomers, bills, getEffectiveBillBalance]);
+
+  // The chosen customer's live invoices (same ownership rules the save uses), for the invoice chooser
+  const selectedOpt = !isCustomParty ? partyOptions.find((o) => o.name === selectedParty) : undefined;
+  const partyBills = useMemo(() => {
+    if (!selectedOpt) return [] as Bill[];
+    try {
+      return getCustomerLedger(selectedOpt.customerId || selectedOpt.name, selectedOpt.phone)
+        .bills.map((b) => bills.find((x) => x.id === b.id) ?? b)
+        .filter((b) => b.status !== "cancelled" && !b.cancellation);
+    } catch {
+      return [] as Bill[];
+    }
+  }, [selectedOpt, getCustomerLedger, bills]);
+  const numericAmount = parseFloat(amount);
 
   // Search across receipts (used by Recent and History)
   const matchesSearch = useCallback(
@@ -310,12 +353,16 @@ export const PaymentsView: React.FC = () => {
     }
 
     try {
+      const billToPay = !isCustomParty ? selectedBillId : undefined;
+      const split = allocateReceipt(numericAmount, partyBills, billToPay);
       const saved = recordCustomerPayment(
         partyToUse,
         numericAmount,
         receiptDate || todayStr,
         paymentMode,
-        referenceNote.trim() || undefined
+        referenceNote.trim() || undefined,
+        billToPay,
+        !isCustomParty ? selectedOpt?.customerId : undefined
       );
       if (!saved) {
         // Same receipt sent twice within a few seconds: the first one is already saved.
@@ -326,12 +373,18 @@ export const PaymentsView: React.FC = () => {
         return;
       }
 
+      const where = split.allocations.map((a) => `#${a.billId}`).join(", ");
       setFormFeedback({
         type: "success",
-        text: `Receipt of ₹${money(numericAmount)} successfully recorded for ${partyToUse}!`,
+        text:
+          `Receipt of ₹${money(numericAmount)} recorded for ${partyToUse}` +
+          (where ? ` against invoice ${where}` : "") +
+          (split.advance > 0.004 ? `${where ? "; " : " "}₹${money(split.advance)} kept as advance` : "") +
+          ".",
       });
 
       setSelectedParty("");
+      setSelectedBillId(undefined);
       setCustomPartyName("");
       setIsCustomParty(false);
       setAmount("");
@@ -339,7 +392,7 @@ export const PaymentsView: React.FC = () => {
       setPaymentMode("cash");
       setReceiptDate(todayStr);
 
-      setTimeout(() => setFormFeedback(null), 4000);
+      setTimeout(() => setFormFeedback(null), 8000);
     } catch (err: any) {
       setFormFeedback({
         type: "error",
@@ -491,7 +544,7 @@ export const PaymentsView: React.FC = () => {
           };
 
           return (
-            <div id="view-payment-details" className="mw-workspace space-y-4 sm:space-y-6 max-w-none lg:max-w-4xl mx-auto py-2 sm:py-3">
+            <div id="view-payment-details" className="hh-view mw-workspace w-full space-y-4 sm:space-y-5">
               {/* Top Navigation - Back only, system ID removed */}
               <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-200">
                 <button
@@ -714,7 +767,7 @@ export const PaymentsView: React.FC = () => {
         /* =========================================================================
            MAIN PAYMENTS VIEW (EXACT MATCH TO ATTACHED SCREENSHOTS)
            ========================================================================= */
-        <div id="view-payments" className="mw-workspace max-w-none lg:max-w-4xl mx-auto py-2 sm:py-4 space-y-6">
+        <div id="view-payments" className="hh-view mw-workspace w-full space-y-5">
           {/* 1. Header with History Log Button */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-1.5">
@@ -735,56 +788,64 @@ export const PaymentsView: React.FC = () => {
             <PaymentAuditModal entries={paymentAudit} onClose={() => setShowAuditLog(false)} />
           )}
 
-          {/* Realtime Cash in Box & Financial Summary Cards */}
+          {/* Realtime Cash in Box & Financial Summary Cards (Synchronized Layout & Typography) */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="bg-emerald-50/80 border border-emerald-200 rounded-2xl p-3.5 sm:p-4 shadow-xs">
-              <div className="flex items-center justify-between text-emerald-800 text-xs font-bold uppercase tracking-wider mb-1">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
+              <div className="flex items-center justify-between text-xs font-semibold text-emerald-800 uppercase tracking-wider mb-1">
                 <span>Cash in Box (Till)</span>
-                <Wallet className="w-4 h-4 text-emerald-600" />
+                <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                  <Wallet className="w-4 h-4" />
+                </div>
               </div>
-              <div className="text-xl sm:text-2xl font-extrabold text-emerald-950 font-mono">
+              <div className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-slate-900 mt-1">
                 ₹{money(realtimeCashInBox)}
               </div>
-              <p className="text-[11px] text-emerald-700 mt-1 font-medium">
-                Realtime cash collected in drawer
+              <p className="text-[11px] text-slate-500 mt-1">
+                {cashExpenses > 0 ? `Net drawer cash (less ₹${money(cashExpenses)} paid)` : "Realtime drawer cash"}
               </p>
             </div>
 
-            <div className="bg-rose-50/80 border border-rose-200 rounded-2xl p-3.5 sm:p-4 shadow-xs">
-              <div className="flex items-center justify-between text-rose-800 text-xs font-bold uppercase tracking-wider mb-1">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
+              <div className="flex items-center justify-between text-xs font-semibold text-rose-800 uppercase tracking-wider mb-1">
                 <span>Market Credit Due</span>
-                <IndianRupee className="w-4 h-4 text-rose-600" />
+                <div className="w-7 h-7 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center">
+                  <IndianRupee className="w-4 h-4" />
+                </div>
               </div>
-              <div className="text-xl sm:text-2xl font-extrabold text-rose-950 font-mono">
+              <div className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-rose-600 mt-1">
                 ₹{money(totalMarketDue)}
               </div>
-              <p className="text-[11px] text-rose-700 mt-1 font-medium">
-                Pending customer collections
+              <p className="text-[11px] text-slate-500 mt-1">
+                Pending customer dues (after returns)
               </p>
             </div>
 
-            <div className="bg-blue-50/80 border border-blue-200 rounded-2xl p-3.5 sm:p-4 shadow-xs">
-              <div className="flex items-center justify-between text-blue-800 text-xs font-bold uppercase tracking-wider mb-1">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
+              <div className="flex items-center justify-between text-xs font-semibold text-blue-800 uppercase tracking-wider mb-1">
                 <span>Total Inward Spend</span>
-                <Package className="w-4 h-4 text-blue-600" />
+                <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center">
+                  <Package className="w-4 h-4" />
+                </div>
               </div>
-              <div className="text-xl sm:text-2xl font-extrabold text-blue-950 font-mono">
+              <div className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-slate-900 mt-1">
                 ₹{money(totalInwardSpend)}
               </div>
-              <p className="text-[11px] text-blue-700 mt-1 font-medium">
-                Spent on purchases (all GRNs)
+              <p className="text-[11px] text-slate-500 mt-1">
+                Total purchase spend (GRNs)
               </p>
             </div>
 
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 sm:p-4 shadow-xs">
-              <div className="flex items-center justify-between text-slate-700 text-xs font-bold uppercase tracking-wider mb-1">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
+              <div className="flex items-center justify-between text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
                 <span>Total Billed Sales</span>
-                <CreditCard className="w-4 h-4 text-slate-500" />
+                <div className="w-7 h-7 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center">
+                  <CreditCard className="w-4 h-4" />
+                </div>
               </div>
-              <div className="text-xl sm:text-2xl font-extrabold text-slate-900 font-mono">
-                ₹{money(totalCollectedAmount + totalMarketDue)}
+              <div className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-slate-900 mt-1">
+                ₹{money(totalBilledSales)}
               </div>
-              <p className="text-[11px] text-slate-500 mt-1 font-medium">
+              <p className="text-[11px] text-slate-500 mt-1">
                 Collected: ₹{money(totalCollectedAmount)}
               </p>
             </div>
@@ -817,167 +878,229 @@ export const PaymentsView: React.FC = () => {
             </div>
           )}
 
-          {/* 2. Top Card: Record Receipt Form (EXACT MATCH TO IMAGE 1) */}
-          <div className="bg-white rounded-2xl sm:rounded-3xl border border-slate-200 shadow-xs p-4 sm:p-6 space-y-4">
-            <form onSubmit={handleRecordReceipt} className="space-y-4">
-              {/* PARTY Row (Full width) */}
+          {/* 2. Record Receipt Form Card (Clean, Symmetrical 2-Column Grid) */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 sm:p-6">
+            <div className="pb-4 mb-5 border-b border-slate-100 flex items-center justify-between">
               <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-[11px] sm:text-xs font-semibold tracking-wider text-slate-600 uppercase block">
-                    PARTY
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsCustomParty(!isCustomParty);
-                      setCustomPartyName("");
-                      setSelectedParty("");
-                    }}
-                    className="text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 cursor-pointer"
-                  >
-                    {isCustomParty ? "← Select from list" : "+ Enter custom name"}
-                  </button>
+                <h2 className="text-base font-bold text-slate-900">Record Payment Receipt</h2>
+                <p className="text-xs text-slate-500">Collect dues, allocate against invoices, and record payments</p>
+              </div>
+              <span className="text-xs font-medium text-slate-500">
+                Staff: <strong className="text-slate-800">{loggedInUserName}</strong>
+              </span>
+            </div>
+
+            <form onSubmit={handleRecordReceipt} className="grid gap-6 lg:grid-cols-2">
+              {/* LEFT BOX: Party Selection & Due Status */}
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-semibold tracking-wider text-slate-600 uppercase block">
+                      PARTY / CUSTOMER
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCustomParty(!isCustomParty);
+                        setCustomPartyName("");
+                        setSelectedParty("");
+                        setSelectedBillId(undefined);
+                      }}
+                      className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 cursor-pointer"
+                    >
+                      {isCustomParty ? "← Select from list" : "+ Enter custom name"}
+                    </button>
+                  </div>
+
+                  {isCustomParty ? (
+                    <input
+                      type="text"
+                      value={customPartyName}
+                      onChange={(e) => setCustomPartyName(e.target.value)}
+                      placeholder="Enter customer or supplier name..."
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700"
+                    />
+                  ) : (
+                    <PartySearchSelect
+                      options={partyOptions}
+                      value={selectedParty}
+                      onSelect={(name, opt) => {
+                        setSelectedParty(name);
+                        setSelectedBillId(undefined);
+                        setAmount(opt && opt.due > 0 ? String(opt.due) : "");
+                      }}
+                    />
+                  )}
                 </div>
 
-                {isCustomParty ? (
-                  <input
-                    type="text"
-                    value={customPartyName}
-                    onChange={(e) => setCustomPartyName(e.target.value)}
-                    placeholder="Enter customer or supplier name..."
-                    className="w-full px-3.5 py-2.5 sm:py-3 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700"
-                  />
-                ) : (
-                  <PartySearchSelect
-                    options={partyOptions}
-                    value={selectedParty}
-                    onSelect={(name, opt) => {
-                      setSelectedParty(name);
-                      if (opt && opt.due > 0 && !amount) setAmount(String(opt.due));
-                    }}
-                  />
+                {/* Selected Party Due Highlight Card */}
+                {selectedOpt && (
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
+                    <div>
+                      <span className="text-[11px] text-slate-500 font-medium block">Selected Account</span>
+                      <p className="text-sm font-bold text-slate-900 truncate">{selectedParty}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xl font-bold font-mono tabular-nums text-rose-600">
+                        ₹{money(Math.max(0, selectedOpt.due))}
+                      </p>
+                      <span className="text-[10px] font-semibold text-rose-700 uppercase">
+                        {t('collect.totalDue')}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Invoice Picker */}
+                {selectedOpt && (
+                  <div className="pt-1">
+                    <label className="text-xs font-semibold tracking-wider text-slate-600 uppercase block mb-1.5">
+                      ALLOCATE TO INVOICE
+                    </label>
+                    <InvoicePicker
+                      bills={partyBills}
+                      selectedId={selectedBillId}
+                      amount={isNaN(numericAmount) ? 0 : numericAmount}
+                      onSelect={(id, due) => {
+                        setSelectedBillId(id);
+                        if (due > 0) setAmount(String(Math.round(due * 100) / 100));
+                      }}
+                    />
+                  </div>
+                )}
+
+                {selectedOpt && partyBills.every((b) => billBalance(b) <= 0.004) && (
+                  <p className="rounded-xl bg-amber-50 border border-amber-200 px-3.5 py-2.5 text-xs text-amber-800 font-medium">
+                    No unpaid invoice for this party. Payment will be credited as an advance for the next bill.
+                  </p>
                 )}
               </div>
 
-              {/* MODE & AMOUNT Row (2 columns) */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+              {/* RIGHT BOX: Payment Mode, Amount, Date & UTR */}
+              <div className="space-y-4">
+                {/* Mode Selector */}
                 <div>
-                  <label className="text-[11px] sm:text-xs font-semibold tracking-wider text-slate-600 uppercase block mb-1.5">
-                    MODE
+                  <label className="text-xs font-semibold tracking-wider text-slate-600 uppercase block mb-1.5">
+                    PAYMENT MODE
                   </label>
-                  <div className="relative">
-                    <select
-                      value={paymentMode}
-                      onChange={(e) => setPaymentMode(e.target.value as PaymentMode)}
-                      className="w-full px-3.5 py-2.5 sm:py-3 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700 appearance-none pr-10 cursor-pointer"
-                    >
-                      <option value="cash">Cash</option>
-                      <option value="upi">UPI / QR</option>
-                      <option value="cheque">Cheque</option>
-                      <option value="bank">Bank Transfer</option>
-                      <option value="other">Other</option>
-                    </select>
-                    <div className="absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
-                      <ChevronDown className="w-4 h-4" />
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-[11px] sm:text-xs font-semibold tracking-wider text-slate-600 uppercase block mb-1.5">
-                    AMOUNT
-                  </label>
-                  <input
-                    type="number" inputMode="decimal"
-                    step="any"
-                    min="0"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    placeholder=""
-                    className="w-full px-3.5 py-2.5 sm:py-3 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700"
+                  <SegmentedPeriod
+                    ariaLabel={t('collect.mode')}
+                    options={[
+                      { id: "cash", label: "Cash" },
+                      { id: "upi", label: "UPI" },
+                      { id: "cheque", label: "Cheque" },
+                      { id: "bank", label: "Bank" },
+                      { id: "other", label: "Other" },
+                    ]}
+                    value={paymentMode}
+                    onChange={(id) => setPaymentMode(id as PaymentMode)}
                   />
                 </div>
-              </div>
 
-              {/* DATE & REFERENCE / UTR Row (2 columns) */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                {/* Amount Field with ₹ Prefix & Quick Full-Pay */}
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
-                    <label
-                      htmlFor="payment-receipt-date-input"
-                      className="text-[11px] sm:text-xs font-semibold tracking-wider text-slate-600 uppercase"
-                    >
-                      DATE
+                    <label htmlFor="payment-receipt-amount" className="text-xs font-semibold tracking-wider text-slate-600 uppercase block">
+                      RECEIPT AMOUNT (₹)
                     </label>
-                    <div className="flex items-center gap-1.5">
+                    {selectedOpt && selectedOpt.due > 0 && (
                       <button
                         type="button"
-                        onClick={() => setReceiptDate(todayStr)}
-                        className={`px-2 py-0.5 text-[11px] font-bold rounded-lg border transition-colors cursor-pointer ${
-                          receiptDate === todayStr
-                            ? "bg-[#064e3b] text-white border-[#064e3b]"
-                            : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                        }`}
-                        title="Set date to Today"
+                        onClick={() => { setSelectedBillId(undefined); setAmount(String(selectedOpt.due)); }}
+                        className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 cursor-pointer flex items-center gap-1"
                       >
-                        Today
+                        <span>{t('collect.payFull')}:</span>
+                        <span className="font-mono tabular-nums font-bold">₹{money(selectedOpt.due)}</span>
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => setReceiptDate(yesterdayStr)}
-                        className={`px-2 py-0.5 text-[11px] font-bold rounded-lg border transition-colors cursor-pointer ${
-                          receiptDate === yesterdayStr
-                            ? "bg-[#064e3b] text-white border-[#064e3b]"
-                            : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                        }`}
-                        title="Set date to Yesterday"
-                      >
-                        Yesterday
-                      </button>
-                    </div>
+                    )}
                   </div>
                   <div className="relative">
+                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-base">₹</span>
+                    <input
+                      id="payment-receipt-amount"
+                      type="number"
+                      inputMode="decimal"
+                      step="any"
+                      min="0"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      placeholder="0.00"
+                      className="w-full pl-8 pr-3.5 py-2.5 sm:py-3 rounded-xl border border-slate-200 bg-white font-mono tabular-nums font-bold text-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700"
+                    />
+                  </div>
+                </div>
+
+                {/* Date and Reference Side-by-Side */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label
+                        htmlFor="payment-receipt-date-input"
+                        className="text-xs font-semibold tracking-wider text-slate-600 uppercase"
+                      >
+                        RECEIPT DATE
+                      </label>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setReceiptDate(todayStr)}
+                          className={`px-1.5 py-0.5 text-[10px] font-bold rounded transition-colors cursor-pointer ${
+                            receiptDate === todayStr
+                              ? "bg-emerald-700 text-white"
+                              : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                          }`}
+                        >
+                          Today
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReceiptDate(yesterdayStr)}
+                          className={`px-1.5 py-0.5 text-[10px] font-bold rounded transition-colors cursor-pointer ${
+                            receiptDate === yesterdayStr
+                              ? "bg-emerald-700 text-white"
+                              : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                          }`}
+                        >
+                          Yesterday
+                        </button>
+                      </div>
+                    </div>
                     <input
                       id="payment-receipt-date-input"
                       type="date"
                       required
                       value={toStandardIsoDate(receiptDate)}
                       onChange={(e) => setReceiptDate(e.target.value)}
-                      className="w-full px-3.5 py-2.5 sm:py-3 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700 cursor-pointer"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700"
                     />
                   </div>
-                  <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
-                    <span>
-                      Collection Date:{" "}
-                      <strong className="text-emerald-800 font-semibold">
-                        {formatInputDateDisplay(receiptDate)}
-                      </strong>
-                    </span>
+
+                  <div>
+                    <label htmlFor="payment-receipt-ref" className="text-xs font-semibold tracking-wider text-slate-600 uppercase block mb-1.5">
+                      REFERENCE / UTR
+                    </label>
+                    <input
+                      id="payment-receipt-ref"
+                      type="text"
+                      value={referenceNote}
+                      onChange={(e) => setReferenceNote(e.target.value)}
+                      placeholder="UPI ref, cheque no., note"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700"
+                    />
                   </div>
                 </div>
 
-                <div>
-                  <label className="text-[11px] sm:text-xs font-semibold tracking-wider text-slate-600 uppercase block mb-1.5">
-                    REFERENCE / UTR
-                  </label>
-                  <input
-                    type="text"
-                    value={referenceNote}
-                    onChange={(e) => setReferenceNote(e.target.value)}
-                    placeholder=""
-                    className="w-full px-3.5 py-2.5 sm:py-3 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700"
-                  />
+                {/* Submit Action Button */}
+                <div className="pt-2 space-y-1.5">
+                  <button
+                    type="submit"
+                    className="w-full py-3 px-4 rounded-xl bg-emerald-700 hover:bg-emerald-800 active:scale-[0.99] text-white font-bold text-sm transition-all shadow-xs flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>{t('collect.saveReceipt')}</span>
+                  </button>
+                  <p className="text-center text-[11px] text-slate-500">{t('collect.whatsappNote')}</p>
                 </div>
-              </div>
-
-              {/* Submit Action Button (EXACT MATCH: Deep Green "Record receipt") */}
-              <div className="pt-1">
-                <button
-                  type="submit"
-                  className="w-full py-3 sm:py-3.5 px-4 rounded-xl sm:rounded-2xl font-semibold text-sm sm:text-base text-white bg-[#064e3b] hover:bg-[#053d2e] active:scale-[0.99] transition-all shadow-xs flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  Record receipt
-                </button>
               </div>
             </form>
           </div>

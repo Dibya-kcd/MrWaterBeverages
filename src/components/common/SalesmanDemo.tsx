@@ -32,7 +32,7 @@ import {
 } from 'lucide-react';
 
 /* ----------------------------------------------------------------------------------------------- sample data */
-const GREEN = '#0B3D32';
+const GREEN = 'var(--primary)';
 const AMBER = '#F59E0B';
 
 const PRODUCTS = [

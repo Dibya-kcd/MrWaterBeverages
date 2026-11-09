@@ -72,7 +72,7 @@ export const PhoneHeader: React.FC<{
 /* ---------- hero card ---------- */
 
 const HERO_TONE = {
-  green: 'bg-gradient-to-br from-[#064E3B] via-[#063C2E] to-[#02261C] text-white shadow-xl shadow-emerald-950/20',
+  green: 'bg-gradient-to-br from-[var(--primary)] via-[var(--primary)] to-[var(--primary-hover)] text-white shadow-xl shadow-emerald-950/20',
   navy: 'bg-gradient-to-br from-[#0B1E48] via-[#08183A] to-[#040E24] text-white shadow-xl shadow-blue-950/20',
   red: 'bg-gradient-to-br from-[#7F1D1D] via-[#601212] to-[#3B0707] text-white shadow-xl shadow-rose-950/20',
   /** Profit = purple, matching `MetricCard tone="profit"` */
@@ -238,7 +238,7 @@ export function BigSwitch<T extends string>({
             aria-selected={on}
             onClick={() => onChange(o.id)}
             className={`flex-1 min-h-[46px] rounded-xl text-[14px] font-bold cursor-pointer transition-colors ${
-              on ? 'bg-[#0b4d3a] text-white shadow-sm' : 'text-slate-600 active:bg-slate-200'
+              on ? 'bg-[var(--primary)] text-white shadow-sm' : 'text-slate-600 active:bg-slate-200'
             }`}
           >
             {o.label}
@@ -393,7 +393,7 @@ export const PhoneDownloadBar: React.FC<{
             disabled={disabled || busy !== null}
             onClick={() => run('xlsx', onExcel)}
             aria-label="Download Excel"
-            className="flex-1 min-h-[52px] rounded-2xl border-2 border-[#0b4d3a] bg-white text-[#0b4d3a] text-[15px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer active:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 min-h-[52px] rounded-2xl border-2 border-[var(--primary)] bg-white text-[var(--primary)] text-[15px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer active:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {busy === 'xlsx' ? <Loader2 size={18} className="animate-spin" /> : <FileSpreadsheet size={18} />}
             Excel
@@ -403,7 +403,7 @@ export const PhoneDownloadBar: React.FC<{
             disabled={disabled || busy !== null}
             onClick={() => run('pdf', onPdf)}
             aria-label="Download PDF"
-            className="flex-1 min-h-[52px] rounded-2xl border-2 border-[#0b4d3a] bg-[#0b4d3a] text-white text-[15px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer active:bg-[#093d2e] disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 min-h-[52px] rounded-2xl border-2 border-[var(--primary)] bg-[var(--primary)] text-white text-[15px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer active:bg-[#093d2e] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {busy === 'pdf' ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
             PDF

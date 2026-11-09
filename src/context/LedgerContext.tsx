@@ -9668,12 +9668,24 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     });
 
+    // Map alternate / historical shop names (aliases) to the unified master customer key
+    const aliasToKeyMap = new Map<string, string>();
+    customers.forEach((c) => {
+      const primaryKey = normCustName(c.name);
+      if (!primaryKey) return;
+      (c.aliases || []).forEach((a) => {
+        const aKey = normCustName(a);
+        if (aKey) aliasToKeyMap.set(aKey, primaryKey);
+      });
+    });
+
     // 2. Aggregate active non-cancelled bills
     bills.forEach((b) => {
       if (b.status === "cancelled" || b.cancelled) return;
       const name = b.retailer?.trim();
       if (!name) return;
-      const key = normCustName(name);
+      const rawKey = normCustName(name);
+      const key = aliasToKeyMap.get(rawKey) || rawKey;
       // Deleted by the owner: keep the bill, but do not list the customer again.
       if (hiddenCustNames.has(key) && !map.has(key)) return;
       let record = map.get(key);
@@ -9711,6 +9723,11 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         (c) => normCustName(c.name) === key || (record.id && c.id === record.id),
       );
       const matchMaster = matchMasterList[0];
+      const matchAliases = (matchMaster?.aliases || []).map(normCustName);
+      const matchesKeyOrAlias = (n?: string) => {
+        const kn = normCustName(n);
+        return kn === key || matchAliases.includes(kn);
+      };
       const distinctPhones = new Set(
         matchMasterList
           .map((c) => last10Of(c.phone))
@@ -9726,8 +9743,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const custBills = bills.filter((b) => {
         if (b.status === "cancelled" || b.cancelled) return false;
-        const bName = normCustName(b.retailer);
-        return bName === key && customerPhonesMatch(custPhones, b.phone, isUniqueName);
+        return matchesKeyOrAlias(b.retailer) && customerPhonesMatch(custPhones, b.phone, isUniqueName);
       });
 
       const custBillIds = new Set(custBills.map((b) => b.id));
@@ -9737,7 +9753,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         const pCust = normCustName(p.customerName);
         return (
           !!pCust &&
-          pCust === key &&
+          matchesKeyOrAlias(p.customerName) &&
           customerPhonesMatch(custPhones, p.customerPhone, isUniqueName)
         );
       });
@@ -9834,7 +9850,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     const custInMaster =
       customers.find((c) => c.id === trimmedInput) ||
       (() => {
-        const byName = customers.filter((c) => normCustName(c.name) === cleanLower);
+        const byName = customers.filter(
+          (c) => normCustName(c.name) === cleanLower || (c.aliases || []).some((a) => normCustName(a) === cleanLower),
+        );
         if (byName.length === 1) return byName[0];
         const id = byName.length > 1 ? resolveMasterCustomerId(trimmedInput, customerPhone) : undefined;
         return id ? customers.find((c) => c.id === id) : undefined;
@@ -9954,8 +9972,11 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         }
         const bRetailer = normCustName(b.retailer);
+        const nameMatches =
+          bRetailer === cleanName ||
+          (custInMaster?.aliases || []).some((a) => normCustName(a) === bRetailer);
         return (
-          bRetailer === cleanName &&
+          nameMatches &&
           customerPhonesMatch(allCustPhones, b.phone, isUniqueCustomerName)
         );
       })
@@ -9981,9 +10002,12 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         }
         const pCust = normCustName(p.customerName);
+        const nameMatches =
+          pCust === cleanName ||
+          (custInMaster?.aliases || []).some((a) => normCustName(a) === pCust);
         return (
           !!pCust &&
-          pCust === cleanName &&
+          nameMatches &&
           customerPhonesMatch(allCustPhones, p.customerPhone, isUniqueCustomerName)
         );
       })

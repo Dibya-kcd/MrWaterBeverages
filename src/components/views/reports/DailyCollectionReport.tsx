@@ -330,7 +330,7 @@ export const DailyCollectionReport: React.FC<DailyCollectionReportProps> = ({
           <button type="button" onClick={exportCsv} aria-label="Export CSV" className="size-10 rounded-xl border border-black/10 bg-white flex items-center justify-center text-slate-600 cursor-pointer">
             <Download size={17} />
           </button>
-          <button type="button" onClick={onRecordPayment} className="h-10 px-3.5 rounded-xl bg-[#0d4a3a] text-white text-[13px] font-semibold inline-flex items-center gap-1.5 cursor-pointer">
+          <button type="button" onClick={onRecordPayment} className="h-10 px-3.5 rounded-xl bg-[var(--primary)] text-white text-[13px] font-semibold inline-flex items-center gap-1.5 cursor-pointer">
             <Plus size={16} /> Payment
           </button>
         </div>
@@ -356,7 +356,7 @@ export const DailyCollectionReport: React.FC<DailyCollectionReportProps> = ({
       )}
 
       <label className="flex items-center gap-2 text-[13px] font-medium text-slate-700 px-1 select-none cursor-pointer">
-        <input type="checkbox" checked={openOnlyDue} onChange={(e) => setOpenOnlyDue(e.target.checked)} className="size-4 accent-[#0d4a3a]" />
+        <input type="checkbox" checked={openOnlyDue} onChange={(e) => setOpenOnlyDue(e.target.checked)} className="size-4 accent-[var(--primary)]" />
         Show only sales with due
       </label>
 

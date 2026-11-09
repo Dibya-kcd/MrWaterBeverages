@@ -470,7 +470,7 @@ export const CustomerQuickSelect: React.FC<CustomerQuickSelectProps> = ({
                     <button
                       type="button"
                       onClick={handleCreateNewCustomer}
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#0d4a3a] text-white text-xs font-bold hover:bg-[#0a382c] cursor-pointer"
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[var(--primary)] text-white text-xs font-bold hover:bg-[var(--primary)] cursor-pointer"
                     >
                       <UserPlus size={13} />
                       <span>Create New Customer</span>

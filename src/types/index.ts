@@ -440,6 +440,8 @@ export interface Customer {
   createdBySalesmanId?: string;
   /** The beat (delivery area) this customer belongs to; `route` keeps its name for display. */
   beatId?: string;
+  /** Alternate names / previous shop names merged into this unified profile */
+  aliases?: string[];
 }
 
 export interface ExistingCustomer {

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Search, X } from 'lucide-react';
+import { ChevronDown, Plus, Search, UserPlus, X } from 'lucide-react';
 import { money } from '../../utils/billing';
 
 export interface PartyOption {
@@ -8,6 +8,8 @@ export interface PartyOption {
   phone?: string;
   due: number;
   advance: number;
+  /** Customer record id, so two shops with the same name stay apart when a receipt is saved. */
+  customerId?: string;
 }
 
 interface PartySearchSelectProps {
@@ -23,7 +25,7 @@ const MAX_SHOWN = 60;
 
 /**
  * Type to search a party by name or phone, then tap to pick.
- * Works with keyboard (arrows, Enter, Escape) and with touch: the list scrolls inside the box.
+ * Also allows entering and using any custom payee / vendor name.
  */
 export const PartySearchSelect: React.FC<PartySearchSelectProps> = ({
   options,
@@ -38,41 +40,42 @@ export const PartySearchSelect: React.FC<PartySearchSelectProps> = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
+  const trimmedQuery = query.trim();
+
   const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = trimmedQuery.toLowerCase();
     const qd = digits(query);
     const list = !q
       ? options
       : options.filter((o) => o.name.toLowerCase().includes(q) || (qd.length >= 3 && digits(o.phone).includes(qd)));
     return list;
-  }, [options, query]);
+  }, [options, trimmedQuery, query]);
+
   const shown = matches.slice(0, MAX_SHOWN);
+
+  // Check if query exactly matches an existing option
+  const exactMatch = useMemo(() => {
+    if (!trimmedQuery) return null;
+    return options.find((o) => o.name.trim().toLowerCase() === trimmedQuery.toLowerCase());
+  }, [options, trimmedQuery]);
 
   useEffect(() => setActive(0), [query, open]);
 
-  // close when tapping outside
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent | TouchEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('touchstart', onDown);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('touchstart', onDown);
-    };
-  }, [open]);
-
-  // keep the highlighted row in view
-  useEffect(() => {
-    if (!open) return;
-    const el = listRef.current?.children[active] as HTMLElement | undefined;
-    el?.scrollIntoView({ block: 'nearest' });
-  }, [active, open]);
-
   const pick = (o: PartyOption) => {
     onSelect(o.name, o);
+    setQuery('');
+    setOpen(false);
+  };
+
+  const pickCustom = (customName: string) => {
+    const trimmed = customName.trim();
+    if (!trimmed) return;
+    onSelect(trimmed, {
+      key: `custom:${trimmed}`,
+      name: trimmed,
+      due: 0,
+      advance: 0,
+    });
     setQuery('');
     setOpen(false);
   };
@@ -84,6 +87,34 @@ export const PartySearchSelect: React.FC<PartySearchSelectProps> = ({
     inputRef.current?.focus();
   };
 
+  // close when tapping outside
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent | TouchEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        // If there's an active query that user typed without picking, commit it as custom name
+        if (trimmedQuery && !value) {
+          pickCustom(trimmedQuery);
+        } else {
+          setOpen(false);
+        }
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('touchstart', onDown);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('touchstart', onDown);
+    };
+  }, [open, trimmedQuery, value]);
+
+  // keep the highlighted row in view
+  useEffect(() => {
+    if (!open) return;
+    const el = listRef.current?.children[active] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [active, open]);
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -93,9 +124,11 @@ export const PartySearchSelect: React.FC<PartySearchSelectProps> = ({
       e.preventDefault();
       setActive((a) => Math.max(a - 1, 0));
     } else if (e.key === 'Enter') {
+      e.preventDefault();
       if (open && shown[active]) {
-        e.preventDefault();
         pick(shown[active]);
+      } else if (trimmedQuery) {
+        pickCustom(trimmedQuery);
       }
     } else if (e.key === 'Escape') {
       setOpen(false);
@@ -157,11 +190,35 @@ export const PartySearchSelect: React.FC<PartySearchSelectProps> = ({
       </div>
 
       {open && (
-        <div className="absolute z-30 left-0 right-0 mt-1.5 rounded-xl border border-slate-200 bg-white shadow-lg overflow-hidden">
-          {shown.length === 0 ? (
-            <div className="px-3.5 py-4 text-xs text-slate-500">
-              No party matches “{query.trim()}”. Use <strong>+ Enter custom name</strong> to add a new one.
+        <div className="absolute z-30 left-0 right-0 mt-1.5 rounded-xl border border-slate-200 bg-white shadow-xl overflow-hidden">
+          {trimmedQuery && !exactMatch && (
+            <div
+              role="button"
+              tabIndex={0}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => pickCustom(trimmedQuery)}
+              className="p-3 bg-emerald-50 hover:bg-emerald-100 border-b border-emerald-200/80 cursor-pointer flex items-center gap-2.5 transition-colors"
+            >
+              <div className="size-7 rounded-lg bg-emerald-700 text-white flex items-center justify-center shrink-0">
+                <Plus className="w-4 h-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-emerald-950 truncate">
+                  Use "{trimmedQuery}"
+                </div>
+                <div className="text-[11px] text-emerald-700">
+                  Tap to use as custom payee / vendor
+                </div>
+              </div>
             </div>
+          )}
+
+          {shown.length === 0 ? (
+            !trimmedQuery ? (
+              <div className="px-3.5 py-4 text-xs text-slate-500">
+                Type a name or phone to search.
+              </div>
+            ) : null
           ) : (
             <ul ref={listRef} role="listbox" className="max-h-64 overflow-y-auto overscroll-contain divide-y divide-slate-100">
               {shown.map((o, i) => (

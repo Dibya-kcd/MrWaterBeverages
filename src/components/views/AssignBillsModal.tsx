@@ -163,7 +163,7 @@ export const AssignBillsModal: React.FC<AssignBillsModalProps> = ({
               <button
                 type="button"
                 onClick={() => onReopenTrip(Number(trip.id))}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0d4a3a] text-white font-bold cursor-pointer hover:bg-[#0a3d30] shadow-xs active:scale-95 transition-all"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[var(--primary)] text-white font-bold cursor-pointer hover:bg-[var(--primary-hover)] shadow-xs active:scale-95 transition-all"
               >
                 <RotateCcw size={13} />
                 Reopen Trip #{trip.id}

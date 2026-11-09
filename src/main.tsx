@@ -14,6 +14,8 @@ import { LanguageProvider } from './i18n/LanguageContext';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import './index.css';
 import './mobile-theme.css';
+import './shell.css';
+import './auth.css';
 import registerServiceWorker from './registerServiceWorker';
 import { installAuthFetch } from './lib/authFetch';
 
@@ -39,3 +41,12 @@ if (rootElement) {
 }
 
 registerServiceWorker();
+
+// Tapping a tab/chip in any horizontally scrolling strip brings it fully into view,
+// so a partly hidden tab never stays cut off at the edge (matters at Large / Extra Large text).
+document.addEventListener('click', (e) => {
+  const el = (e.target as HTMLElement | null)?.closest?.(
+    '.hh-tabstrip > *, .overflow-x-auto.flex > :where(button, a, [role="tab"])',
+  ) as HTMLElement | null;
+  el?.scrollIntoView?.({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+});

@@ -264,7 +264,7 @@ export const CratesDepositsView: React.FC = () => {
     kind === "deposit_collected" || kind === "deposit_refunded";
 
   return (
-    <div className="mw-workspace flex flex-col gap-4 sm:gap-5 w-full min-w-0 max-w-none lg:max-w-3xl mx-auto">
+    <div className="mw-workspace flex flex-col gap-4 sm:gap-5 w-full min-w-0 max-w-none mx-auto">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div className="min-w-0">
@@ -277,7 +277,7 @@ export const CratesDepositsView: React.FC = () => {
         <button
           type="button"
           onClick={openRecord}
-          className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-full bg-[#0d4a3a] text-white font-semibold text-sm shadow-sm cursor-pointer hover:bg-[#0a3d30] shrink-0"
+          className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-full bg-[var(--primary)] text-white font-semibold text-sm shadow-sm cursor-pointer hover:bg-[var(--primary-hover)] shrink-0"
         >
           <Plus size={16} />
           Record
@@ -492,7 +492,7 @@ export const CratesDepositsView: React.FC = () => {
                   <select
                     value={partyName}
                     onChange={(e) => setPartyName(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                    className="w-full px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                   >
                     <option value="">Choose…</option>
                     {customerOptions.map((c) => (
@@ -506,7 +506,7 @@ export const CratesDepositsView: React.FC = () => {
                   <select
                     value={partyName}
                     onChange={(e) => setPartyName(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                    className="w-full px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                   >
                     <option value="">Choose…</option>
                     {supplierNames.map((n) => (
@@ -522,7 +522,7 @@ export const CratesDepositsView: React.FC = () => {
                     value={partyName}
                     onChange={(e) => setPartyName(e.target.value)}
                     placeholder="Type supplier name"
-                    className="mt-2 w-full px-3 py-2.5 rounded-xl border border-black/10 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                    className="mt-2 w-full px-3 py-2.5 rounded-xl border border-black/10 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                   />
                 )}
               </div>
@@ -534,7 +534,7 @@ export const CratesDepositsView: React.FC = () => {
                 <select
                   value={kind}
                   onChange={(e) => setKind(e.target.value as CrateDepositKind)}
-                  className="w-full px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                  className="w-full px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                 >
                   {(Object.keys(KIND_LABELS) as CrateDepositKind[]).map((k) => (
                     <option key={k} value={k}>
@@ -557,7 +557,7 @@ export const CratesDepositsView: React.FC = () => {
                           e.target.value === "" ? "" : Number(e.target.value),
                         )
                       }
-                      className="w-full px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                      className="w-full px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                     >
                       <option value="">Choose…</option>
                       {(returnableProducts.length > 0
@@ -580,7 +580,7 @@ export const CratesDepositsView: React.FC = () => {
                       min={1}
                       value={units}
                       onChange={(e) => setUnits(e.target.value)}
-                      className="w-full px-3 py-2.5 rounded-xl border border-black/10 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                      className="w-full px-3 py-2.5 rounded-xl border border-black/10 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                     />
                   </div>
                 </div>
@@ -595,7 +595,7 @@ export const CratesDepositsView: React.FC = () => {
                     step="0.01"
                     value={amount}
                     onChange={(e) => setAmount(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl border border-black/10 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                    className="w-full px-3 py-2.5 rounded-xl border border-black/10 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                   />
                 </div>
               )}
@@ -609,14 +609,14 @@ export const CratesDepositsView: React.FC = () => {
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
                   placeholder="Optional"
-                  className="w-full px-3 py-2.5 rounded-xl border border-black/10 text-sm focus:outline-none focus:ring-2 focus:ring-[#0d4a3a]/30"
+                  className="w-full px-3 py-2.5 rounded-xl border border-black/10 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                 />
               </div>
 
               <button
                 type="button"
                 onClick={handleSave}
-                className="w-full py-3 rounded-xl bg-[#0d4a3a] text-white font-bold text-sm cursor-pointer hover:bg-[#0a3d30]"
+                className="w-full py-3 rounded-xl bg-[var(--primary)] text-white font-bold text-sm cursor-pointer hover:bg-[var(--primary-hover)]"
               >
                 Save
               </button>

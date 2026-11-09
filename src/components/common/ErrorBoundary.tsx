@@ -23,6 +23,25 @@ export class ErrorBoundary extends Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('Uncaught error caught by ErrorBoundary:', error, errorInfo);
+    const msg = error?.message || String(error || '');
+    const isStaleHookOrChunk =
+      /Invalid hook call/i.test(msg) ||
+      /Cannot read properties of null \(reading 'useState'\)/i.test(msg) ||
+      /reading 'useState'/i.test(msg) ||
+      /reading 'useMemo'/i.test(msg) ||
+      /reading 'useReducer'/i.test(msg) ||
+      /Failed to fetch dynamically imported module/i.test(msg) ||
+      /Loading chunk/i.test(msg);
+
+    if (typeof window !== 'undefined' && isStaleHookOrChunk) {
+      const lastReload = Number(sessionStorage.getItem('last_chunk_reload') || '0');
+      const now = Date.now();
+      if (now - lastReload > 8000) {
+        sessionStorage.setItem('last_chunk_reload', String(now));
+        console.warn('[ErrorBoundary] Stale Vite bundle/hook instance detected. Reloading once to resync...');
+        window.location.reload();
+      }
+    }
   }
 
   private handleReset = () => {
@@ -34,7 +53,9 @@ export class ErrorBoundary extends Component<Props, State> {
       const isModuleFetchError =
         this.state.error?.name === 'TypeError' ||
         /Failed to fetch dynamically imported module/i.test(this.state.error?.message || '') ||
-        /Loading chunk/i.test(this.state.error?.message || '');
+        /Loading chunk/i.test(this.state.error?.message || '') ||
+        /Invalid hook call/i.test(this.state.error?.message || '') ||
+        /reading 'useState'/i.test(this.state.error?.message || '');
 
       return (
         <div className="p-4 sm:p-6 max-w-xl mx-auto my-8 bg-white border-2 border-rose-200 rounded-2xl shadow-lg text-slate-800">

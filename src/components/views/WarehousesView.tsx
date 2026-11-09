@@ -530,7 +530,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
               <button
                 type="button"
                 onClick={handleOpenAddWarehouse}
-                className="flex items-center gap-1.5 px-3.5 py-2 font-semibold rounded-full text-xs text-white bg-[#0d4a3a] hover:bg-[#0a3d30] cursor-pointer shadow-sm"
+                className="flex items-center gap-1.5 px-3.5 py-2 font-semibold rounded-full text-xs text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] cursor-pointer shadow-sm"
               >
                 <Plus size={14} />
                 Add Godown
@@ -540,7 +540,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
               <button
                 type="button"
                 onClick={() => handleOpenAddBatch()}
-                className="flex items-center gap-1.5 px-3.5 py-2 font-semibold rounded-full text-xs text-white bg-[#0d4a3a] hover:bg-[#0a3d30] cursor-pointer shadow-sm"
+                className="flex items-center gap-1.5 px-3.5 py-2 font-semibold rounded-full text-xs text-white bg-[var(--primary)] hover:bg-[var(--primary-hover)] cursor-pointer shadow-sm"
               >
                 <Plus size={14} />
                 Add Batch Lot
@@ -657,7 +657,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
                 <span>{t.label}</span>
                 <span
                   className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full tabular-nums ${
-                    active ? 'bg-[#ebe8e1] text-[#0d4a3a]' : 'bg-black/5 text-slate-500'
+                    active ? 'bg-[#ebe8e1] text-[var(--primary)]' : 'bg-black/5 text-slate-500'
                   }`}
                 >
                   {t.count}
