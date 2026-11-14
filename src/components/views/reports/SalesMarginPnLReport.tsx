@@ -24,10 +24,12 @@ import {
 } from 'lucide-react';
 import { Bill, BillItem, InventoryBatch, Product } from '../../../types';
 import { useLedger } from '../../../context/LedgerContext';
-import { money, normalizeGstFraction, resolveProductGstRate, scaledTaxSplit } from '../../../utils/billing';
+import { money, normalizeGstFraction, resolveProductGstRate, scaledTaxSplit, inwardFreightAlreadyInCost } from '../../../utils/billing';
 import { billBalance, billNetTotal, returnedQtyByProduct, billReturnCredit, returnedCreditByProduct } from '../../../utils/salesReturns';
 import { CATS } from '../../../constants/initialData';
 import { writeOffNetForPeriod, schemeCreditsForPeriod } from '../../../utils/pnlBridge';
+import { billTaxBasis } from '../../../utils/billTaxBasis';
+import { resolveTaxRegime, noOutputTax } from '../../../tax/appRegime';
 import { ProductProfitPricingModal } from './ProductProfitPricingModal';
 import { NetProfitReport } from './NetProfitReport';
 import { InfoTip } from '../../common/InfoTip';
@@ -56,7 +58,7 @@ import {
 } from './mobile/PhoneKit';
 import { SubPageBack, SubPageMenu, type SubPageCard } from './mobile/SubPageMenu';
 
-export type MarginSubTab = 'pnl' | 'products' | 'batches' | 'customers' | 'days' | 'netProfit';
+export type MarginSubTab = 'products' | 'customers' | 'days' | 'netProfit';
 export type ProfitViewBasis = 'exGst' | 'inclGst';
 
 export interface SalesMarginPnLReportProps {
@@ -203,7 +205,25 @@ export function useSalesMarginPnl(args: {
     return m;
   }, [products]);
 
-  const { inventoryBatches, inventoryDispositions, supplierCreditNotes, grns } = useLedger();
+  const { inventoryBatches, inventoryDispositions, supplierCreditNotes, grns, orgProfile } = useLedger();
+
+  /**
+   * Revenue ex-GST and GST for ONE bill, the same way on every screen. A regular taxpayer's non-GST bill still
+   * contains GST in its price; that GST is owed to the government and is not revenue (see utils/billTaxBasis).
+   */
+  const taxBasisOf = useCallback(
+    (b: Bill) => {
+      const carve = !noOutputTax(resolveTaxRegime(orgProfile, String(b.date || '').slice(0, 10)));
+      return billTaxBasis(b, {
+        carveGstFromPrices: carve,
+        rateFor: (item) =>
+          item.gst !== undefined && item.gst !== null
+            ? (item.gst as number)
+            : resolveProductGstRate(productMap.get(item.productId), item.category),
+      });
+    },
+    [orgProfile, productMap]
+  );
   const batchMap = useMemo(() => {
     const m = new Map<string, InventoryBatch>();
     (inventoryBatches || []).forEach((b) => m.set(b.id, b));
@@ -215,33 +235,48 @@ export function useSalesMarginPnl(args: {
    * This is a real cost of the stock, so it is part of COGS. Before this, it was entered on the GRN but
    * never reached any profit figure.
    */
-  const inwardByBatch = useMemo(() => {
-    const m = new Map<string, number>();
+  const { inwardByBatch, inwardExtraByBatch } = useMemo(() => {
+    // inwardByBatch: ALL freight per crate carried in the cost of a batch (used for the "includes freight" figure).
+    // inwardExtraByBatch: only the freight NOT already inside the batch's stored cost, i.e. what must still be added
+    // on top of the batch cost. Invoice-upload GRNs store a landed cost that already holds the freight; adding it
+    // again counted it twice and understated every margin.
+    const all = new Map<string, number>();
+    const extra = new Map<string, number>();
     (grns || []).forEach((g: any) => {
       const grnLevel = Number(g?.inwardCostPerCrate) || 0;
       (g?.items || []).forEach((it: any) => {
         const per = Number(it?.inwardCostPerCrate) || grnLevel;
-        if (per > 0) m.set(`batch_${g.id}_${it.id}`, per);
+        if (per <= 0) return;
+        const key = `batch_${g.id}_${it.id}`;
+        all.set(key, per);
+        if (!inwardFreightAlreadyInCost(it, per)) extra.set(key, per);
       });
     });
-    return m;
+    return { inwardByBatch: all, inwardExtraByBatch: extra };
   }, [grns]);
 
-  /** Inward cost per crate of ONE bill line: weighted by the batches the cases were taken from. */
-  const lineInwardPerCrate = useCallback(
-    (item: BillItem): number => {
+  /** Freight per crate of ONE bill line, weighted by the batches the cases were taken from. */
+  const weightedInward = useCallback(
+    (item: BillItem, source: Map<string, number>): number => {
       let q = 0;
       let c = 0;
       for (const a of item.batchAllocations || []) {
         const aq = Number(a.qty) || 0;
         if (aq <= 0) continue;
         q += aq;
-        c += aq * (inwardByBatch.get(a.batchId) || 0);
+        c += aq * (source.get(a.batchId) || 0);
       }
       return q > 0 ? c / q : 0;
     },
-    [inwardByBatch]
+    []
   );
+
+  /** Total freight per crate carried in the cost of ONE bill line (informational). */
+  const lineInwardPerCrate = useCallback((item: BillItem): number => weightedInward(item, inwardByBatch), [weightedInward, inwardByBatch]);
+
+  /** Freight per crate still to be ADDED on top of the batch cost for ONE bill line (not already inside it). */
+  const lineInwardExtraPerCrate = useCallback((item: BillItem): number => weightedInward(item, inwardExtraByBatch), [weightedInward, inwardExtraByBatch]);
+
 
   /** How trustworthy the cost used for ONE bill line is (feeds the "Check my numbers" panel). */
   const lineCostQuality = useCallback(
@@ -291,11 +326,11 @@ export function useSalesMarginPnl(args: {
       const avgEx = frozen > 0 ? frozen : allocQty > 0 ? allocEx / allocQty : exFallback;
       // Ex-GST profit carries the inward freight / labour of the batches too. (The incl-GST view already
       // scales by the product's landed cost, which contains it.)
-      if (basis === 'exGst') return (avgEx + lineInwardPerCrate(item)) * physicalQty;
+      if (basis === 'exGst') return (avgEx + lineInwardExtraPerCrate(item)) * physicalQty;
       const landedRatio = exFallback > 0 ? landedFallback / exFallback : 1;
       return avgEx * landedRatio * physicalQty;
     },
-    [productMap, batchMap, lineInwardPerCrate]
+    [productMap, batchMap, lineInwardExtraPerCrate]
   );
 
   /**
@@ -313,6 +348,7 @@ export function useSalesMarginPnl(args: {
     let billedSalesNet = 0;
     let taxableSalesNet = 0;
     let totalOutputGstNet = 0;
+    let gstCarvedFromPrices = 0;
     let cogs = 0;
     let casesSold = 0;
     let freeCases = 0;
@@ -339,28 +375,11 @@ export function useSalesMarginPnl(args: {
       const extraDisc = Math.max(0, Number(b.additionalDiscount) || 0);
       billDiscounts += extraDisc;
 
-      // Extract returns for this bill
-      const returnCredit = billReturnCredit(b);
-      const returns = b.returns || [];
-      const returnCgst = returns.reduce((s, r) => s + (Number(r.cgst) || 0), 0);
-      const returnSgst = returns.reduce((s, r) => s + (Number(r.sgst) || 0), 0);
-      const returnTax = returnCgst + returnSgst;
-      const returnTaxable = Math.max(0, returnCredit - returnTax);
-
-      // Bill-level taxable and GST net of returns
-      const bSubtotal = Number(b.subtotal);
-      const bCgst = Number(b.cgst) || 0;
-      const bSgst = Number(b.sgst) || 0;
-      const billGstGross = bCgst + bSgst;
-      const billGstNet = Math.max(0, billGstGross - returnTax);
-      totalOutputGstNet += billGstNet;
-
-      // Net Taxable Turnover (Ex-GST)
-      const billTaxableNet =
-        Number.isFinite(bSubtotal) && bSubtotal > 0
-          ? Math.max(0, bSubtotal - returnTaxable)
-          : Math.max(0, billNet - billGstNet);
-      taxableSalesNet += billTaxableNet;
+      // Bill-level revenue ex-GST and GST, net of returns (one shared definition for every profit screen)
+      const basis = taxBasisOf(b);
+      totalOutputGstNet += basis.gst;
+      taxableSalesNet += basis.taxable;
+      if (basis.carved) gstCarvedFromPrices += basis.gst;
 
       // Returned quantities by product for this bill
       const backByProd = returnedQtyByProduct(b);
@@ -459,6 +478,7 @@ export function useSalesMarginPnl(args: {
       billedSalesNet,
       taxableSalesNet,
       totalOutputGstNet,
+      gstCarvedFromPrices: Math.round(gstCarvedFromPrices * 100) / 100,
       netGstPayable,
       itc,
       cogs,
@@ -496,26 +516,28 @@ export function useSalesMarginPnl(args: {
       avgEffectiveSellPerCase,
       avgCostPerCase,
     };
-  }, [filteredBills, productMap, viewBasis, gstTaxSummary, purchaseStats, lineCogs, inventoryDispositions, supplierCreditNotes, dateInPeriod, lineInwardPerCrate, lineCostQuality]);
-  return { pnl, productMap, batchMap, lineCogs };
+  }, [filteredBills, productMap, viewBasis, gstTaxSummary, purchaseStats, lineCogs, inventoryDispositions, supplierCreditNotes, dateInPeriod, lineInwardPerCrate, lineCostQuality, taxBasisOf]);
+  return { pnl, productMap, batchMap, lineCogs, inwardExtraByBatch, taxBasisOf };
 }
 
 export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
   filteredBills,
   products,
   periodLabel,
-  initialSubTab = 'pnl',
+  initialSubTab = 'products',
   dateInPeriod,
   gstTaxSummary,
   purchaseStats,
 }) => {
-  const [subTab, setSubTab] = useState<MarginSubTab>(initialSubTab || 'pnl');
+  const [subTab, setSubTab] = useState<MarginSubTab>(initialSubTab || 'products');
   // Phone: a deep link (e.g. "Net Profit" from the Reports home) opens that page directly; otherwise start on the list.
   const [mobileActiveSubPage, setMobileActiveSubPage] = useState<MarginSubTab | null>(
-    initialSubTab && initialSubTab !== 'pnl' ? initialSubTab : null,
+    initialSubTab || null,
   );
   const [viewBasis, setViewBasis] = useState<ProfitViewBasis>('exGst');
   const [search, setSearch] = useState('');
+  // Composition / unregistered bills carry a taxStamp: stock cost then includes the purchase GST (no ITC).
+  const costIncludesGst = filteredBills.some((b) => b.taxStamp && b.taxStamp.registrationType !== 'regular');
   const [sortBy, setSortBy] = useState<'profit' | 'margin' | 'sales' | 'cases'>('profit');
   const [explainOpen, setExplainOpen] = useState(false);
 
@@ -523,7 +545,7 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
   const [selectedProductForModal, setSelectedProductForModal] = useState<ProductMarginRow | null>(null);
   const [isPricingModalOpen, setIsPricingModalOpen] = useState(false);
 
-  const { pnl, productMap, batchMap, lineCogs } = useSalesMarginPnl({
+  const { pnl, productMap, batchMap, lineCogs, taxBasisOf } = useSalesMarginPnl({
     filteredBills,
     products,
     dateInPeriod,
@@ -702,10 +724,7 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
       });
 
       const netBilled = billNetTotal(b);
-      const returns = b.returns || [];
-      const returnTax = returns.reduce((s, r) => s + (Number(r.cgst) || 0) + (Number(r.sgst) || 0), 0);
-      const bGst = Math.max(0, (Number(b.cgst) || 0) + (Number(b.sgst) || 0) - returnTax);
-      const taxable = Math.max(0, netBilled - bGst);
+      const { taxable, gst: bGst } = taxBasisOf(b);
 
       const opProfit = taxable - billCogs;
       const billedProfit = netBilled - billCogs;
@@ -761,7 +780,7 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
     });
 
     return rows;
-  }, [filteredBills, productMap, search, sortBy, viewBasis, lineCogs]);
+  }, [filteredBills, productMap, search, sortBy, viewBasis, lineCogs, taxBasisOf]);
 
   const dayRows = useMemo(() => {
     const map = new Map<string, DayMarginRow>();
@@ -782,10 +801,7 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
       });
 
       const netBilled = billNetTotal(b);
-      const returns = b.returns || [];
-      const returnTax = returns.reduce((s, r) => s + (Number(r.cgst) || 0) + (Number(r.sgst) || 0), 0);
-      const bGst = Math.max(0, (Number(b.cgst) || 0) + (Number(b.sgst) || 0) - returnTax);
-      const taxable = Math.max(0, netBilled - bGst);
+      const { taxable, gst: bGst } = taxBasisOf(b);
 
       const opProfit = taxable - billCogs;
       const billedProfit = netBilled - billCogs;
@@ -824,205 +840,13 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
     });
 
     return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
-  }, [filteredBills, productMap, viewBasis, lineCogs]);
+  }, [filteredBills, productMap, viewBasis, lineCogs, taxBasisOf]);
 
   /**
    * Batch-wise profit: attribute each bill line's revenue & COGS to the stock batches
    * the invoice was actually issued from (batchAllocations). Falls back to an
    * "Unallocated · Average Cost" bucket when older bills have no FEFO allocation.
    */
-  const batchRows = useMemo(() => {
-    interface BatchAcc {
-      row: BatchMarginRow;
-      exCogs: number;
-      landedCogs: number;
-    }
-    const map = new Map<string, BatchAcc>();
-
-    const ensure = (
-      key: string,
-      seed: Partial<BatchMarginRow> & { productId: number; productName: string; category: string }
-    ): BatchAcc => {
-      let acc = map.get(key);
-      if (!acc) {
-        acc = {
-          exCogs: 0,
-          landedCogs: 0,
-          row: {
-            batchKey: key,
-            batchNumber: seed.batchNumber || 'Unallocated',
-            productId: seed.productId,
-            productName: seed.productName,
-            category: seed.category,
-            supplierName: seed.supplierName || '—',
-            inwardDate: seed.inwardDate || '',
-            expiryDate: seed.expiryDate || '',
-            casesSold: 0,
-            freeCases: 0,
-            totalDispatched: 0,
-            costPerCase: 0,
-            netSales: 0,
-            taxableSales: 0,
-            gstAmount: 0,
-            cogs: 0,
-            grossProfit: 0,
-            marginPct: 0,
-            operatingProfit: 0,
-            operatingMarginPct: 0,
-            profitPerCase: 0,
-            avgSellRate: 0,
-          },
-        };
-        map.set(key, acc);
-      }
-      return acc;
-    };
-
-    filteredBills.forEach((b) => {
-      if (b.status === 'cancelled') return;
-      const backByProd = returnedQtyByProduct(b);
-      const creditBackByProd = returnedCreditByProduct(b);
-
-      b.items.forEach((item) => {
-        const prod = productMap.get(item.productId);
-        const qty = Number(item.qty) || 0;
-        const free = Number(item.freeQty) || 0;
-        const gross = Number(item.gross) || qty * (Number(item.rate) || 0);
-        const disc = Number(item.discount) || 0;
-        const billedNet = Number(item.amount) || gross - disc;
-        const retQty = backByProd[item.productId] || 0;
-        const netCases = Math.max(0, qty - retQty);
-        if (netCases <= 0 && billedNet <= 0) return;
-
-        const freeNet = Math.min(free, netCases);
-        const paidCases = netCases - freeNet;
-
-        const retCredit = creditBackByProd[item.productId] || 0;
-        const netBilled = Math.max(0, billedNet - retCredit);
-        const retRatio = billedNet > 0 ? Math.min(1, retCredit / billedNet) : 0;
-
-        const g = item.gst !== undefined && item.gst !== null
-          ? normalizeGstFraction(item.gst)
-          : resolveProductGstRate(prod, item.category);
-        const split = scaledTaxSplit(item, netBilled, g);
-        const taxable = split.taxable;
-        const gst = split.tax;
-
-        const allocations = item.batchAllocations || [];
-        const allocTotal = allocations.reduce((s, a) => s + (Number(a.qty) || 0), 0);
-
-        // Scale allocations down if returns reduced physical qty
-        const scale = qty > 0 ? netCases / qty : 1;
-
-        if (allocations.length > 0 && allocTotal > 0) {
-          allocations.forEach((a) => {
-            const rawQ = Number(a.qty) || 0;
-            if (rawQ <= 0) return;
-            const q = rawQ * scale;
-            if (q <= 0) return;
-            const share = allocTotal > 0 ? rawQ / allocTotal : 0;
-            const batch = batchMap.get(a.batchId);
-            const key = a.batchId || `${item.productId}::${a.batchNumber || 'unknown'}`;
-            const productName = item.productName || prod?.name || `Product #${item.productId}`;
-            const category = String(item.category || prod?.category || 'general');
-            const acc = ensure(key, {
-              productId: item.productId,
-              productName,
-              category,
-              batchNumber: a.batchNumber || batch?.batchNumber || a.batchId.slice(0, 8),
-              supplierName: batch?.supplierName || '—',
-              inwardDate: batch?.inwardDate || '',
-              expiryDate: a.expiryDate || batch?.expiryDate || '',
-            });
-
-            const paidShare = paidCases * share;
-            const freeShare = freeNet * share;
-            acc.row.casesSold += paidShare;
-            acc.row.freeCases += freeShare;
-            acc.row.totalDispatched += q;
-            acc.row.netSales += netBilled * share;
-            acc.row.taxableSales += taxable * share;
-            acc.row.gstAmount += gst * share;
-
-            // COGS from actual batch cost
-            const exFallback = resolveExGstProductCost(prod);
-            const landedFallback = resolveLandedProductCost(prod);
-            const raw = Number(batch?.effectiveCostPrice) || Number(batch?.costPrice) || 0;
-            const sane = raw > 0 && !(exFallback > 0 && raw < exFallback * 0.35);
-            const exUnit = sane ? raw : exFallback;
-            const landedRatio = exFallback > 0 ? landedFallback / exFallback : 1;
-            acc.exCogs += exUnit * q;
-            acc.landedCogs += exUnit * landedRatio * q;
-          });
-        } else {
-          // Fallback: unallocated bucket per product
-          const key = `unalloc::${item.productId}`;
-          const productName = item.productName || prod?.name || `Product #${item.productId}`;
-          const category = String(item.category || prod?.category || 'general');
-          const acc = ensure(key, {
-            productId: item.productId,
-            productName,
-            category,
-            batchNumber: 'Unallocated · Avg Cost',
-            supplierName: '—',
-            inwardDate: '',
-            expiryDate: '',
-          });
-          acc.row.casesSold += paidCases;
-          acc.row.freeCases += freeNet;
-          acc.row.totalDispatched += netCases;
-          acc.row.netSales += netBilled * (1 - retRatio + retRatio); // already net
-          acc.row.taxableSales += taxable;
-          acc.row.gstAmount += gst;
-          acc.exCogs += lineCogs(item, netCases, 'exGst');
-          acc.landedCogs += lineCogs(item, netCases, 'inclGst');
-        }
-      });
-    });
-
-    let rows: BatchMarginRow[] = Array.from(map.values()).map(({ row: r, exCogs, landedCogs }) => {
-      const opProfit = r.taxableSales - exCogs;
-      const billedProfit = r.netSales - landedCogs;
-      const activeProfit = viewBasis === 'exGst' ? opProfit : billedProfit;
-      const activeRev = viewBasis === 'exGst' ? r.taxableSales : r.netSales;
-      const activeCogs = viewBasis === 'exGst' ? exCogs : landedCogs;
-      const disp = r.totalDispatched;
-      const costPerCase = disp > 0 ? activeCogs / disp : 0;
-      return {
-        ...r,
-        cogs: activeCogs,
-        grossProfit: activeProfit,
-        marginPct: activeRev > 0 ? (activeProfit / activeRev) * 100 : 0,
-        operatingProfit: opProfit,
-        operatingMarginPct: r.taxableSales > 0 ? (opProfit / r.taxableSales) * 100 : 0,
-        costPerCase,
-        profitPerCase: r.casesSold > 0 ? opProfit / r.casesSold : 0,
-        avgSellRate: r.casesSold > 0 ? activeRev / r.casesSold : 0,
-      };
-    });
-
-    const q = search.trim().toLowerCase();
-    if (q) {
-      rows = rows.filter(
-        (r) =>
-          r.batchNumber.toLowerCase().includes(q) ||
-          r.productName.toLowerCase().includes(q) ||
-          r.supplierName.toLowerCase().includes(q) ||
-          r.category.toLowerCase().includes(q)
-      );
-    }
-
-    rows.sort((a, b) => {
-      if (sortBy === 'margin') return b.marginPct - a.marginPct;
-      if (sortBy === 'sales')
-        return (viewBasis === 'exGst' ? b.taxableSales : b.netSales) -
-          (viewBasis === 'exGst' ? a.taxableSales : a.netSales);
-      if (sortBy === 'cases') return b.casesSold - a.casesSold;
-      return b.grossProfit - a.grossProfit;
-    });
-
-    return rows;
-  }, [filteredBills, productMap, batchMap, search, sortBy, viewBasis, lineCogs]);
 
   const basisText = viewBasis === 'exGst' ? 'Ex-GST operating profit' : 'Incl-GST billed value';
   const pct2 = (n: number) => `${n.toFixed(2)}%`;
@@ -1058,11 +882,6 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
         name: 'Customers',
         header: ['Customer', 'Invoices', 'Cases', 'Taxable sales', 'GST', 'Billed net', 'COGS', 'Profit', 'Margin %', 'Outstanding'],
         rows: customerRows.map((r) => [r.customerName, r.invoices, r.casesSold, r.taxableSales, r.gstAmount, r.netSales, r.cogs, r.grossProfit, Number(r.marginPct.toFixed(2)), r.outstanding]),
-      },
-      {
-        name: 'Batches',
-        header: ['Batch', 'Product', 'Category', 'Supplier', 'Inward date', 'Expiry', 'Billed cs', 'Free cs', 'Cost / cs', 'Taxable sales', 'Billed net', 'COGS', 'Operating profit', 'Margin %'],
-        rows: batchRows.map((r) => [r.batchNumber, r.productName, r.category, r.supplierName, r.inwardDate.slice(0, 10), r.expiryDate.slice(0, 10), r.casesSold, r.freeCases, r.costPerCase, r.taxableSales, r.netSales, r.cogs, r.operatingProfit, Number(r.operatingMarginPct.toFixed(2))]),
       },
       {
         name: 'By day',
@@ -1125,18 +944,16 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
           : 'bg-rose-50 border-rose-200 text-rose-800';
 
   const tabs: { id: MarginSubTab; label: string; shortLabel: string; icon: React.ReactNode }[] = [
-    { id: 'pnl', label: 'P&L & GST', shortLabel: 'P&L', icon: <Layers className="w-3.5 h-3.5" /> },
-    { id: 'netProfit', label: 'Net Profit & Pay', shortLabel: 'Net / Pay', icon: <Wallet className="w-3.5 h-3.5" /> },
+    { id: 'netProfit', label: 'Salary budget', shortLabel: 'Salary', icon: <Wallet className="w-3.5 h-3.5" /> },
     { id: 'products', label: 'Products', shortLabel: 'Products', icon: <Package className="w-3.5 h-3.5" /> },
-    { id: 'batches', label: 'Batches', shortLabel: 'Batches', icon: <Boxes className="w-3.5 h-3.5" /> },
     { id: 'customers', label: 'Customers', shortLabel: 'Customers', icon: <Users className="w-3.5 h-3.5" /> },
     { id: 'days', label: 'By day', shortLabel: 'Days', icon: <TrendingUp className="w-3.5 h-3.5" /> },
   ];
 
   const showControls = subTab !== 'netProfit';
-  const showSearch = subTab === 'products' || subTab === 'customers' || subTab === 'batches';
+  const showSearch = subTab === 'products' || subTab === 'customers';
   const searchHint =
-    subTab === 'products' ? 'Search product…' : subTab === 'batches' ? 'Search batch, product or supplier…' : 'Search customer…';
+    subTab === 'products' ? 'Search product…' : 'Search customer…';
   const tabOptions = tabs.map((t) => ({ id: t.id, label: t.label }));
   const basisOptions: { id: ProfitViewBasis; label: string }[] = [
     { id: 'exGst', label: 'Ex-GST (operating profit)' },
@@ -1159,18 +976,9 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
 
   const mobileMenuCards: SubPageCard<MarginSubTab>[] = [
     {
-      id: 'pnl',
-      title: 'P&L and GST Summary',
-      summary: `Taxable sales ${rs(pnl.taxableSalesNet)} · output GST ${rs(pnl.totalOutputGstNet)} · margin ${pnl.activeMarginPct.toFixed(1)}%. Step-by-step profit and loss with the GST flow`,
-      badge: `${profitNeg ? 'Loss' : 'Profit'} ${rs(pnl.activeGrossProfit)}`,
-      badgeTone: profitNeg ? 'red' : 'green',
-      icon: Layers,
-      tone: 'indigo',
-    },
-    {
       id: 'netProfit',
-      title: 'Net Profit and Staff Pay',
-      summary: 'Profit after fuel, rent, salary and other running costs, plus how much can be shared as staff pay',
+      title: 'Salary budget and pay',
+      summary: 'Net profit after running costs and pay already given, plus how much can be shared as staff pay',
       badge: 'Open report',
       badgeTone: 'green',
       icon: Wallet,
@@ -1184,15 +992,6 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
       badgeTone: 'blue',
       icon: Package,
       tone: 'blue',
-    },
-    {
-      id: 'batches',
-      title: 'Batch and Lot Margins',
-      summary: `${batchRows.length} batch${batchRows.length === 1 ? '' : 'es'} · what each purchase lot cost against the price it sold at`,
-      badge: `${batchRows.length} lot${batchRows.length === 1 ? '' : 's'}`,
-      badgeTone: 'amber',
-      icon: Boxes,
-      tone: 'amber',
     },
     {
       id: 'customers',
@@ -1323,244 +1122,6 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
 
       {/* Subtab views - on mobile only shown when a subpage card is selected */}
       <div className={mobileActiveSubPage === null ? 'hidden md:block' : ''}>
-        {/* ===== 1. P&L WATERFALL & GST FLOW ===== */}
-        {subTab === 'pnl' && (
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-          <div className="lg:col-span-3 bg-white rounded-2xl border border-black/10 overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-100 bg-[#faf8f5] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-emerald-600" />
-                <span className="text-xs font-black uppercase tracking-wider text-slate-700">
-                  Comprehensive P&amp;L Waterfall
-                </span>
-              </div>
-              <span className="text-[11px] font-bold text-slate-500">
-                Basis: {viewBasis === 'exGst' ? 'Ex-GST Operating' : 'Incl-GST Billed'}
-              </span>
-            </div>
-            <div className="p-4 space-y-3">
-              {[
-                {
-                  label: 'Gross Sales (Catalog Rate × Qty)',
-                  value: pnl.grossSales,
-                  tone: 'neutral' as const,
-                  hint: 'Sum of line-item gross invoiced value',
-                },
-                {
-                  label: 'Less: Trade Schemes & Discounts',
-                  value: -pnl.totalDiscounts,
-                  tone: 'warn' as const,
-                  hint: `Line discounts ₹${money(pnl.lineDiscounts)} + Bill discount ₹${money(pnl.billDiscounts)}`,
-                },
-                {
-                  label: 'Net Billed Invoice Value (Customer Payable)',
-                  value: pnl.billedSalesNet,
-                  tone: 'sky' as const,
-                  hint: 'Total invoice demand net of returns & credits',
-                  bold: true,
-                },
-                {
-                  label: 'Less: Output GST Collected (Payable to Govt)',
-                  value: -pnl.totalOutputGstNet,
-                  tone: 'warn' as const,
-                  hint: 'CGST + SGST statutory tax liability collected on behalf of tax authorities',
-                  bold: true,
-                },
-                {
-                  label: '= Operating Turnover / Taxable Revenue (Ex-GST)',
-                  value: pnl.taxableSalesNet,
-                  tone: 'sky' as const,
-                  hint: 'Actual commercial revenue belonging to the business',
-                  bold: true,
-                },
-                {
-                  label: 'Less: Cost of Goods Sold (COGS at Inward Cost)',
-                  value: -pnl.cogs,
-                  tone: 'warn' as const,
-                  hint: `Purchase rate × ${pnl.totalDispatchedCases} crates delivered (${pnl.casesSold} billed + ${pnl.freeCases} free schemes)`,
-                },
-                {
-                  label: '= Gross Profit on Sales (before stock losses)',
-                  value: pnl.grossProfitBeforeLosses,
-                  tone: pnl.grossProfitBeforeLosses >= 0 ? ('good' as const) : ('bad' as const),
-                  hint: 'Taxable revenue minus cost of the cases delivered',
-                  bold: true,
-                },
-                {
-                  label: 'Less: Stock Written Off / Returned / Given Free (net of supplier credit)',
-                  value: -pnl.writeOffNet,
-                  tone: 'warn' as const,
-                  hint: `Cost ₹${money(pnl.writeOffLoss)} less supplier compensation ₹${money(pnl.writeOffRecovered)} (Dispositions screen)`,
-                },
-                ...(pnl.supplierCredits > 0
-                  ? [
-                      {
-                        label: 'Add: Supplier scheme credits received',
-                        value: pnl.supplierCredits,
-                        tone: 'good' as const,
-                        hint: 'Incentive / scheme credit notes actually received in the period',
-                      },
-                    ]
-                  : []),
-                {
-                  label: '= True Operating Gross Profit / (Loss)',
-                  value: pnl.operatingGrossProfit,
-                  tone: pnl.operatingGrossProfit >= 0 ? ('good' as const) : ('bad' as const),
-                  hint: `${pnl.operatingMarginPct.toFixed(1)}% operating gross margin on taxable revenue`,
-                  bold: true,
-                },
-              ].map((row) => {
-                const abs = Math.abs(row.value);
-                const maxBase = Math.max(pnl.grossSales, pnl.billedSalesNet, pnl.taxableSalesNet, pnl.cogs, 1);
-                const width = Math.min(100, (abs / maxBase) * 100);
-                const barColor =
-                  row.tone === 'good'
-                    ? 'bg-emerald-500'
-                    : row.tone === 'bad'
-                      ? 'bg-rose-500'
-                      : row.tone === 'sky'
-                        ? 'bg-sky-500'
-                        : row.tone === 'warn'
-                          ? 'bg-amber-400'
-                          : 'bg-slate-400';
-                return (
-                  <div key={row.label} className="space-y-1">
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className={`font-semibold text-slate-700 ${row.bold ? 'font-black' : ''}`}>
-                        {row.label}
-                      </span>
-                      <span
-                        className={`font-mono font-black tabular-nums ${
-                          row.tone === 'good'
-                            ? 'text-emerald-700'
-                            : row.tone === 'bad'
-                              ? 'text-rose-700'
-                              : row.tone === 'sky'
-                                ? 'text-sky-800'
-                                : row.tone === 'warn'
-                                  ? 'text-amber-800'
-                                  : 'text-slate-900'
-                        }`}
-                      >
-                        {row.value < 0 ? '−' : ''}₹{money(abs)}
-                      </span>
-                    </div>
-                    <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all duration-500 ${barColor}`}
-                        style={{ width: `${width}%` }}
-                      />
-                    </div>
-                    <div className="text-[10px] text-slate-400 font-medium">{row.hint}</div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="lg:col-span-2 space-y-3.5">
-            {/* GST Tax Settlement Flow */}
-            <div className="bg-white rounded-2xl border border-black/10 p-4 space-y-3">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                <span className="text-xs font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                  GST Tax Position
-                </span>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                  {periodLabel}
-                </span>
-              </div>
-
-              <div className="space-y-2 text-xs">
-                <div className="flex justify-between items-center text-slate-600">
-                  <span>Output GST Collected (Sales)</span>
-                  <span className="font-mono font-bold text-slate-900">₹{money(pnl.totalOutputGstNet)}</span>
-                </div>
-                <div className="flex justify-between items-center text-slate-600">
-                  <span>Eligible ITC (Purchases/GRN)</span>
-                  <span className="font-mono font-bold text-emerald-700">−₹{money(pnl.itc)}</span>
-                </div>
-                <div className="pt-2 border-t border-slate-100 flex justify-between items-center">
-                  <span className="font-bold text-slate-800">Net GST Liability</span>
-                  <span
-                    className={`font-mono font-black ${
-                      pnl.netGstPayable > 0 ? 'text-rose-700' : 'text-emerald-700'
-                    }`}
-                  >
-                    ₹{money(pnl.netGstPayable)}
-                  </span>
-                </div>
-                <p className="text-[10px] text-slate-400 pt-1 leading-relaxed">
-                  Output GST collected from buyers minus Input Tax Credit on your supplier invoices.
-                </p>
-              </div>
-            </div>
-
-            {/* Unit Economics with Method 2 Average Selling Price */}
-            <div className="bg-white rounded-2xl border border-black/10 p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">
-                  Unit Economics (Per Case)
-                </div>
-                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-sky-100 text-sky-800">
-                  Method 2 Active
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="rounded-xl bg-slate-50 border border-slate-100 p-2.5">
-                  <div className="text-[10px] font-bold text-slate-500 uppercase">
-                    Avg Sell (Method 2)
-                  </div>
-                  <div className="text-sm font-black text-slate-900 font-mono mt-0.5">
-                    ₹{money(pnl.avgSellPerCase)}
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">
-                    {pnl.casesSold} billed cases
-                  </div>
-                </div>
-                <div className="rounded-xl bg-slate-50 border border-slate-100 p-2.5">
-                  <div className="text-[10px] font-bold text-slate-500 uppercase">Cost / cs</div>
-                  <div className="text-sm font-black text-amber-900 font-mono mt-0.5">
-                    ₹{money(pnl.avgCostPerCase)}
-                  </div>
-                  <div className="text-[10px] text-slate-400 mt-0.5">
-                    Inward purchase cost
-                  </div>
-                </div>
-                <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-2.5 col-span-2">
-                  <div className="text-[10px] font-bold text-emerald-700 uppercase flex items-center justify-between">
-                    <span>Operating Profit / Billed Case</span>
-                    <span className="font-mono">{pnl.activeMarginPct.toFixed(1)}%</span>
-                  </div>
-                  <div className="text-base font-black text-emerald-800 font-mono mt-0.5">
-                    +₹{money(pnl.avgProfitPerCase)} / cs
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Cash Position */}
-            <div className="bg-white rounded-2xl border border-black/10 p-4 space-y-2">
-              <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">
-                Collections &amp; Receivables
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-600 font-medium">Collected Cash</span>
-                <span className="font-mono font-bold text-emerald-700">₹{money(pnl.collected)}</span>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-600 font-medium">Outstanding Dues</span>
-                <span className="font-mono font-bold text-rose-700">₹{money(pnl.outstanding)}</span>
-              </div>
-              <div className="flex justify-between text-xs pt-1.5 border-t border-slate-100">
-                <span className="text-slate-600 font-medium">Free Scheme Crates Given</span>
-                <span className="font-mono font-bold text-amber-700">+{pnl.freeCases} cs</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ===== 2. PRODUCT MARGINS & PRICING TABLE ===== */}
       {subTab === 'products' && (
         <div className="space-y-2">
@@ -1711,8 +1272,8 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
                               Landed: ₹{money(r.landedCostPerCase)}
                             </span>
                           ) : (
-                            <span title="Pre-tax Inward Purchase Rate (Ex-GST)">
-                              Ex-GST: ₹{money(r.exGstCostPerCase)}
+                            <span title={costIncludesGst ? 'Inward purchase cost including the GST paid (no input credit under composition)' : 'Pre-tax Inward Purchase Rate (Ex-GST)'}>
+                              {costIncludesGst ? 'Cost incl. GST' : 'Ex-GST'}: ₹{money(r.exGstCostPerCase)}
                             </span>
                           )}
                         </div>
@@ -1775,143 +1336,6 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
                 )}
               </tbody>
             </table>
-          </div>
-        </div>
-      )}
-
-      {/* ===== 2b. BATCH-WISE PROFIT ===== */}
-      {subTab === 'batches' && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between flex-wrap gap-2 text-xs text-slate-500 px-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-semibold text-slate-700">
-                {batchRows.length} Stock Batches
-              </span>
-              <span className="hidden sm:inline">·</span>
-              <span className="text-emerald-700 font-semibold">
-                Profit by actual FEFO batch cost (or average cost if unallocated)
-              </span>
-            </div>
-            <span className="text-[11px] text-slate-400">
-              Matches how stock left the godown
-            </span>
-          </div>
-
-          {/* Desktop table */}
-          <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-black/10 bg-white">
-            <table className="w-full text-left data-table min-w-[920px] text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 bg-[#faf8f5] text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                  <th className="px-3 py-2.5">Batch / Lot</th>
-                  <th className="px-3 py-2.5">Product</th>
-                  <th className="px-2 py-2.5 text-right">Billed cs</th>
-                  <th className="px-2 py-2.5 text-right">Free cs</th>
-                  <th className="px-2 py-2.5 text-right">Cost / cs</th>
-                  <th className="px-3 py-2.5 text-right">You got</th>
-                  <th className="px-3 py-2.5 text-right">You spent</th>
-                  <th className="px-3 py-2.5 text-right font-black text-emerald-800">Profit</th>
-                  <th className="px-2 py-2.5 text-right">Margin %</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {batchRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="text-center py-10 text-slate-500 text-sm">
-                      No batch-level sales for this period. Older invoices without FEFO allocation appear under &ldquo;Unallocated · Avg Cost&rdquo;.
-                    </td>
-                  </tr>
-                ) : (
-                  batchRows.map((r) => (
-                    <tr key={r.batchKey} className="hover:bg-sky-50/50 transition-colors">
-                      <td className="px-3 py-2.5">
-                        <div className="font-bold text-slate-900 font-mono text-[11px]">
-                          {r.batchNumber}
-                        </div>
-                        <div className="text-[10px] text-slate-500 mt-0.5">
-                          {r.supplierName !== '—' ? r.supplierName : 'No supplier'}
-                          {r.inwardDate ? ` · In ${r.inwardDate.slice(0, 10)}` : ''}
-                          {r.expiryDate ? ` · Exp ${r.expiryDate.slice(0, 10)}` : ''}
-                        </div>
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <div className="font-semibold text-slate-800">{r.productName}</div>
-                        <div className="text-[10px] text-slate-500">{r.category}</div>
-                      </td>
-                      <td className="px-2 py-2.5 text-right font-mono font-bold tabular-nums">
-                        {Math.round(r.casesSold * 100) / 100}
-                      </td>
-                      <td className="px-2 py-2.5 text-right font-mono tabular-nums text-amber-700">
-                        {r.freeCases > 0 ? `+${Math.round(r.freeCases * 100) / 100}` : '—'}
-                      </td>
-                      <td className="px-2 py-2.5 text-right font-mono tabular-nums text-slate-700">
-                        ₹{money(r.costPerCase)}
-                      </td>
-                      <td className="px-3 py-2.5 text-right font-mono font-bold tabular-nums text-sky-900">
-                        ₹{money(viewBasis === 'exGst' ? r.taxableSales : r.netSales)}
-                      </td>
-                      <td className="px-3 py-2.5 text-right font-mono tabular-nums text-amber-900">
-                        ₹{money(r.cogs)}
-                      </td>
-                      <td
-                        className={`px-3 py-2.5 text-right font-mono font-black tabular-nums ${
-                          r.grossProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'
-                        }`}
-                      >
-                        ₹{money(r.grossProfit)}
-                      </td>
-                      <td className="px-2 py-2.5 text-right">
-                        <span
-                          className={`inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(
-                            r.marginPct
-                          )}`}
-                        >
-                          {r.marginPct.toFixed(1)}%
-                        </span>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Mobile / tablet cards — matches Payments & Customers pattern */}
-          <div className="block md:hidden space-y-3" id="margin-batch-cards">
-            {batchRows.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-black/10 px-4 py-10 text-center text-sm text-slate-500">
-                No batch-level sales for this period.
-              </div>
-            ) : (
-              batchRows.map((r) => (
-                <RegisterCard
-                  key={r.batchKey}
-                  title={r.productName}
-                  pills={<span className={`inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(r.marginPct)}`}>{r.marginPct.toFixed(1)}%</span>}
-                  subtitle={
-                    <>
-                      <div className="font-mono font-bold text-slate-900">Lot {r.batchNumber}</div>
-                      <div className="text-slate-500">
-                        {r.category}
-                        {r.supplierName !== '—' ? ` · ${r.supplierName}` : ''}
-                      </div>
-                    </>
-                  }
-                  heroLabel="Profit"
-                  hero={`₹${money(r.grossProfit)}`}
-                  heroTone={r.grossProfit >= 0 ? 'green' : 'red'}
-                  segments={[
-                    { value: r.cogs, className: 'bg-amber-500', label: 'You spent' },
-                    { value: Math.max(0, r.grossProfit), className: 'bg-emerald-600', label: 'Profit' },
-                  ]}
-                  stats={[
-                    { label: 'You got', value: `₹${money(viewBasis === 'exGst' ? r.taxableSales : r.netSales)}`, tone: 'sky' },
-                    { label: 'You spent', value: `₹${money(r.cogs)}`, tone: 'amber' },
-                    { label: 'Cases', value: `${Math.round(r.casesSold * 100) / 100}${r.freeCases > 0 ? ` +${Math.round(r.freeCases * 100) / 100}` : ''} cs` },
-                  ]}
-                  note={<div className="text-[11px] text-slate-500 font-mono">Cost ₹{money(r.costPerCase)} / cs</div>}
-                />
-              ))
-            )}
           </div>
         </div>
       )}

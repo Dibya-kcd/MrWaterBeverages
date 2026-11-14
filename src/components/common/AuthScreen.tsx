@@ -13,7 +13,6 @@ import {
 } from 'lucide-react';
 import { BrandMark } from './BrandMark';
 import { LandingIcon } from './LandingIcon';
-import { LanguageToggle } from './LanguageToggle';
 import { useLandingContent } from '../../constants/landingContent';
 import { useLedger } from '../../context/LedgerContext';
 import { speakAssistiveText } from '../../utils/speechRecognition';
@@ -207,7 +206,6 @@ export const AuthScreen: React.FC = () => {
               <span>{brand}</span>
             </div>
             <div className="hh-land__barright">
-              <LanguageToggle />
               <button type="button" onClick={() => setView('signin')} className="hh-cta hh-cta--ghost" style={{ minHeight: 40, padding: '8px 16px' }}>
                 {content.signInButton}
               </button>

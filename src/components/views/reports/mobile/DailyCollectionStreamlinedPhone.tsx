@@ -47,6 +47,8 @@ export const PERIOD_PRESETS: { id: ReportPeriod; label: string }[] = [
 ];
 
 export interface DailyCollectionStreamlinedPhoneProps {
+  /** The Day book / By customer switch, shown under the back button. */
+  topExtra?: React.ReactNode;
   periodLabel: string;
   totals: PeriodTotals;
   /** Days after search / type / mode filters. */
@@ -111,6 +113,7 @@ const BarChartThreeIcon = () => (
 );
 
 export const DailyCollectionStreamlinedPhone: React.FC<DailyCollectionStreamlinedPhoneProps> = ({
+  topExtra,
   periodLabel,
   totals,
   groups,
@@ -179,13 +182,15 @@ export const DailyCollectionStreamlinedPhone: React.FC<DailyCollectionStreamline
         </button>
       </div>
 
+      {topExtra}
+
       {/* 3. HERO CARD: DAILY COLLECTION */}
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#0B1E48] via-[#08183A] to-[#040E24] p-5 text-white shadow-xl shadow-blue-950/20">
         {/* Top row: Title & Calendar Icon */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <BarChartThreeIcon />
-            <h2 className="text-lg font-bold text-white tracking-tight">Daily Collection</h2>
+            <h2 className="text-lg font-bold text-white tracking-tight">Collections</h2>
           </div>
 
           <button

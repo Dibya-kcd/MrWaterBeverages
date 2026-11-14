@@ -13,6 +13,8 @@ import { todayISO, toLocalISODate } from '../../../utils/dateLocal';
 import { PaymentRecord } from '../../../types';
 import { REPORT_GROUPS, getReportNavIcon } from './ReportNavMenu';
 import { ReportShareMenu } from './ReportShareMenu';
+import { useSalesMarginPnl } from './SalesMarginPnLReport';
+import { totalDueOf } from '../../../utils/dueSummary';
 
 interface ReportsMobileHomeProps {
   onSelectReport: (reportId: string) => void;
@@ -34,7 +36,7 @@ const BarChartThreeIcon = () => (
 export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
   onSelectReport,
 }) => {
-  const { bills, payments, products, expenses } = useLedger();
+  const { bills, payments, products, expenses, existingCustomers } = useLedger();
   const [periodDropdownOpen, setPeriodDropdownOpen] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState<
     'today' | 'yesterday' | '7days' | 'month' | 'all'
@@ -230,50 +232,35 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
   }, [bills, payments, matchesPeriod]);
 
   // 3. REAL METRIC: Total Due across all bills
-  const totalDue = useMemo(() => {
-    const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
-    return round2(liveBills.reduce((acc, b) => acc + Math.max(0, billBalance(b)), 0));
-  }, [bills]);
+  const totalDue = useMemo(() => totalDueOf({ existingCustomers, bills }), [existingCustomers, bills]);
 
-  // 4. REAL METRICS: Billed Sales, Taxable Sales & True Operating Profit in selected period
-  // (GST collected is a statutory pass-through liability to government, not revenue or profit)
-  const { salesInPeriod, taxableSalesInPeriod, profitInPeriod } = useMemo(() => {
-    const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
-    const prodMap = new Map((products || []).map((p) => [p.id, p]));
+  // 4. REAL METRICS: Non-GST Retail Sales & Feasible Net Profit in selected period
+  // Profit comes from the SAME engine as Reports > Profit & Loss (batch cost incl. inward freight, returns,
+  // stock write-offs, supplier scheme credits), so Home, Overview and the P&L report always show one number.
+  const periodBills = useMemo(
+    () =>
+      (bills || []).filter(
+        (b) => b.status !== 'cancelled' && !b.cancelled && matchesPeriod(String(b.date || '').slice(0, 10)),
+      ),
+    [bills, matchesPeriod],
+  );
+  const { pnl: periodPnl } = useSalesMarginPnl({
+    filteredBills: periodBills,
+    products: products || [],
+    dateInPeriod: matchesPeriod,
+    viewBasis: 'exGst',
+  });
+  const { salesInPeriod, grossProfitInPeriod, landedCostInPeriod } = useMemo(() => {
     let billedRev = 0;
-    let taxableRev = 0;
-    let totalCost = 0;
-
-    liveBills
-      .filter((b) => matchesPeriod(String(b.date || '').slice(0, 10)))
-      .forEach((b) => {
-        const net = billNetTotal(b);
-        billedRev += net;
-
-        // Subtotal (Ex-GST taxable value after returns/discounts)
-        const sub = Number(b.subtotal);
-        const cgst = Number(b.cgst) || 0;
-        const sgst = Number(b.sgst) || 0;
-        const tax = cgst + sgst;
-        const taxBase = Number.isFinite(sub) && sub > 0 ? sub : Math.max(0, net - tax);
-        taxableRev += taxBase;
-
-        b.items.forEach((item) => {
-          const prod = prodMap.get(item.productId);
-          const cost = item.costExGst || prod?.effectiveCost || prod?.cost || 0;
-          totalCost += (Number(item.qty) || 0) * cost;
-        });
-      });
-
-    // Operating Gross Profit = Taxable Sales (Ex-GST) - Inward Inventory Cost (Ex-GST)
-    const grossProfit = round2(Math.max(0, taxableRev - totalCost));
-
+    periodBills.forEach((b) => {
+      billedRev += billNetTotal(b);
+    });
     return {
       salesInPeriod: round2(billedRev),
-      taxableSalesInPeriod: round2(taxableRev),
-      profitInPeriod: grossProfit,
+      grossProfitInPeriod: round2(periodPnl.operatingGrossProfit),
+      landedCostInPeriod: round2(periodPnl.cogs),
     };
-  }, [bills, products, matchesPeriod]);
+  }, [periodBills, periodPnl]);
 
   // Expenses in selected period (fuel, salary, rent, driver pay, maintenance)
   const expensesInPeriod = useMemo(() => {
@@ -282,10 +269,10 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
       .reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
   }, [expenses, matchesPeriod]);
 
-  // True Net Profit in period (Gross Profit minus operating expenses)
+  // True Feasible Net Profit in period (Gross Profit minus operating expenses)
   const netProfitInPeriod = useMemo(() => {
-    return round2(profitInPeriod - expensesInPeriod);
-  }, [profitInPeriod, expensesInPeriod]);
+    return round2(grossProfitInPeriod - expensesInPeriod);
+  }, [grossProfitInPeriod, expensesInPeriod]);
 
   const periodOptions: { id: typeof selectedPeriod; label: string }[] = [
     { id: 'today', label: 'Today' },
@@ -371,7 +358,7 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
                 { label: cardLabels.received, value: `₹${money(receivedInPeriod)}` },
                 { label: 'Total Due', value: `₹${money(totalDue)}` },
                 { label: cardLabels.sales, value: `₹${money(salesInPeriod)}` },
-                { label: cardLabels.profit, value: `₹${money(profitInPeriod)}` },
+                { label: cardLabels.profit, value: `₹${money(netProfitInPeriod)}` },
               ]}
               sheets={[
                 {
@@ -382,7 +369,7 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
                     [cardLabels.received, currentPeriodLabel, receivedInPeriod],
                     ['Total Due Outstanding', 'All time', totalDue],
                     [cardLabels.sales, currentPeriodLabel, salesInPeriod],
-                    [cardLabels.profit, currentPeriodLabel, profitInPeriod],
+                    [cardLabels.profit, currentPeriodLabel, netProfitInPeriod],
                   ],
                 },
               ]}
@@ -395,7 +382,7 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
                     [cardLabels.received, currentPeriodLabel, money(receivedInPeriod)],
                     ['Total Due Outstanding', 'All time', money(totalDue)],
                     [cardLabels.sales, currentPeriodLabel, money(salesInPeriod)],
-                    [cardLabels.profit, currentPeriodLabel, money(profitInPeriod)],
+                    [cardLabels.profit, currentPeriodLabel, money(netProfitInPeriod)],
                   ],
                   rightAlign: [2],
                 },
@@ -540,7 +527,7 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
               ₹{money(salesInPeriod)}
             </div>
             <div className="text-[10px] text-slate-500 font-medium mt-0.5 leading-tight line-clamp-1 h-3.5 flex items-center">
-              Taxable: ₹{money(taxableSalesInPeriod)}
+              Non-GST retail sales
             </div>
           </div>
         </div>
@@ -566,11 +553,11 @@ export const ReportsMobileHome: React.FC<ReportsMobileHomeProps> = ({
             <div className="text-[11px] sm:text-xs font-semibold text-slate-600 line-clamp-1 h-4 flex items-center">
               {cardLabels.profit}
             </div>
-            <div className="text-base sm:text-lg font-extrabold text-[#05603A] tracking-tight tabular-nums mt-0.5 leading-tight">
+            <div className={`text-base sm:text-lg font-extrabold tracking-tight tabular-nums mt-0.5 leading-tight ${netProfitInPeriod >= 0 ? 'text-[#05603A]' : 'text-rose-700'}`}>
               ₹{money(netProfitInPeriod)}
             </div>
             <div className="text-[10px] text-slate-500 font-medium mt-0.5 leading-tight line-clamp-1 h-3.5 flex items-center">
-              Gross: ₹{money(profitInPeriod)}
+              Gross: ₹{money(grossProfitInPeriod)}
             </div>
           </div>
         </div>

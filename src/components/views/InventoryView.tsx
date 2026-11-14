@@ -1109,17 +1109,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
               </ul>
             </div>
 
-            {/* Save bar — fixed above the bottom nav on phone/tablet so it is always reachable on a long list.
+            <details className="text-xs text-slate-500 my-2">
+              <summary className="cursor-pointer font-semibold text-slate-600 py-1 hover:text-slate-900">
+                Audit history &amp; reconciliation
+              </summary>
+              <div className="mt-3">
+                <AuditView embedded />
+              </div>
+            </details>
+
+            {/* Save bar — fixed above the bottom nav on phone/tablet so it is always reachable and unobstructed.
                 (position: sticky does not engage here because ancestors use overflow:auto.) */}
-            <div className="lg:hidden h-14" aria-hidden="true" />
-            <div className="fixed inset-x-0 z-30 bottom-[calc(4rem+env(safe-area-inset-bottom,0px))] lg:static lg:z-auto px-3 sm:px-6 lg:px-0 py-2 bg-[var(--bg)]/95 backdrop-blur border-t border-black/5 lg:border-0 lg:bg-transparent lg:backdrop-blur-none lg:py-0">
+            <div className="lg:hidden h-32" aria-hidden="true" />
+            <div className="fixed inset-x-0 z-40 bottom-[calc(5.75rem+env(safe-area-inset-bottom,0px))] lg:static lg:z-auto px-3 sm:px-6 lg:px-0 py-2.5 bg-white/95 backdrop-blur-md border-t border-slate-200/80 shadow-[0_-4px_16px_rgba(0,0,0,0.08)] lg:border-0 lg:bg-transparent lg:backdrop-blur-none lg:shadow-none lg:py-0">
               <div className="max-w-none mx-auto flex flex-row gap-2 items-center">
                 <input
                   type="text"
                   value={auditNote}
                   onChange={(e) => setAuditNote(e.target.value)}
                   placeholder="Note (optional)"
-                  className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
+                  className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
                 />
                 <button
                   type="button"
@@ -1131,15 +1140,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                 </button>
               </div>
             </div>
-
-            <details className="text-xs text-slate-500">
-              <summary className="cursor-pointer font-semibold text-slate-600 py-1">
-                Audit history &amp; reconciliation
-              </summary>
-              <div className="mt-3">
-                <AuditView embedded />
-              </div>
-            </details>
           </div>
         );
       })()}

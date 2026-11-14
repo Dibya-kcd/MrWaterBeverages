@@ -13,7 +13,6 @@ import {
 import { useLedger } from '../../context/LedgerContext';
 import { Bill, ExistingCustomer } from '../../types';
 import {
-  buildBillText,
   money,
   whatsappLink,
 } from '../../utils/billing';
@@ -26,6 +25,8 @@ import { BillingHistoryView } from './BillingHistoryView';
 import { BillingWorkflow } from './BillingWorkflow';
 import { NewSaleScreen } from './NewSaleScreen';
 import { billBalance } from '../../utils/salesReturns';
+import { sendBillOnWhatsApp, whatsAppResultMessage } from '../../utils/whatsappBill';
+import { notify as toastNotify } from '../../utils/toast';
 
 export const BillingView: React.FC = () => {
   const {
@@ -187,11 +188,13 @@ export const BillingView: React.FC = () => {
 
             {/* WhatsApp formatted receipt */}
             {justBill.phone && (
-              <a
+              <button
+                type="button"
                 id="whatsapp-just-saved"
-                href={whatsappLink(justBill.phone, buildBillText(justBill, orgProfile, billingSettings))}
-                target="_blank"
-                rel="noopener noreferrer"
+                onClick={async () => {
+                  const msg = whatsAppResultMessage(await sendBillOnWhatsApp(justBill, orgProfile, billingSettings));
+                  if (msg) toastNotify(msg.text, msg.kind);
+                }}
                 className="inline-flex items-center gap-1.5 border-2 px-3 py-1.5 focus-ring cursor-pointer hover:opacity-95 font-bold shadow-sm text-xs rounded-xl"
                 style={{
                   borderColor: '#1EBE5D',
@@ -200,8 +203,8 @@ export const BillingView: React.FC = () => {
                 }}
               >
                 <MessageCircle size={14} aria-hidden="true" />
-                <span>WhatsApp</span>
-              </a>
+                <span>WhatsApp 80mm bill</span>
+              </button>
             )}
 
             {/* View in History Option */}

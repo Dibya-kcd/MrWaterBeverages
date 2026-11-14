@@ -836,7 +836,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                       className="w-full sm:w-auto px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
                     >
                       <UserPlus size={15} />
-                      <span>+ Register as New Customer</span>
+                      <span>Register as New Customer</span>
                     </button>
                     <button
                       type="button"
@@ -1300,7 +1300,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
           (Cancel sale lives inside the cart.) */}
       <div
         id="salesman-cart-bottom-bar"
-        className={`${cart.items.length > 0 ? 'flex' : 'hidden'} sticky bottom-16 z-30 rounded-2xl items-center gap-3 shadow-[0_8px_20px_rgba(11,61,50,0.45)] ${
+        className={`${cart.items.length > 0 ? 'flex' : 'hidden'} sticky bottom-[calc(5.75rem+env(safe-area-inset-bottom,0px))] sm:bottom-4 z-40 rounded-2xl items-center gap-3 shadow-[0_8px_20px_rgba(11,61,50,0.45)] ${
           isLowVision ? 'p-3 border-4 border-black bg-yellow-300 text-black' : 'pl-3.5 pr-2.5 py-2.5 bg-[var(--primary)] text-white'
         }`}
         role="region"

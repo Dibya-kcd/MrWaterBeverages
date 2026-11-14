@@ -199,9 +199,11 @@ export interface LandedCostBreakdown {
 
   // Invoice rates (Audit unchanged, ex-GST & incl-GST)
   invoiceRateExGst: number; // rate ex-GST per crate (unitPrice)
-  gstPercent: number; // total GST % (cgst + sgst)
+  gstPercent: number; // total GST % (cgst + sgst + igst)
   cgstPercent: number;
   sgstPercent: number;
+  /** Inter-state purchase: IGST % instead of CGST + SGST. Optional; absent / 0 = legacy behaviour. */
+  igstPercent?: number;
   gstAmountPerCrate: number; // GST ₹ per crate
   invoiceRateInclGst: number; // rate per crate including GST
   invoiceUnitRateBottleExGst: number; // ex-GST rate per individual bottle/unit
@@ -220,6 +222,7 @@ export interface LandedCostBreakdown {
   taxableAmount: number; // paid base amount
   cgstAmount: number;
   sgstAmount: number;
+  igstAmount?: number;
   taxAmount: number;
   lineTotal: number; // paid total amount incl. GST
 
@@ -248,6 +251,7 @@ export function calculateLandedCostBreakdown(params: {
   packSize?: string;
   cgstPercent: number;
   sgstPercent: number;
+  igstPercent?: number;
   schemeType: GrnSchemeType;
   schemeMode?: GrnSchemeMode;
   schemeBuyQty?: number;
@@ -265,7 +269,8 @@ export function calculateLandedCostBreakdown(params: {
 
   const cgstPercent = Math.max(0, Number(params.cgstPercent) || 0);
   const sgstPercent = Math.max(0, Number(params.sgstPercent) || 0);
-  const gstPercent = cgstPercent + sgstPercent;
+  const igstPercent = Math.max(0, Number(params.igstPercent) || 0);
+  const gstPercent = cgstPercent + sgstPercent + igstPercent;
 
   // Base invoice rates
   const gstAmountPerCrate = (unitPrice * gstPercent) / 100;
@@ -379,20 +384,23 @@ export function calculateLandedCostBreakdown(params: {
   let taxableAmount: number;
   let cgstAmount: number;
   let sgstAmount: number;
+  let igstAmount: number;
   let lineTotal: number;
   if (isFreeGoodsScheme && getGstOnFreeCases()) {
     const taxBase = Math.max(0, baseGross - otherDiscount);
     cgstAmount = (taxBase * cgstPercent) / 100;
     sgstAmount = (taxBase * sgstPercent) / 100;
+    igstAmount = (taxBase * igstPercent) / 100;
     lineTotal = netExGst * (1 + gstPercent / 100); // payable: paid cases only, GST-inclusive
-    taxableAmount = Math.max(0, lineTotal - (cgstAmount + sgstAmount));
+    taxableAmount = Math.max(0, lineTotal - (cgstAmount + sgstAmount + igstAmount));
   } else {
     taxableAmount = netExGst;
     cgstAmount = (taxableAmount * cgstPercent) / 100;
     sgstAmount = (taxableAmount * sgstPercent) / 100;
-    lineTotal = taxableAmount + cgstAmount + sgstAmount;
+    igstAmount = (taxableAmount * igstPercent) / 100;
+    lineTotal = taxableAmount + cgstAmount + sgstAmount + igstAmount;
   }
-  const taxAmount = cgstAmount + sgstAmount;
+  const taxAmount = cgstAmount + sgstAmount + igstAmount;
 
   // Effective Scheme-Adjusted Purchase Cost (pre-inward godown expenses)
   // Stock cost uses the net ex-GST value actually paid for (paid cases only), whatever the GST rule is: it must not
@@ -426,6 +434,7 @@ export function calculateLandedCostBreakdown(params: {
     gstPercent,
     cgstPercent,
     sgstPercent,
+    igstPercent,
     gstAmountPerCrate,
     invoiceRateInclGst,
     invoiceUnitRateBottleExGst,
@@ -440,6 +449,7 @@ export function calculateLandedCostBreakdown(params: {
     taxableAmount,
     cgstAmount,
     sgstAmount,
+    igstAmount,
     taxAmount,
     lineTotal,
     effectiveCostPerCrateExGst,
@@ -459,6 +469,7 @@ export interface GrnLineMetrics {
   taxableAmount: number;
   cgstAmount: number;
   sgstAmount: number;
+  igstAmount?: number;
   taxAmount: number;
   lineTotal: number;
   paidQty: number;
@@ -482,6 +493,7 @@ export function calculateGrnLineMetrics(params: {
   discountAmount?: number;
   cgstPercent: number;
   sgstPercent: number;
+  igstPercent?: number;
   inwardCostPerCrate?: number;
 }): GrnLineMetrics {
   const breakdown = calculateLandedCostBreakdown({
@@ -497,6 +509,7 @@ export function calculateGrnLineMetrics(params: {
     discountAmount: params.discountAmount,
     cgstPercent: params.cgstPercent,
     sgstPercent: params.sgstPercent,
+    igstPercent: params.igstPercent,
     inwardCostPerCrate: params.inwardCostPerCrate,
   });
 
@@ -505,6 +518,7 @@ export function calculateGrnLineMetrics(params: {
     taxableAmount: breakdown.taxableAmount,
     cgstAmount: breakdown.cgstAmount,
     sgstAmount: breakdown.sgstAmount,
+    igstAmount: breakdown.igstAmount,
     taxAmount: breakdown.taxAmount,
     lineTotal: breakdown.lineTotal,
     paidQty: breakdown.paidQty,
@@ -543,7 +557,7 @@ export function resolveItemCrateCost(item: any): number {
 
   // 3. Explicit post-tax crate landed rate if no ex-tax available
   const crateLanded = Number(item.landedCostPerCrate);
-  const gstRate = ((Number(item.cgstPercent) || 0) + (Number(item.sgstPercent) || 0)) / 100;
+  const gstRate = ((Number(item.cgstPercent) || 0) + (Number(item.sgstPercent) || 0) + (Number(item.igstPercent) || 0)) / 100;
   if (Number.isFinite(crateLanded) && crateLanded > 0) {
     return gstRate > 0 ? Math.round((crateLanded / (1 + gstRate)) * 100) / 100 : crateLanded;
   }
@@ -555,6 +569,22 @@ export function resolveItemCrateCost(item: any): number {
 
   // 4. Default to invoice line unitPrice (which is always per-crate on distributor inward invoices)
   return unitPrice;
+}
+
+/**
+ * True when the cost stored for a GRN line (and so the stock batch's cost per case) ALREADY contains the
+ * inward freight / transport / labour per case.  That is the case for lines saved with a landed cost that is
+ * higher than the scheme-adjusted purchase cost by the freight amount (the invoice-upload inward screen).
+ * Reports must then NOT add the freight again on top of the batch cost, or profit is understated.
+ * Lines where this cannot be proven keep the old behaviour (freight added once on top).
+ */
+export function inwardFreightAlreadyInCost(item: any, inwardPerCrate: number): boolean {
+  const per = Number(inwardPerCrate) || 0;
+  if (per <= 0 || !item) return false;
+  const landedEx = Number(item.landedCostPerCrateExGst);
+  const effEx = Number(item.effectiveCostPerCrateExGst);
+  if (!(landedEx > 0) || !(effEx > 0)) return false;
+  return landedEx - effEx >= per - 0.02;
 }
 
 /**
@@ -571,7 +601,7 @@ export function resolveItemLandedCrateCost(item: any): number {
   const crateCostExGst = resolveItemCrateCost(item);
   const hasSplit = item.cgstPercent !== undefined && item.cgstPercent !== null && item.sgstPercent !== undefined && item.sgstPercent !== null;
   // a purchase line saved with 0% + 0% really is 0% GST; only a line with no tax split falls back to 18%
-  const gstRate = hasSplit ? ((Number(item.cgstPercent) || 0) + (Number(item.sgstPercent) || 0)) / 100 : 0.18;
+  const gstRate = hasSplit ? ((Number(item.cgstPercent) || 0) + (Number(item.sgstPercent) || 0) + (Number(item.igstPercent) || 0)) / 100 : 0.18;
   const inwardAddon = Math.max(0, Number(item.inwardCostPerCrate) || 0);
   return Math.round((crateCostExGst * (1 + gstRate) + inwardAddon) * 100) / 100;
 }
@@ -634,13 +664,18 @@ export function inferHsn8(category?: string | null, name?: string | null, hsn4or
     if (/cola|lemon|soda|vibe|clear|orange|sprite|fanta|thums|limca|pepsi|coke|fizz|sparkl|aerated|carbonat/.test(n)) return '22021010';
     return '22021090';
   }
+  if (digits === '2202') {
+    if (/soda|club\s*soda|plain\s*soda|carbonated\s*water/.test(n)) return '22021010';
+    if (/juice|joos|mango|mix.?fruit|pulp|nectar|raskik|slice|maaza|frooti|guava|litchi|apple/.test(n) || cat === 'joos') return '22029920';
+    return '22021090';
+  }
   // Nothing usable in the stored HSN: decide from the product itself.
   if (/water|aqua|bisleri|kinley|packaged drinking/.test(n) || cat === 'water') return '22019010';
   if (/juice|joos|mango|mix.?fruit|pulp|nectar|raskik|slice|maaza|frooti|guava|litchi|apple/.test(n) || cat === 'joos') return '22029920';
   if (/energy|runner|power\s*up|boost|red\s*bull|monster|campa/.test(n) || cat === 'energy') return '22021090';
   if (/cola|lemon|soda|vibe|clear|sprite|fanta|thums|limca|pepsi|coke|fizz|sparkl|aerated|carbonat/.test(n) || cat === 'vibe') return '22021010';
   const c = (cat && (CATS as any)[cat]?.hsn) as string | undefined;
-  return c && c.length === 8 ? c : '22029990';
+  return c && c.length === 8 ? c : '22021090';
 }
 
 /**
@@ -2035,49 +2070,89 @@ export function nonGstSummary(bill: Bill) {
   return { itemsValue, schemeDiscount, specialDiscount, taxAdjustment, total: Number(bill.total) || 0 };
 }
 
+function wrapMonospaceText(text: string, maxWidth: number): string[] {
+  const words = String(text || 'Item').trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return ['Item'];
+  const lines: string[] = [];
+  let current = '';
+  for (let word of words) {
+    while (word.length > maxWidth) {
+      if (current) {
+        lines.push(current);
+        current = '';
+      }
+      lines.push(word.slice(0, maxWidth));
+      word = word.slice(maxWidth);
+    }
+    if (!word) continue;
+    if (!current) {
+      current = word;
+    } else if (current.length + 1 + word.length <= maxWidth) {
+      current += ' ' + word;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+  return lines.length ? lines : ['Item'];
+}
+
+function fitMonospaceAmount(value: number, width: number): string {
+  const num = Number(value) || 0;
+  const fixed = num.toFixed(2);
+  if (fixed.length <= width) return fixed;
+  return String(Math.round(num));
+}
+
 function formatMonospaceReceipt(bill: Bill, isGst: boolean = true): string {
   const colItem = 14;
-  const colQty = 3;
-  const colRate = 5;
-  const colAmt = 6;
-  const totalWidth = colItem + 1 + colQty + 1 + colRate + 1 + colAmt; // 31 chars
+  const colQty = 4;
+  const colRate = 7;
+  const colAmt = 8;
+  // 14 + 1 + 4 + 1 + 7 + 1 + 8 = 36 chars (fits cleanly in mobile WhatsApp monospace bubbles)
+  const totalWidth = colItem + 1 + colQty + 1 + colRate + 1 + colAmt;
 
-  const header = `${'ITEM'.padEnd(colItem)} ${'QTY'.padStart(colQty)} ${'RATE'.padStart(colRate)} ${'AMOUNT'.padStart(colAmt)}`;
+  const header = `${'ITEM'.padEnd(colItem)}|${'QTY'.padStart(colQty)}|${'RATE'.padStart(colRate)}|${'AMOUNT'.padStart(colAmt)}`;
+  const colRule = `${'-'.repeat(colItem)}+${'-'.repeat(colQty)}+${'-'.repeat(colRate)}+${'-'.repeat(colAmt)}`;
   const divLine = '-'.repeat(totalWidth);
   const dblLine = '='.repeat(totalWidth);
 
-  const lines: string[] = [header, divLine];
+  const lines: string[] = [header, colRule];
 
-  bill.items.forEach((it) => {
+  (bill.items || []).forEach((it) => {
     const d = freeStockInvoiceDisplay(it);
-    let name = it.productName || 'Item';
-    if (name.length > colItem) {
-      name = name.slice(0, colItem - 1) + '…';
-    } else {
-      name = name.padEnd(colItem);
-    }
+    const rawName = String(it.productName || 'Item').replace(/\s+/g, ' ').trim();
     const qtyStr = String(it.qty).padStart(colQty);
-    const rateStr = String(Math.round(d.rate)).padStart(colRate);
-    const amtStr = (d.isFreeStock ? 'FREE' : String(Math.round(d.amount))).padStart(colAmt);
+    const rateStr = fitMonospaceAmount(d.rate, colRate).padStart(colRate);
+    const amtStr = (d.isFreeStock ? 'FREE' : fitMonospaceAmount(d.amount, colAmt)).padStart(colAmt);
+    const colsTail = `|${qtyStr}|${rateStr}|${amtStr}`;
 
-    lines.push(`${name} ${qtyStr} ${rateStr} ${amtStr}`);
+    if (rawName.length <= colItem) {
+      lines.push(`${rawName.padEnd(colItem)}${colsTail}`);
+    } else {
+      for (const nameLine of wrapMonospaceText(rawName, totalWidth)) {
+        lines.push(nameLine);
+      }
+      lines.push(`${''.padEnd(colItem)}${colsTail}`);
+    }
+
     if (d.isFreeStock) {
-      lines.push(` ↳ FREE STOCK · 100% discount`);
+      lines.push('  -> FREE STOCK (100% discount)');
     } else if (it.freeQty > 0) {
       const paidQty = Math.max(0, it.qty - it.freeQty);
-      lines.push(` ↳ Includes ${it.freeQty} free in ${it.qty} cs (${paidQty} billed + ${it.freeQty} free)`);
+      lines.push(`  -> ${it.freeQty} free (${paidQty} billed + ${it.freeQty} free)`);
     }
     if (d.discount > 0 && !d.isFreeStock) {
-      lines.push(` ↳ Scheme disc Rs ${Math.round(d.discount)}`);
+      lines.push(`  -> Scheme disc: Rs ${money(d.discount)}`);
     }
   });
 
   lines.push(divLine);
 
   const formatSummaryRow = (label: string, val: string) => {
-    const paddedLabel = label.padEnd(16);
-    const paddedVal = val.padStart(totalWidth - 16);
-    return `${paddedLabel}${paddedVal}`;
+    const gap = Math.max(1, totalWidth - label.length - val.length);
+    return `${label}${' '.repeat(gap)}${val}`;
   };
 
   if (isGst) {
@@ -2140,55 +2215,59 @@ export function buildBillText(
   const invoicePrefix = settings?.invoicePrefix || (isGst ? 'INV' : 'RET');
   const billNo = `${invoicePrefix}-${bill.id}`;
 
-  const orgName = org?.name || 'MrWater';
-  const orgTagline = org?.tagline || 'Authorized Wholesale Beverage Distributor';
-  const orgPhone = org?.phone || '';
-  const orgGstin = org?.gstin || '';
+  const orgName = (org?.name || 'MrWater').trim();
+  const orgTagline = (org?.tagline || 'Authorized Wholesale Beverage Distributor').trim();
+  const orgPhone = (org?.phone || '').trim();
+  const orgGstin = (org?.gstin || '').trim();
+  const orgFssai = (org?.fssai || '').trim();
+  const isB2b = isGst && bill.supplyType === 'B2B' && Boolean(bill.customerGstin);
 
   const out: string[] = [];
 
   if (isGst) {
-    out.push(`🧾 *TAX INVOICE — ${orgName.toUpperCase()}*`);
-    out.push(`_(GST B2B Tax Invoice)_`);
-    if (orgTagline) out.push(`_${orgTagline}_`);
-    if (org?.address) out.push(`📍 ${org.address}${org.city ? `, ${org.city}` : ''}`);
-    out.push(`📞 ${orgPhone} | GSTIN: ${orgGstin}`);
+    out.push(`*TAX INVOICE — ${orgName.toUpperCase()}*`);
+    out.push(`_(${isB2b ? 'GST B2B Tax Invoice' : 'GST Tax Invoice'})_`);
   } else {
-    out.push(`🧾 *RETAIL BILL / CASH MEMO — ${orgName.toUpperCase()}*`);
-    out.push(`_(Non-GST / B2C Sale)_`);
-    if (orgTagline) out.push(`_${orgTagline}_`);
-    if (org?.address) out.push(`📍 ${org.address}${org.city ? `, ${org.city}` : ''}`);
-    out.push(`📞 Phone: ${orgPhone}${orgGstin ? ` | GSTIN: ${orgGstin}` : ''}`);
+    out.push(`*RETAIL BILL / CASH MEMO — ${orgName.toUpperCase()}*`);
+    out.push(`_(Non-GST / Bill of Supply)_`);
   }
-  out.push('━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  out.push(`📄 *${isGst ? 'Tax Invoice' : 'Bill No'}:* #${billNo}`);
-  out.push(`📅 *Date:* ${bill.date}`);
-  out.push(`👤 *Billed To:* *${(bill.retailer || 'Cash Retailer').toUpperCase()}*`);
-  if (isGst && bill.customerGstin) {
-    out.push(`🏢 *Buyer GSTIN:* ${bill.customerGstin}`);
-  }
-  if (bill.phone) out.push(`📱 *Party Contact:* ${bill.phone}`);
-  out.push('━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  if (orgTagline) out.push(`_${orgTagline}_`);
+  if (org?.address) out.push(`Address: ${org.address}${org.city ? `, ${org.city}` : ''}`);
+  const orgMeta = [
+    orgPhone ? `Phone: ${orgPhone}` : '',
+    orgGstin ? `GSTIN: ${orgGstin}` : '',
+    orgFssai ? `FSSAI: ${orgFssai}` : '',
+  ].filter(Boolean);
+  if (orgMeta.length > 0) out.push(orgMeta.join(' | '));
 
-  // Monospace aligned receipt table
+  out.push('------------------------------------');
+  out.push(`*${isGst ? 'Tax Invoice' : 'Bill No'}:* #${billNo}`);
+  out.push(`*Date:* ${bill.date}`);
+  out.push(`*Billed To:* *${(bill.retailer || 'Cash Retailer').toUpperCase()}*`);
+  if (isGst && bill.customerGstin) {
+    out.push(`*Buyer GSTIN:* ${bill.customerGstin}`);
+  }
+  if (bill.phone) out.push(`*Party Contact:* ${bill.phone}`);
+  out.push('------------------------------------');
+
+  // Monospace aligned row-and-column receipt table
   out.push(formatMonospaceReceipt(bill, isGst));
 
   // Settlement & Status summary
-  const statusEmoji = st.balance <= 0 ? '✅' : st.balance === bill.total ? '⚠️' : '⏳';
   out.push('');
-  out.push(`${statusEmoji} *Payment Status:* *${st.label.toUpperCase()}*`);
+  out.push(`*Payment Status:* *${st.label.toUpperCase()}*`);
   if (st.balance > 0) {
-    out.push(`⚠️ *Pending Balance: ₹${money(st.balance)}*`);
+    out.push(`*Pending Balance:* ₹${money(st.balance)}`);
   } else {
-    out.push(`🎉 *Full Payment Received: ₹${money(bill.amountPaid)}*`);
+    out.push(`*Full Payment Received:* ₹${money(bill.amountPaid)}`);
   }
 
   if (org?.upiId || org?.bankName) {
     out.push('');
-    out.push('💳 *Settlement Details:*');
-    if (org.upiId) out.push(`• UPI ID: *${org.upiId}*`);
+    out.push('*Settlement Details:*');
+    if (org.upiId) out.push(`- UPI ID: *${org.upiId}*`);
     if (org.bankName) {
-      out.push(`• Bank: ${org.bankName} (A/c: ${org.accountNumber || '—'}, IFSC: ${org.ifsc || '—'})`);
+      out.push(`- Bank: ${org.bankName} (A/c: ${org.accountNumber || '-'}, IFSC: ${org.ifsc || '-'})`);
     }
   }
 

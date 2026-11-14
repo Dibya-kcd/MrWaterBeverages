@@ -72,3 +72,69 @@ export function packTheme(pack?: string | null, name?: string | null): PackTheme
     return { label: raw, chip: 'bg-amber-600 text-white border-amber-800 shadow-2xs font-black' };
   return { label: raw, chip: 'bg-slate-600 text-white border-slate-800 shadow-2xs font-black' };
 }
+
+export type PackGroupKey = 'PET' | 'Can' | 'Glass' | 'Tetra' | 'Other';
+
+export interface PackGroupInfo {
+  key: PackGroupKey;
+  label: string;
+  heading: string;
+  order: number;
+}
+
+const PACK_GROUPS: Record<PackGroupKey, PackGroupInfo> = {
+  PET: { key: 'PET', label: 'PET', heading: 'PET Bottles', order: 0 },
+  Can: { key: 'Can', label: 'Can', heading: 'Cans', order: 1 },
+  Glass: { key: 'Glass', label: 'Glass', heading: 'Glass Bottles', order: 2 },
+  Tetra: { key: 'Tetra', label: 'Tetra', heading: 'Tetra / Pouches', order: 3 },
+  Other: { key: 'Other', label: 'Other', heading: 'Other Packs', order: 4 },
+};
+
+/**
+ * Classifies a beverage into a canonical pack group (PET -> Can -> Glass -> Tetra -> Other)
+ * so product pickers and load sheets stay grouped by container type instead of mixing haphazardly.
+ */
+export function productPackGroup(product?: { pack?: string | null; name?: string | null } | null): PackGroupInfo {
+  const raw =
+    product?.pack && product.pack.trim() && product.pack.trim().toLowerCase() !== 'pcs'
+      ? product.pack.trim()
+      : product?.name
+        ? detectPack(product.name)
+        : '';
+  const k = raw.toLowerCase();
+  if (k.includes('can') || k.includes('tin')) return PACK_GROUPS.Can;
+  if (k.includes('glass') || k.includes('rgb') || k.includes('returnable')) return PACK_GROUPS.Glass;
+  if (k.includes('tetra') || k.includes('pouch') || k.includes('brick')) return PACK_GROUPS.Tetra;
+  if (k.includes('pet') || k.includes('plastic') || k.includes('bottle') || k.includes('btl')) return PACK_GROUPS.PET;
+  return PACK_GROUPS.Other;
+}
+
+/** Volume in ml for deterministic ascending size sorting (150ml -> 185ml -> 250ml -> 500ml -> 1L -> 2L). */
+export function productSequenceVolume(product?: { volume?: number | null; name?: string | null } | null): number {
+  const explicit = Number(product?.volume);
+  if (explicit > 0) return explicit;
+  const inferred = product?.name ? volumeFromName(product.name) : null;
+  return inferred && inferred > 0 ? inferred : 999999;
+}
+
+/**
+ * Sorts products in easy-to-scan sequence:
+ *   1. Pack type (PET Bottles, then Cans, then Glass, then Tetra, then Other)
+ *   2. Volume ascending (150ml, 185ml, 250ml, 500ml, 1L, 2L...)
+ *   3. Product name alphabetically
+ */
+export function compareProductsInSequence(
+  a?: { pack?: string | null; volume?: number | null; name?: string | null } | null,
+  b?: { pack?: string | null; volume?: number | null; name?: string | null } | null,
+): number {
+  const ga = productPackGroup(a);
+  const gb = productPackGroup(b);
+  if (ga.order !== gb.order) return ga.order - gb.order;
+
+  const va = productSequenceVolume(a);
+  const vb = productSequenceVolume(b);
+  if (va !== vb) return va - vb;
+
+  return (a?.name || '').localeCompare(b?.name || '');
+}
+

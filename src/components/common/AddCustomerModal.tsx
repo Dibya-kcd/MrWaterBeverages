@@ -48,7 +48,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
   isLowVision = false,
 }) => {
   const { addCustomer, palette, customers: registeredCustomers } = useLedger();
-  const { beats, activeBeats, myBeats } = useBeats();
+  const { beats, activeBeats, myBeats, addBeat } = useBeats();
 
   // Combine all active beats, salesman's beats, standard Odisha beats, and existing customer routes
   const availableBeatNames = useMemo(() => {
@@ -192,6 +192,21 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
         notes.trim(),
       ].filter(Boolean);
 
+      let assignedBeatId: string | undefined = undefined;
+      if (cleanRoute) {
+        const match =
+          activeBeats.find((b) => b.name.trim().toLowerCase() === cleanRoute.toLowerCase()) ||
+          beats.find((b) => b.name.trim().toLowerCase() === cleanRoute.toLowerCase());
+        if (match) {
+          assignedBeatId = match.id;
+        } else {
+          const res = addBeat(cleanRoute);
+          if (res.ok && res.beat) {
+            assignedBeatId = res.beat.id;
+          }
+        }
+      }
+
       const knownIds = new Set((registeredCustomers || []).map((c) => c.id));
       const newCustomer = addCustomer({
         name: cleanName,
@@ -200,9 +215,7 @@ export const AddCustomerModal: React.FC<AddCustomerModalProps> = ({
         address: cleanAddress || undefined,
         city: cleanRoute || undefined,
         route: cleanRoute || undefined,
-        beatId:
-          activeBeats.find((b) => b.name.trim().toLowerCase() === cleanRoute.toLowerCase())?.id ||
-          beats.find((b) => b.name.trim().toLowerCase() === cleanRoute.toLowerCase())?.id,
+        beatId: assignedBeatId,
         gstin: cleanGstin || undefined,
         openingBalance: openBal,
         creditLimit: credLim,

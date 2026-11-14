@@ -27,10 +27,14 @@ import {
   ChevronDown,
   MoreVertical,
 } from 'lucide-react';
-import { BillItem, PriceType, Product, Trip, ExistingCustomer } from '../../types';
+import { Bill, BillItem, PriceType, Product, Trip, ExistingCustomer } from '../../types';
 import { money } from '../../utils/billing';
 import { speakAssistiveText } from '../../utils/speechRecognition';
 import { getProductOdiaName, getCustomerOdiaName } from '../../utils/displayName';
+import { ToggleSwitch } from '../ui/ToggleSwitch';
+import { useLedger } from '../../context/LedgerContext';
+import { sendBillOnWhatsApp, whatsAppResultMessage } from '../../utils/whatsappBill';
+import { notify } from '../../utils/toast';
 
 interface SalesmanCartModalProps {
   isOpen: boolean;
@@ -57,7 +61,7 @@ interface SalesmanCartModalProps {
   applyQuickDiscount: (amt: number, isPercent?: boolean) => void;
   autoSendWhatsApp: boolean;
   setAutoSendWhatsApp: (val: boolean) => void;
-  lastFinalizedWhatsApp: { id: number; phone: string; url: string } | null;
+  lastFinalizedWhatsApp: { id: number; phone: string; url: string; bill: Bill } | null;
   onUpdateQty: (key: string | number, qty: number) => void;
   onUpdateRate: (key: string | number, rate: number) => void;
   onUpdateDiscount: (key: string | number, discount: number) => void;
@@ -113,6 +117,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
   priceType,
   isPriceLocked = false,
 }) => {
+  const { orgProfile, billingSettings } = useLedger();
   const { isOdia } = useLanguage();
 
   // Beverage browsing mode state (allows adding beverages without leaving modal)
@@ -629,7 +634,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                           style={{ minHeight: '42px' }}
                         >
                           <Plus size={16} />
-                          <span>{isOutOfVanStock ? 'Out of Van Stock' : '+ Add 1 Case'}</span>
+                          <span>{isOutOfVanStock ? 'Out of Van Stock' : 'Add 1 Case'}</span>
                         </button>
                       ) : (
                         <div className="w-full flex items-center justify-between gap-2">
@@ -696,10 +701,14 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   <div className="text-xs truncate">{lastFinalizedWhatsApp.phone}</div>
                 </div>
               </div>
-              <a href={lastFinalizedWhatsApp.url} target="_blank" rel="noopener noreferrer"
+              <button type="button" id="cart-send-whatsapp-bill"
+                 onClick={async () => {
+                   const msg = whatsAppResultMessage(await sendBillOnWhatsApp(lastFinalizedWhatsApp.bill, orgProfile, billingSettings));
+                   if (msg) notify(msg.text, msg.kind);
+                 }}
                  className="px-4 min-h-[44px] rounded-lg font-black text-xs bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center gap-1.5 cursor-pointer shrink-0">
-                <MessageCircle size={16} /><span>Open</span>
-              </a>
+                <MessageCircle size={16} /><span>Send 80mm bill</span>
+              </button>
             </div>
           )}
 
@@ -1072,18 +1081,22 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   </div>
                 )}
 
-                <label className="flex items-center justify-between gap-3 mt-3 cursor-pointer min-h-[40px]">
-                  <span className="text-[13px] font-bold flex items-center gap-1.5">
+                <div className="flex items-center justify-between gap-3 mt-3 min-h-[40px]">
+                  <span
+                    id="label-cart-modal-whatsapp"
+                    onClick={() => setAutoSendWhatsApp(!autoSendWhatsApp)}
+                    className="text-[13px] font-bold flex items-center gap-1.5 cursor-pointer select-none"
+                  >
                     <MessageCircle size={16} className="text-emerald-600" /> Send bill on WhatsApp
                   </span>
-                  <input
-                    type="checkbox" role="switch"
+                  <ToggleSwitch
                     checked={autoSendWhatsApp}
-                    onChange={(e) => setAutoSendWhatsApp(e.target.checked)}
-                    className="w-5 h-5 accent-emerald-600 cursor-pointer"
-                    aria-label="Send bill on WhatsApp"
+                    onChange={setAutoSendWhatsApp}
+                    tone="emerald"
+                    ariaLabel="Send bill on WhatsApp"
+                    ariaLabelledBy="label-cart-modal-whatsapp"
                   />
-                </label>
+                </div>
               </div>
             )}
           </div>

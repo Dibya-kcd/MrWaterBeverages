@@ -252,6 +252,17 @@ export interface BillEditEntry {
   paidAfter: number;
 }
 
+/** Tax treatment recorded on a bill when it was issued under the tax engine (never recalculated later). */
+export interface TaxStamp {
+  registrationType: 'regular' | 'composition' | 'unregistered';
+  documentType: string;
+  ruleVersion: string;
+  engineStartDate: string;
+  declaration?: string;
+  /** Own composition liability on this bill (informational; never charged to the customer). */
+  compositionLiability?: { base: number; cgst: number; sgst: number; total: number };
+}
+
 export interface Bill extends BillTotals {
   id: number;
   retailer: string;
@@ -288,6 +299,8 @@ export interface Bill extends BillTotals {
   customerGstin?: string;
   /** Invoice format type: 'tax_invoice' (GST B2B) vs 'retail' / 'bill_of_supply' (Non-GST B2C) */
   invoiceType?: 'tax_invoice' | 'bill_of_supply' | 'retail';
+  /** Present on bills issued under the tax engine. */
+  taxStamp?: TaxStamp;
   isGstInvoice?: boolean;
   /** True when invoice was raised later for stock already issued (uncaptured field sale). */
   isRetrospective?: boolean;
@@ -847,6 +860,14 @@ export interface OrganizationProfile {
   state?: string;
   stateCode?: string;
   gstin: string;
+  /**
+   * GST registration of this business. Leave unset to keep the legacy behaviour (nothing changes).
+   * The tax engine takes over for documents dated on/after `gstEngineStartDate`.
+   */
+  gstRegistrationType?: 'regular' | 'composition' | 'unregistered';
+  compositionCategory?: 'trader' | 'manufacturer' | 'restaurant' | 'service';
+  /** First document date (YYYY-MM-DD) governed by the tax engine. Older documents are never re-taxed. */
+  gstEngineStartDate?: string;
   fssai: string;
   bankName: string;
   accountNumber: string;
@@ -902,6 +923,16 @@ export interface BillingSettings {
    * custom price give the same tax and profit. Confirm with your CA.
    */
   gstOnFreeCases?: boolean;
+  /** Paper for the PDF made by the Download / Print / Share buttons: A4 (full invoice, default) or an 80 mm receipt. */
+  defaultInvoicePaper?: 'a4' | '80mm';
+  /** Style of the bill text sent on WhatsApp / copied: 'detailed' (emoji summary, default) or 'receipt' (80 mm slip in a fixed-width font). */
+  whatsappTextStyle?: 'detailed' | 'receipt';
+  /** Characters per line of the receipt text: 32 fits a phone chat, 42 / 48 suit 80 mm printer apps. */
+  receiptTextWidth?: 32 | 42 | 48;
+  /** 80 mm receipt PDF: print a UPI QR (for the balance due) when the bill is not fully paid and a UPI ID is set. Default on. */
+  showUpiQrOnReceipt?: boolean;
+  /** 80 mm receipt: also print each product's saved Odia name under the English name. Default off. */
+  showOdiaNameOnReceipt?: boolean;
   /** ISO timestamp when billing settings were last updated */
   updatedAt?: string;
 }
@@ -1014,7 +1045,10 @@ export interface GrnLineItem {
   sgstPercent: number; // e.g. 20%
   cgstAmount: number;
   sgstAmount: number;
-  taxAmount: number; // cgst + sgst
+  /** Inter-state purchase: IGST instead of CGST + SGST. Optional; absent = 0 (legacy lines unchanged). */
+  igstPercent?: number;
+  igstAmount?: number;
+  taxAmount: number; // cgst + sgst + igst
   lineTotal: number; // taxableAmount + taxAmount
   totalReceivedQty: number; // qty + freeQty
 

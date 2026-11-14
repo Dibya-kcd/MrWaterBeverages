@@ -1261,7 +1261,7 @@ export const SupplierSchemesView: React.FC = () => {
               <input className={inputCls} value={receiptNumber} onChange={(e) => setReceiptNumber(e.target.value)} placeholder="e.g. CN-2026-001" />
             </Field>
             <div className="grid grid-cols-2 gap-3">
-              <Field label="Amount received now (₹)">
+              <Field label="Amount received now, without GST (₹)" info="Enter the credit note value WITHOUT GST (its taxable value). The GST on a credit note is not extra profit, so it must not be counted. Your profit reports add this amount to profit." infoTitle="Without GST">
                 <input
                   type="number"
                   inputMode="decimal"
@@ -1302,7 +1302,7 @@ export const SupplierSchemesView: React.FC = () => {
               <Field label="Expected (₹)" info="Use only to correct a wrong expected value. Normal receipts go through “Record receipt”." infoTitle="Expected amount">
                 <input type="number" inputMode="decimal" min="0" className={inputCls} value={editExpectedAmount} onChange={(e) => setEditExpectedAmount(e.target.value)} />
               </Field>
-              <Field label="Received (₹)">
+              <Field label="Received, without GST (₹)" info="Credit note value without GST. GST on a credit note is not profit." infoTitle="Without GST">
                 <input
                   type="number"
                   inputMode="decimal"

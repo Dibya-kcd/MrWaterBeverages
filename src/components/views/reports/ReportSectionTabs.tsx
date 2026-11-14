@@ -26,7 +26,7 @@ export type ReportSection =
   | 'inventory'
   | 'trips'
   | 'tax'
-  | 'supplierProfit'
+  | 'expenses'
   | 'daybook'
   | 'beats';
 
@@ -35,14 +35,16 @@ const TABS: {
   label: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
 }[] = [
+  { id: 'sales', label: 'Sales', icon: TrendingUp },
   { id: 'margin', label: 'Profit & Loss', icon: Percent },
+  { id: 'expenses', label: 'Expenses', icon: Coins },
   { id: 'dispositions', label: 'Returns, Free & Claims', icon: AlertTriangle },
   { id: 'purchases', label: 'Inward & Purchases', icon: ArrowDownToLine },
   { id: 'receivables', label: 'Party Credit & Receivables', icon: Users },
   { id: 'inventory', label: 'Inventory & Valuation', icon: Boxes },
   { id: 'trips', label: 'Vehicle Trips & Logistics', icon: Truck },
   { id: 'tax', label: 'GST', icon: ShieldCheck },
-  { id: 'daybook', label: 'Daily Collection (paid / due)', icon: BookOpen },
+  { id: 'daybook', label: 'Collections', icon: BookOpen },
   { id: 'beats', label: 'Beat-wise Sales & Due', icon: MapPin },
 ];
 

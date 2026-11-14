@@ -1754,14 +1754,14 @@ export async function writeCollectionMerged(
  *    (sales, payments on bills, trip changes) and are only rewritten when a record really changed.
  *  - godown stock records, products, batches, salesmen, warehouses: only how many rows (new or removed records).
  *  - deletions: the per-deletion rows and the "last changed" times of the deletion lists.
- * Not looked at: the generic collections (customers, payments, expenses ...). The app rewrites those after every
- * download, so they would look "changed" all the time. A change that only they show up in is picked up by the
- * regular safety download (see SAFETY_FULL_PULL_MS in src/utils/syncGate.ts).
+ * Also looked at (one request, timestamps only): the payments, customers and business_expenses lists. Other generic
+ * collections are not, and are picked up by the regular safety download (see SAFETY_FULL_PULL_MS in src/utils/syncGate.ts).
  *
  * Nothing is written, and no rows are downloaded: counts use HEAD requests, the others fetch one timestamp.
  */
 const PROBE_NEWEST_TABLES = ["bills", "trips"];
 const PROBE_COUNT_TABLES = ["grns", "products", "inventory_batches", "salesmen", "warehouses"];
+const PROBE_LIST_KEYS = ["payments", "customers", "business_expenses"];
 let probeWarned = false;
 
 export async function probeCloudChanges(): Promise<string | null> {
@@ -1807,6 +1807,16 @@ export async function probeCloudChanges(): Promise<string | null> {
         .like("key", `${DELETION_ROW_PREFIX}%`);
       if (error) throw error;
       return String(count ?? "?");
+    }),
+    // Payments / customers / expenses: ONE tiny request (3 rows, key + timestamp only, no data). Safe now that identical
+    // write-backs are skipped (writeCollectionMerged), so these timestamps only move on a real change.
+    ask("shared_lists", async () => {
+      const { data, error } = await client
+        .from("app_collections")
+        .select("key,updated_at")
+        .in("key", PROBE_LIST_KEYS);
+      if (error) throw error;
+      return shortHash(((data as any[]) || []).map((r) => `${r.key}=${r.updated_at}`).sort().join(","));
     }),
     ask("deletion_lists", async () => {
       const { data, error } = await client

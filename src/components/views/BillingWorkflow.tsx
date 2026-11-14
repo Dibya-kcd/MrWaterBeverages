@@ -2161,7 +2161,7 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
                           className="w-full min-h-[42px] py-2 px-3 rounded-xl font-bold text-xs bg-slate-700 hover:bg-slate-800 text-white flex items-center justify-center gap-1.5 cursor-pointer shadow-sm transition-colors"
                         >
                           <Plus size={14} />
-                          <span>+ Add to Bill (0 cs in {stockSourceType === 'trip' ? 'van' : 'depot'})</span>
+                          <span>Add to Bill (0 cs in {stockSourceType === 'trip' ? 'van' : 'depot'})</span>
                         </button>
                       )}
                     </div>

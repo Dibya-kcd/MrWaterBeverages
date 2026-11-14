@@ -42,8 +42,8 @@ export const getReportNavIcon = (id: string): LucideIcon => {
       return Clock;
     case 'sales':
       return TrendingUp;
-    case 'supplierProfit':
-      return Percent;
+    case 'expenses':
+      return Wallet;
     case 'margin':
       return BarChart3;
     case 'inventory':
@@ -68,15 +68,8 @@ export const REPORT_GROUPS: ReportCategoryGroup[] = [
     items: [
       {
         id: 'daybook',
-        title: 'Daily collection',
-        subtitle: 'Cash, UPI and new due, day by day',
-        initial: 'D',
-        tone: 'green',
-      },
-      {
-        id: 'payments',
-        title: 'Customer receipts',
-        subtitle: 'Who paid, how, and what they still owe',
+        title: 'Collections',
+        subtitle: 'Money in and out each day, and money received from each customer',
         initial: 'C',
         tone: 'green',
       },
@@ -107,10 +100,24 @@ export const REPORT_GROUPS: ReportCategoryGroup[] = [
     name: 'WHAT SELLS AND EARNS',
     items: [
       {
+        id: 'sales',
+        title: 'Sales',
+        subtitle: 'Sold, received and unpaid, by day, customer, product or salesman',
+        initial: 'S',
+        tone: 'blue',
+      },
+      {
         id: 'margin',
         title: 'Profit & Loss',
         subtitle: 'Sales, cost, expenses and net profit',
         initial: 'M',
+        tone: 'blue',
+      },
+      {
+        id: 'expenses',
+        title: 'Expenses',
+        subtitle: 'What you spent, by category',
+        initial: 'E',
         tone: 'blue',
       },
     ],

@@ -194,16 +194,16 @@ export const TripReconciliationCards: React.FC<TripReconciliationCardsProps> = (
           className="border-2 overflow-x-auto rounded bg-white"
           style={{ borderColor: palette.line }}
         >
-          <table className="w-full text-left" style={fz(13)}>
+          <table className="w-full min-w-[560px] text-left" style={fz(13)}>
             <thead>
               <tr className="border-b-2 bg-slate-50" style={{ borderColor: palette.line }}>
-                <th className="px-3 py-2 font-bold">Beverage Name</th>
-                <th className="px-3 py-2 text-right font-bold">Loaded</th>
-                <th className="px-3 py-2 text-right font-bold">Delivered</th>
-                <th className="px-3 py-2 text-right font-bold">
+                <th className="px-3 py-2 font-bold whitespace-nowrap min-w-[150px]">Beverage Name</th>
+                <th className="px-3 py-2 text-right font-bold whitespace-nowrap">Loaded</th>
+                <th className="px-3 py-2 text-right font-bold whitespace-nowrap">Delivered</th>
+                <th className="px-3 py-2 text-right font-bold whitespace-nowrap">
                   {tripStatus === 'closed' ? 'Returned' : 'Remaining on Van'}
                 </th>
-                <th className="px-3 py-2 text-right font-bold">Reconciliation</th>
+                <th className="px-3 py-2 text-right font-bold whitespace-nowrap">Reconciliation</th>
               </tr>
             </thead>
             <tbody>

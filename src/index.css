@@ -434,7 +434,7 @@ table thead tr.bg-slate-50 {
   /* Default 44px tap target, but leave alone buttons that are intentionally sized
      (toggle switches, icon buttons: h-5..h-8 / size-*), otherwise a 24px switch
      is stretched into a 44px circle. */
-  button:not([role="switch"]):not([class*="h-5 "]):not([class*="h-6 "]):not([class*="h-7 "]):not([class*="h-8 "]):not([class*="size-"]),
+  button:not([role="switch"]):not(.hh-switch):not([class*="h-5"]):not([class*="h-6"]):not([class*="h-7"]):not([class*="h-8"]):not([class*="size-"]),
   .mw-nav-item,
   .mobile-tab-bar button {
     min-height: 44px;

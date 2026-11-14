@@ -8,6 +8,7 @@ import {
   Search,
   Share2,
   Trash2,
+  Truck,
   Users,
   X,
 } from 'lucide-react';
@@ -15,6 +16,7 @@ import { Bill } from '../../types';
 import { money } from '../../utils/billing';
 import { useLedger } from '../../context/LedgerContext';
 import { billBalance } from '../../utils/salesReturns';
+import { useBeats } from '../../hooks/useBeats';
 
 interface BillingHistoryViewProps {
   onViewInvoice: (bill: Bill, defaultFormat?: 'gst' | 'non_gst') => void;
@@ -38,15 +40,19 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
     bills,
     salesmen,
     billingSettings,
+    customers,
   } = useLedger();
+
+  const { beats, activeBeats } = useBeats();
 
   const [grouping, setGrouping] = useState<HistoryGrouping>('table');
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('all');
   const [salesmanFilter, setSalesmanFilter] = useState<string>('');
+  const [beatFilter, setBeatFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
 
-  // Filter bills based on search and payment status
+  // Filter bills based on search, payment status, salesman, and beat
   const filteredBills = useMemo(() => {
     return bills.filter((b) => {
       const q = searchQuery.trim().toLowerCase();
@@ -71,22 +77,41 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
           salesmen.find((s) => s.id === salesmanFilter)?.name === b.salesman;
       }
 
-      return matchesSearch && matchesPayment && matchesSalesman;
+      let matchesBeat = true;
+      if (beatFilter !== 'all') {
+        const cust = (customers || []).find(
+          (c) => c.id === b.customerId || c.name.toLowerCase() === b.retailer.toLowerCase()
+        );
+        const custBeat = cust?.route || cust?.city || '';
+        matchesBeat =
+          custBeat.toLowerCase() === beatFilter.toLowerCase() ||
+          b.retailer.toLowerCase().includes(beatFilter.toLowerCase());
+      }
+
+      return matchesSearch && matchesPayment && matchesSalesman && matchesBeat;
     });
-  }, [bills, salesmen, searchQuery, paymentFilter, salesmanFilter]);
+  }, [bills, salesmen, customers, searchQuery, paymentFilter, salesmanFilter, beatFilter]);
 
-  // Overall statistics
+  // Overall statistics (respecting beat filter if active)
   const stats = useMemo(() => {
-    const totalCount = bills.length;
-    const totalBilled = bills.reduce((sum, b) => sum + b.total, 0);
-    const totalPaid = bills.reduce((sum, b) => sum + b.amountPaid, 0);
-    const totalDue = Math.max(0, totalBilled - totalPaid);
-    const pendingCount = bills.filter((b) => billBalance(b) > 0).length;
-    const paidCount = bills.filter((b) => billBalance(b) <= 0).length;
-    return { totalCount, totalBilled, totalPaid, totalDue, pendingCount, paidCount };
-  }, [bills]);
+    const relevantBills = beatFilter === 'all' ? bills : bills.filter((b) => {
+      const cust = (customers || []).find(
+        (c) => c.id === b.customerId || c.name.toLowerCase() === b.retailer.toLowerCase()
+      );
+      const custBeat = cust?.route || cust?.city || '';
+      return custBeat.toLowerCase() === beatFilter.toLowerCase() || b.retailer.toLowerCase().includes(beatFilter.toLowerCase());
+    });
 
-  // Status breakdown counts (respecting search and salesman filters)
+    const totalCount = relevantBills.length;
+    const totalBilled = relevantBills.reduce((sum, b) => sum + b.total, 0);
+    const totalPaid = relevantBills.reduce((sum, b) => sum + b.amountPaid, 0);
+    const totalDue = Math.max(0, totalBilled - totalPaid);
+    const pendingCount = relevantBills.filter((b) => billBalance(b) > 0).length;
+    const paidCount = relevantBills.filter((b) => billBalance(b) <= 0).length;
+    return { totalCount, totalBilled, totalPaid, totalDue, pendingCount, paidCount };
+  }, [bills, customers, beatFilter]);
+
+  // Status breakdown counts (respecting search, salesman, and beat filters)
   const statusCounts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const base = bills.filter((b) => {
@@ -105,14 +130,26 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
           b.salesman === salesmanFilter ||
           salesmen.find((s) => s.id === salesmanFilter)?.name === b.salesman;
       }
-      return matchesSearch && matchesSalesman;
+
+      let matchesBeat = true;
+      if (beatFilter !== 'all') {
+        const cust = (customers || []).find(
+          (c) => c.id === b.customerId || c.name.toLowerCase() === b.retailer.toLowerCase()
+        );
+        const custBeat = cust?.route || cust?.city || '';
+        matchesBeat =
+          custBeat.toLowerCase() === beatFilter.toLowerCase() ||
+          b.retailer.toLowerCase().includes(beatFilter.toLowerCase());
+      }
+
+      return matchesSearch && matchesSalesman && matchesBeat;
     });
 
     const all = base.length;
     const pending = base.filter((b) => billBalance(b) > 0).length;
     const paid = base.filter((b) => billBalance(b) <= 0).length;
     return { all, pending, paid };
-  }, [bills, salesmen, searchQuery, salesmanFilter]);
+  }, [bills, salesmen, customers, searchQuery, salesmanFilter, beatFilter]);
 
   // Group by Date (Latest date on top)
   const dateGroups = useMemo(() => {
@@ -302,14 +339,14 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
 
       {/* 2. Unified Toolbar (Compact single-word tabs: Invoices | Dates | Customer + Full-width Search) */}
       <div className="bg-white rounded-2xl border border-slate-200/90 p-3 sm:p-3.5 shadow-xs space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          {/* Main View Mode Tabs (Short single-word names: Invoices | Dates | Customer to fit mobile) */}
-          <div className="grid grid-cols-3 p-1 bg-slate-100/90 rounded-xl border border-slate-200/80 shrink-0 self-stretch sm:self-auto sm:inline-flex shadow-2xs">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          {/* Main View Mode Tabs (Dedicated inline-flex with shrink-0, never colliding with search) */}
+          <div className="inline-flex items-center gap-1 p-1 bg-slate-100/90 rounded-xl border border-slate-200/80 shrink-0 shadow-2xs overflow-x-auto self-start sm:self-auto">
             <button
               type="button"
               id="tab-view-table"
               onClick={() => setGrouping('table')}
-              className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap ${
+              className={`inline-flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap shrink-0 ${
                 grouping === 'table'
                   ? 'bg-[var(--primary)] text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -323,7 +360,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
               type="button"
               id="tab-view-date"
               onClick={() => setGrouping('date')}
-              className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap ${
+              className={`inline-flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap shrink-0 ${
                 grouping === 'date'
                   ? 'bg-[var(--primary)] text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -337,7 +374,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
               type="button"
               id="tab-view-customer"
               onClick={() => setGrouping('customer')}
-              className={`inline-flex items-center justify-center gap-1 sm:gap-1.5 px-2.5 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap ${
+              className={`inline-flex items-center justify-center gap-1.5 px-3 sm:px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer select-none whitespace-nowrap shrink-0 ${
                 grouping === 'customer'
                   ? 'bg-[var(--primary)] text-white shadow-xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
@@ -348,14 +385,14 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
             </button>
           </div>
 
-          {/* Full-width Search Bar (Expand & Collapse removed as requested) */}
-          <div className="relative flex-1 min-w-0 max-w-xl">
+          {/* Full-width Search Bar with guaranteed min-width */}
+          <div className="relative flex-1 min-w-[220px] max-w-xl">
             <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input
               enterKeyHint="search"
               id="history-search-input"
               type="text"
-              placeholder="Search invoices, customer, item..."
+              placeholder="Search invoices, customer, item, beat..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-9 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20 focus:border-[var(--primary)] focus:bg-white transition-all shadow-2xs"
@@ -373,6 +410,50 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
           </div>
         </div>
 
+        {/* Beat Route Filter Strip */}
+        {activeBeats.length > 0 && (
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-2 border-t border-slate-100 text-xs">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider shrink-0 flex items-center gap-1 mr-1">
+              <Truck size={13} className="text-indigo-600 shrink-0" />
+              <span>Beat:</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setBeatFilter('all')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition-colors cursor-pointer shrink-0 ${
+                beatFilter === 'all'
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+              }`}
+            >
+              All Beats
+            </button>
+            {activeBeats.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => setBeatFilter(b.name)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition-colors cursor-pointer shrink-0 ${
+                  beatFilter.toLowerCase() === b.name.toLowerCase()
+                    ? 'bg-indigo-600 text-white shadow-2xs'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                }`}
+              >
+                {b.name}
+              </button>
+            ))}
+            {beatFilter !== 'all' && (
+              <button
+                type="button"
+                onClick={() => setBeatFilter('all')}
+                className="text-xs text-rose-600 hover:underline shrink-0 ml-1 font-semibold cursor-pointer"
+              >
+                Clear Beat Filter
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Live Filter Feedback Strip */}
         <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500 font-medium flex-wrap gap-2">
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -381,6 +462,18 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
             </span>
             <span className="text-slate-400">of</span>
             <span className="text-slate-600">{bills.length} total bills</span>
+            {beatFilter !== 'all' && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                Beat: {beatFilter}
+                <button
+                  type="button"
+                  onClick={() => setBeatFilter('all')}
+                  className="text-indigo-400 hover:text-indigo-700 cursor-pointer ml-0.5"
+                >
+                  ✕
+                </button>
+              </span>
+            )}
             {paymentFilter !== 'all' && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-slate-100 text-slate-700">
                 Filter: {paymentFilter.toUpperCase()}
@@ -397,7 +490,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
 
           <div className="text-right">
             <span>Filtered Total: </span>
-            <span className="font-mono font-bold text-slate-900">
+            <span className="font-mono font-bold text-slate-900 whitespace-nowrap">
               ₹{money(filteredBills.reduce((s, b) => s + b.total, 0))}
             </span>
           </div>
@@ -409,7 +502,9 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
         <div className="bg-white rounded-2xl border border-slate-200 shadow-xs px-6 py-12 text-center">
           <h3 className="text-base font-bold text-slate-900">No invoices found</h3>
           <p className="text-sm text-slate-500 mt-1.5">
-            Create your first sale to see it here.
+            {beatFilter !== 'all'
+              ? `No invoices match Beat "${beatFilter}".`
+              : 'Create your first sale to see it here.'}
           </p>
           {onNewInvoiceClick && (
             <button
@@ -428,24 +523,24 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
           ========================================================================= */}
       {filteredBills.length > 0 && grouping === 'table' && (
         <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
-          {/* Desktop Table View */}
+          {/* Desktop & Tablet Table View (Guaranteed min-width prevents columns from squeezing) */}
           <div className="hidden md:block overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full min-w-[700px] text-left border-collapse table-auto">
               <thead>
                 <tr className="border-b border-slate-100 bg-slate-50/70">
-                  <th className="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th className="py-3.5 px-4 text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap w-[130px] shrink-0">
                     ITEM
                   </th>
-                  <th className="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th className="py-3.5 px-4 text-xs font-semibold uppercase tracking-wider text-slate-500 min-w-[200px]">
                     DETAILS
                   </th>
-                  <th className="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th className="py-3.5 px-4 text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap w-[120px] shrink-0">
                     VALUE
                   </th>
-                  <th className="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  <th className="py-3.5 px-4 text-xs font-semibold uppercase tracking-wider text-slate-500 whitespace-nowrap w-[100px] shrink-0">
                     STATUS
                   </th>
-                  <th className="py-3.5 px-5 text-xs font-semibold uppercase tracking-wider text-slate-500 text-right">
+                  <th className="py-3.5 px-4 text-xs font-semibold uppercase tracking-wider text-slate-500 text-right whitespace-nowrap w-[170px] shrink-0">
                     ACTIONS
                   </th>
                 </tr>
@@ -458,75 +553,85 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                   const itemLabel = `${invPrefix}-${b.id}`;
                   const totalCases = (b.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
                   const itemCount = (b.items || []).length;
+                  const cust = (customers || []).find(
+                    (c) => c.id === b.customerId || c.name.toLowerCase() === b.retailer.toLowerCase()
+                  );
+                  const custBeat = cust?.route || cust?.city;
 
                   return (
                     <tr
                       key={b.id}
                       className="hover:bg-slate-50/80 transition-colors group select-none"
                     >
-                      <td className="py-3.5 px-5 text-sm font-semibold text-slate-900">
-                        <div className="flex items-center gap-1.5">
+                      <td className="py-3.5 px-4 text-sm font-semibold text-slate-900 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5 whitespace-nowrap shrink-0">
                           <button
                             type="button"
                             onClick={() => onViewInvoice(b)}
-                            className="font-mono text-xs font-bold text-[var(--primary)] hover:underline cursor-pointer"
+                            className="font-mono text-xs font-bold text-[var(--primary)] hover:underline cursor-pointer whitespace-nowrap shrink-0"
                             title="Click to view invoice"
                           >
                             #{itemLabel}
                           </button>
-                          <span
-                            className={`text-[9px] font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider ${
-                              b.invoiceType === 'tax_invoice' || b.isGstInvoice
-                                ? 'bg-amber-50 text-amber-900 border-amber-300'
-                                : 'bg-emerald-50 text-emerald-900 border-emerald-300'
-                            }`}
-                          >
-                            {b.invoiceType === 'tax_invoice' || b.isGstInvoice ? 'GST' : 'Non-GST'}
-                          </span>
+                          {b.customerGstin && (
+                            <span
+                              className="text-[9px] font-bold px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider whitespace-nowrap shrink-0"
+                              title={`Registered GSTIN: ${b.customerGstin}`}
+                            >
+                              B2B
+                            </span>
+                          )}
                         </div>
                       </td>
-                      <td className="py-3.5 px-5 text-sm text-slate-600 font-normal">
-                        <div className="font-medium text-slate-900">{b.retailer || 'Cash customer'}</div>
-                        <div className="text-[11px] text-slate-400">
+                      <td className="py-3.5 px-4 text-sm text-slate-600 font-normal">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-bold text-slate-900">{b.retailer || 'Cash customer'}</span>
+                          {custBeat && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-sky-50 text-sky-800 border border-sky-200 whitespace-nowrap shrink-0">
+                              {custBeat}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5 whitespace-nowrap">
                           {b.date} · {totalCases} cs · {itemCount} {itemCount === 1 ? 'item' : 'items'}
                         </div>
                       </td>
-                      <td className="py-3.5 px-5 text-sm font-semibold text-slate-900 font-mono tabular-nums">
+                      <td className="py-3.5 px-4 text-sm font-bold text-slate-900 font-mono tabular-nums whitespace-nowrap">
                         ₹{money(b.total)}
                       </td>
-                      <td className="py-3.5 px-5 text-sm">
-                        <span className={`font-semibold text-xs ${isPaid ? 'text-emerald-600' : 'text-red-600'}`}>
+                      <td className="py-3.5 px-4 text-sm whitespace-nowrap">
+                        <span className={`font-semibold text-xs whitespace-nowrap ${isPaid ? 'text-emerald-600' : 'text-red-600'}`}>
                           {isPaid ? 'Paid' : `Due: ₹${money(due)}`}
                         </span>
                       </td>
-                      <td className="py-3.5 px-5 text-sm text-right">
-                        <div className="inline-flex items-center justify-end gap-1.5">
+                      <td className="py-3.5 px-4 text-sm text-right whitespace-nowrap">
+                        <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap shrink-0">
                           <button
                             type="button"
                             onClick={() => onEditBill(b)}
                             disabled={(b.returns || []).length > 0}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer disabled:opacity-40"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer disabled:opacity-40 whitespace-nowrap shrink-0"
                             title="Edit this invoice"
                           >
-                            <Pencil size={12} />
+                            <Pencil size={12} className="shrink-0" />
                             <span>Edit</span>
                           </button>
                           <button
                             type="button"
                             onClick={() => onViewInvoice(b)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors cursor-pointer whitespace-nowrap shrink-0"
                             title="Share or View invoice"
                           >
-                            <Share2 size={12} />
+                            <Share2 size={12} className="shrink-0" />
                             <span>Share</span>
                           </button>
                           <button
                             type="button"
                             onClick={() => onDeleteBill(b)}
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer shrink-0"
                             title="Delete bill"
                           >
-                            <Trash2 size={14} />
+                            <Trash2 size={14} className="shrink-0" />
                           </button>
                         </div>
                       </td>
@@ -558,15 +663,11 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                       >
                         #{itemLabel}
                       </button>
-                      <span
-                        className={`text-[9px] font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider ${
-                          b.invoiceType === 'tax_invoice' || b.isGstInvoice
-                            ? 'bg-amber-50 text-amber-900 border-amber-300'
-                            : 'bg-emerald-50 text-emerald-900 border-emerald-300'
-                        }`}
-                      >
-                        {b.invoiceType === 'tax_invoice' || b.isGstInvoice ? 'GST' : 'Non-GST'}
-                      </span>
+                      {b.customerGstin && (
+                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider">
+                          B2B
+                        </span>
+                      )}
                     </div>
                     <span className={`font-semibold text-xs ${isPaid ? 'text-emerald-600' : 'text-red-600'}`}>
                       {isPaid ? 'Paid' : `Due: ₹${money(due)}`}
@@ -701,15 +802,11 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                               >
                                 #{itemLabel}
                               </button>
-                              <span
-                                className={`text-[10px] font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider ${
-                                  bill.invoiceType === 'tax_invoice' || bill.isGstInvoice
-                                    ? 'bg-amber-50 text-amber-900 border-amber-300'
-                                    : 'bg-emerald-50 text-emerald-900 border-emerald-300'
-                                }`}
-                              >
-                                {bill.invoiceType === 'tax_invoice' || bill.isGstInvoice ? 'GST' : 'Non-GST'}
-                              </span>
+                              {bill.customerGstin && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider">
+                                  B2B
+                                </span>
+                              )}
                               <span className="text-xs text-slate-800 font-semibold truncate">
                                 {bill.retailer || 'Cash customer'}
                               </span>
@@ -860,15 +957,11 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                               >
                                 #{itemLabel}
                               </button>
-                              <span
-                                className={`text-[10px] font-bold px-1.5 py-0.2 rounded border uppercase tracking-wider ${
-                                  bill.invoiceType === 'tax_invoice' || bill.isGstInvoice
-                                    ? 'bg-amber-50 text-amber-900 border-amber-300'
-                                    : 'bg-emerald-50 text-emerald-900 border-emerald-300'
-                                }`}
-                              >
-                                {bill.invoiceType === 'tax_invoice' || bill.isGstInvoice ? 'GST' : 'Non-GST'}
-                              </span>
+                              {bill.customerGstin && (
+                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider">
+                                  B2B
+                                </span>
+                              )}
                               <span className="text-xs text-slate-600 font-medium">
                                 {bill.date}
                               </span>

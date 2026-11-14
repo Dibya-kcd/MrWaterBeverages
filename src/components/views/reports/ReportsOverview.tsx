@@ -9,6 +9,8 @@ import { PaymentRecord, PaymentMode } from '../../../types';
 import { ReportShareMenu } from './ReportShareMenu';
 import { ReportList, ReportRow, ReportStat, ReportStatGrid, ReportTitleBar, reportCard } from './ReportKit';
 import { HeroCard, LegendDot, SplitBar } from './mobile/PhoneKit';
+import { useSalesMarginPnl } from './SalesMarginPnLReport';
+import { totalDueOf } from '../../../utils/dueSummary';
 
 interface ReportsOverviewProps {
   onNavigateReport: (reportId: string) => void;
@@ -33,7 +35,7 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
   inPeriod: externalInPeriod,
 }) => {
   const followsTop = typeof externalInPeriod === 'function';
-  const { bills, payments, expenses, products, customers } = useLedger();
+  const { bills, payments, expenses, products, customers, existingCustomers } = useLedger();
 
   const [periodDropdownOpen, setPeriodDropdownOpen] = useState(false);
   const [selectedPeriod, setSelectedPeriod] = useState<
@@ -172,47 +174,36 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
   }, [bills, payments, matchesPeriod]);
 
   // 2. REAL METRIC: Total Due across all bills
-  const totalDue = useMemo(() => {
-    const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
-    return round2(liveBills.reduce((acc, b) => acc + Math.max(0, billBalance(b)), 0));
-  }, [bills]);
+  // One definition of due for every screen: the customer ledger total (see utils/dueSummary.ts).
+  const totalDue = useMemo(() => totalDueOf({ existingCustomers, bills }), [existingCustomers, bills]);
 
-  // 3. REAL METRICS: Sales in selected period (Billed & Taxable turnover)
-  // (GST collected is a statutory pass-through liability to government, not revenue or profit)
-  const { salesInPeriod, taxableSalesInPeriod, profitInPeriod } = useMemo(() => {
-    const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
-    const prodMap = new Map((products || []).map((p) => [p.id, p]));
+  // 3. REAL METRICS: billed sales in the selected period, and profit from the shared P&L engine
+  // Profit comes from the SAME engine as Reports > Profit & Loss (batch cost incl. inward freight, returns,
+  // stock write-offs, supplier scheme credits), so Home, Overview and the P&L report always show one number.
+  const periodBills = useMemo(
+    () =>
+      (bills || []).filter(
+        (b) => b.status !== 'cancelled' && !b.cancelled && matchesPeriod(String(b.date || '').slice(0, 10)),
+      ),
+    [bills, matchesPeriod],
+  );
+  const { pnl: periodPnl } = useSalesMarginPnl({
+    filteredBills: periodBills,
+    products: products || [],
+    dateInPeriod: matchesPeriod,
+    viewBasis: 'exGst',
+  });
+  const { salesInPeriod, profitInPeriod, landedCostInPeriod } = useMemo(() => {
     let billedRev = 0;
-    let taxableRev = 0;
-    let totalCost = 0;
-
-    liveBills
-      .filter((b) => matchesPeriod(String(b.date || '').slice(0, 10)))
-      .forEach((b) => {
-        const net = billNetTotal(b);
-        billedRev += net;
-
-        // Subtotal (Ex-GST taxable value after returns/discounts)
-        const sub = Number(b.subtotal);
-        const cgst = Number(b.cgst) || 0;
-        const sgst = Number(b.sgst) || 0;
-        const tax = cgst + sgst;
-        const taxBase = Number.isFinite(sub) && sub > 0 ? sub : Math.max(0, net - tax);
-        taxableRev += taxBase;
-
-        b.items.forEach((item) => {
-          const prod = prodMap.get(item.productId);
-          const cost = item.costExGst || prod?.effectiveCost || prod?.cost || 0;
-          totalCost += (Number(item.qty) || 0) * cost;
-        });
-      });
-
+    periodBills.forEach((b) => {
+      billedRev += billNetTotal(b);
+    });
     return {
       salesInPeriod: round2(billedRev),
-      taxableSalesInPeriod: round2(taxableRev),
-      profitInPeriod: round2(Math.max(0, taxableRev - totalCost)),
+      profitInPeriod: round2(periodPnl.operatingGrossProfit),
+      landedCostInPeriod: round2(periodPnl.cogs),
     };
-  }, [bills, products, matchesPeriod]);
+  }, [periodBills, periodPnl]);
 
   // 5. REAL DATA: Daily / Period Collection Breakdown & Transactions
   const { periodMoneyInHand, periodCashIn, periodDigitalIn, periodNewDue, periodTransactions } = useMemo(() => {
@@ -366,58 +357,44 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
   }, [bills, payments, expenses, matchesPeriod]);
 
   const totalCollected = periodCashIn + periodDigitalIn;
-  const periodExpenses = Math.max(0, round2(totalCollected - periodMoneyInHand));
-  const netProfitInPeriod = useMemo(() => round2(profitInPeriod - periodExpenses), [profitInPeriod, periodExpenses]);
+  const recordedExpensesInPeriod = useMemo(() => {
+    return (expenses || [])
+      .filter((e) => matchesPeriod(String(e.date || '').slice(0, 10)))
+      .reduce((acc, e) => acc + (Number(e.amount) || 0), 0);
+  }, [expenses, matchesPeriod]);
+  const periodExpenses = recordedExpensesInPeriod;
+  const netProfitInPeriod = useMemo(() => round2(profitInPeriod - recordedExpensesInPeriod), [profitInPeriod, recordedExpensesInPeriod]);
   const cashPct = totalCollected > 0 ? (periodCashIn / totalCollected) * 100 : 0;
   const upiPct = totalCollected > 0 ? (periodDigitalIn / totalCollected) * 100 : 0;
 
   // 6. REAL DATA: Who Owes Me (Biggest Outstanding Balances)
   const biggestDues = useMemo(() => {
     const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
-    const customerMap = new Map<
-      string,
-      {
-        name: string;
-        balance: number;
-        overdueCount: number;
-        totalBills: number;
-      }
-    >();
-
+    const key = (n?: string) => String(n || '').trim().toLowerCase();
+    const perName = new Map<string, { overdue: number; count: number }>();
     liveBills.forEach((b) => {
-      const bal = billBalance(b);
-      if (bal <= 0) return;
-      const name = b.retailer || 'Unknown Party';
-      const existing = customerMap.get(name) || {
-        name,
-        balance: 0,
-        overdueCount: 0,
-        totalBills: 0,
-      };
-      existing.balance += bal;
-      existing.totalBills += 1;
-      const bDate = String(b.date || '').slice(0, 10);
-      if (bDate < todayStr) existing.overdueCount += 1;
-      customerMap.set(name, existing);
+      if (billBalance(b) <= 0) return;
+      const k = key(b.retailer);
+      const cur = perName.get(k) || { overdue: 0, count: 0 };
+      cur.count += 1;
+      if (String(b.date || '').slice(0, 10) < todayStr) cur.overdue += 1;
+      perName.set(k, cur);
     });
-
-    // Include registered customers who have balance
-    (customers || []).forEach((c) => {
-      const bal = Number(c.openingBalance) || 0;
-      if (bal > 0 && !customerMap.has(c.name)) {
-        customerMap.set(c.name, {
-          name: c.name,
-          balance: bal,
-          overdueCount: 0,
-          totalBills: 0,
-        });
-      }
-    });
-
-    return Array.from(customerMap.values())
+    // Same ledger balance as the Customers screen, Party credit and the Beat report.
+    return (existingCustomers || [])
+      .filter((c) => (Number(c.balanceDue) || 0) > 0.004)
+      .map((c) => {
+        const x = perName.get(key(c.name));
+        return {
+          name: c.name || 'Unknown Party',
+          balance: Number(c.balanceDue) || 0,
+          overdueCount: x?.overdue || 0,
+          totalBills: x?.count || 0,
+        };
+      })
       .sort((a, b) => b.balance - a.balance)
       .slice(0, 5);
-  }, [bills, customers, todayStr]);
+  }, [bills, existingCustomers, todayStr]);
 
   // 7. REAL DATA: Product Profit (Top Products in period)
   const topProductProfits = useMemo(() => {
@@ -642,10 +619,10 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
           <ReportStat label="Total due" value={`₹${money(totalDue)}`} tone="red" sub="still to collect, all time" />
         </StatLink>
         <StatLink to="margin">
-          <ReportStat label={cardLabels.sales} value={`₹${money(salesInPeriod)}`} sub={`billed · Taxable ₹${money(taxableSalesInPeriod)}`} />
+          <ReportStat label={cardLabels.sales} value={`₹${money(salesInPeriod)}`} sub="Non-GST retail sales" />
         </StatLink>
         <StatLink to="margin">
-          <ReportStat label={cardLabels.profit} value={`₹${money(profitInPeriod)}`} tone="green" sub={`ex-GST margin · Net ₹${money(netProfitInPeriod)}`} />
+          <ReportStat label={cardLabels.profit} value={`₹${money(profitInPeriod)}`} tone="green" sub={`Gross margin · Net ₹${money(netProfitInPeriod)}`} />
         </StatLink>
       </ReportStatGrid>
 

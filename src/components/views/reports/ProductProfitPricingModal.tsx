@@ -35,6 +35,11 @@ export const ProductProfitPricingModal: React.FC<ProductProfitPricingModalProps>
 }) => {
   if (!isOpen || !row) return null;
 
+  // Composition / unregistered bills carry a taxStamp: no GST is charged on the sale and stock cost already includes
+  // the purchase GST, so nothing may be grossed up on top of the cost anywhere in this modal.
+  const noSaleGst = bills.some((b) => b.taxStamp && b.taxStamp.registrationType !== 'regular');
+  const costTag = noSaleGst ? 'incl. purchase GST' : 'ex-GST';
+
   // Filter bills containing this product
   const productBills = bills
     .filter((b) => b.status !== 'cancelled' && b.items.some((it) => it.productId === row.productId))
@@ -53,12 +58,12 @@ export const ProductProfitPricingModal: React.FC<ProductProfitPricingModalProps>
       const g = it.gst !== undefined && it.gst !== null
         ? normalizeGstFraction(it.gst)
         : resolveProductGstRate(undefined, it.category);
-      const split = scaledTaxSplit(it, billedNet, g);
+      const split = scaledTaxSplit(it, billedNet, noSaleGst ? 0 : g);
       const taxable = split.taxable;
       const gst = split.tax;
       const totalDispatched = netBilledQty;
       const cogsExGst = totalDispatched * (row.exGstCostPerCase || row.costPerCase);
-      const cogsLanded = totalDispatched * (row.landedCostPerCase || (row.exGstCostPerCase ? row.exGstCostPerCase * (1 + g) : row.costPerCase));
+      const cogsLanded = totalDispatched * (row.landedCostPerCase || (row.exGstCostPerCase ? row.exGstCostPerCase * (1 + (noSaleGst ? 0 : g)) : row.costPerCase));
       const opProfit = taxable - cogsExGst;
       const billedProfit = billedNet - cogsLanded;
       const customRate = Number(it.rate) || (billedQty > 0 ? gross / billedQty : 0);
@@ -156,9 +161,9 @@ export const ProductProfitPricingModal: React.FC<ProductProfitPricingModalProps>
               </div>
               <div className="text-[10px] text-slate-600 font-medium">
                 {row.landedCostPerCase > 0 ? (
-                  <span>Incl-GST + Landed (Base ex-tax: ₹{money(row.exGstCostPerCase || cost)})</span>
+                  <span>Incl-GST + Landed (Base {noSaleGst ? 'cost incl. purchase GST' : 'ex-tax'}: ₹{money(row.exGstCostPerCase || cost)})</span>
                 ) : (
-                  <span>Ex-GST base rate</span>
+                  <span>{noSaleGst ? 'Cost incl. purchase GST' : 'Ex-GST base rate'}</span>
                 )}
               </div>
             </div>
@@ -212,7 +217,7 @@ export const ProductProfitPricingModal: React.FC<ProductProfitPricingModalProps>
           {(() => {
             const cost = row.exGstCostPerCase || row.costPerCase || 0;
             const sample = bills.flatMap((b) => b.items).find((it) => it.productId === row.productId && it.gst != null);
-            const g = sample ? normalizeGstFraction(sample.gst) : resolveProductGstRate(undefined, row.category as any);
+            const g = noSaleGst ? 0 : sample ? normalizeGstFraction(sample.gst) : resolveProductGstRate(undefined, row.category as any);
             const schemes: [string, number, number][] = [
               ['No scheme', 1, 0],
               ['Buy 1 Get 1 free', 1, 1],
@@ -222,15 +227,15 @@ export const ProductProfitPricingModal: React.FC<ProductProfitPricingModalProps>
             return (
               <div className="bg-amber-50/60 border border-amber-200 rounded-2xl p-4 space-y-2">
                 <h4 className="text-xs font-black uppercase tracking-wider text-amber-900">
-                  Break-even selling rate (cost ₹{money(cost)} / cs ex-GST · GST {(g * 100).toFixed(0)}%)
+                  Break-even selling rate (cost ₹{money(cost)} / cs {costTag} · GST {(g * 100).toFixed(0)}%)
                 </h4>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-[11px]">
+                  <table className="w-full min-w-[500px] text-[11px]">
                     <thead>
                       <tr className="text-left text-slate-500">
-                        <th className="py-1 pr-3">Deal</th>
-                        <th className="py-1 pr-3">Min price per PAID case (incl. GST)</th>
-                        <th className="py-1">Or one custom rate per case, all cases</th>
+                        <th className="py-1 pr-3 whitespace-nowrap">Deal</th>
+                        <th className="py-1 pr-3 whitespace-nowrap">Min price per PAID case (incl. GST)</th>
+                        <th className="py-1 whitespace-nowrap">Or one custom rate per case, all cases</th>
                       </tr>
                     </thead>
                     <tbody className="font-mono">

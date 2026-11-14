@@ -19,6 +19,7 @@ import { useLedger } from '../../context/LedgerContext';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { FontSize } from '../../types';
 import { UserAvatar } from './UserAvatar';
+import { ToggleSwitch } from '../ui/ToggleSwitch';
 
 interface ProfileAvatarMenuProps {
   className?: string;
@@ -101,15 +102,15 @@ export const ProfileAvatarMenu: React.FC<ProfileAvatarMenuProps> = ({ className 
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2.5 p-1 sm:px-2.5 sm:py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 transition-all shadow-xs cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-700/30"
+        className="flex items-center gap-1.5 p-0 sm:px-1.5 sm:py-1 rounded-xl bg-transparent border-0 shadow-none hover:opacity-85 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-600/30"
         aria-expanded={isOpen}
         aria-haspopup="true"
         title="Business Profile & Settings"
       >
-        {/* Avatar Badge */}
-        <div className="w-8 h-8 rounded-lg bg-emerald-800 text-white font-bold flex items-center justify-center text-sm shadow-xs shrink-0">
-          <UserAvatar initial={businessInitial} size={18} />
-        </div>
+        {/* Colorful Profile Icon (no background box) */}
+        <span className="w-10 h-10 flex items-center justify-center bg-transparent text-[#059669] font-extrabold text-lg shrink-0">
+          <UserAvatar initial={businessInitial} size={24} />
+        </span>
 
         {/* Business & User Text (Desktop) */}
         <div className="hidden sm:flex flex-col text-left leading-tight min-w-0 max-w-[130px] md:max-w-[160px]">
@@ -221,37 +222,40 @@ export const ProfileAvatarMenu: React.FC<ProfileAvatarMenuProps> = ({ className 
             </div>
 
             {/* High Contrast Toggle */}
-            <div className="flex items-center justify-between text-xs">
-              <span className="flex items-center gap-1.5 text-slate-700 font-medium">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span
+                id="label-menu-high-contrast"
+                onClick={() => setHighContrast(!highContrast)}
+                className="flex items-center gap-1.5 text-slate-700 font-medium cursor-pointer select-none"
+              >
                 <SunMoon className="w-3.5 h-3.5 text-slate-400" />
                 <span>High Contrast</span>
               </span>
-              <button
-                type="button"
-                onClick={() => setHighContrast(!highContrast)}
-                className={`px-2.5 py-0.5 rounded-md font-semibold text-[11px] transition-colors ${
-                  highContrast ? 'bg-black text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {highContrast ? 'On' : 'Off'}
-              </button>
+              <ToggleSwitch
+                size="sm"
+                checked={highContrast}
+                onChange={setHighContrast}
+                ariaLabelledBy="label-menu-high-contrast"
+              />
             </div>
 
             {/* Low Vision Mode Toggle */}
-            <div className="flex items-center justify-between text-xs">
-              <span className="flex items-center gap-1.5 text-slate-700 font-medium">
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span
+                id="label-menu-low-vision"
+                onClick={toggleLowVisionMode}
+                className="flex items-center gap-1.5 text-slate-700 font-medium cursor-pointer select-none"
+              >
                 <Eye className="w-3.5 h-3.5 text-slate-400" />
                 <span>High Legibility Mode</span>
               </span>
-              <button
-                type="button"
-                onClick={toggleLowVisionMode}
-                className={`px-2.5 py-0.5 rounded-md font-semibold text-[11px] transition-colors ${
-                  lowVisionMode ? 'bg-emerald-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {lowVisionMode ? 'Active' : 'Off'}
-              </button>
+              <ToggleSwitch
+                size="sm"
+                tone="emerald"
+                checked={lowVisionMode}
+                onChange={() => toggleLowVisionMode()}
+                ariaLabelledBy="label-menu-low-vision"
+              />
             </div>
           </div>
 

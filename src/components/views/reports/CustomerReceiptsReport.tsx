@@ -12,6 +12,10 @@ import { CustomerReceiptsPhone } from './mobile/CustomerReceiptsPhone';
 export interface CustomerReceiptsReportProps {
   periodLabel: string;
   inPeriod: (date: string) => boolean;
+  /** Collections view: show only the customer-by-customer list; the day-by-day list is the Day book. */
+  only?: 'customer';
+  /** Shown at the top (the Day book / By customer switch). */
+  topExtra?: React.ReactNode;
 }
 
 const MODE: Record<string, string> = { cash: 'Cash', upi: 'UPI', bank: 'Bank', cheque: 'Cheque', other: 'Other' };
@@ -33,10 +37,10 @@ const fmtShort = (d: string) => {
  * Customer receipts: day by day (who paid how much, and what each customer still owes) or customer by customer.
  * Can be limited to one beat and downloaded as Excel or PDF.
  */
-export const CustomerReceiptsReport: React.FC<CustomerReceiptsReportProps> = ({ periodLabel, inPeriod }) => {
+export const CustomerReceiptsReport: React.FC<CustomerReceiptsReportProps> = ({ periodLabel, inPeriod, only, topExtra }) => {
   const { bills, payments, customers, existingCustomers, orgProfile } = useLedger();
   const { beats, activeBeats } = useBeats();
-  const [view, setView] = useState<'day' | 'customer'>('day');
+  const [view, setView] = useState<'day' | 'customer'>(only ?? 'day');
   const [beat, setBeat] = useState('all');
   const [search, setSearch] = useState('');
   const [includeUnpaid, setIncludeUnpaid] = useState(false);
@@ -130,6 +134,8 @@ export const CustomerReceiptsReport: React.FC<CustomerReceiptsReportProps> = ({ 
   return (
     <>
       <CustomerReceiptsPhone
+        onlyCustomer={only === 'customer'}
+        topExtra={topExtra}
         reg={reg}
         periodLabel={periodLabel}
         view={view}
@@ -147,11 +153,13 @@ export const CustomerReceiptsReport: React.FC<CustomerReceiptsReportProps> = ({ 
     <div className="hidden md:block space-y-3" id="report-customer-receipts">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <h2 className="text-base font-bold text-slate-900">Customer receipts &amp; due remaining</h2>
+          <h2 className="text-base font-bold text-slate-900">{only ? 'Collections by customer' : 'Customer receipts & due remaining'}</h2>
           <p className="text-xs text-slate-500">{periodLabel} · due is as of today</p>
         </div>
         <ReportDownloadButtons onExcel={exportExcel} onPdf={exportPdf} disabled={reg.count === 0 && reg.customers.length === 0} />
       </div>
+
+      {topExtra}
 
       {hasBeats && <BeatFilterBar value={beat} onChange={setBeat} options={activeBeats} />}
 
@@ -175,10 +183,12 @@ export const CustomerReceiptsReport: React.FC<CustomerReceiptsReportProps> = ({ 
         </div>
       )}
 
-      <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl border border-slate-200">
-        {tab('day', 'Day-wise')}
-        {tab('customer', 'Customer-wise')}
-      </div>
+      {!only && (
+        <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl border border-slate-200">
+          {tab('day', 'Day-wise')}
+          {tab('customer', 'Customer-wise')}
+        </div>
+      )}
 
       <div className="relative">
         <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />

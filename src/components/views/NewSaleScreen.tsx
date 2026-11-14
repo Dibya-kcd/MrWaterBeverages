@@ -23,6 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
+import { resolveTaxRegime, noOutputTax } from '../../tax/appRegime';
 import { normCustName } from '../../context/ledgerHelpers';
 import { Bill, BillItem, Customer, PaymentMode, Product, Promotion, PriceType } from '../../types';
 import { useBeats } from '../../hooks/useBeats';
@@ -130,6 +131,14 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   // Date
   const todayStr = todayISO();
   const [saleDate, setSaleDate] = useState<string>(todayStr);
+  // Composition / unregistered businesses never charge GST: lock the bill type to Bill of Supply.
+  const compositionLocked = useMemo(
+    () => noOutputTax(resolveTaxRegime(orgProfile, saleDate)),
+    [orgProfile, saleDate],
+  );
+  useEffect(() => {
+    if (compositionLocked && billType === 'tax_invoice') setBillType('bill_of_supply');
+  }, [compositionLocked, billType]);
 
   // Selected Cart Items: productId -> qty
   const [selectedItems, setSelectedItems] = useState<Record<number, number>>({});
@@ -177,6 +186,15 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   const [newCustPhone, setNewCustPhone] = useState('');
   const [newCustGstin, setNewCustGstin] = useState('');
   const [newCustAddress, setNewCustAddress] = useState('');
+  const [newCustBeat, setNewCustBeat] = useState('');
+  const [isAddingBeatInModal, setIsAddingBeatInModal] = useState(false);
+  const [newBeatNameInput, setNewBeatNameInput] = useState('');
+
+  // Sale Page Beat filter and Add Beat modal
+  const [selectedBeatFilter, setSelectedBeatFilter] = useState<string>('all');
+  const [showAddBeatModal, setShowAddBeatModal] = useState<boolean>(false);
+  const [salePageNewBeatName, setSalePageNewBeatName] = useState('');
+  const [salePageNewBeatHub, setSalePageNewBeatHub] = useState('');
 
   // Van Trip modal state (for starting a new delivery van dispatch)
   const [showNewTripModal, setShowNewTripModal] = useState<boolean>(false);
@@ -188,7 +206,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   // Size chips (All / each size you actually stock / Soda): view-only filter, nothing is saved.
   // 'all' | 'soda' | the size in ml as text, e.g. '500'
   const [selectedSize, setSelectedSize] = useState<string>('all');
-  const { beats, activeBeats } = useBeats();
+  const { beats, activeBeats, addBeat } = useBeats();
   const createTrip = useCreateTrip();
 
   const nameCounts = useMemo(() => {
@@ -215,6 +233,8 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     setCustomerPhone('');
     setCustomerGstin('');
     setPaymentAmount('');
+    setPaymentMode('cash');
+    setPaymentNote('');
     setCart({
       retailer: '',
       phone: '',
@@ -341,15 +361,55 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     return null;
   };
 
-  // Quick save new customer
+  // Filter customers by selected beat if beat filter is active on sale page
+  const filteredCustomersForPredictive = useMemo(() => {
+    if (selectedBeatFilter === 'all') return customers;
+    return (customers || []).filter((c) => {
+      const bName = beatOfCustomer(c, beats)?.name || c.route || c.city || '';
+      return bName.toLowerCase() === selectedBeatFilter.toLowerCase();
+    });
+  }, [customers, beats, selectedBeatFilter]);
+
+  const filteredExistingCustomersForPredictive = useMemo(() => {
+    if (selectedBeatFilter === 'all') return existingCustomers;
+    return (existingCustomers || []).filter((c) => {
+      const match = (customers || []).find((cust) => cust.name.toLowerCase() === c.name.toLowerCase());
+      const bName = (match && (beatOfCustomer(match, beats)?.name || match.route || match.city)) || c.address || '';
+      return bName.toLowerCase().includes(selectedBeatFilter.toLowerCase());
+    });
+  }, [existingCustomers, customers, beats, selectedBeatFilter]);
+
+  // Quick save new customer with Beat
   const handleSaveNewCustomer = () => {
     if (!newCustName.trim()) return;
+
+    let assignedBeatId: string | undefined = undefined;
+    const cleanBeat = (newCustBeat || '').trim();
+
+    if (cleanBeat) {
+      const match =
+        activeBeats.find((b) => b.name.toLowerCase() === cleanBeat.toLowerCase()) ||
+        beats.find((b) => b.name.toLowerCase() === cleanBeat.toLowerCase());
+      if (match) {
+        assignedBeatId = match.id;
+      } else {
+        const res = addBeat(cleanBeat);
+        if (res.ok && res.beat) {
+          assignedBeatId = res.beat.id;
+        }
+      }
+    }
+
     const created = addCustomer({
       name: newCustName.trim(),
       phone: newCustPhone.trim(),
       gstin: newCustGstin.trim().toUpperCase() || undefined,
       address: newCustAddress.trim() || undefined,
+      city: cleanBeat || undefined,
+      route: cleanBeat || undefined,
+      beatId: assignedBeatId,
     });
+
     setShowNewCustomerModal(false);
     setSelectedCustomerId(created.id);
     setCustomerName(created.name);
@@ -359,6 +419,9 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     setNewCustPhone('');
     setNewCustGstin('');
     setNewCustAddress('');
+    setNewCustBeat('');
+    setIsAddingBeatInModal(false);
+    notify(`Customer "${created.name}" saved${cleanBeat ? ` in Beat "${cleanBeat}"` : ''}.`);
     checkAndPromptProducts(created.name, stockSource);
   };
 
@@ -567,6 +630,13 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     promotions,
   ]);
 
+  const collectedAmountPreview = useMemo(() => {
+    const trimmed = paymentAmount.trim();
+    if (trimmed === '') return 0;
+    return Math.min(grandTotal, Math.max(0, Number(trimmed) || 0));
+  }, [paymentAmount, grandTotal]);
+  const balanceDuePreview = Math.max(0, grandTotal - collectedAmountPreview);
+
   // Total crates in cart
   const totalCartQty = useMemo(() => {
     return lineItems.reduce((sum, it) => sum + (Number(it.qty) || 0), 0);
@@ -608,14 +678,20 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     const isGst = billType === 'tax_invoice';
     const supplyType = isGst && customerGstin.trim() ? 'B2B' : 'B2C';
 
-    const paidNum = paymentAmount === '' ? grandTotal : Math.max(0, Number(paymentAmount) || 0);
+    const trimmedPayment = paymentAmount.trim();
+    const paidNum =
+      trimmedPayment === ''
+        ? 0
+        : Math.min(grandTotal, Math.max(0, Number(trimmedPayment) || 0));
+    const effectivePaymentMode: PaymentMode =
+      paidNum <= 0 ? 'credit' : paymentMode === 'credit' ? 'cash' : paymentMode;
 
     const billId = finalizeBill(
       paidNum,
       tripToAssign,
       0, // additionalDiscount
       saleDate,
-      paymentMode,
+      effectivePaymentMode,
       paymentNote || undefined,
       saleDate,
       {
@@ -651,6 +727,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
         totalTax: totalTax,
         total: grandTotal,
         amountPaid: paidNum,
+        paymentMode: effectivePaymentMode,
         warehouseId,
         tripId: tripToAssign,
         supplyType,
@@ -669,6 +746,9 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
       setCustomerName('');
       setCustomerPhone('');
       setCustomerGstin('');
+      setPaymentAmount('');
+      setPaymentMode('cash');
+      setPaymentNote('');
       setShowCartReview(false);
       onOpenInvoiceModal(newlyCreated, isGst ? 'gst' : 'non_gst');
     }
@@ -743,19 +823,72 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
         </div>
       </div>
 
-      {/* Main Configuration Card — compliant with Image 2 */}
+      {/* Main Configuration Card */}
       <div className="bg-white rounded-2xl border border-slate-200/90 p-3 sm:p-4 shadow-xs space-y-4">
+        {/* Route / Beat Filter & Add Beat action directly on Sale Page */}
+        <div className="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-slate-100">
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 max-w-full">
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider shrink-0 flex items-center gap-1 mr-1">
+              <Truck size={13} className="text-indigo-600 shrink-0" />
+              <span>Route / Beat:</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedBeatFilter('all')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition-colors cursor-pointer shrink-0 ${
+                selectedBeatFilter === 'all'
+                  ? 'bg-slate-900 text-white shadow-2xs'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+              }`}
+            >
+              All Beats
+            </button>
+            {activeBeats.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => setSelectedBeatFilter(b.name)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition-colors cursor-pointer shrink-0 ${
+                  selectedBeatFilter.toLowerCase() === b.name.toLowerCase()
+                    ? 'bg-indigo-600 text-white shadow-2xs'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                }`}
+              >
+                {b.name}
+              </button>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setSalePageNewBeatName('');
+              setSalePageNewBeatHub('');
+              setShowAddBeatModal(true);
+            }}
+            className="inline-flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            title="Add a new Beat / Route to your system"
+          >
+            <Plus size={13} className="shrink-0" />
+            <span>Add Beat</span>
+          </button>
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
           {/* 1. CUSTOMER (Smart Responsive Predictive Search) */}
           <CustomerPredictiveSearch
             id="select-customer"
             label="CUSTOMER"
-            placeholder="Search by name, mobile, customer ID, or email..."
+            placeholder={
+              selectedBeatFilter !== 'all'
+                ? `Search customers in Beat "${selectedBeatFilter}"...`
+                : 'Search by name, mobile, customer ID, or email...'
+            }
             selectedCustomerId={selectedCustomerId}
             selectedCustomerName={customerName}
             selectedCustomerPhone={customerPhone}
-            customers={customers}
-            existingCustomers={existingCustomers}
+            customers={filteredCustomersForPredictive}
+            existingCustomers={filteredExistingCustomersForPredictive}
             onSelectCustomer={(c) => {
               setSelectedCustomerId(c.id);
               setCustomerName(c.name);
@@ -776,6 +909,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
               setNewCustName(prefill.name || '');
               setNewCustPhone(prefill.phone || '');
               setNewCustGstin(prefill.gstin || '');
+              setNewCustBeat(selectedBeatFilter !== 'all' ? selectedBeatFilter : '');
               setShowNewCustomerModal(true);
             }}
           />
@@ -792,12 +926,19 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                 onChange={(e) => setBillType(e.target.value as any)}
                 className="w-full appearance-none px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 font-medium focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700 pr-10 cursor-pointer"
               >
-                <option value="tax_invoice">Tax invoice (GST inclusive)</option>
+                <option value="tax_invoice" disabled={compositionLocked}>
+                  Tax invoice (GST inclusive){compositionLocked ? ' - not allowed for composition' : ''}
+                </option>
                 <option value="bill_of_supply">Bill of supply (non-GST)</option>
                 <option value="estimate">Estimate / quotation</option>
               </select>
               <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
+            {compositionLocked && (
+              <p className="mt-1.5 text-[11px] text-slate-500">
+                Composition taxpayer: a Bill of Supply is issued and no GST is charged to the customer.
+              </p>
+            )}
           </div>
 
           {/* 3. STOCK FROM (Godowns & Delivery Vans / Van Trip Stock) */}
@@ -1671,7 +1812,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                         if (profit >= 0) {
                           return (
                             <div className="text-[10px] text-emerald-700 mt-0.5">
-                              Margin ₹{money(profit)} / cs (cost ₹{money(cost)} ex-GST)
+                              Margin ₹{money(profit)} / cs (cost ₹{money(cost)} {compositionLocked ? 'incl. purchase GST' : 'ex-GST'})
                             </div>
                           );
                         }
@@ -1769,7 +1910,13 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                   </label>
                   <select
                     value={paymentMode}
-                    onChange={(e) => setPaymentMode(e.target.value as any)}
+                    onChange={(e) => {
+                      const nextMode = e.target.value as PaymentMode;
+                      setPaymentMode(nextMode);
+                      if (nextMode === 'credit') {
+                        setPaymentAmount('0');
+                      }
+                    }}
                     className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold focus:outline-none"
                   >
                     <option value="cash">Cash</option>
@@ -1788,7 +1935,10 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                     <div className="flex items-center gap-1.5 text-[10px]">
                       <button
                         type="button"
-                        onClick={() => setPaymentAmount(String(grandTotal))}
+                        onClick={() => {
+                          setPaymentAmount(String(grandTotal));
+                          if (paymentMode === 'credit') setPaymentMode('cash');
+                        }}
                         className="text-emerald-700 font-bold hover:underline cursor-pointer"
                       >
                         Full
@@ -1796,7 +1946,10 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                       <span>·</span>
                       <button
                         type="button"
-                        onClick={() => setPaymentAmount('0')}
+                        onClick={() => {
+                          setPaymentAmount('0');
+                          setPaymentMode('credit');
+                        }}
                         className="text-amber-700 font-bold hover:underline cursor-pointer"
                       >
                         Credit (0)
@@ -1804,14 +1957,35 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                     </div>
                   </div>
                   <input
-                    type="number" inputMode="decimal"
+                    type="number"
+                    inputMode="decimal"
                     step="any"
                     min="0"
-                    placeholder={`₹${grandTotal}`}
+                    placeholder="0"
                     value={paymentAmount}
-                    onChange={(e) => setPaymentAmount(e.target.value)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setPaymentAmount(val);
+                      const num = Number(val);
+                      if (val.trim() !== '' && num > 0 && paymentMode === 'credit') {
+                        setPaymentMode('cash');
+                      }
+                    }}
                     className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-bold font-mono focus:outline-none"
                   />
+                  <p
+                    className={`mt-1 text-[11px] font-semibold ${
+                      collectedAmountPreview <= 0 || balanceDuePreview > 0.005
+                        ? 'text-amber-700'
+                        : 'text-emerald-700'
+                    }`}
+                  >
+                    {collectedAmountPreview <= 0
+                      ? `Defaults to ₹0 (Credit) · Due ₹${money(grandTotal)}`
+                      : balanceDuePreview > 0.005
+                        ? `Partial payment · Credit due ₹${money(balanceDuePreview)}`
+                        : 'Paid in full · Due ₹0.00'}
+                  </p>
                 </div>
               </div>
 
@@ -1907,6 +2081,108 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                 />
               </div>
 
+              {/* Route / Beat Selection */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Route / Beat
+                  </label>
+                  {!isAddingBeatInModal ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddingBeatInModal(true);
+                        setNewBeatNameInput('');
+                      }}
+                      className="text-[11px] font-bold text-indigo-600 hover:underline cursor-pointer"
+                    >
+                      + Add New Beat
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setIsAddingBeatInModal(false)}
+                      className="text-[11px] font-bold text-slate-500 hover:underline cursor-pointer"
+                    >
+                      Pick existing
+                    </button>
+                  )}
+                </div>
+
+                {isAddingBeatInModal ? (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      placeholder="e.g. Bhojpur Beat, Main Road"
+                      value={newBeatNameInput}
+                      onChange={(e) => setNewBeatNameInput(e.target.value)}
+                      className="flex-1 px-3 py-2 rounded-xl border border-indigo-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const clean = newBeatNameInput.trim();
+                        if (clean) {
+                          const res = addBeat(clean);
+                          if (res.ok) {
+                            setNewCustBeat(clean);
+                            notify(`Beat "${clean}" created.`);
+                          } else {
+                            setNewCustBeat(clean);
+                          }
+                          setIsAddingBeatInModal(false);
+                        }
+                      }}
+                      className="px-3 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 whitespace-nowrap cursor-pointer shadow-xs"
+                    >
+                      Save Beat
+                    </button>
+                  </div>
+                ) : (
+                  <select
+                    value={newCustBeat}
+                    onChange={(e) => {
+                      if (e.target.value === '__add_new__') {
+                        setIsAddingBeatInModal(true);
+                        setNewBeatNameInput('');
+                      } else {
+                        setNewCustBeat(e.target.value);
+                      }
+                    }}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-700/20 bg-white cursor-pointer"
+                  >
+                    <option value="">-- Select Beat / Route --</option>
+                    {activeBeats.map((b) => (
+                      <option key={b.id} value={b.name}>
+                        {b.name}
+                      </option>
+                    ))}
+                    <option value="__add_new__">+ Add New Beat...</option>
+                  </select>
+                )}
+
+                {/* 1-Tap Quick Beat Chips */}
+                {!isAddingBeatInModal && activeBeats.length > 0 && (
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {activeBeats.slice(0, 6).map((b) => (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => setNewCustBeat(b.name)}
+                        className={`px-2 py-0.5 rounded-md text-[11px] font-bold border transition-colors cursor-pointer ${
+                          newCustBeat.toLowerCase() === b.name.toLowerCase()
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                        }`}
+                      >
+                        {b.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">
                   Address (optional)
@@ -1936,6 +2212,95 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                 className="px-5 py-2 rounded-xl bg-[var(--primary)] text-white text-xs font-semibold hover:bg-[var(--primary-hover)] disabled:opacity-50"
               >
                 Save & Select Customer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Beat Modal directly from Sale Page */}
+      {showAddBeatModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in"
+          onClick={() => setShowAddBeatModal(false)}
+        >
+          <div
+            className="w-full max-w-sm bg-white border border-slate-200 rounded-2xl shadow-xl p-5 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <Truck className="w-5 h-5 text-indigo-600" />
+                <h3 className="font-bold text-slate-900 text-base">Add New Beat / Route</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddBeatModal(false)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Beat / Route Name *
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Bhojpur Route, Station Road"
+                  value={salePageNewBeatName}
+                  onChange={(e) => setSalePageNewBeatName(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Hub / Base Godown (optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Main Godown"
+                  value={salePageNewBeatHub}
+                  onChange={(e) => setSalePageNewBeatHub(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowAddBeatModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const clean = salePageNewBeatName.trim();
+                  if (!clean) return;
+                  const res = addBeat(clean, { hub: salePageNewBeatHub.trim() || undefined });
+                  if (res.ok) {
+                    setSelectedBeatFilter(clean);
+                    notify(`Beat "${clean}" added successfully.`);
+                    setShowAddBeatModal(false);
+                    setSalePageNewBeatName('');
+                    setSalePageNewBeatHub('');
+                  } else {
+                    notify(res.error || 'Could not add beat.');
+                  }
+                }}
+                disabled={!salePageNewBeatName.trim()}
+                className="px-5 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 cursor-pointer shadow-xs"
+              >
+                Add Beat
               </button>
             </div>
           </div>

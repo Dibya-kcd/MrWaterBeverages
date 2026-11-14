@@ -4,6 +4,10 @@ import { Bill, OrganizationProfile, BillingSettings } from '../types';
 import { money, normalizeTo8DigitHsn, statusOf, cgstSgstLabels, freeStockInvoiceDisplay, nonGstSummary } from './billing';
 import { billTaxBreakdown } from './gstReports';
 import { todayISO } from "./dateLocal";
+import { inrToWords, isBillGstInvoice } from './invoiceCommon';
+import { generateReceiptPdf80, sharePdfFile } from './receipt80';
+
+export { inrToWords, isBillGstInvoice };
 
 // Convert numbers into Indian Currency words (e.g. "Rupees Ten Thousand Five Hundred Only")
 const GST_STATE_NAMES: Record<string, string> = {
@@ -16,76 +20,6 @@ const GST_STATE_NAMES: Record<string, string> = {
   '34': 'Puducherry', '35': 'Andaman & Nicobar Islands', '36': 'Telangana', '37': 'Andhra Pradesh',
   '38': 'Ladakh', '97': 'Other Territory',
 };
-
-export function inrToWords(num: number): string {
-  if (isNaN(num) || num <= 0) return 'Rupees Zero Only';
-
-  const a = [
-    '',
-    'One',
-    'Two',
-    'Three',
-    'Four',
-    'Five',
-    'Six',
-    'Seven',
-    'Eight',
-    'Nine',
-    'Ten',
-    'Eleven',
-    'Twelve',
-    'Thirteen',
-    'Fourteen',
-    'Fifteen',
-    'Sixteen',
-    'Seventeen',
-    'Eighteen',
-    'Nineteen',
-  ];
-  const b = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
-
-  const convertTwoDigits = (n: number): string => {
-    if (n === 0) return '';
-    if (n < 20) return a[n];
-    return b[Math.floor(n / 10)] + (n % 10 !== 0 ? ' ' + a[n % 10] : '');
-  };
-
-  const convertThreeDigits = (n: number): string => {
-    const hundred = Math.floor(n / 100);
-    const remainder = n % 100;
-    let res = '';
-    if (hundred > 0) res += a[hundred] + ' Hundred';
-    if (remainder > 0) res += (res ? ' and ' : '') + convertTwoDigits(remainder);
-    return res;
-  };
-
-  const whole = Math.floor(num);
-  const paise = Math.round((num - whole) * 100);
-
-  let crore = Math.floor(whole / 10000000);
-  let lakh = Math.floor((whole % 10000000) / 100000);
-  let thousand = Math.floor((whole % 100000) / 1000);
-  let remainder = whole % 1000;
-
-  let parts: string[] = [];
-  if (crore > 0) parts.push(convertThreeDigits(crore) + ' Crore');
-  if (lakh > 0) parts.push(convertThreeDigits(lakh) + ' Lakh');
-  if (thousand > 0) parts.push(convertThreeDigits(thousand) + ' Thousand');
-  if (remainder > 0) parts.push(convertThreeDigits(remainder));
-
-  let res = 'Rupees ' + (parts.join(' ') || 'Zero');
-  if (paise > 0) {
-    res += ' and ' + convertTwoDigits(paise) + ' Paise';
-  }
-  return res + ' Only';
-}
-
-export function isBillGstInvoice(bill: Bill, invoiceFormat?: 'gst' | 'non_gst'): boolean {
-  if (invoiceFormat !== undefined) return invoiceFormat === 'gst';
-  if (bill.invoiceType === 'tax_invoice' || bill.isGstInvoice === true) return true;
-  if (bill.invoiceType === 'retail' || bill.invoiceType === 'bill_of_supply' || bill.isGstInvoice === false) return false;
-  return bill.supplyType === 'B2B' && Boolean(bill.customerGstin);
-}
 
 export function generateInvoicePdf(
   bill: Bill,
@@ -644,7 +578,9 @@ export function generateInvoicePdf(
   doc.text(
     isGst
       ? 'This is a Computer Generated Tax Invoice. E. & O.E.'
-      : 'This is a Computer Generated Retail Bill of Supply (Non-GST / B2C). Thank You!',
+      : bill.taxStamp?.declaration
+        ? `${bill.taxStamp.declaration}. Computer generated Bill of Supply.`
+        : 'This is a Computer Generated Retail Bill of Supply (Non-GST / B2C). Thank You!',
     pageWidth / 2,
     pageHeight - 6,
     { align: 'center' }
@@ -653,21 +589,78 @@ export function generateInvoicePdf(
   return doc;
 }
 
+export type InvoicePaper = 'a4' | '80mm';
+export type InvoicePdfOptions = { showBatch?: boolean; paper?: InvoicePaper };
+
+/** Paper for the PDF: what the caller asked for, else Settings -> Billing, else A4. */
+export function resolveInvoicePaper(settings?: BillingSettings, options?: InvoicePdfOptions): InvoicePaper {
+  return options?.paper ?? (settings?.defaultInvoicePaper === '80mm' ? '80mm' : 'a4');
+}
+
+/** The invoice on A4 (full GST layout) or as an 80 mm receipt, same figures either way. */
+export function buildInvoicePdf(
+  bill: Bill,
+  org?: OrganizationProfile,
+  settings?: BillingSettings,
+  invoiceFormat?: 'gst' | 'non_gst',
+  options?: InvoicePdfOptions
+): jsPDF {
+  return resolveInvoicePaper(settings, options) === '80mm'
+    ? generateReceiptPdf80(bill, org, settings, invoiceFormat, options)
+    : generateInvoicePdf(bill, org, settings, invoiceFormat, options);
+}
+
+export function invoicePdfFilename(
+  bill: Bill,
+  settings?: BillingSettings,
+  invoiceFormat?: 'gst' | 'non_gst',
+  options?: InvoicePdfOptions
+): string {
+  const isGst = isBillGstInvoice(bill, invoiceFormat);
+  const prefix = settings?.invoicePrefix || (isGst ? 'INV' : 'RET');
+  const cleanRetailer = (bill.retailer || 'Cash').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const paper = resolveInvoicePaper(settings, options) === '80mm' ? '_80mm' : '';
+  return isGst
+    ? `Tax_Invoice_${prefix}-${bill.id}_${cleanRetailer}${paper}.pdf`
+    : `Retail_Bill_${prefix}-${bill.id}_${cleanRetailer}${paper}.pdf`;
+}
+
 export function downloadInvoicePdf(
   bill: Bill,
   org?: OrganizationProfile,
   settings?: BillingSettings,
   invoiceFormat?: 'gst' | 'non_gst',
-  options?: { showBatch?: boolean }
+  options?: InvoicePdfOptions
 ): void {
+  const doc = buildInvoicePdf(bill, org, settings, invoiceFormat, options);
+  doc.save(invoicePdfFilename(bill, settings, invoiceFormat, options));
+}
+
+/**
+ * Opens the phone's share sheet with the invoice PDF attached (pick WhatsApp there).
+ * Where the browser cannot share files, the PDF is downloaded instead and 'downloaded' is returned.
+ */
+export async function shareInvoicePdf(
+  bill: Bill,
+  org?: OrganizationProfile,
+  settings?: BillingSettings,
+  invoiceFormat?: 'gst' | 'non_gst',
+  options?: InvoicePdfOptions
+): Promise<'shared' | 'cancelled' | 'downloaded'> {
   const isGst = isBillGstInvoice(bill, invoiceFormat);
-  const doc = generateInvoicePdf(bill, org, settings, invoiceFormat, options);
+  const doc = buildInvoicePdf(bill, org, settings, invoiceFormat, options);
+  const filename = invoicePdfFilename(bill, settings, invoiceFormat, options);
   const prefix = settings?.invoicePrefix || (isGst ? 'INV' : 'RET');
-  const cleanRetailer = (bill.retailer || 'Cash').replace(/[^a-zA-Z0-9_-]/g, '_');
-  const filename = isGst
-    ? `Tax_Invoice_${prefix}-${bill.id}_${cleanRetailer}.pdf`
-    : `Retail_Bill_${prefix}-${bill.id}_${cleanRetailer}.pdf`;
-  doc.save(filename);
+  const result = await sharePdfFile(
+    doc,
+    filename,
+    `${isGst ? 'Tax Invoice' : 'Bill'} ${prefix}-${bill.id} - ${bill.retailer || 'Cash'}`
+  );
+  if (result === 'unsupported') {
+    doc.save(filename);
+    return 'downloaded';
+  }
+  return result;
 }
 
 export function printInvoicePdf(
@@ -675,10 +668,9 @@ export function printInvoicePdf(
   org?: OrganizationProfile,
   settings?: BillingSettings,
   invoiceFormat?: 'gst' | 'non_gst',
-  options?: { showBatch?: boolean }
+  options?: InvoicePdfOptions
 ): void {
-  const isGst = isBillGstInvoice(bill, invoiceFormat);
-  const doc = generateInvoicePdf(bill, org, settings, invoiceFormat, options);
+  const doc = buildInvoicePdf(bill, org, settings, invoiceFormat, options);
   doc.autoPrint();
   const blobUrl = doc.output('bloburl');
   const printWindow = window.open(blobUrl, '_blank');
@@ -686,7 +678,6 @@ export function printInvoicePdf(
     printWindow.focus();
   } else {
     // Fallback if window.open is blocked in sandbox iframe
-    const prefix = settings?.invoicePrefix || (isGst ? 'INV' : 'RET');
-    doc.save(`${isGst ? 'Tax_Invoice' : 'Retail_Bill'}_${prefix}-${bill.id}.pdf`);
+    doc.save(invoicePdfFilename(bill, settings, invoiceFormat, options));
   }
 }

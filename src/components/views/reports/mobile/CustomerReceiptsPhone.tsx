@@ -40,6 +40,10 @@ const DueNote: React.FC<{ due: number; advance: number }> = ({ due, advance }) =
 };
 
 export interface CustomerReceiptsPhoneProps {
+  /** Collections view: only the by-customer list (the day-by-day list is the Day book). */
+  onlyCustomer?: boolean;
+  /** The Day book / By customer switch, shown at the top. */
+  topExtra?: React.ReactNode;
   reg: ReceiptRegister;
   periodLabel: string;
   view: 'day' | 'customer';
@@ -57,6 +61,8 @@ export interface CustomerReceiptsPhoneProps {
 
 /** Phone layout of "Customer receipts": big received figure, by day / by customer, unified filter sheet, Excel + PDF at the bottom. */
 export const CustomerReceiptsPhone: React.FC<CustomerReceiptsPhoneProps> = ({
+  onlyCustomer,
+  topExtra,
   reg,
   periodLabel,
   view,
@@ -83,10 +89,12 @@ export const CustomerReceiptsPhone: React.FC<CustomerReceiptsPhoneProps> = ({
 
   return (
     <div className="md:hidden space-y-3.5" id="report-customer-receipts-phone">
+      {topExtra}
+
       {/* Title Header */}
       <div className="px-0.5">
         <h2 className="text-lg font-extrabold text-slate-900 tracking-tight leading-tight">
-          Customer Receipts
+          {onlyCustomer ? 'Collections by customer' : 'Customer Receipts'}
         </h2>
         <p className="text-xs text-slate-500 font-medium">Due remaining is as of today</p>
       </div>
@@ -114,15 +122,17 @@ export const CustomerReceiptsPhone: React.FC<CustomerReceiptsPhoneProps> = ({
       </HeroCard>
 
       {/* Grouping switch: By day vs By customer */}
-      <BigSwitch
-        label="Group receipts"
-        value={view}
-        onChange={onView}
-        options={[
-          { id: 'day', label: 'By day' },
-          { id: 'customer', label: 'By customer' },
-        ]}
-      />
+      {!onlyCustomer && (
+        <BigSwitch
+          label="Group receipts"
+          value={view}
+          onChange={onView}
+          options={[
+            { id: 'day', label: 'By day' },
+            { id: 'customer', label: 'By customer' },
+          ]}
+        />
+      )}
 
       {/* Unified Search and Filter Bar (replaces separate labels and separate chips) */}
       <UnifiedPhoneFilterBar

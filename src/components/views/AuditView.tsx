@@ -695,13 +695,13 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
 
                             {/* Itemized Table of this Audit */}
                             <div className="border overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm" style={{ borderColor: palette.line }}>
-                              <table className="w-full text-left data-table" style={fz(12.5)}>
+                              <table className="w-full min-w-[520px] text-left data-table" style={fz(12.5)}>
                                 <thead>
                                   <tr className="bg-slate-50 border-b" style={{ borderColor: palette.line }}>
-                                    <th className="px-3 py-1.5 font-bold">Beverage Product</th>
-                                    <th className="px-3 py-1.5 text-right font-bold">System Book Stock</th>
-                                    <th className="px-3 py-1.5 text-right font-bold">Physical Counted</th>
-                                    <th className="px-3 py-1.5 text-right font-bold">Variance (Diff)</th>
+                                    <th className="px-3 py-1.5 font-bold min-w-[150px]">Beverage Product</th>
+                                    <th className="px-3 py-1.5 text-right font-bold whitespace-nowrap">System Book Stock</th>
+                                    <th className="px-3 py-1.5 text-right font-bold whitespace-nowrap">Physical Counted</th>
+                                    <th className="px-3 py-1.5 text-right font-bold whitespace-nowrap">Variance (Diff)</th>
                                   </tr>
                                 </thead>
                                 <tbody>

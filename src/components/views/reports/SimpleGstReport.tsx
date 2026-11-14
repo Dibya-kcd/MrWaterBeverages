@@ -1,16 +1,20 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, ArrowLeft, ChevronRight, Download } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ChevronRight, Download, Zap } from 'lucide-react';
 import { Bill, Customer, OrganizationProfile, Product } from '../../../types';
-import { money } from '../../../utils/billing';
+import { money, resolveProductGstRate } from '../../../utils/billing';
+import { billTaxBasis } from '../../../utils/billTaxBasis';
+import { resolveTaxRegime, noOutputTax } from '../../../tax/appRegime';
 import {
   buildGstLines,
   exportCaGstPack,
   orgStateCodeFromProfile,
+  resolveLineGstRate,
   summarizeInvoices,
 } from '../../../utils/gstReports';
 import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
 import { ReportTitleBar, reportCard } from './ReportKit';
+import { useLedger } from '../../../context/LedgerContext';
 
 /**
  * GST in one screen:
@@ -96,12 +100,55 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
 }) => {
   const [showDetail, setShowDetail] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const { convertBillsToTaxInvoices } = useLedger();
 
   const orgStateCode = orgStateCodeFromProfile(orgProfile);
   const lines = useMemo(
     () => buildGstLines(filteredBills, products, customers, invoicePrefix, { orgStateCode }),
     [filteredBills, products, customers, invoicePrefix, orgStateCode],
   );
+
+  const zeroGstBills = useMemo(() => {
+    const zeroBillIds = new Set(
+      lines
+        .filter((l) => l.gstRatePct === 0 && (l.taxable > 0 || l.qty > 0))
+        .map((l) => l.billId)
+    );
+    return filteredBills.filter((b) => {
+      if (b.status === 'cancelled' || !(b.items || []).length) return false;
+      if (zeroBillIds.has(b.id)) return true;
+      const isNonGst = b.invoiceType === 'retail' || b.invoiceType === 'bill_of_supply' || b.isGstInvoice === false;
+      const zeroTaxStored = (Number(b.cgst) || 0) + (Number(b.sgst) || 0) < 0.01;
+      return (isNonGst || zeroTaxStored) && (Number(b.total) || 0) > 0;
+    });
+  }, [filteredBills, lines]);
+
+  // GST sitting inside the prices of the bills above. The P&L treats it as owed to the government (not profit), but
+  // it is not in the GST figures on this page until those bills become tax invoices, so show it here to reconcile.
+  const gstInsideNonGstBillPrices = useMemo(() => {
+    const byId = new Map<number, Product>();
+    (products || []).forEach((p) => byId.set(p.id, p));
+    let total = 0;
+    for (const b of zeroGstBills) {
+      const date = String(b.date || '').slice(0, 10);
+      const carve = orgProfile ? !noOutputTax(resolveTaxRegime(orgProfile, date)) : true;
+      const r = billTaxBasis(b, {
+        carveGstFromPrices: carve,
+        rateFor: (item) =>
+          item.gst !== undefined && item.gst !== null
+            ? (item.gst as number)
+            : resolveProductGstRate(byId.get(item.productId), item.category),
+      });
+      if (r.carved) total += r.gst;
+    }
+    return Math.round(total * 100) / 100;
+  }, [zeroGstBills, products, orgProfile]);
+
+  const zeroGstUnits = useMemo(() => {
+    const fromLines = lines.filter((l) => l.gstRatePct === 0).reduce((s, l) => s + (Number(l.qty) || 0), 0);
+    if (fromLines > 0) return fromLines;
+    return zeroGstBills.reduce((s, b) => s + (b.items || []).reduce((iq, it) => iq + (Number(it.qty) || 0), 0), 0);
+  }, [lines, zeroGstBills]);
 
   const byRate = useMemo(() => {
     const m = new Map<number, { rate: number; taxable: number; cgst: number; sgst: number; igst: number; cess: number }>();
@@ -306,7 +353,7 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
         <section className={`${reportCard} overflow-hidden`}>
           <div className="px-3.5 py-2.5 text-[13px] font-bold text-slate-900 bg-[#faf8f5]">Sales by GST rate</div>
           <div className="overflow-x-auto border-t border-black/5">
-            <table className="w-full text-left">
+            <table className="w-full min-w-[480px] text-left">
               <thead>
                 <tr>
                   <th className={`${th} text-left`}>Rate</th>
@@ -318,19 +365,60 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {byRate.map((r) => (
-                  <tr key={r.rate} className="border-t border-black/5">
-                    <td className="px-3 py-2 text-[13px] font-semibold text-slate-800">{r.rate}%</td>
-                    <td className={td}>₹{money(r.taxable)}</td>
-                    <td className={td}>₹{money(r.cgst)}</td>
-                    <td className={td}>₹{money(r.sgst)}</td>
-                    {showIgst && <td className={td}>₹{money(r.igst)}</td>}
-                    {showCess && <td className={td}>₹{money(r.cess)}</td>}
-                  </tr>
-                ))}
+                {byRate.map((r) => {
+                  const isZeroWithFix = r.rate === 0 && zeroGstBills.length > 0;
+                  return (
+                    <tr key={r.rate} className={`border-t border-black/5 ${isZeroWithFix ? 'bg-amber-50/80' : ''}`}>
+                      <td className="px-3 py-2 text-[13px] font-semibold text-slate-800">
+                        <span>{r.rate}%</span>
+                        {isZeroWithFix && (
+                          <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300">
+                            Non-GST Error
+                          </span>
+                        )}
+                      </td>
+                      <td className={td}>₹{money(r.taxable)}</td>
+                      <td className={td}>₹{money(r.cgst)}</td>
+                      <td className={td}>₹{money(r.sgst)}</td>
+                      {showIgst && <td className={td}>₹{money(r.igst)}</td>}
+                      {showCess && <td className={td}>₹{money(r.cess)}</td>}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          {zeroGstBills.length > 0 && (
+            <div className="p-3 bg-amber-50 border-t border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div>
+                  <div className="text-xs font-bold text-amber-900">
+                    {zeroGstBills.length} Bill(s) Recorded as 0% Non-GST ({zeroGstUnits} units · ₹{money(byRate.find((r) => r.rate === 0)?.taxable || 0)})
+                  </div>
+                  <div className="text-[11px] text-amber-800/90 mt-0.5">
+                    Sales to village shops must be B2C Tax Invoices. Click below to backward-calculate 40% & 5% GST from MRP and merge into legal tax rows.
+                  </div>
+                  {gstInsideNonGstBillPrices > 0.004 && (
+                    <div className="text-[11px] font-semibold text-amber-900 mt-1">
+                      GST included in the prices of these bills: ₹{money(gstInsideNonGstBillPrices)}. The Profit &amp; Loss already treats it as owed to the government, not as profit; it is not in the GST totals above until the bills are converted.
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const r = convertBillsToTaxInvoices(zeroGstBills.map((b) => b.id));
+                  setMsg(`Done! ${r.fixed} invoice(s) converted to B2C Tax Invoices with backward-calculated 40% & 5% GST. The 0% row is now ₹0.00.`);
+                }}
+                className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold whitespace-nowrap cursor-pointer transition-all shadow-sm flex items-center justify-center gap-1.5 shrink-0"
+              >
+                <Zap size={14} className="text-amber-300 fill-current" />
+                <span>Fix 0% Bills (Convert to Tax Invoices)</span>
+              </button>
+            </div>
+          )}
         </section>
       )}
 

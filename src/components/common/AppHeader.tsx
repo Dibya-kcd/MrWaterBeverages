@@ -49,14 +49,14 @@ export const AppHeader: React.FC<AppHeaderProps> = () => {
           </span>
         </button>
 
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1 shrink-0">
           <button
             type="button"
             onClick={() => setShowNotifications(true)}
             className="hh-iconbtn hh-iconbtn--bell"
             aria-label={total > 0 ? t('top.alertsCount', { n: total }) : t('top.alerts')}
           >
-            <Bell size={20} aria-hidden="true" />
+            <Bell size={23} strokeWidth={2.25} aria-hidden="true" />
             {total > 0 && <span className="hh-dot" aria-hidden="true" />}
           </button>
 

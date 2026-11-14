@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import { Check, Download, MessageCircle, Printer, Plus, ArrowRight } from 'lucide-react';
 import { Bill } from '../../types';
-import { money, buildBillText, whatsappLink } from '../../utils/billing';
+import { money } from '../../utils/billing';
 import { downloadInvoicePdf } from '../../utils/invoicePdf';
 import { useLedger } from '../../context/LedgerContext';
+import { sendBillOnWhatsApp, whatsAppResultMessage } from '../../utils/whatsappBill';
+import { notify } from '../../utils/toast';
 
 interface InvoiceSuccessCardProps {
   bill: Bill;
@@ -34,9 +36,17 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
     downloadInvoicePdf(bill, orgProfile, billingSettings, selectedFormat);
   };
 
-  const whatsappUrl = bill.phone
-    ? whatsappLink(bill.phone, buildBillText(bill, orgProfile, billingSettings, selectedFormat))
-    : '';
+  const [sendingWa, setSendingWa] = useState(false);
+  const handleSendWhatsApp = async () => {
+    setSendingWa(true);
+    try {
+      const result = await sendBillOnWhatsApp(bill, orgProfile, billingSettings, selectedFormat);
+      const msg = whatsAppResultMessage(result);
+      if (msg) notify(msg.text, msg.kind);
+    } finally {
+      setSendingWa(false);
+    }
+  };
 
   const totalCases = bill.items.reduce((s, it) => s + it.qty, 0);
   const itemsSubtotal = bill.items.reduce((s, it) => s + it.amount, 0);
@@ -136,22 +146,24 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
       </div>
 
       {/* 5. Sticky action bar — sits above the bottom nav on phones, inline on desktop */}
+      <div className="lg:hidden h-32" aria-hidden="true" />
       <div
-        className="fixed inset-x-0 bottom-[calc(3.75rem+env(safe-area-inset-bottom,0px))] z-30 border-t border-slate-300 bg-white px-3 pt-2.5 pb-2.5 shadow-[0_-6px_18px_rgba(15,23,42,0.10)] lg:static lg:z-auto lg:border lg:rounded-2xl lg:shadow-sm"
+        className="fixed inset-x-0 bottom-[calc(5.75rem+env(safe-area-inset-bottom,0px))] z-40 border-t border-slate-200 bg-white/95 backdrop-blur-md px-3 pt-2.5 pb-2.5 shadow-[0_-4px_16px_rgba(15,23,42,0.08)] lg:static lg:z-auto lg:border lg:rounded-2xl lg:shadow-sm lg:backdrop-blur-none"
         id="invoice-success-actions"
       >
         <div className="max-w-2xl mx-auto space-y-2">
           <div className="flex items-stretch gap-2">
             {bill.phone ? (
-              <a
-                href={whatsappUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex-1 min-h-[46px] rounded-xl bg-[#25D366] hover:bg-[#1EBE5D] text-white font-black text-sm flex items-center justify-center gap-2 cursor-pointer"
+              <button
+                type="button"
+                id="invoice-success-whatsapp"
+                onClick={handleSendWhatsApp}
+                disabled={sendingWa}
+                className="flex-1 min-h-[46px] rounded-xl bg-[#25D366] hover:bg-[#1EBE5D] disabled:opacity-70 text-white font-black text-sm flex items-center justify-center gap-2 cursor-pointer"
               >
                 <MessageCircle size={19} />
-                <span>WhatsApp bill</span>
-              </a>
+                <span>{sendingWa ? 'Preparing…' : 'WhatsApp 80mm bill'}</span>
+              </button>
             ) : (
               <button type="button" disabled className="flex-1 min-h-[46px] rounded-xl bg-slate-100 text-slate-400 font-bold text-xs cursor-not-allowed">
                 No phone for WhatsApp

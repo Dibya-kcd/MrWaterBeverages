@@ -21,10 +21,14 @@ import { ReceivablesReport } from "./reports/ReceivablesReport";
 import { TripsReport } from "./reports/TripsReport";
 import { TaxReport } from "./reports/TaxReport";
 import { SimpleGstReport } from "./reports/SimpleGstReport";
+import { CompositionReport } from "./reports/CompositionReport";
 import { SimplePnLReport } from "./reports/SimplePnLReport";
 import { SalesMarginPnLReport } from "./reports/SalesMarginPnLReport";
+import { SalesSummaryReport } from "./reports/SalesSummaryReport";
+import { ExpensesReport } from "./reports/ExpensesReport";
 import { BeatSalesDueReport } from "./reports/BeatSalesDueReport";
 import { CustomerReceiptsReport } from "./reports/CustomerReceiptsReport";
+import { CollectionsSwitch } from "./reports/CollectionsSwitch";
 import { DispositionsReport } from "./reports/DispositionsReport";
 import {
   type ReportSection,
@@ -41,6 +45,7 @@ import { money, resolveProductGstRate } from "../../utils/billing";
 
 // High-fidelity components matching user mock images
 import { ReportsOverview } from "./reports/ReportsOverview";
+import { ledgerTotalDue } from "../../utils/dueSummary";
 import { ReportsMobileHome } from "./reports/ReportsMobileHome";
 import { DailyCollectionStreamlined } from "./reports/DailyCollectionStreamlined";
 import { ReportShareMenu } from "./reports/ReportShareMenu";
@@ -79,6 +84,8 @@ export const ReportsView: React.FC = () => {
     billingSettings,
     inventoryDispositions,
   } = useLedger();
+  // Composition taxpayers see CMP-08 / GSTR-4 workings instead of GSTR-1 / GSTR-3B; this toggles back to the old view.
+  const [showRegularGst, setShowRegularGst] = useState(false);
   const { activeBeats } = useBeats();
 
   // Active report section — defaults to 'overview' (Desktop mock image)
@@ -326,6 +333,8 @@ export const ReportsView: React.FC = () => {
     const now = new Date().getTime();
 
     (bills || []).forEach((b) => {
+      // Cancelled bills are not owed (they used to be counted here, which inflated Party credit).
+      if (b.status === "cancelled" || (b as any).cancelled) return;
       const balance = billBalance(b);
       if (balance <= 0) return;
 
@@ -416,9 +425,9 @@ export const ReportsView: React.FC = () => {
       case "overview":
         return "Overview";
       case "daybook":
-        return "Daily collection";
+        return "Collections";
       case "payments":
-        return "Customer receipts";
+        return "Collections by customer";
       case "beats":
         return "Beat-wise sales & due";
       case "receivables":
@@ -427,8 +436,9 @@ export const ReportsView: React.FC = () => {
       case "netProfit":
         return "Profit & Loss";
       case "sales":
-      case "supplierProfit":
-        return "Sales & product profit";
+        return "Sales";
+      case "expenses":
+        return "Expenses";
       case "inventory":
         return "Inventory & value";
       case "purchases":
@@ -478,6 +488,7 @@ export const ReportsView: React.FC = () => {
           periodLabel={periodLabel}
           inPeriod={reportInPeriod}
           onBack={() => setActiveReport("overview")}
+          topExtra={<CollectionsSwitch active="daybook" onChange={(v) => setActiveReport(v)} />}
           period={period}
           onPeriodChange={(p) => setPeriod(p)}
           startDate={startDate}
@@ -496,6 +507,8 @@ export const ReportsView: React.FC = () => {
         <CustomerReceiptsReport
           periodLabel={periodLabel}
           inPeriod={reportInPeriod}
+          only="customer"
+          topExtra={<CollectionsSwitch active="payments" onChange={(v) => setActiveReport(v)} />}
         />
       );
     }
@@ -513,6 +526,7 @@ export const ReportsView: React.FC = () => {
       return (
         <ReceivablesReport
           debtorsLedger={debtorsLedger}
+          ledgerTotalDue={ledgerTotalDue(existingCustomers)?.total}
           orgProfile={orgProfile}
           onRecordPayment={(retailer) => {
             setModalCustomerName(retailer);
@@ -549,27 +563,14 @@ export const ReportsView: React.FC = () => {
       );
     }
 
-    // Sales by day / Product profit — the detailed report with sub-tabs.
-    if (activeReport === "sales" || activeReport === "supplierProfit") {
-      const initialSubTab =
-        activeReport === "supplierProfit"
-          ? "products"
-          : activeReport === "sales"
-            ? "days"
-            : activeReport === "netProfit"
-              ? "netProfit"
-              : "pnl";
-      return (
-        <SalesMarginPnLReport
-          dateInPeriod={reportInPeriod}
-          filteredBills={periodBills}
-          products={products}
-          gstTaxSummary={gstTaxSummary}
-          purchaseStats={purchaseStats}
-          periodLabel={periodLabel}
-          initialSubTab={initialSubTab as any}
-        />
-      );
+    // Sales: sold / received / unpaid, by day, customer, product or salesman.
+    if (activeReport === "sales") {
+      return <SalesSummaryReport filteredBills={periodBills} periodLabel={periodLabel} />;
+    }
+
+    // Expenses by category (the same entries feed the Profit & Loss).
+    if (activeReport === "expenses") {
+      return <ExpensesReport dateInPeriod={reportInPeriod} periodLabel={periodLabel} />;
     }
 
     if (activeReport === "inventory") {
@@ -628,8 +629,34 @@ export const ReportsView: React.FC = () => {
       );
     }
 
+    if (
+      activeReport === "tax" &&
+      orgProfile?.gstRegistrationType === "composition" &&
+      orgProfile?.gstEngineStartDate &&
+      !showRegularGst
+    ) {
+      return (
+        <CompositionReport
+          bills={bills}
+          grns={grns}
+          orgProfile={orgProfile}
+          onShowRegularGst={() => setShowRegularGst(true)}
+        />
+      );
+    }
+
     if (activeReport === "tax") {
       return (
+        <>
+        {orgProfile?.gstRegistrationType === "composition" && orgProfile?.gstEngineStartDate && (
+          <button
+            type="button"
+            onClick={() => setShowRegularGst(false)}
+            className="mb-3 text-xs font-semibold underline text-indigo-800"
+          >
+            ← Back to composition workings (CMP-08 / GSTR-4)
+          </button>
+        )}
         <SimpleGstReport
           gstTaxSummary={gstTaxSummary}
           purchaseStats={purchaseStats}
@@ -653,6 +680,7 @@ export const ReportsView: React.FC = () => {
             />
           }
         />
+        </>
       );
     }
 

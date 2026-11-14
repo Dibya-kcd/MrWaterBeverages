@@ -77,7 +77,7 @@ export const PHRASES_OR: Record<string, string> = {
   'when the trip is closed. It stays on the trips screen until repaid or written off.': 'ଟ୍ରିପ୍ ବନ୍ଦ ହେଲେ। ଶୋଧ ବା ବାଦ୍ ନହେବା ଯାଏ ଏହା ଟ୍ରିପ୍ ସ୍କ୍ରିନ୍ ରେ ରହିବ।', 'billed on route': 'ରୁଟରେ ବିଲ୍ ହେଲା',
   'Cash owed by salesmen': 'ସେଲ୍ସମ୍ୟାନ୍ ଙ୍କ ବାକି ନଗଦ', 'Received': 'ଗ୍ରହଣ', 'Write off': 'ବାଦ୍ ଦିଅନ୍ତୁ', 'Confirm write-off': 'ବାଦ୍ ନିଶ୍ଚିତ କରନ୍ତୁ',
   // ── customer select / add ──
-  'Select Customer / Retailer': 'ଗ୍ରାହକ / ଦୋକାନୀ ବାଛନ୍ତୁ', 'Add New Customer / Retailer': 'ନୂଆ ଗ୍ରାହକ / ଦୋକାନୀ ଯୋଡ଼ନ୍ତୁ', '+ Customer': '+ ଗ୍ରାହକ', '1-Tap Select': '୧-ଟାପ୍ ବାଛନ୍ତୁ', 'Selected': 'ବଛାଗଲା',
+  'Select Customer / Retailer': 'ଗ୍ରାହକ / ଦୋକାନୀ ବାଛନ୍ତୁ', 'Add New Customer / Retailer': 'ନୂଆ ଗ୍ରାହକ / ଦୋକାନୀ ଯୋଡ଼ନ୍ତୁ', 'Customer': 'ଗ୍ରାହକ', '1-Tap Select': '୧-ଟାପ୍ ବାଛନ୍ତୁ', 'Selected': 'ବଛାଗଲା',
   'Spot Cash Sale / Walk-in Customer': 'ସ୍ପଟ୍ ନଗଦ ବିକ୍ରି / ସିଧା ଗ୍ରାହକ', 'Spot Cash / Walk-in Customer': 'ସ୍ପଟ୍ ନଗଦ / ସିଧା ଗ୍ରାହକ', 'Use once for this bill': 'ଏହି ବିଲ୍ ପାଇଁ ଥରେ ବ୍ୟବହାର', 'Type name, phone, or tap mic to speak...': 'ନାମ, ଫୋନ୍ ଲେଖନ୍ତୁ ବା ମାଇକ୍ ଚାପି କୁହନ୍ତୁ...',
   'Tap to speak retailer or customer name': 'ଦୋକାନୀ ବା ଗ୍ରାହକଙ୍କ ନାମ କହିବାକୁ ଚାପନ୍ତୁ', 'Speak': 'କୁହନ୍ତୁ', 'Listening...': 'ଶୁଣୁଛି...', 'Clear': 'ସଫା', 'Dismiss': 'ବନ୍ଦ', 'Close dialog': 'ଡାଏଲଗ୍ ବନ୍ଦ', 'No phone saved': 'ଫୋନ୍ ସେଭ୍ ନାହିଁ',
   'Tip: Tap microphone to speak shop name or tap number to pick.': 'ଟିପ୍: ଦୋକାନ ନାମ କହିବାକୁ ମାଇକ୍ ଚାପନ୍ତୁ ବା ନମ୍ବର ଚାପି ବାଛନ୍ତୁ।', 'Voice-assisted customer selection •': 'ସ୍ୱର ସହାୟତା ଗ୍ରାହକ ବାଛିବା •', 'Toggle Large High-Contrast View for Low Vision': 'କମ୍ ଦୃଷ୍ଟି ପାଇଁ ବଡ଼ ଦୃଶ୍ୟ ଚାଲୁ / ବନ୍ଦ',
@@ -85,7 +85,7 @@ export const PHRASES_OR: Record<string, string> = {
   'Name in Odia (ଓଡ଼ିଆ) — optional': 'ଓଡ଼ିଆରେ ନାମ — ଇଚ୍ଛାଧୀନ', 'Contact Person': 'ଯୋଗାଯୋଗ ବ୍ୟକ୍ତି', 'Owner / Manager name': 'ମାଲିକ / ମ୍ୟାନେଜର ନାମ', 'Mobile / Phone Number': 'ମୋବାଇଲ୍ / ଫୋନ୍ ନମ୍ବର', '10-digit mobile (for WhatsApp bill & ledger)': '୧୦ ଅଙ୍କର ମୋବାଇଲ୍ (ହ୍ୱାଟସଆପ୍ ବିଲ୍ ପାଇଁ)',
   'Speak mobile number': 'ମୋବାଇଲ୍ ନମ୍ବର କୁହନ୍ତୁ', 'Speak shop name': 'ଦୋକାନ ନାମ କୁହନ୍ତୁ', 'GSTIN (Optional)': 'GSTIN (ଇଚ୍ଛାଧୀନ)', '15-digit GSTIN': '୧୫ ଅଙ୍କର GSTIN', 'Opening Balance Due (₹)': 'ଆରମ୍ଭ ବାକି (₹)', 'Shop Address / Landmark': 'ଦୋକାନ ଠିକଣା / ଚିହ୍ନ',
   'Shop number, market, near temple/school...': 'ଦୋକାନ ନମ୍ବର, ବଜାର, ମନ୍ଦିର/ସ୍କୁଲ୍ ପାଖରେ...', 'e.g. Market Route / Beat A': 'ଯଥା: ବଜାର ରୁଟ୍ / ବିଟ୍ A', 'Register': 'ପଞ୍ଜୀକରଣ', 'Save': 'ସେଭ୍', 'Save Customer': 'ଗ୍ରାହକ ସେଭ୍',
-  'Register "': 'ପଞ୍ଜୀକରଣ "', '" as New Customer': '" କୁ ନୂଆ ଗ୍ରାହକ ଭାବେ', '+ Register as New Customer': '+ ନୂଆ ଗ୍ରାହକ ଭାବେ ପଞ୍ଜୀକରଣ', 'No registered shop found matching "': 'ମେଳ ଖାଉଥିବା ପଞ୍ଜୀକୃତ ଦୋକାନ ମିଳିଲା ନାହିଁ "', 'Ph:': 'ଫୋନ୍:',
+  'Register "': 'ପଞ୍ଜୀକରଣ "', '" as New Customer': '" କୁ ନୂଆ ଗ୍ରାହକ ଭାବେ', 'Register as New Customer': 'ନୂଆ ଗ୍ରାହକ ଭାବେ ପଞ୍ଜୀକରଣ', 'No registered shop found matching "': 'ମେଳ ଖାଉଥିବା ପଞ୍ଜୀକୃତ ଦୋକାନ ମିଳିଲା ନାହିଁ "', 'Ph:': 'ଫୋନ୍:',
   'Due: ₹': 'ବାକି: ₹', 'Advance: ₹': 'ଅଗ୍ରିମ: ₹', 'Current Due: ₹': 'ବର୍ତ୍ତମାନ ବାକି: ₹', 'Last:': 'ଶେଷ:', 'Last Bill:': 'ଶେଷ ବିଲ୍:', 'Billed:': 'ବିଲ୍:', 'Billed: ₹': 'ବିଲ୍: ₹', 'Collected: ₹': 'ଆଦାୟ: ₹', 'Invoiced: ₹': 'ବିଲ୍ ହୋଇଛି: ₹', 'Rec: ₹': 'ପ୍ରାପ୍ତ: ₹',
   // ── sale workflow / cart ──
   'Please select a dispatched vehicle or start a new van run to record sales.': 'ବିକ୍ରି ଲେଖିବାକୁ ପଠାଯାଇଥିବା ଗାଡ଼ି ବାଛନ୍ତୁ ବା ନୂଆ ଭ୍ୟାନ୍ ଟ୍ରିପ୍ ଆରମ୍ଭ କରନ୍ତୁ।', 'Select an active van / trip before adding stock': 'ଷ୍ଟକ୍ ଯୋଡ଼ିବା ପୂର୍ବରୁ ଚାଲୁ ଭ୍ୟାନ୍ / ଟ୍ରିପ୍ ବାଛନ୍ତୁ',

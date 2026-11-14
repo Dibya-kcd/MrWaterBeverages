@@ -1497,19 +1497,19 @@ export const InwardConsignmentModal: React.FC<InwardConsignmentModalProps> = ({
               </div>
             ) : (
               <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm border mb-3">
-                <table className="w-full text-left data-table text-xs">
+                <table className="w-full min-w-[780px] text-left data-table text-xs">
                   <thead className="bg-gray-100 border-b">
                     <tr>
-                      <th className="p-2">SKU</th>
-                      <th className="p-2">Description</th>
-                      <th className="p-2 text-right">Billed</th>
-                      <th className="p-2 text-right">Free</th>
-                      <th className="p-2 text-right">Paid</th>
-                      <th className="p-2 text-right">Inward Qty</th>
-                      <th className="p-2 text-right">Landed Cost</th>
-                      <th className="p-2 text-right">Tax</th>
-                      <th className="p-2 text-right">Total</th>
-                      <th className="p-2 text-center">Actions</th>
+                      <th className="p-2 whitespace-nowrap">SKU</th>
+                      <th className="p-2 min-w-[150px]">Description</th>
+                      <th className="p-2 text-right whitespace-nowrap">Billed</th>
+                      <th className="p-2 text-right whitespace-nowrap">Free</th>
+                      <th className="p-2 text-right whitespace-nowrap">Paid</th>
+                      <th className="p-2 text-right whitespace-nowrap">Inward Qty</th>
+                      <th className="p-2 text-right whitespace-nowrap">Landed Cost</th>
+                      <th className="p-2 text-right whitespace-nowrap">Tax</th>
+                      <th className="p-2 text-right whitespace-nowrap">Total</th>
+                      <th className="p-2 text-center whitespace-nowrap">Actions</th>
                     </tr>
                   </thead>
                   <tbody>

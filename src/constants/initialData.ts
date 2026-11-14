@@ -50,6 +50,11 @@ export const DEFAULT_BILLING_SETTINGS: BillingSettings = {
   disableManualDiscountWhenSchemeApplied: false,
   allowSchemeOverride: true,
   showBatchOnInvoice: false,
+  defaultInvoicePaper: "a4",
+  whatsappTextStyle: "detailed",
+  receiptTextWidth: 32,
+  showUpiQrOnReceipt: true,
+  showOdiaNameOnReceipt: false,
 };
 
 export const INIT_WAREHOUSES: Warehouse[] = [];

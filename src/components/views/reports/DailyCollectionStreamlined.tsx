@@ -22,6 +22,8 @@ export interface DailyCollectionStreamlinedProps {
   startDate?: string;
   endDate?: string;
   onCustomRangeChange?: (start: string, end: string) => void;
+  /** Shown under the title (the Day book / By customer switch). */
+  topExtra?: React.ReactNode;
 }
 
 export type CollectionFilterType = 'all' | 'due' | 'pay' | 'out';
@@ -159,6 +161,7 @@ export const DailyCollectionStreamlined: React.FC<DailyCollectionStreamlinedProp
   startDate,
   endDate,
   onCustomRangeChange,
+  topExtra,
 }) => {
   const { bills, payments, expenses, orgProfile } = useLedger();
 
@@ -518,7 +521,7 @@ export const DailyCollectionStreamlined: React.FC<DailyCollectionStreamlinedProp
   const exportPdf = () =>
     downloadPdf({
       filename: `daily-collection-${fileStamp()}.pdf`,
-      title: 'Daily collection',
+      title: 'Collections (day book)',
       subtitle: [shop, `Period: ${periodLabel}`, ...(filterText ? [`Transactions filtered: ${filterText}`] : [])],
       landscape: true,
       sections: [
@@ -576,17 +579,20 @@ export const DailyCollectionStreamlined: React.FC<DailyCollectionStreamlinedProp
         startDate={startDate}
         endDate={endDate}
         onCustomRangeChange={onCustomRangeChange}
+        topExtra={topExtra}
       />
 
       <div className="hidden md:block space-y-3" id="report-daily-collection">
         {/* Header */}
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <h2 className="text-base font-bold text-slate-900">Daily collection</h2>
+            <h2 className="text-base font-bold text-slate-900">Collections</h2>
             <p className="text-xs text-slate-500">{periodLabel} · day by day: money in, money out and new due</p>
           </div>
           <ReportDownloadButtons onExcel={exportExcel} onPdf={exportPdf} disabled={dayGroups.length === 0} />
         </div>
+
+        {topExtra}
 
         {/* Totals */}
         <div className="grid grid-cols-4 gap-2">

@@ -3,6 +3,7 @@
  * price caches, initial-state loader). Moved out of LedgerContext.tsx unchanged so that file
  * only holds the provider. Nothing here touches React state.
  */
+import { stockCrateCost, type CostBasis } from "../tax/purchaseCost";
 import { DEFAULT_BILLING_SETTINGS, DEFAULT_ORG_PROFILE, INIT_WAREHOUSES } from "../constants/initialData";
 import { loadCachedBillingSettings, loadCachedOrders, loadCachedGrns, reportSyncFailure, reportSyncSuccess } from "../utils/storage";
 import { Audit, Bill, BillingSettings, CartState, Customer, ExistingCustomer, FontSize, GRN, GrnLineItem, GrnChange, GstMode, InventoryBatch, OrganizationProfile, PaymentRecord, PaymentAuditEntry, Product, Promotion, StickyTotalPosition, StockTransfer, Trip, Warehouse } from "../types";
@@ -347,6 +348,297 @@ export function mergeCustomersNewestWins(local: Customer[], remote: Customer[]):
     map.set(r.id, rt > lt ? r : l);
   });
   return Array.from(map.values());
+}
+
+export interface CustomerUpdatePlanInput {
+  customers: Customer[];
+  bills: Bill[];
+  payments: PaymentRecord[];
+  customerProductPrices?: Record<string, number>;
+  updated: Customer;
+  syncLinkedBillsAndPayments?: boolean;
+  /** Set when editing a derived/bill-only ExistingCustomer that did not yet have a master Customer row. */
+  previousIdentity?: { name: string; phone?: string };
+  now?: string;
+}
+
+export interface CustomerUpdatePlanResult {
+  savedCustomer: Customer;
+  customers: Customer[];
+  bills: Bill[];
+  changedBills: Bill[];
+  payments: PaymentRecord[];
+  paymentsChanged: boolean;
+  customerProductPrices?: Record<string, number>;
+  retiredDuplicateIds: string[];
+  unhideNormalizedName: string;
+  oldName: string;
+  canSyncCrateDeposits: boolean;
+  ownPhones: string[];
+}
+
+/**
+ * Pure planner for updating/renaming a customer in-place without ever creating a duplicate customer
+ * or stranding historical bills, payments, returns, or custom prices under the old name.
+ *
+ * Handles:
+ *  - Normal master Customer edits & renames.
+ *  - Duplicate same-shop master records (same normalized name without conflicting real phones): merges/retires
+ *    redundant duplicates into `savedCustomer.id` so the old name never stays behind as a ghost customer.
+ *  - Distinct shops sharing a name with different real 10-digit phones: keeps the other shop untouched and
+ *    only moves records owned by `old.id` or matching `old`'s own phone digits.
+ *  - Promoting a derived bill-only ExistingCustomer (no master row yet) into a master record while
+ *    re-linking all of its historical bills and payments in-place.
+ */
+export function planCustomerUpdate(input: CustomerUpdatePlanInput): CustomerUpdatePlanResult {
+  const now = input.now || new Date().toISOString();
+  const syncLinked = input.syncLinkedBillsAndPayments !== false;
+  const cleanName = (input.updated.name || "").trim();
+  const cleanPhone = (input.updated.phone || "").trim();
+
+  let existingOld = input.customers.find((c) => c.id === input.updated.id);
+  if (!existingOld && input.previousIdentity?.name) {
+    const dupMatch = findDuplicateCustomer(
+      input.customers,
+      input.previousIdentity.name,
+      input.previousIdentity.phone,
+    ).sameShop;
+    if (dupMatch) existingOld = dupMatch;
+  }
+
+  const resolvedId =
+    existingOld?.id ||
+    (input.updated.id && input.updated.id.trim()) ||
+    `cust_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+  let savedCustomer: Customer = {
+    ...input.updated,
+    id: resolvedId,
+    name: cleanName,
+    phone: cleanPhone,
+    createdAt: existingOld?.createdAt || input.updated.createdAt || now,
+    updatedAt: now,
+  };
+
+  const oldName = (existingOld ? existingOld.name : (input.previousIdentity?.name || savedCustomer.name)).trim();
+  const oldPhone = (existingOld ? existingOld.phone : (input.previousIdentity?.phone || "")).trim();
+  const oldAltPhone = (existingOld?.altPhone || "").trim();
+  const oldKey = normCustName(oldName);
+  const newKey = normCustName(savedCustomer.name);
+
+  const otherSameName = oldKey
+    ? input.customers.filter((c) => c.id !== savedCustomer.id && normCustName(c.name) === oldKey)
+    : [];
+  const allSameName = existingOld ? [existingOld, ...otherSameName] : otherSameName;
+  const distinctPhones = new Set(allSameName.map((c) => last10PhoneDigits(c.phone)).filter(Boolean));
+  const sameNameIsAmbiguous = distinctPhones.size > 1;
+
+  // When all same-name master records represent the same shop (no conflicting real 10-digit phones),
+  // retire redundant duplicates during an interactive edit/rename so the old name never stays split.
+  const retiredDuplicates: Customer[] =
+    syncLinked && !sameNameIsAmbiguous ? otherSameName : [];
+  const retiredDuplicateIds = retiredDuplicates.map((d) => d.id);
+  const retiredIdSet = new Set(retiredDuplicateIds.map(String));
+
+  // Preserve non-conflicting historical aliases on the surviving customer record (excluding the new name)
+  if (retiredDuplicates.length > 0 || savedCustomer.aliases?.length) {
+    const aliasSeen = new Set<string>();
+    const mergedAliases: string[] = [];
+    for (const raw of [
+      ...(savedCustomer.aliases || []),
+      ...retiredDuplicates.flatMap((d) => d.aliases || []),
+    ]) {
+      const k = normCustName(raw);
+      if (!k || k === newKey || aliasSeen.has(k)) continue;
+      aliasSeen.add(k);
+      mergedAliases.push(raw.trim());
+    }
+    savedCustomer = {
+      ...savedCustomer,
+      aliases: mergedAliases.length > 0 ? mergedAliases : undefined,
+    };
+  }
+
+  const nextCustomers: Customer[] = existingOld
+    ? input.customers
+        .filter((c) => !retiredIdSet.has(String(c.id)))
+        .map((c) => (c.id === savedCustomer.id ? savedCustomer : c))
+    : [
+        savedCustomer,
+        ...input.customers.filter(
+          (c) => c.id !== savedCustomer.id && !retiredIdSet.has(String(c.id)),
+        ),
+      ];
+
+  const ownPhones = [
+    oldPhone,
+    oldAltPhone,
+    ...retiredDuplicates.map((d) => d.phone),
+    ...retiredDuplicates.map((d) => d.altPhone || ""),
+  ]
+    .map((p) => last10PhoneDigits(p))
+    .filter(Boolean);
+
+  const shouldSyncRecords =
+    syncLinked &&
+    (!!input.previousIdentity ||
+      retiredDuplicateIds.length > 0 ||
+      (!!existingOld &&
+        (oldName !== savedCustomer.name || oldPhone !== savedCustomer.phone)));
+
+  let nextBills = input.bills;
+  const changedBills: Bill[] = [];
+  let nextPayments = input.payments;
+  let paymentsChanged = false;
+  let nextCustomerProductPrices = input.customerProductPrices;
+
+  if (shouldSyncRecords) {
+    const mergedIds = new Set<string>([String(savedCustomer.id), ...retiredDuplicateIds.map(String)]);
+    const liveOtherIds = new Set<string>(
+      nextCustomers.filter((c) => c.id !== savedCustomer.id).map((c) => String(c.id)),
+    );
+    const oldAliases = [
+      ...(existingOld?.aliases || []),
+      ...retiredDuplicates.flatMap((d) => d.aliases || []),
+    ];
+    const matchNameKeys = new Set<string>(
+      [oldKey, ...(!sameNameIsAmbiguous ? oldAliases.map(normCustName) : [])].filter(Boolean),
+    );
+
+    const isThisCustomer = (recId?: string | null, recName?: string, recPhone?: string): boolean => {
+      if (recId && mergedIds.has(String(recId))) return true;
+      if (recId && liveOtherIds.has(String(recId))) return false;
+      const rk = normCustName(recName);
+      if (!rk || !matchNameKeys.has(rk)) return false;
+      if (!sameNameIsAmbiguous) return true;
+      const rPh = last10PhoneDigits(recPhone);
+      return Boolean(rPh && ownPhones.includes(rPh));
+    };
+
+    const changedBillIds = new Set<number>();
+    nextBills = input.bills.map((b) => {
+      if (!isThisCustomer(b.customerId, b.retailer, b.phone)) return b;
+      const nextPhone = savedCustomer.phone || b.phone;
+      if (
+        String(b.customerId || "") === String(savedCustomer.id) &&
+        b.retailer === savedCustomer.name &&
+        (b.phone || "") === (nextPhone || "")
+      ) {
+        return b;
+      }
+      const upBill: Bill = {
+        ...b,
+        customerId: savedCustomer.id,
+        retailer: savedCustomer.name,
+        phone: nextPhone,
+        updatedAt: now,
+      };
+      changedBills.push(upBill);
+      changedBillIds.add(Number(b.id));
+      return upBill;
+    });
+
+    nextPayments = input.payments.map((p) => {
+      const matched =
+        (p.billId && changedBillIds.has(Number(p.billId))) ||
+        isThisCustomer(p.customerId, p.customerName, p.customerPhone);
+      if (!matched) return p;
+      const nextPhone = savedCustomer.phone || p.customerPhone;
+      if (
+        String(p.customerId || "") === String(savedCustomer.id) &&
+        p.customerName === savedCustomer.name &&
+        (p.customerPhone || "") === (nextPhone || "")
+      ) {
+        return p;
+      }
+      paymentsChanged = true;
+      return {
+        ...p,
+        customerId: savedCustomer.id,
+        customerName: savedCustomer.name,
+        customerPhone: nextPhone,
+        updatedAt: now,
+      };
+    });
+
+    if (
+      input.customerProductPrices &&
+      oldKey &&
+      newKey &&
+      oldKey !== newKey &&
+      !sameNameIsAmbiguous
+    ) {
+      const oldPrefix = `${oldName.toLowerCase()}_`;
+      const newPrefix = `${savedCustomer.name.toLowerCase()}_`;
+      if (oldPrefix !== newPrefix) {
+        let priceChanged = false;
+        const nextPrices = { ...input.customerProductPrices };
+        for (const [k, v] of Object.entries(input.customerProductPrices)) {
+          if (k.startsWith(oldPrefix)) {
+            const prodPart = k.slice(oldPrefix.length);
+            const targetKey = `${newPrefix}${prodPart}`;
+            if (nextPrices[targetKey] === undefined) {
+              nextPrices[targetKey] = v;
+            }
+            delete nextPrices[k];
+            priceChanged = true;
+          }
+        }
+        if (priceChanged) nextCustomerProductPrices = nextPrices;
+      }
+    }
+  }
+
+  return {
+    savedCustomer,
+    customers: nextCustomers,
+    bills: nextBills,
+    changedBills,
+    payments: nextPayments,
+    paymentsChanged,
+    customerProductPrices: nextCustomerProductPrices,
+    retiredDuplicateIds,
+    unhideNormalizedName: newKey,
+    oldName,
+    canSyncCrateDeposits: shouldSyncRecords && !sameNameIsAmbiguous && !!oldKey,
+    ownPhones,
+  };
+}
+
+export const CRATE_DEPOSIT_RECORDS_KEY = "mrwater_crate_deposit_records_v1";
+
+/** Updates manual crate/deposit records in localStorage when a customer is renamed. */
+export function renameCustomerCrateDeposits(
+  oldName: string,
+  newName: string,
+  newPhone?: string,
+): void {
+  if (typeof window === "undefined") return;
+  const oldKey = normCustName(oldName);
+  const cleanNew = newName.trim();
+  if (!oldKey || !cleanNew) return;
+  try {
+    const raw = localStorage.getItem(CRATE_DEPOSIT_RECORDS_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    let changed = false;
+    const next = parsed.map((r: any) => {
+      if (r && r.partyType === "customer" && normCustName(r.partyName) === oldKey) {
+        const nextPhone = (newPhone || "").trim() || r.partyPhone;
+        if (r.partyName !== cleanNew || (nextPhone || "") !== (r.partyPhone || "")) {
+          changed = true;
+          return { ...r, partyName: cleanNew, partyPhone: nextPhone };
+        }
+      }
+      return r;
+    });
+    if (changed) {
+      localStorage.setItem(CRATE_DEPOSIT_RECORDS_KEY, JSON.stringify(next));
+    }
+  } catch {
+    /* ignore storage unavailable */
+  }
 }
 
 export function readPaymentAudit(): PaymentAuditEntry[] {
@@ -726,6 +1018,8 @@ export function ensureUniqueGrnNumbers(list: GRN[]): GRN[] {
 export function buildCatalogFromGrns(
   grnList: GRN[],
   baseWarehouses: Warehouse[] = [],
+  /** Cost basis per GRN inward date (composition => GST-inclusive). Omitted = legacy ex-GST costing. */
+  costBasisFor?: (inwardDate: string) => CostBasis,
 ): { products: Product[]; batches: InventoryBatch[] } {
   const prodMap = new Map<string, Product>();
   const batches: InventoryBatch[] = [];
@@ -766,10 +1060,12 @@ export function buildCatalogFromGrns(
       const unitCost = Number(item.unitPrice) || 0;
       const crateCost = resolveItemCrateCost(item);
       const crateLandedCost = resolveItemLandedCrateCost(item);
+      // GST-inclusive stock cost for composition GRNs dated on/after the engine start date (see tax/purchaseCost.ts)
+      const stockCost = costBasisFor ? stockCrateCost(item, costBasisFor(grn.inwardDate)) : crateCost;
       const effCost =
         totalReceived > 0
-          ? (crateCost * existingTotalReceived) / totalReceived
-          : crateCost;
+          ? (stockCost * existingTotalReceived) / totalReceived
+          : stockCost;
 
       // FIX (multi-warehouse inward bug): never silently default to warehouses[0] or a
       // hardcoded id here. A GRN posted through postGrn always carries a real,

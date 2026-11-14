@@ -4,7 +4,7 @@ import { Trip } from '../../../types';
 import { money } from '../../../utils/billing';
 import { useLedger } from '../../../context/LedgerContext';
 import { SizeChip } from '../../common/SizeChip';
-import { sizeStripe } from '../../../utils/sizeColor';
+import { compareProductsInSequence, sizeStripe } from '../../../utils/sizeColor';
 import { OdiaName } from '../../common/OdiaName';
 
 export interface TripCardRow {
@@ -186,7 +186,14 @@ export const TripListCard: React.FC<TripListCardProps> = ({
         {open && (
           <ul className="divide-y divide-black/5 rounded-xl border border-black/8 overflow-hidden">
             {rows.length === 0 && <li className="px-3 py-3 text-xs text-slate-500">Nothing loaded on this trip.</li>}
-            {rows.map((r) => {
+            {[...rows]
+              .sort((a, b) =>
+                compareProductsInSequence(
+                  productOf(a.productId) || { name: a.name },
+                  productOf(b.productId) || { name: b.name },
+                ),
+              )
+              .map((r) => {
               const left = isActive ? Math.max(0, r.loaded - r.sold) : r.returned;
               return (
                 <li key={r.productId} className="px-3 py-2.5" style={sizeStripe(productOf(r.productId)?.volume, r.name)}>

@@ -1,8 +1,15 @@
-import React, { useMemo, useState } from 'react';
-import { AlertTriangle, ArrowLeft, Check, CheckCircle2, Lock, Minus, Plus, Search, Trash2, X } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, ArrowLeft, Check, CheckCircle2, Lock, Minus, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import { Product, Warehouse } from '../../../types';
 import { SizeChip } from '../../common/SizeChip';
-import { sizeTheme } from '../../../utils/sizeColor';
+import {
+  PackGroupInfo,
+  PackGroupKey,
+  compareProductsInSequence,
+  productPackGroup,
+  productSequenceVolume,
+  sizeTheme,
+} from '../../../utils/sizeColor';
 import { OdiaName } from '../../common/OdiaName';
 
 /**
@@ -274,7 +281,7 @@ export const SheetShell: React.FC<{ title: string; subtitle?: string; onClose: (
   z = 60,
 }) => (
   <div className="fixed inset-0 flex items-end sm:items-center justify-center bg-slate-900/55" style={{ zIndex: z }} role="dialog" aria-modal="true" aria-label={title}>
-    <div className="w-full sm:max-w-xl bg-[#faf8f5] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col max-h-[92dvh] sm:max-h-[90vh] overflow-hidden">
+    <div className="w-full sm:max-w-2xl bg-[#faf8f5] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col max-h-[92dvh] sm:max-h-[90vh] overflow-hidden">
       <div className="mx-auto mt-2 h-1.5 w-11 rounded-full bg-slate-300 sm:hidden" />
       <div className="shrink-0 px-4 pt-2 pb-2 flex items-center justify-between gap-3">
         <div className="min-w-0">
@@ -320,37 +327,79 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
   onCancel,
 }) => {
   const [query, setQuery] = useState('');
+  const [packFilter, setPackFilter] = useState<PackGroupKey | ''>('');
   const [size, setSize] = useState('');
   const [inStockOnly, setInStockOnly] = useState(true);
   const [picks, setPicks] = useState<Record<number, number>>({});
   const [error, setError] = useState<string | null>(null);
 
+  // Popup entry modal state when clicking Add (or Edit) on a product
+  const [entryProduct, setEntryProduct] = useState<Product | null>(null);
+  const [entryQtyText, setEntryQtyText] = useState('1');
+  const entryInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!entryProduct) return;
+    const t = setTimeout(() => {
+      entryInputRef.current?.focus();
+      entryInputRef.current?.select();
+    }, 20);
+    return () => clearTimeout(t);
+  }, [entryProduct]);
+
+  const packGroups = useMemo(() => {
+    const map = new Map<PackGroupKey, { info: PackGroupInfo; count: number }>();
+    for (const p of products) {
+      const info = productPackGroup(p);
+      const existing = map.get(info.key);
+      if (existing) existing.count += 1;
+      else map.set(info.key, { info, count: 1 });
+    }
+    return Array.from(map.values()).sort((a, b) => a.info.order - b.info.order);
+  }, [products]);
+
   const sizes = useMemo(() => {
     const m = new Map<string, number>();
     for (const p of products) {
+      if (packFilter && productPackGroup(p).key !== packFilter) continue;
       const t = sizeTheme(p.volume, p.name);
-      if (t.label && !m.has(t.label)) m.set(t.label, Number(p.volume) || 0);
+      if (t.label && !m.has(t.label)) m.set(t.label, productSequenceVolume(p));
     }
-    return Array.from(m.entries()).sort((a, b) => a[1] - b[1]).map(([label]) => label).slice(0, 8);
-  }, [products]);
+    return Array.from(m.entries())
+      .sort((a, b) => a[1] - b[1])
+      .map(([label]) => label)
+      .slice(0, 10);
+  }, [products, packFilter]);
 
   const q = query.trim().toLowerCase();
   const visible = useMemo(() => {
     return products
       .filter((p) => {
+        if (packFilter && productPackGroup(p).key !== packFilter) return false;
         if (q) {
-          const hay = `${p.name} ${p.category || ''} ${p.pack || ''} ${sizeTheme(p.volume, p.name).label}`.toLowerCase();
+          const hay = `${p.name} ${p.category || ''} ${p.pack || ''} ${productPackGroup(p).heading} ${sizeTheme(p.volume, p.name).label}`.toLowerCase();
           if (!hay.includes(q)) return false;
         }
         if (size && sizeTheme(p.volume, p.name).label !== size) return false;
         if (inStockOnly && !added[p.id] && !picks[p.id] && stockOf(p.id, godownId) <= 0) return false;
         return true;
       })
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [products, q, size, inStockOnly, added, picks, stockOf, godownId]);
+      .sort(compareProductsInSequence);
+  }, [products, packFilter, q, size, inStockOnly, added, picks, stockOf, godownId]);
 
-  const selected = visible.filter((p) => (picks[p.id] || 0) > 0 && !added[p.id]);
-  const rest = visible.filter((p) => !((picks[p.id] || 0) > 0 && !added[p.id]));
+  const groupedSections = useMemo(() => {
+    const groups: { key: PackGroupKey; heading: string; items: Product[] }[] = [];
+    for (const p of visible) {
+      const info = productPackGroup(p);
+      const last = groups[groups.length - 1];
+      if (last && last.key === info.key) {
+        last.items.push(p);
+      } else {
+        groups.push({ key: info.key, heading: info.heading, items: [p] });
+      }
+    }
+    return groups;
+  }, [visible]);
 
   const pickCount = Object.values(picks).filter((n) => n > 0).length;
   const pickCases = Object.values(picks).reduce((s, n) => s + (n > 0 ? n : 0), 0);
@@ -365,6 +414,20 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
     });
   };
 
+  const openEntryPopup = (p: Product) => {
+    const current = picks[p.id] || 0;
+    setEntryProduct(p);
+    setEntryQtyText(current > 0 ? String(current) : '1');
+  };
+
+  const commitEntryPopup = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!entryProduct) return;
+    const parsed = Math.max(0, parseInt(entryQtyText, 10) || 0);
+    setQty(entryProduct.id, parsed);
+    setEntryProduct(null);
+  };
+
   const stockLine = (p: Product) => (stockText ? stockText(p.id, godownId) : `${stockOf(p.id, godownId)} cs in stock`);
 
   const renderRow = (p: Product) => {
@@ -372,46 +435,65 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
     const n = picks[p.id] || 0;
     const stock = stockOf(p.id, godownId);
     const over = n > stock;
+    const stripe = sizeTheme(p.volume, p.name).hex;
+
     return (
-      <div key={p.id} className={`flex items-center justify-between gap-2 py-2 px-1.5 border-b border-black/5 ${n > 0 ? 'bg-emerald-50 rounded-xl' : ''}`}>
-        <div className="min-w-0 flex-1">
-          <div className="text-[13.5px] font-bold text-slate-900 leading-snug break-words">
-            <OdiaName name={p.name} nameOr={p.nameOr} /> <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
+      <div
+        key={p.id}
+        style={{ borderLeftWidth: 4, borderLeftColor: stripe }}
+        className={`flex items-center justify-between gap-2.5 py-2.5 pl-3 pr-2 rounded-xl border transition-colors ${
+          n > 0
+            ? 'border-emerald-300 bg-emerald-50/90'
+            : 'border-black/8 bg-white hover:border-black/15'
+        }`}
+      >
+        <button
+          type="button"
+          disabled={Boolean(onTrip)}
+          onClick={() => openEntryPopup(p)}
+          className="min-w-0 flex-1 text-left cursor-pointer disabled:cursor-default"
+        >
+          <div className="text-[13.5px] font-bold text-slate-900 leading-snug break-words flex items-center gap-1.5 flex-wrap">
+            <OdiaName name={p.name} nameOr={p.nameOr} />
+            <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
           </div>
-          <div className={`text-[11.5px] ${over ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
+          <div className={`text-[11.5px] mt-0.5 ${over ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
             {stockLine(p)}
+            {p.unitsPerCrate ? ` · ${p.unitsPerCrate} pcs/cs` : ''}
             {over ? ' — more than in stock' : ''}
           </div>
-        </div>
+        </button>
+
         {onTrip ? (
           <span className="shrink-0 inline-flex items-center gap-1 text-[11.5px] font-bold text-emerald-800 bg-emerald-100 px-2.5 py-1.5 rounded-full">
             <Check size={13} /> On trip · {onTrip}
           </span>
         ) : n > 0 ? (
-          <div className="flex items-center gap-1 shrink-0">
-            <button type="button" aria-label={`Less ${p.name}`} onClick={() => setQty(p.id, n - 1)} className="size-10 rounded-xl border border-black/15 bg-white flex items-center justify-center cursor-pointer active:scale-95">
-              <Minus size={16} />
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => openEntryPopup(p)}
+              aria-label={`Edit cases for ${p.name}`}
+              className="min-h-[38px] px-3 rounded-xl bg-emerald-700 text-white text-[13px] font-black tabular-nums inline-flex items-center gap-1.5 cursor-pointer hover:bg-emerald-800 active:scale-95"
+            >
+              <span>{n} cs</span>
+              <Pencil size={12} />
             </button>
-            <input
-              type="number"
-              inputMode="numeric"
-              min={0}
-              value={n}
-              onFocus={(e) => e.target.select()}
-              onChange={(e) => setQty(p.id, Math.max(0, parseInt(e.target.value, 10) || 0))}
-              aria-label={`Cases of ${p.name}`}
-              className="w-14 h-10 text-center rounded-xl border-2 border-[var(--primary)]/40 bg-white text-base font-black tabular-nums"
-            />
-            <button type="button" aria-label={`More ${p.name}`} onClick={() => setQty(p.id, n + 1)} className="size-10 rounded-xl bg-[var(--primary)] text-white flex items-center justify-center cursor-pointer active:scale-95">
-              <Plus size={16} />
+            <button
+              type="button"
+              onClick={() => setQty(p.id, 0)}
+              aria-label={`Remove ${p.name}`}
+              className="size-9 rounded-xl border border-black/10 bg-white text-slate-500 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center cursor-pointer"
+            >
+              <X size={15} />
             </button>
           </div>
         ) : (
           <button
             type="button"
             aria-label={`Add ${p.name}`}
-            onClick={() => setQty(p.id, 1)}
-            className="shrink-0 min-h-[40px] px-3.5 rounded-xl bg-[var(--primary)] text-white text-[13px] font-black flex items-center gap-1 cursor-pointer active:scale-95"
+            onClick={() => openEntryPopup(p)}
+            className="shrink-0 min-h-[40px] px-3.5 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-[13px] font-black flex items-center gap-1 cursor-pointer active:scale-95"
           >
             <Plus size={15} /> Add
           </button>
@@ -421,8 +503,8 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
   };
 
   const chip = (on: boolean) =>
-    `shrink-0 min-h-[36px] px-3 rounded-full border text-[12px] font-bold whitespace-nowrap cursor-pointer ${
-      on ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-700 border-black/15'
+    `shrink-0 min-h-[34px] px-3 rounded-full border text-[12px] font-bold whitespace-nowrap cursor-pointer ${
+      on ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-700 border-black/15 hover:bg-slate-50'
     }`;
 
   const confirm = () => {
@@ -430,19 +512,38 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
     if (msg) setError(msg);
   };
 
+  const entryStock = entryProduct ? stockOf(entryProduct.id, godownId) : 0;
+  const entryParsedQty = Math.max(0, parseInt(entryQtyText, 10) || 0);
+  const entryOver = entryProduct ? entryParsedQty > entryStock : false;
+
   return (
-    <SheetShell title="Add products" subtitle="Tap Add, then Done" onClose={onCancel}>
-      <div className="shrink-0 px-4 space-y-2">
+    <SheetShell
+      title="Add products to trip"
+      subtitle="Grouped in sequence (PET, Can, Glass) · Tap Add to enter cases"
+      onClose={onCancel}
+    >
+      <div className="shrink-0 px-4 space-y-2 pb-2 border-b border-black/8">
         <div className="relative">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             enterKeyHint="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search name, size, type…"
-            className="w-full min-h-[46px] pl-9 pr-3 rounded-xl border border-black/15 bg-white text-[15px] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
+            placeholder="Search name, size, PET, Can…"
+            className="w-full min-h-[44px] pl-9 pr-8 rounded-xl border border-black/15 bg-white text-[14.5px] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
           />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 size-8 flex items-center justify-center text-slate-400 hover:text-slate-700 cursor-pointer"
+            >
+              <X size={15} />
+            </button>
+          )}
         </div>
+
         {godowns && godowns.length > 1 && onGodown && (
           <div className="flex gap-1.5 overflow-x-auto no-scrollbar" role="tablist" aria-label="Godown">
             {godowns.map((w) => (
@@ -452,12 +553,43 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
             ))}
           </div>
         )}
+
+        {/* Pack sequence filter row: PET, Can, Glass, Tetra */}
+        {packGroups.length > 1 && (
+          <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+            <button
+              type="button"
+              onClick={() => {
+                setPackFilter('');
+                setSize('');
+              }}
+              className={chip(packFilter === '')}
+            >
+              All packs ({products.length})
+            </button>
+            {packGroups.map(({ info, count }) => (
+              <button
+                key={info.key}
+                type="button"
+                onClick={() => {
+                  setPackFilter(packFilter === info.key ? '' : info.key);
+                  setSize('');
+                }}
+                className={chip(packFilter === info.key)}
+              >
+                {info.heading} ({count})
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Stock toggle + ascending size chips */}
         <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
           <button
             type="button"
             onClick={() => setInStockOnly((v) => !v)}
             aria-pressed={inStockOnly}
-            className={`shrink-0 min-h-[36px] px-3 rounded-full border text-[12px] font-bold whitespace-nowrap cursor-pointer flex items-center gap-1 ${
+            className={`shrink-0 min-h-[34px] px-3 rounded-full border text-[12px] font-bold whitespace-nowrap cursor-pointer flex items-center gap-1 ${
               inStockOnly ? 'bg-emerald-100 text-emerald-900 border-emerald-500' : 'bg-white text-slate-500 border-black/15'
             }`}
           >
@@ -465,7 +597,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
           </button>
           <span className="shrink-0 self-center w-px h-5 bg-black/15" />
           <button type="button" onClick={() => setSize('')} className={chip(size === '')}>
-            All
+            All sizes
           </button>
           {sizes.map((s) => (
             <button key={s} type="button" onClick={() => setSize(size === s ? '' : s)} className={chip(size === s)}>
@@ -473,24 +605,26 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
             </button>
           ))}
         </div>
+
+        {pickCount > 0 && (
+          <div className="flex items-center justify-between gap-2 rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-xs font-bold text-emerald-900">
+            <span>
+              Selected: {pickCount} product{pickCount === 1 ? '' : 's'} · {pickCases} cs
+            </span>
+            <button
+              type="button"
+              onClick={() => setPicks({})}
+              className="text-rose-700 hover:underline cursor-pointer font-bold"
+            >
+              Clear
+            </button>
+          </div>
+        )}
       </div>
 
-      <div className="flex-1 min-h-[180px] overflow-y-auto overscroll-contain px-4 pb-3">
-        {selected.length > 0 && (
-          <>
-            <div className="flex justify-between text-[10.5px] font-black uppercase tracking-wider text-slate-500 mt-3 mb-1 px-1">
-              <span>Chosen now · {selected.length}</span>
-              <span>+{selected.reduce((s, p) => s + (picks[p.id] || 0), 0)} cs</span>
-            </div>
-            {selected.map(renderRow)}
-          </>
-        )}
-        <div className="flex justify-between text-[10.5px] font-black uppercase tracking-wider text-slate-500 mt-3 mb-1 px-1">
-          <span>All products</span>
-          <span>{rest.length}</span>
-        </div>
-        {rest.length === 0 ? (
-          <div className="py-8 text-center text-sm text-slate-500">
+      <div className="flex-1 min-h-[180px] overflow-y-auto overscroll-contain px-4 pb-3 space-y-4 pt-2">
+        {groupedSections.length === 0 ? (
+          <div className="py-10 text-center text-sm text-slate-500">
             Nothing to show.{' '}
             {inStockOnly && (
               <button type="button" onClick={() => setInStockOnly(false)} className="font-bold text-[var(--primary)] underline cursor-pointer">
@@ -499,7 +633,17 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
             )}
           </div>
         ) : (
-          rest.map(renderRow)
+          groupedSections.map((sec) => (
+            <section key={sec.key} className="space-y-1.5">
+              <div className="sticky top-0 z-10 flex items-center justify-between bg-[#faf8f5]/95 backdrop-blur-xs py-1 px-1 text-[11px] font-black uppercase tracking-wider text-slate-600">
+                <span>{sec.heading}</span>
+                <span className="font-mono tabular-nums text-slate-400">{sec.items.length}</span>
+              </div>
+              <div className="space-y-1.5">
+                {sec.items.map(renderRow)}
+              </div>
+            </section>
+          ))
         )}
       </div>
 
@@ -509,6 +653,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
           {error}
         </div>
       )}
+
       <ActionBar
         actions={[
           { key: 'cancel', label: 'Cancel', icon: <X size={20} />, tone: 'cancel', onClick: onCancel, grow: 1, id: 'btn-add-sheet-cancel' },
@@ -524,6 +669,150 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
           },
         ]}
       />
+
+      {/* Focused Quantity Entry Popup when clicking Add on any product */}
+      {entryProduct && (
+        <div
+          className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center bg-slate-900/60 p-0 sm:p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="product-entry-popup-title"
+          onClick={() => setEntryProduct(null)}
+        >
+          <form
+            onSubmit={commitEntryPopup}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl border border-black/10 p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-4"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <SizeChip volume={entryProduct.volume} pack={entryProduct.pack} name={entryProduct.name} />
+                  {entryProduct.unitsPerCrate ? (
+                    <span className="text-[11px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                      {entryProduct.unitsPerCrate} pcs/cs
+                    </span>
+                  ) : null}
+                </div>
+                <h3 id="product-entry-popup-title" className="mt-1.5 text-base font-black text-slate-900 leading-snug break-words">
+                  <OdiaName name={entryProduct.name} nameOr={entryProduct.nameOr} />
+                </h3>
+                <p className="mt-0.5 text-xs font-semibold text-slate-500">
+                  {stockLine(entryProduct)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEntryProduct(null)}
+                aria-label="Close entry popup"
+                className="size-9 shrink-0 rounded-full border border-black/10 bg-slate-50 flex items-center justify-center text-slate-500 hover:text-slate-900 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {godowns && godowns.length > 1 && onGodown && (
+              <div>
+                <label htmlFor="entry-popup-godown" className={fieldLabel}>
+                  Source godown
+                </label>
+                <select
+                  id="entry-popup-godown"
+                  value={godownId}
+                  onChange={(e) => onGodown(e.target.value)}
+                  className={fieldBox}
+                >
+                  {godowns.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name} ({stockOf(entryProduct.id, w.id)} cs)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div>
+              <label htmlFor="entry-popup-qty" className={fieldLabel}>
+                Cases to load
+              </label>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  aria-label="Decrease quantity"
+                  onClick={() => setEntryQtyText(String(Math.max(0, entryParsedQty - 1)))}
+                  className="size-12 shrink-0 rounded-xl border border-black/15 bg-slate-50 flex items-center justify-center text-slate-700 hover:bg-slate-100 active:scale-95 cursor-pointer"
+                >
+                  <Minus size={20} />
+                </button>
+                <input
+                  ref={entryInputRef}
+                  id="entry-popup-qty"
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  value={entryQtyText}
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => setEntryQtyText(e.target.value)}
+                  className="flex-1 min-w-0 h-12 text-center rounded-xl border-2 border-[var(--primary)] bg-white text-2xl font-black tabular-nums text-slate-900 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  aria-label="Increase quantity"
+                  onClick={() => setEntryQtyText(String(entryParsedQty + 1))}
+                  className="size-12 shrink-0 rounded-xl bg-[var(--primary)] text-white flex items-center justify-center hover:bg-[var(--primary-hover)] active:scale-95 cursor-pointer"
+                >
+                  <Plus size={20} />
+                </button>
+              </div>
+
+              {/* Quick-tap preset increments */}
+              <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
+                {[1, 5, 10, 20, 50].map((inc) => (
+                  <button
+                    key={inc}
+                    type="button"
+                    onClick={() => setEntryQtyText(String(entryParsedQty + inc))}
+                    className="min-h-[36px] px-3 rounded-lg border border-black/10 bg-slate-50 hover:bg-slate-100 text-xs font-black text-slate-800 cursor-pointer tabular-nums"
+                  >
+                    +{inc}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setEntryQtyText('0')}
+                  className="ml-auto min-h-[36px] px-2.5 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-100 hover:text-slate-800 cursor-pointer"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            {entryOver && (
+              <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
+                <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+                <span>Entered {entryParsedQty} cs, which is more than {entryStock} cs in this godown.</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setEntryProduct(null)}
+                className="min-h-[48px] rounded-xl border border-black/15 bg-white text-sm font-bold text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                id="btn-entry-popup-confirm"
+                className="min-h-[48px] rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-sm font-black cursor-pointer shadow-sm"
+              >
+                {entryParsedQty > 0 ? `Add ${entryParsedQty} cs` : 'Remove'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </SheetShell>
   );
 };

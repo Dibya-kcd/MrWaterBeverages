@@ -1,3 +1,4 @@
+import GstRegistrationCard from './GstRegistrationCard';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Check,
@@ -35,6 +36,7 @@ import { UserAvatar, useAvatarId } from '../common/UserAvatar';
 import { AVATAR_IDS, writeAvatar } from '../../utils/avatar';
 import { FontSize, GstMode, PriceType, StickyTotalPosition, Salesman } from '../../types';
 import { validateOrgProfile, summarizeErrors, normalizeGstin } from '../../utils/validation';
+import { ToggleSwitch } from '../ui/ToggleSwitch';
 
 const INDIAN_STATES = [
   '27 Maharashtra',
@@ -162,6 +164,13 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
     gstOnFreeCases: billingSettings.gstOnFreeCases !== false,
     schemesEnabled: billingSettings.schemesEnabled !== false,
     autoApplyPromotions: billingSettings.autoApplyPromotions ?? true,
+    showUpiQrOnReceipt: billingSettings.showUpiQrOnReceipt ?? true,
+    showOdiaNameOnReceipt: billingSettings.showOdiaNameOnReceipt ?? false,
+    defaultInvoicePaper: (billingSettings.defaultInvoicePaper === '80mm' ? '80mm' : 'a4') as 'a4' | '80mm',
+    whatsappTextStyle: (billingSettings.whatsappTextStyle === 'receipt' ? 'receipt' : 'detailed') as 'detailed' | 'receipt',
+    receiptTextWidth: (billingSettings.receiptTextWidth === 42 || billingSettings.receiptTextWidth === 48
+      ? billingSettings.receiptTextWidth
+      : 32) as 32 | 42 | 48,
   });
 
   // Keep forms in sync whenever database record changes
@@ -200,6 +209,14 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
       gstOnFreeCases: billingSettings.gstOnFreeCases !== false,
       schemesEnabled: billingSettings.schemesEnabled !== false,
       autoApplyPromotions: billingSettings.autoApplyPromotions ?? true,
+      showUpiQrOnReceipt: billingSettings.showUpiQrOnReceipt ?? true,
+      showOdiaNameOnReceipt: billingSettings.showOdiaNameOnReceipt ?? false,
+      defaultInvoicePaper: billingSettings.defaultInvoicePaper === '80mm' ? '80mm' : 'a4',
+      whatsappTextStyle: billingSettings.whatsappTextStyle === 'receipt' ? 'receipt' : 'detailed',
+      receiptTextWidth:
+        billingSettings.receiptTextWidth === 42 || billingSettings.receiptTextWidth === 48
+          ? billingSettings.receiptTextWidth
+          : 32,
     }));
   }, [billingSettings]);
 
@@ -278,6 +295,11 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
         gstOnFreeCases: billingForm.gstOnFreeCases,
         schemesEnabled: billingForm.schemesEnabled,
         autoApplyPromotions: billingForm.autoApplyPromotions,
+        showUpiQrOnReceipt: billingForm.showUpiQrOnReceipt,
+        showOdiaNameOnReceipt: billingForm.showOdiaNameOnReceipt,
+        defaultInvoicePaper: billingForm.defaultInvoicePaper,
+        whatsappTextStyle: billingForm.whatsappTextStyle,
+        receiptTextWidth: billingForm.receiptTextWidth,
       });
 
       if (profileRes.cloudSynced && billingRes.cloudSynced) {
@@ -863,72 +885,84 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                 </div>
 
                 <div className="flex items-center gap-3 pt-4 md:pt-5">
-                  <button
-                    type="button"
+                  <ToggleSwitch
+                    id="toggle-sell-earliest-expiry"
+                    checked={billingForm.sellEarliestExpiryFirst}
+                    onChange={(v) =>
+                      setBillingForm({
+                        ...billingForm,
+                        sellEarliestExpiryFirst: v,
+                      })
+                    }
+                    ariaLabelledBy="label-sell-earliest-expiry"
+                  />
+                  <span
+                    id="label-sell-earliest-expiry"
                     onClick={() =>
                       setBillingForm({
                         ...billingForm,
                         sellEarliestExpiryFirst: !billingForm.sellEarliestExpiryFirst,
                       })
                     }
-                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.sellEarliestExpiryFirst ? 'bg-[var(--primary)]' : 'bg-neutral-300'
-                    }`}
+                    className="text-sm font-medium text-neutral-800 cursor-pointer select-none"
                   >
-                    <span
-                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
-                        billingForm.sellEarliestExpiryFirst ? 'left-6' : 'left-1'
-                      }`}
-                    />
-                  </button>
-                  <span className="text-sm font-medium text-neutral-800">Sell earliest expiry first</span>
+                    Sell earliest expiry first
+                  </span>
                 </div>
               </div>
 
               {/* ROW 3: ALLOW SELLING WITHOUT STOCK & ROUND OFF BILL TOTAL */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3 sm:gap-y-4 items-center pt-2">
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
+                  <ToggleSwitch
+                    id="toggle-allow-no-stock"
+                    checked={billingForm.allowSellingWithoutStock}
+                    onChange={(v) =>
+                      setBillingForm({
+                        ...billingForm,
+                        allowSellingWithoutStock: v,
+                      })
+                    }
+                    ariaLabelledBy="label-allow-no-stock"
+                  />
+                  <span
+                    id="label-allow-no-stock"
                     onClick={() =>
                       setBillingForm({
                         ...billingForm,
                         allowSellingWithoutStock: !billingForm.allowSellingWithoutStock,
                       })
                     }
-                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.allowSellingWithoutStock ? 'bg-[var(--primary)]' : 'bg-neutral-300'
-                    }`}
+                    className="text-sm font-medium text-neutral-800 cursor-pointer select-none"
                   >
-                    <span
-                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
-                        billingForm.allowSellingWithoutStock ? 'left-6' : 'left-1'
-                      }`}
-                    />
-                  </button>
-                  <span className="text-sm font-medium text-neutral-800">Allow selling without stock</span>
+                    Allow selling without stock
+                  </span>
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
+                  <ToggleSwitch
+                    id="toggle-round-off-total"
+                    checked={billingForm.roundOffGrandTotal}
+                    onChange={(v) =>
+                      setBillingForm({
+                        ...billingForm,
+                        roundOffGrandTotal: v,
+                      })
+                    }
+                    ariaLabelledBy="label-round-off-total"
+                  />
+                  <span
+                    id="label-round-off-total"
                     onClick={() =>
                       setBillingForm({
                         ...billingForm,
                         roundOffGrandTotal: !billingForm.roundOffGrandTotal,
                       })
                     }
-                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.roundOffGrandTotal ? 'bg-[var(--primary)]' : 'bg-neutral-300'
-                    }`}
+                    className="text-sm font-medium text-neutral-800 cursor-pointer select-none"
                   >
-                    <span
-                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
-                        billingForm.roundOffGrandTotal ? 'left-6' : 'left-1'
-                      }`}
-                    />
-                  </button>
-                  <span className="text-sm font-medium text-neutral-800">Round off bill total</span>
+                    Round off bill total
+                  </span>
                 </div>
               </div>
 
@@ -963,6 +997,8 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                     <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   </div>
                 </div>
+
+                <GstRegistrationCard />
 
                 <div>
                   <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
@@ -999,78 +1035,194 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                     className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs"
                   />
                 </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                    INVOICE PDF PAPER (DOWNLOAD / PRINT / SHARE)
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={billingForm.defaultInvoicePaper}
+                      onChange={(e) => setBillingForm({ ...billingForm, defaultInvoicePaper: e.target.value as 'a4' | '80mm' })}
+                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs cursor-pointer"
+                    >
+                      <option value="a4">A4 invoice (full GST layout)</option>
+                      <option value="80mm">80 mm receipt (thermal slip)</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                  <p className="text-[11px] text-neutral-500 mt-1">You can still switch A4 / 80 mm on each invoice's Share screen.</p>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                    WHATSAPP BILL MESSAGE STYLE
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={billingForm.whatsappTextStyle}
+                      onChange={(e) => setBillingForm({ ...billingForm, whatsappTextStyle: e.target.value as 'detailed' | 'receipt' })}
+                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs cursor-pointer"
+                    >
+                      <option value="detailed">Detailed message (with icons)</option>
+                      <option value="receipt">80 mm receipt text (fixed-width slip)</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1.5 block">
+                    RECEIPT TEXT WIDTH (CHARACTERS PER LINE)
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={billingForm.receiptTextWidth}
+                      onChange={(e) => setBillingForm({ ...billingForm, receiptTextWidth: Number(e.target.value) as 32 | 42 | 48 })}
+                      className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-9 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs cursor-pointer"
+                    >
+                      <option value={32}>32 - fits a phone chat (WhatsApp)</option>
+                      <option value={42}>42 - 80 mm printer apps</option>
+                      <option value={48}>48 - 80 mm printer apps, small font</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                  <p className="text-[11px] text-neutral-500 mt-1">Used when the message style above is the 80 mm receipt text.</p>
+                </div>
               </div>
 
               {/* STATUTORY & SCHEME SWITCHES */}
-              <div className="pt-2 border-t border-neutral-100 space-y-3 text-sm">
+              <div className="pt-2 border-t border-neutral-100 space-y-3.5 text-sm">
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
+                  <ToggleSwitch
+                    id="toggle-show-batch-invoice"
+                    checked={billingForm.showBatchOnInvoice}
+                    onChange={(v) =>
+                      setBillingForm({
+                        ...billingForm,
+                        showBatchOnInvoice: v,
+                      })
+                    }
+                    ariaLabelledBy="label-show-batch-invoice"
+                  />
+                  <span
+                    id="label-show-batch-invoice"
                     onClick={() =>
                       setBillingForm({
                         ...billingForm,
                         showBatchOnInvoice: !billingForm.showBatchOnInvoice,
                       })
                     }
-                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.showBatchOnInvoice ? 'bg-[var(--primary)]' : 'bg-neutral-300'
-                    }`}
+                    className="text-sm font-medium text-neutral-800 cursor-pointer select-none"
                   >
-                    <span
-                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
-                        billingForm.showBatchOnInvoice ? 'left-6' : 'left-1'
-                      }`}
-                    />
-                  </button>
-                  <span className="text-sm font-medium text-neutral-800">
                     Print Lot / Batch numbers & expiry dates on invoices
                   </span>
                 </div>
 
+                <div className="flex items-start gap-3">
+                  <ToggleSwitch
+                    id="toggle-show-upi-qr"
+                    checked={billingForm.showUpiQrOnReceipt}
+                    onChange={(v) =>
+                      setBillingForm({
+                        ...billingForm,
+                        showUpiQrOnReceipt: v,
+                      })
+                    }
+                    ariaLabelledBy="label-show-upi-qr"
+                    className="mt-0.5"
+                  />
+                  <span
+                    id="label-show-upi-qr"
+                    onClick={() =>
+                      setBillingForm({
+                        ...billingForm,
+                        showUpiQrOnReceipt: !billingForm.showUpiQrOnReceipt,
+                      })
+                    }
+                    className="text-sm font-medium text-neutral-800 cursor-pointer select-none"
+                  >
+                    Print a UPI QR on the 80 mm receipt when money is still due
+                    <span className="block text-[11px] font-normal text-neutral-500 mt-0.5">Needs your UPI ID in the organization profile. The QR opens a payment screen with the balance filled in.</span>
+                  </span>
+                </div>
+
+                <div className="flex items-start gap-3">
+                  <ToggleSwitch
+                    id="toggle-show-odia-receipt"
+                    checked={billingForm.showOdiaNameOnReceipt}
+                    onChange={(v) =>
+                      setBillingForm({
+                        ...billingForm,
+                        showOdiaNameOnReceipt: v,
+                      })
+                    }
+                    ariaLabelledBy="label-show-odia-receipt"
+                    className="mt-0.5"
+                  />
+                  <span
+                    id="label-show-odia-receipt"
+                    onClick={() =>
+                      setBillingForm({
+                        ...billingForm,
+                        showOdiaNameOnReceipt: !billingForm.showOdiaNameOnReceipt,
+                      })
+                    }
+                    className="text-sm font-medium text-neutral-800 cursor-pointer select-none"
+                  >
+                    Print Odia product names on the 80 mm receipt and WhatsApp receipt text
+                    <span className="block text-[11px] font-normal text-neutral-500 mt-0.5">Uses the Odia name saved on each product. Products without one show the English name only.</span>
+                  </span>
+                </div>
+
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
+                  <ToggleSwitch
+                    id="toggle-gst-free-cases"
+                    checked={billingForm.gstOnFreeCases}
+                    onChange={(v) =>
+                      setBillingForm({
+                        ...billingForm,
+                        gstOnFreeCases: v,
+                      })
+                    }
+                    ariaLabelledBy="label-gst-free-cases"
+                  />
+                  <span
+                    id="label-gst-free-cases"
                     onClick={() =>
                       setBillingForm({
                         ...billingForm,
                         gstOnFreeCases: !billingForm.gstOnFreeCases,
                       })
                     }
-                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.gstOnFreeCases ? 'bg-[var(--primary)]' : 'bg-neutral-300'
-                    }`}
+                    className="text-sm font-medium text-neutral-800 cursor-pointer select-none"
                   >
-                    <span
-                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
-                        billingForm.gstOnFreeCases ? 'left-6' : 'left-1'
-                      }`}
-                    />
-                  </button>
-                  <span className="text-sm font-medium text-neutral-800">
                     Charge GST on free scheme cases too (supplier invoice method)
                   </span>
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
+                  <ToggleSwitch
+                    id="toggle-auto-apply-schemes"
+                    checked={billingForm.autoApplyPromotions}
+                    onChange={(v) =>
+                      setBillingForm({
+                        ...billingForm,
+                        autoApplyPromotions: v,
+                      })
+                    }
+                    ariaLabelledBy="label-auto-apply-schemes"
+                  />
+                  <span
+                    id="label-auto-apply-schemes"
                     onClick={() =>
                       setBillingForm({
                         ...billingForm,
                         autoApplyPromotions: !billingForm.autoApplyPromotions,
                       })
                     }
-                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                      billingForm.autoApplyPromotions ? 'bg-[var(--primary)]' : 'bg-neutral-300'
-                    }`}
+                    className="text-sm font-medium text-neutral-800 cursor-pointer select-none"
                   >
-                    <span
-                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
-                        billingForm.autoApplyPromotions ? 'left-6' : 'left-1'
-                      }`}
-                    />
-                  </button>
-                  <span className="text-sm font-medium text-neutral-800">
                     Auto-apply qualifying schemes by default in Billing
                   </span>
                 </div>
@@ -1411,46 +1563,40 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
 
             {/* Accessibility Switches */}
             <div className="pt-2 border-t border-neutral-100 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex items-center justify-between gap-3">
+                <div
+                  id="label-settings-high-contrast"
+                  onClick={() => setHighContrast(!highContrast)}
+                  className="cursor-pointer select-none"
+                >
                   <span className="text-sm font-semibold text-neutral-800 block">{t('settings.display.highContrast')}</span>
                   <span className="text-xs text-neutral-500">{t('settings.display.highContrastDesc')}</span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setHighContrast(!highContrast)}
-                  className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                    highContrast ? 'bg-[var(--primary)]' : 'bg-neutral-300'
-                  }`}
-                >
-                  <span
-                    className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
-                      highContrast ? 'left-6' : 'left-1'
-                    }`}
-                  />
-                </button>
+                <ToggleSwitch
+                  id="toggle-settings-high-contrast"
+                  checked={highContrast}
+                  onChange={setHighContrast}
+                  ariaLabelledBy="label-settings-high-contrast"
+                />
               </div>
 
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex items-center justify-between gap-3">
+                <div
+                  id="label-settings-easy-view"
+                  onClick={toggleLowVisionMode}
+                  className="cursor-pointer select-none"
+                >
                   <span className="text-sm font-semibold text-neutral-800 block">{t('settings.display.easyView')}</span>
                   <span className="text-xs text-neutral-500">{t('settings.display.easyViewDesc')}</span>
                 </div>
-                <button
-                  type="button"
-                  onClick={toggleLowVisionMode}
-                  className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                    lowVisionMode ? 'bg-[var(--primary)]' : 'bg-neutral-300'
-                  }`}
-                >
-                  <span
-                    className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
-                      lowVisionMode ? 'left-6' : 'left-1'
-                    }`}
-                  />
-                </button>
+                <ToggleSwitch
+                  id="toggle-settings-easy-view"
+                  checked={lowVisionMode}
+                  onChange={() => toggleLowVisionMode()}
+                  ariaLabelledBy="label-settings-easy-view"
+                />
               </div>
-</div>
+            </div>
           </div>
         )}
 
@@ -1494,7 +1640,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
               <button
                 type="button"
                 onClick={async () => {
-                  setToastMessage('Triggering full cloud sync...');
+                  setToastMessage('Sending changes to cloud...');
                   const res = await syncToCloud();
                   setToastMessage(res.message);
                   setTimeout(() => setToastMessage(null), 3500);
@@ -1502,7 +1648,27 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                 className="px-4 py-2 bg-[var(--primary)] hover:bg-[var(--primary)] text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer shadow-xs flex items-center gap-1.5"
               >
                 <Cloud className="w-3.5 h-3.5" />
-                <span>Sync All Data to Cloud</span>
+                <span>Push Changes to Cloud</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  if (
+                    !window.confirm(
+                      'Re-send EVERYTHING to Supabase? This rewrites every record and uses a lot of database activity. Only needed after restoring or changing the database. "Push Changes to Cloud" sends just what changed.',
+                    )
+                  ) {
+                    return;
+                  }
+                  setToastMessage('Re-sending everything to cloud...');
+                  const res = await syncToCloud({ full: true });
+                  setToastMessage(res.message);
+                  setTimeout(() => setToastMessage(null), 3500);
+                }}
+                className="px-2 py-2 text-[11px] font-semibold text-neutral-500 underline underline-offset-2 hover:text-neutral-800 cursor-pointer"
+              >
+                Re-send everything (rarely needed)
               </button>
 
               <button
@@ -1682,17 +1848,21 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 pt-1">
-                <input
-                  type="checkbox"
-                  id="staffActiveToggle"
-                  checked={editStaffActive}
-                  onChange={(e) => setEditStaffActive(e.target.checked)}
-                  className="rounded border-neutral-300 text-[var(--primary)] focus:ring-0 cursor-pointer"
-                />
-                <label htmlFor="staffActiveToggle" className="text-xs font-medium text-neutral-700 cursor-pointer">
+              <div className="flex items-center justify-between gap-3 pt-1">
+                <span
+                  id="label-staff-active-toggle"
+                  onClick={() => setEditStaffActive(!editStaffActive)}
+                  className="text-xs font-medium text-neutral-700 cursor-pointer select-none"
+                >
                   Account is Active (can log in and create sales orders)
-                </label>
+                </span>
+                <ToggleSwitch
+                  id="staffActiveToggle"
+                  size="sm"
+                  checked={editStaffActive}
+                  onChange={setEditStaffActive}
+                  ariaLabelledBy="label-staff-active-toggle"
+                />
               </div>
 
               <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-neutral-100">

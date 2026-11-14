@@ -455,14 +455,14 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
           )}
         </div>
         <div className="hidden md:block overflow-x-auto">
-          <table className="w-full text-xs">
+          <table className="w-full min-w-[520px] text-xs">
             <thead>
               <tr className="text-left text-[11px] font-bold uppercase tracking-wide text-slate-500 border-b border-black/5">
-                <th className="py-1.5 pr-3">Date</th>
-                <th className="py-1 pr-3">Type</th>
-                <th className="py-1 pr-3">Paid to</th>
-                <th className="py-1 pr-3">Note</th>
-                <th className="py-1 pr-3 text-right">Amount</th>
+                <th className="py-1.5 pr-3 whitespace-nowrap">Date</th>
+                <th className="py-1 pr-3 whitespace-nowrap">Type</th>
+                <th className="py-1 pr-3 whitespace-nowrap">Paid to</th>
+                <th className="py-1 pr-3 whitespace-nowrap">Note</th>
+                <th className="py-1 pr-3 text-right whitespace-nowrap">Amount</th>
                 <th />
               </tr>
             </thead>

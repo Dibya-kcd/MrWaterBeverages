@@ -32,7 +32,16 @@ export function writeOffNetForPeriod(
     const cost = Number(d.costValue) || 0;
     loss += cost;
     if (d.compensationStatus === 'settled' || d.compensationStatus === 'partial') {
-      recovered += Math.min(cost, Number(d.compensatedAmount) || Number(d.cnTaxableValue) || 0);
+      // The loss above is ex-GST, so what the supplier gave back must be ex-GST too. `compensatedAmount` is the
+      // credit note TOTAL (GST included); counting it whole treated the GST as recovered and understated the loss.
+      const paid = Number(d.compensatedAmount) || 0;
+      const cnTotal = Number(d.cnTotal) || 0;
+      const cnTaxable = Number(d.cnTaxableValue) || 0;
+      const exGstPaid =
+        paid > 0 && cnTotal > 0 && cnTaxable > 0 && cnTaxable <= cnTotal
+          ? paid * (cnTaxable / cnTotal)
+          : paid || cnTaxable;
+      recovered += Math.min(cost, exGstPaid);
     }
   }
   return { loss: r2(loss), recovered: r2(recovered), net: r2(Math.max(0, loss - recovered)) };

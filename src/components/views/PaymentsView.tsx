@@ -427,12 +427,12 @@ export const PaymentsView: React.FC = () => {
     }
     return (
       <>
-        <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-          <table className="w-full text-left border-collapse">
+        <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-xs overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left border-collapse">
             <thead>
               <tr className="border-b border-slate-200/90 bg-slate-50/70">
                 {["ITEM", "DETAILS", "VALUE", "STATUS"].map((h) => (
-                  <th key={h} className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  <th key={h} className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
                     {h}
                   </th>
                 ))}
@@ -446,14 +446,14 @@ export const PaymentsView: React.FC = () => {
                   className="hover:bg-slate-50/80 cursor-pointer transition-colors"
                   title="Click to view payment details"
                 >
-                  <td className="py-3.5 px-4 font-bold text-slate-800 text-sm">{formatPaymentId(p.id, idx)}</td>
+                  <td className="py-3.5 px-4 font-bold text-slate-800 text-sm whitespace-nowrap">{formatPaymentId(p.id, idx)}</td>
                   <td className="py-3.5 px-4 text-slate-500 text-sm">
                     {p.customerName} · {formatItemDate(p.paymentDate || p.createdAt)}
                   </td>
-                  <td className="py-3.5 px-4 font-bold text-slate-800 text-sm">
+                  <td className="py-3.5 px-4 font-bold text-slate-800 text-sm whitespace-nowrap">
                     {p.amount < 0 ? "−" : ""}₹{money(Math.abs(p.amount))}
                   </td>
-                  <td className="py-3.5 px-4 text-teal-600 font-medium text-sm">{p.isRefund ? "Refunded" : "Received"}</td>
+                  <td className="py-3.5 px-4 text-teal-600 font-medium text-sm whitespace-nowrap">{p.isRefund ? "Refunded" : "Received"}</td>
                 </tr>
               ))}
             </tbody>
@@ -1209,20 +1209,20 @@ export const PaymentsView: React.FC = () => {
           {/* 5. Tab 2: Due / Credit Invoices View */}
           {activeTab === "due" && (
             <div className="space-y-3">
-              <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-                <table className="w-full text-left border-collapse">
+              <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-xs overflow-x-auto">
+                <table className="w-full min-w-[560px] text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200/90 bg-slate-50/70">
-                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
                         ITEM
                       </th>
-                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
                         DETAILS
                       </th>
-                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
                         BALANCE DUE
                       </th>
-                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                      <th className="py-3 px-4 text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">
                         STATUS
                       </th>
                     </tr>
@@ -1251,16 +1251,16 @@ export const PaymentsView: React.FC = () => {
                             className="hover:bg-slate-50/80 cursor-pointer transition-colors"
                             title="Click to populate Record Receipt form above"
                           >
-                            <td className="py-3.5 px-4 font-bold text-slate-800 text-sm">
+                            <td className="py-3.5 px-4 font-bold text-slate-800 text-sm whitespace-nowrap">
                               INV-{String(b.id).padStart(4, "0")}
                             </td>
                             <td className="py-3.5 px-4 text-slate-500 text-sm">
                               {b.retailer || "Cash Sale"} · {formatItemDate(b.date || "")}
                             </td>
-                            <td className="py-3.5 px-4 font-bold text-rose-700 text-sm">
+                            <td className="py-3.5 px-4 font-bold text-rose-700 text-sm whitespace-nowrap">
                               ₹{money(due)}
                             </td>
-                            <td className="py-3.5 px-4">
+                            <td className="py-3.5 px-4 whitespace-nowrap">
                               <span className={`text-xs font-bold ${daysOld > 7 ? "text-rose-600" : "text-amber-700"}`}>
                                 {daysOld > 7 ? `Overdue (${daysOld}d)` : "Due"}
                               </span>

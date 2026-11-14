@@ -31,7 +31,7 @@ import {
 import { money } from "../../utils/billing";
 import { billBalance } from "../../utils/salesReturns";
 import { useBeats } from "../../hooks/useBeats";
-import { ConfirmModal } from "../ui";
+import { ConfirmModal, ToggleSwitch } from "../ui";
 import { RecordPaymentModal } from "../common/RecordPaymentModal";
 import { RecordRefundModal } from "../common/RecordRefundModal";
 import { EditBillModal } from "../common/EditBillModal";
@@ -159,6 +159,31 @@ const emptyCustomerForm = () => ({
   gstin: "",
 });
 
+function parseCustomerNotes(notes?: string) {
+  const out = {
+    contactPerson: "",
+    pan: "",
+    fssai: "",
+    customerType: "Retail",
+    priceList: "Retail",
+    state: "21 · Odisha",
+    creditDays: "0",
+    visitOrder: "0",
+  };
+  if (!notes) return out;
+  for (const part of notes.split("·").map((s) => s.trim())) {
+    if (part.startsWith("Contact:")) out.contactPerson = part.slice("Contact:".length).trim();
+    else if (part.startsWith("PAN:")) out.pan = part.slice("PAN:".length).trim();
+    else if (part.startsWith("FSSAI:")) out.fssai = part.slice("FSSAI:".length).trim();
+    else if (part.startsWith("Type:")) out.customerType = part.slice("Type:".length).trim() || "Retail";
+    else if (part.startsWith("Price list:")) out.priceList = part.slice("Price list:".length).trim() || "Retail";
+    else if (part.startsWith("State:")) out.state = part.slice("State:".length).trim() || "21 · Odisha";
+    else if (part.startsWith("Credit days:")) out.creditDays = part.slice("Credit days:".length).trim() || "0";
+    else if (part.startsWith("Visit order:")) out.visitOrder = part.slice("Visit order:".length).trim() || "0";
+  }
+  return out;
+}
+
 const emptySupplierForm = () => ({
   name: "",
   contactPerson: "",
@@ -246,6 +271,12 @@ export const CustomersView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [formOpen, setFormOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+  const [editingDerivedCustomer, setEditingDerivedCustomer] =
+    useState<ExistingCustomer | null>(null);
+  const [clashConfirm, setClashConfirm] = useState<{
+    clash: Customer;
+    commit: () => void;
+  } | null>(null);
   const [customerForm, setCustomerForm] = useState(emptyCustomerForm());
   const [selectedCustomer, setSelectedCustomer] =
     useState<ExistingCustomer | null>(null);
@@ -371,40 +402,43 @@ export const CustomersView: React.FC = () => {
   /* ─── Customer form handlers ─── */
   const openAddCustomer = () => {
     setEditingCustomer(null);
+    setEditingDerivedCustomer(null);
+    setClashConfirm(null);
     setCustomerForm(emptyCustomerForm());
     setFormError(null);
     setFormOpen(true);
   };
 
   const openEditCustomer = (ec: ExistingCustomer) => {
-    const full = customers.find(
-      (c) =>
-        c.id === ec.id ||
-        c.name.trim().toLowerCase() === ec.name.trim().toLowerCase(),
-    );
+    const targetNorm = normCustName(ec.name);
+    const full =
+      (ec.id ? customers.find((c) => c.id === ec.id) : undefined) ||
+      customers.find((c) => normCustName(c.name) === targetNorm);
+    const parsedNotes = parseCustomerNotes(full?.notes);
     setEditingCustomer(full || null);
+    setEditingDerivedCustomer(full ? null : ec);
+    setClashConfirm(null);
     setCustomerForm({
       name: full?.name || ec.name || "",
       nameOr: full?.nameOr || (ec as any).nameOr || "",
-      contactPerson: "",
+      contactPerson: parsedNotes.contactPerson,
       phone: full?.phone || ec.phone || "",
-      customerType: "Retail",
-      priceList: "Retail",
+      customerType: parsedNotes.customerType,
+      priceList: parsedNotes.priceList,
       gstRegistered: !!(full?.gstin || ec.gstin),
-      state: "21 · Odisha",
+      state: parsedNotes.state,
       address: full?.address || ec.address || "",
-      pan: "",
-      fssai: "",
-      beat: customerBeat(full)?.name || full?.route || full?.city || "",
-      visitOrder: "0",
+      pan: parsedNotes.pan,
+      fssai: parsedNotes.fssai,
+      beat: customerBeat(full)?.name || full?.route || full?.city || ec.city || "",
+      visitOrder: parsedNotes.visitOrder,
       creditLimit: String(full?.creditLimit ?? ec.creditLimit ?? 0),
-      creditDays: "0",
-      openingBalance: String(full?.openingBalance ?? 0),
+      creditDays: parsedNotes.creditDays,
+      openingBalance: String(full?.openingBalance ?? ec.openingBalance ?? 0),
       gstin: full?.gstin || ec.gstin || "",
     });
     setFormError(null);
     setFormOpen(true);
-    setSelectedCustomer(null);
   };
 
   const saveCustomer = () => {
@@ -413,6 +447,9 @@ export const CustomersView: React.FC = () => {
       setFormError("Shop / business name is required");
       return;
     }
+    const beatMatch =
+      activeBeats.find((b) => b.name === customerForm.beat.trim()) ||
+      beats.find((b) => b.name === customerForm.beat.trim());
     const payload = {
       name,
       nameOr: customerForm.nameOr.trim() || undefined,
@@ -421,7 +458,7 @@ export const CustomersView: React.FC = () => {
       city: customerForm.beat.trim() || undefined,
       route: customerForm.beat.trim() || undefined,
       // linked by id so renaming the beat never loses this customer
-      beatId: activeBeats.find((b) => b.name === customerForm.beat.trim())?.id,
+      beatId: beatMatch?.id,
       gstin: customerForm.gstRegistered
         ? customerForm.gstin.trim() || undefined
         : undefined,
@@ -440,27 +477,87 @@ export const CustomersView: React.FC = () => {
         .filter(Boolean)
         .join(" · "),
     };
+
+    const syncSelectedDetail = (saved: Customer) => {
+      setSelectedCustomer((prev) =>
+        prev
+          ? {
+              ...prev,
+              id: saved.id,
+              name: saved.name,
+              nameOr: saved.nameOr,
+              phone: saved.phone,
+              address: saved.address,
+              city: saved.city,
+              gstin: saved.gstin,
+              creditLimit: saved.creditLimit,
+              openingBalance: saved.openingBalance,
+            }
+          : null,
+      );
+    };
+
     if (editingCustomer) {
+      const commit = () => {
+        const saved = updateCustomer({
+          ...editingCustomer,
+          ...payload,
+          updatedAt: new Date().toISOString(),
+        });
+        syncSelectedDetail(saved);
+        setClashConfirm(null);
+        setFormOpen(false);
+        setEditingCustomer(null);
+        setEditingDerivedCustomer(null);
+      };
       const clash = customerNameClash(editingCustomer.id, name);
-      if (
-        clash &&
-        !window.confirm(
-          `Another customer is already named "${clash.name}"${clash.phone ? ` (phone ${clash.phone})` : ""}. ` +
-            `Their bills stay with them and are NOT merged, but the two will look the same in lists. Save this name anyway?`,
-        )
-      ) {
+      if (clash) {
+        setClashConfirm({ clash, commit });
         return;
       }
-      updateCustomer({
-        ...editingCustomer,
-        ...payload,
-        updatedAt: new Date().toISOString(),
-      });
-    } else {
-      addCustomer(payload);
+      commit();
+      return;
     }
+
+    if (editingDerivedCustomer) {
+      const derivedId =
+        editingDerivedCustomer.id ||
+        `cust_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const commit = () => {
+        const saved = updateCustomer(
+          {
+            id: derivedId,
+            ...payload,
+            altPhone: editingDerivedCustomer.altPhone,
+            createdAt:
+              editingDerivedCustomer.lastBillDate || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          true,
+          {
+            name: editingDerivedCustomer.name,
+            phone: editingDerivedCustomer.phone,
+          },
+        );
+        syncSelectedDetail(saved);
+        setClashConfirm(null);
+        setFormOpen(false);
+        setEditingCustomer(null);
+        setEditingDerivedCustomer(null);
+      };
+      const clash = customerNameClash(derivedId, name);
+      if (clash) {
+        setClashConfirm({ clash, commit });
+        return;
+      }
+      commit();
+      return;
+    }
+
+    addCustomer(payload);
     setFormOpen(false);
     setEditingCustomer(null);
+    setEditingDerivedCustomer(null);
   };
 
   /* ─── Supplier form handlers ─── */
@@ -1375,7 +1472,7 @@ export const CustomersView: React.FC = () => {
               ? editingSupplier
                 ? "Edit supplier"
                 : "New supplier"
-              : editingCustomer
+              : editingCustomer || editingDerivedCustomer
                 ? "Edit customer"
                 : "New customer"}
           </h1>
@@ -1384,7 +1481,9 @@ export const CustomersView: React.FC = () => {
             onClick={() => {
               setFormOpen(false);
               setEditingCustomer(null);
+              setEditingDerivedCustomer(null);
               setEditingSupplier(null);
+              setClashConfirm(null);
             }}
             className="p-2 rounded-full hover:bg-black/5 cursor-pointer"
             aria-label="Close"
@@ -1511,6 +1610,11 @@ export const CustomersView: React.FC = () => {
                   onChange={(e) => setCField("name", e.target.value)}
                   autoFocus
                 />
+                {(editingCustomer || editingDerivedCustomer) && (
+                  <p className="text-[11px] text-slate-500 mt-1.5">
+                    Renaming updates this customer in-place along with all their past bills, payments, and ledger.
+                  </p>
+                )}
               </Field>
               <Field label="Name in Odia (ଓଡ଼ିଆ) — optional">
                 <input
@@ -1682,7 +1786,7 @@ export const CustomersView: React.FC = () => {
           )}
         </div>
 
-        <div className="sticky bottom-0 bg-[var(--bg)] border-t border-black/5 px-4 sm:px-6 py-3">
+        <div className="sticky bottom-0 z-10 bg-[var(--bg)] border-t border-black/5 px-4 sm:px-6 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <button
             type="button"
             onClick={isSupplier ? saveSupplier : saveCustomer}
@@ -1693,6 +1797,20 @@ export const CustomersView: React.FC = () => {
         </div>
 
         <style>{CRATE_INPUT_CSS}</style>
+
+        {clashConfirm && (
+          <ConfirmModal
+            isOpen
+            title="Duplicate customer name"
+            message={`Another customer is already named "${clashConfirm.clash.name}"${clashConfirm.clash.phone ? ` (phone ${clashConfirm.clash.phone})` : ""}. Their bills stay with them and are NOT merged, but the two will look the same in lists. Save this name anyway?`}
+            confirmButtonLabel="Save anyway"
+            cancelButtonLabel="Go back"
+            variant="warning"
+            confirmIcon={<Edit2 className="w-3.5 h-3.5" />}
+            onConfirm={clashConfirm.commit}
+            onClose={() => setClashConfirm(null)}
+          />
+        )}
       </div>
     );
   }
@@ -2022,23 +2140,7 @@ function Toggle({
   on: boolean;
   onChange: (v: boolean) => void;
 }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      onClick={() => onChange(!on)}
-      className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer shrink-0 ${
-        on ? "bg-[var(--primary)]" : "bg-slate-300"
-      }`}
-    >
-      <span
-        className={`absolute top-0.5 left-0.5 size-5 rounded-full bg-white shadow transition-transform ${
-          on ? "translate-x-5" : "translate-x-0"
-        }`}
-      />
-    </button>
-  );
+  return <ToggleSwitch checked={on} onChange={onChange} />;
 }
 
 function EmptyCard({ title, hint }: { title: string; hint: string }) {

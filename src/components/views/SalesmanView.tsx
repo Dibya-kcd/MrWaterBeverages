@@ -57,7 +57,7 @@ import { LanguageToggle } from '../common/LanguageToggle';
 import { OdiaName } from '../common/OdiaName';
 import { normCustName, splitSameNameShops } from '../../context/ledgerHelpers';
 import { Bill, BillItem, ExistingCustomer, PriceType, Product, Trip } from '../../types';
-import { billTotals, buildBillText, computeLine, normalizeGstFraction, money, schemeLabel, whatsappLink, resolveProductGstRate, resolveProductHsn, formatProductVolPack, volumeFromName } from '../../utils/billing';
+import { billTotals, computeLine, normalizeGstFraction, money, schemeLabel, whatsappLink, resolveProductGstRate, resolveProductHsn, formatProductVolPack, volumeFromName } from '../../utils/billing';
 import { downloadInvoicePdf } from '../../utils/invoicePdf';
 import { getProductOdiaName, getCustomerOdiaName } from '../../utils/displayName';
 import { isSpeechRecognitionSupported, speakAssistiveText, startSpeechRecognition } from '../../utils/speechRecognition';
@@ -71,6 +71,7 @@ import { billBalance } from '../../utils/salesReturns';
 import { formatBeatStops, beatLabel } from '../../constants/beats';
 import { useBeats } from '../../hooks/useBeats';
 import { todayISO } from "../../utils/dateLocal";
+import { buildBillMessage } from '../../utils/receipt80';
 
 export const SalesmanView: React.FC = () => {
   const { activeBeats } = useBeats();
@@ -183,57 +184,53 @@ export const SalesmanView: React.FC = () => {
   // Trip history visibility toggle
   const [showTripHistory, setShowTripHistory] = useState<boolean>(false);
 
-  // Trips displayed in the selector list: ONLY show active out trips! Never show closed trips by default!
-  const displayedTrips = useMemo(() => {
-    if (showTripHistory) return relevantTrips;
-    return anyOutTrips.length > 0 ? anyOutTrips : relevantTrips;
-  }, [showTripHistory, relevantTrips, anyOutTrips]);
+  // Selected vehicle/trip selection: only active ('out') trips may be active for selling
+  const [selectedTripId, setSelectedTripId] = useState<number | null>(() => {
+    return todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? null;
+  });
 
-  // Trip history: search + "show more" so every past run can be reached, not just the latest few
+  // Keep selectedTripId pointing to an open ('out') trip; clears automatically once closed
+  useEffect(() => {
+    if (selectedTripId !== null) {
+      const stillOut = anyOutTrips.some((t) => Number(t.id) === Number(selectedTripId));
+      if (!stillOut) {
+        setSelectedTripId(todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? null);
+      }
+    } else if (anyOutTrips.length > 0) {
+      setSelectedTripId(todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? null);
+    }
+  }, [selectedTripId, todayOutTrips, anyOutTrips]);
+
+  // Active Trip: strictly an open ('out') run — never falls back to an already-closed trip
+  const activeTrip: Trip | null = useMemo(() => {
+    if (selectedTripId !== null) {
+      const found = anyOutTrips.find((t) => Number(t.id) === Number(selectedTripId));
+      if (found) return found;
+    }
+    return todayOutTrips[0] ?? anyOutTrips[0] ?? null;
+  }, [selectedTripId, todayOutTrips, anyOutTrips]);
+
+  // Additional open ('out') trips besides activeTrip (prevents duplicating activeTrip below its banner)
+  const otherOutTrips = useMemo(() => {
+    if (!activeTrip) return anyOutTrips;
+    return anyOutTrips.filter((t) => Number(t.id) !== Number(activeTrip.id));
+  }, [anyOutTrips, activeTrip]);
+
+  // Trip history: search + "show more" over closed past runs so every past run can be reached without duplicating active runs
   const [tripSearch, setTripSearch] = useState('');
   const [tripLimit, setTripLimit] = useState(30);
-  const matchedTrips = useMemo(() => {
+  const matchedHistoryTrips = useMemo(() => {
     const q = tripSearch.trim().toLowerCase();
-    if (!showTripHistory || !q) return displayedTrips;
-    return displayedTrips.filter(
+    if (!q) return olderOrClosedTrips;
+    return olderOrClosedTrips.filter(
       (t) =>
         (t.vehicle || '').toLowerCase().includes(q) ||
         (t.route || '').toLowerCase().includes(q) ||
         (t.date || '').includes(q) ||
         String(t.id).includes(q),
     );
-  }, [displayedTrips, tripSearch, showTripHistory]);
-  const shownTrips = showTripHistory ? matchedTrips.slice(0, tripLimit) : matchedTrips;
-
-  // Selected vehicle/trip selection: prioritize active out trips, then any available trip
-  const [selectedTripId, setSelectedTripId] = useState<number | null>(() => {
-    return todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? relevantTrips[0]?.id ?? trips[0]?.id ?? null;
-  });
-
-  // Keep selectedTripId valid if trips change
-  useEffect(() => {
-    if (selectedTripId !== null) {
-      const exists = trips.some((t) => Number(t.id) === Number(selectedTripId));
-      if (!exists) {
-        const nextId = todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? relevantTrips[0]?.id ?? trips[0]?.id ?? null;
-        setSelectedTripId(nextId);
-      }
-    } else if (trips.length > 0) {
-      const nextId = todayOutTrips[0]?.id ?? anyOutTrips[0]?.id ?? relevantTrips[0]?.id ?? trips[0]?.id ?? null;
-      if (nextId !== null) {
-        setSelectedTripId(nextId);
-      }
-    }
-  }, [relevantTrips, selectedTripId, todayOutTrips, anyOutTrips, trips]);
-
-  // Active Trip: seamlessly link by selectedTripId or default to the most relevant open run
-  const activeTrip: Trip | null = useMemo(() => {
-    if (selectedTripId !== null) {
-      const found = trips.find((t) => Number(t.id) === Number(selectedTripId));
-      if (found) return found;
-    }
-    return todayOutTrips[0] ?? anyOutTrips[0] ?? relevantTrips[0] ?? trips[0] ?? null;
-  }, [trips, selectedTripId, todayOutTrips, anyOutTrips, relevantTrips]);
+  }, [olderOrClosedTrips, tripSearch]);
+  const shownHistoryTrips = matchedHistoryTrips.slice(0, tripLimit);
 
   // Quick Trip / Van Load Creator State
   const [showNewVanModal, setShowNewVanModal] = useState(false);
@@ -278,7 +275,7 @@ export const SalesmanView: React.FC = () => {
   const [invoiceDiscountDraft, setInvoiceDiscountDraft] = useState<string>('');
   const [settledTotalDraft, setSettledTotalDraft] = useState<string>('');
   const [autoSendWhatsApp, setAutoSendWhatsApp] = useState<boolean>(true);
-  const [lastFinalizedWhatsApp, setLastFinalizedWhatsApp] = useState<{ id: number; phone: string; url: string } | null>(null);
+  const [lastFinalizedWhatsApp, setLastFinalizedWhatsApp] = useState<{ id: number; phone: string; url: string; bill: Bill } | null>(null);
 
   // Cart Modal & Multi-beverage selector states
   const [isCartOpen, setIsCartOpen] = useState<boolean>(false);
@@ -1163,17 +1160,12 @@ export const SalesmanView: React.FC = () => {
           salesman: activeTrip.salesman,
           additionalDiscount: appliedDiscount,
         };
-        const text = buildBillText(dummyBill, orgProfile, billingSettings);
+        const text = buildBillMessage(dummyBill, orgProfile, billingSettings);
         const url = whatsappLink(phoneToUse, text);
-        setLastFinalizedWhatsApp({ id: billId, phone: phoneToUse, url });
-
-        if (autoSendWhatsApp) {
-          try {
-            window.open(url, '_blank');
-          } catch {
-            // Popup blocked
-          }
-        }
+        // The WhatsApp banner (cart screen) now sends the 80 mm receipt PDF. A browser only opens the share sheet
+        // straight after a tap, never on its own after a save, so the banner is shown when this option is on.
+        if (autoSendWhatsApp) setLastFinalizedWhatsApp({ id: billId, phone: phoneToUse, url, bill: dummyBill });
+        else setLastFinalizedWhatsApp(null);
       }
 
       const savedBill: Bill = {
@@ -2210,7 +2202,7 @@ export const SalesmanView: React.FC = () => {
               setConfirmedBill={setConfirmedBill}
               cart={cart}
               activeTrip={activeTrip}
-              availableTrips={anyOutTrips.length > 0 ? anyOutTrips : relevantTrips.length > 0 ? relevantTrips : trips}
+              availableTrips={anyOutTrips}
               onSelectTripId={(id) => {
                 setSelectedTripId(id);
                 if (isLowVision) speakAssistiveText(`Switched to vehicle ${(trips.find(t => t.id === id))?.vehicle || 'van'}.`);
@@ -2267,7 +2259,7 @@ export const SalesmanView: React.FC = () => {
           />
         )}
 
-        {/* VIEW 5: TRIPS (MY CURRENT & PAST VEHICLE DISPATCHES) */}
+        {/* VIEW 5: TRIPS (MERGED ACTIVE RUN + OTHER ACTIVE DISPATCHES + PAST HISTORY) */}
         {salesmanTab === 'trips' && (
           <section id="salesman-trips-view" className="space-y-4">
             <div
@@ -2285,7 +2277,9 @@ export const SalesmanView: React.FC = () => {
                     <span>Trips</span>
                   </h2>
                   <p className="text-xs font-semibold text-slate-500 mt-0.5">
-                    {relevantTrips.length} assigned trip{relevantTrips.length === 1 ? '' : 's'}
+                    {anyOutTrips.length > 0
+                      ? `${anyOutTrips.length} active run${anyOutTrips.length === 1 ? '' : 's'} • ${olderOrClosedTrips.length} past`
+                      : `${olderOrClosedTrips.length} past trip${olderOrClosedTrips.length === 1 ? '' : 's'}`}
                   </p>
                 </div>
 
@@ -2300,58 +2294,90 @@ export const SalesmanView: React.FC = () => {
                 </button>
               </div>
 
-              {/* Active Trip Banner */}
+              {/* Merged Active Trip Card (single authoritative card for the current Out-on-Run trip) */}
               {activeTrip ? (
                 <div
-                  className="p-4 rounded-xl border-2 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  id={`salesman-trip-item-${activeTrip.id}`}
+                  className="p-4 rounded-xl border-2 shadow-sm space-y-3.5"
                   style={{
                     backgroundColor: '#EFF6FF',
                     borderColor: '#3B82F6',
                   }}
                 >
-                  <div>
-                    <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="px-2 py-0.5 rounded bg-blue-600 text-white text-[10px] font-black uppercase tracking-wider">
                         Active Trip
                       </span>
+                      <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                        ● Out on Run
+                      </span>
                       <span className="font-mono text-xs font-bold text-sky-700">
-                        Date: {activeTrip.date}
+                        {activeTrip.date}
                       </span>
                     </div>
-                    <div className="font-black text-lg text-slate-900 mt-1">
+                    <span className="text-[11px] font-bold text-sky-700 bg-white/80 px-2 py-0.5 rounded border border-sky-200">
+                      {warehouses.find((w) => w.id === activeTrip.warehouseId)?.name || 'Main Godown'}
+                    </span>
+                  </div>
+
+                  <div>
+                    <div className="font-black text-lg text-slate-900 leading-tight">
                       {activeTrip.vehicle}
                     </div>
                     <div className="text-xs font-bold text-slate-600 mt-0.5">
-                      Route: {activeTrip.route || 'Standard Route'} • Driver/Sales: {activeTrip.salesman} • Godown: <strong>{warehouses.find((w) => w.id === activeTrip.warehouseId)?.name || 'Main Godown'}</strong>
+                      Route: {activeTrip.route || 'Standard Route'} • Driver/Sales: {activeTrip.salesman || 'Assigned'} • Trip #{activeTrip.id}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
-                    <div className="text-right">
-                      <div className="text-xs font-bold text-slate-500">Trip Sales</div>
-                      <div className="font-mono font-black text-base text-slate-900">
+                  {/* Unified Trip Summary Metrics */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div className="rounded-lg bg-white/90 border border-sky-200/80 px-2.5 py-2">
+                      <div className="text-[10px] font-bold uppercase text-slate-500">Loaded</div>
+                      <div className="font-mono font-black text-sm text-slate-900">{totalLoadedItems} cs</div>
+                    </div>
+                    <div className="rounded-lg bg-white/90 border border-sky-200/80 px-2.5 py-2">
+                      <div className="text-[10px] font-bold uppercase text-slate-500">Sold</div>
+                      <div className="font-mono font-black text-sm text-emerald-700">{vanStockCounts.totalSoldCases} cs</div>
+                    </div>
+                    <div className="rounded-lg bg-white/90 border border-sky-200/80 px-2.5 py-2">
+                      <div className="text-[10px] font-bold uppercase text-slate-500">On Van</div>
+                      <div className="font-mono font-black text-sm text-sky-800">{vanStockCounts.totalAvailableCases} cs</div>
+                    </div>
+                    <div className="rounded-lg bg-white/90 border border-sky-200/80 px-2.5 py-2">
+                      <div className="text-[10px] font-bold uppercase text-slate-500">Trip Sales</div>
+                      <div className="font-mono font-black text-sm text-slate-900">
                         ₹{money(tripTotalBilled)}
-                      </div>
-                      <div className="text-[11px] font-bold text-emerald-700">
-                        {tripBills.length} invoices generated
+                        <span className="text-[10px] font-bold text-emerald-700 ml-1">({tripBills.length})</span>
                       </div>
                     </div>
+                  </div>
 
+                  {/* Systematic Trip Actions */}
+                  <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setSalesmanTab('sell')}
+                      className="flex-1 sm:flex-none min-h-[40px] px-4 py-2 rounded-xl bg-sky-600 text-white font-black text-xs flex items-center justify-center gap-1.5 hover:bg-sky-700 cursor-pointer shadow-sm"
+                    >
+                      <ShoppingCart size={14} />
+                      <span>Start Selling</span>
+                    </button>
+                    <button
+                      type="button"
+                      id={`btn-salesman-edit-trip-${activeTrip.id}`}
+                      onClick={() => setTripScreen({ mode: 'edit', trip: activeTrip })}
+                      className="min-h-[40px] px-3.5 py-2 rounded-xl border-2 border-slate-300 bg-white hover:bg-slate-50 text-slate-800 font-black text-xs flex items-center justify-center cursor-pointer"
+                    >
+                      <span>View Load</span>
+                    </button>
                     <button
                       type="button"
                       id="btn-salesman-end-trip"
                       onClick={() => setTripScreen({ mode: 'settle', trip: activeTrip })}
-                      className="min-h-[40px] px-3.5 py-2 rounded-xl border-2 border-amber-500 bg-amber-100 text-amber-900 font-black text-xs flex items-center gap-1 hover:bg-amber-200 cursor-pointer"
+                      className="min-h-[40px] px-3.5 py-2 rounded-xl border-2 border-amber-500 bg-amber-100 text-amber-900 font-black text-xs flex items-center justify-center gap-1 hover:bg-amber-200 cursor-pointer"
                     >
-                      <span>End Trip</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSalesmanTab('sell')}
-                      className="min-h-[40px] px-3.5 py-2 rounded-xl bg-sky-600 text-white font-black text-xs flex items-center gap-1 hover:bg-sky-700 cursor-pointer shadow-sm"
-                    >
-                      <ShoppingCart size={14} />
-                      <span>Start Selling</span>
+                      <span>Close &amp; Settle</span>
                     </button>
                   </div>
                 </div>
@@ -2370,68 +2396,27 @@ export const SalesmanView: React.FC = () => {
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-black uppercase tracking-wider">
-                          No Active Run for Today
+                          No Active Run
                         </span>
                         <span className="font-mono text-xs font-bold text-slate-500">
                           {todayStr}
                         </span>
                       </div>
                       <div className="text-xs font-semibold text-slate-600 mt-1">
-                        No delivery vehicle is currently dispatched. Tap “Load Vehicle Run” above to start selling on route.
+                        No delivery vehicle is currently out on route. Tap “Load Trip” above to start a new run.
                       </div>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* All Assigned Trips List */}
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
+              {/* Other Open Active Dispatches (only shown when >1 active trips exist, never duplicates activeTrip) */}
+              {otherOutTrips.length > 0 && (
+                <div className="space-y-2.5 pt-1">
                   <div className="text-xs font-black uppercase tracking-wider text-slate-500">
-                    {showTripHistory ? 'All Dispatches & History' : 'Active Dispatches'} ({displayedTrips.length})
+                    Other Active Dispatches ({otherOutTrips.length})
                   </div>
-                  {olderOrClosedTrips.length > 0 && (
-                    <button
-                      type="button"
-                      id="btn-trips-view-toggle-history"
-                      onClick={() => setShowTripHistory(!showTripHistory)}
-                      className="text-xs font-black text-sky-700 hover:text-blue-900 underline flex items-center gap-1 cursor-pointer"
-                    >
-                      <HistoryIcon size={14} />
-                      <span>{showTripHistory ? "Show Active Only" : `Trip History (${olderOrClosedTrips.length} past runs)`}</span>
-                    </button>
-                  )}
-                </div>
-
-                {showTripHistory && (
-                  <input
-                    type="search"
-                    value={tripSearch}
-                    onChange={(e) => {
-                      setTripSearch(e.target.value);
-                      setTripLimit(30);
-                    }}
-                    enterKeyHint="search"
-                    placeholder="Search vehicle, route, date or trip no."
-                    className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border-2 text-sm font-semibold focus:outline-none focus:border-sky-600"
-                    style={{ borderColor: palette.line }}
-                  />
-                )}
-                {displayedTrips.length === 0 ? (
-                  <div
-                    className="p-8 text-center rounded-xl border-2 border-dashed space-y-2 text-slate-500"
-                    style={{ borderColor: palette.line }}
-                  >
-                    <Truck size={36} className="mx-auto text-slate-400" />
-                    <div className="font-black text-sm text-slate-700">No vehicle runs assigned</div>
-                    <div className="text-xs font-semibold">
-                      Tap "Load Vehicle Run" above to load products onto a delivery vehicle.
-                    </div>
-                  </div>
-                ) : (
-                  shownTrips.map((trip) => {
-                    const isActive = Boolean(activeTrip && activeTrip.id === trip.id);
-                    const isOut = trip.status === 'out';
+                  {otherOutTrips.map((trip) => {
                     const tripLoadTotal = Object.values(trip.loaded || {}).reduce((sum, q) => sum + (Number(q) || 0), 0);
                     const billsForTrip = bills.filter((b) => b.tripId === trip.id || trip.billIds.includes(b.id));
                     const totalTripBilled = billsForTrip.reduce((sum, b) => sum + (Number(b.total) || 0), 0);
@@ -2440,23 +2425,15 @@ export const SalesmanView: React.FC = () => {
                       <div
                         key={trip.id}
                         id={`salesman-trip-item-${trip.id}`}
-                        className={`p-3.5 sm:p-4 rounded-xl border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
-                          isActive
-                            ? 'bg-sky-50/70 border-blue-600 shadow-sm'
-                            : 'bg-white border-slate-200 hover:border-slate-300'
-                        }`}
+                        className="p-3.5 sm:p-4 rounded-xl border-2 border-slate-200 bg-white hover:border-slate-300 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors"
                       >
                         <div>
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-black text-base text-slate-900">
                               {trip.vehicle}
                             </span>
-                            <span
-                              className={`text-[10px] font-black uppercase px-2 py-0.5 rounded ${
-                                isOut ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700'
-                              }`}
-                            >
-                              {isOut ? '● Out on Run' : 'Closed'}
+                            <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                              ● Out on Run
                             </span>
                             <span className="text-xs font-bold text-slate-500 font-mono">
                               {trip.date}
@@ -2467,68 +2444,146 @@ export const SalesmanView: React.FC = () => {
                           </div>
 
                           <div className="text-xs font-semibold text-slate-600 mt-1">
-                            Route: {trip.route || 'Delivery Route'} • Godown: {warehouses.find((w) => w.id === trip.warehouseId)?.name || 'Main Godown'} • Loaded: {tripLoadTotal} cases • Bills: {billsForTrip.length} (₹{money(totalTripBilled)})
+                            Route: {trip.route || 'Delivery Route'} • Loaded: {tripLoadTotal} cases • Bills: {billsForTrip.length} (₹{money(totalTripBilled)})
                           </div>
                         </div>
 
                         <div className="flex items-center gap-2 self-end sm:self-center flex-wrap justify-end">
-                          {isOut && (
-                            <>
-                              <button
-                                type="button"
-                                id={`btn-salesman-edit-trip-${trip.id}`}
-                                onClick={() => setTripScreen({ mode: 'edit', trip })}
-                                className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-slate-300 bg-white hover:bg-slate-50 text-slate-800 font-black text-xs cursor-pointer"
-                              >
-                                View Load
-                              </button>
-                              <button
-                                type="button"
-                                id={`btn-salesman-settle-trip-${trip.id}`}
-                                onClick={() => setTripScreen({ mode: 'settle', trip })}
-                                className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-amber-500 bg-amber-100 hover:bg-amber-200 text-amber-900 font-black text-xs cursor-pointer"
-                              >
-                                Return &amp; Settle
-                              </button>
-                            </>
-                          )}
-                          {isActive ? (
-                            <span className="px-3 py-1.5 rounded-xl bg-sky-600 text-white font-black text-xs flex items-center gap-1 shadow-sm">
-                              <CheckCircle2 size={14} />
-                              <span>Current Active Run</span>
-                            </span>
-                          ) : isOut ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedTripId(trip.id);
-                                if (isLowVision) speakAssistiveText(`Switched to active vehicle ${trip.vehicle}.`);
-                              }}
-                              className="min-h-[38px] px-3.5 py-1.5 rounded-xl border-2 border-slate-300 bg-white hover:bg-slate-50 text-slate-800 font-black text-xs flex items-center gap-1 cursor-pointer transition-colors"
-                            >
-                              <span>Switch to this Run</span>
-                              <ArrowRight size={13} />
-                            </button>
-                          ) : (
-                            <span className="px-3 py-1 text-xs font-bold text-slate-400 bg-slate-100 rounded-lg">
-                              Completed Run
-                            </span>
-                          )}
+                          <button
+                            type="button"
+                            id={`btn-salesman-edit-trip-${trip.id}`}
+                            onClick={() => setTripScreen({ mode: 'edit', trip })}
+                            className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-slate-300 bg-white hover:bg-slate-50 text-slate-800 font-black text-xs cursor-pointer"
+                          >
+                            View Load
+                          </button>
+                          <button
+                            type="button"
+                            id={`btn-salesman-settle-trip-${trip.id}`}
+                            onClick={() => setTripScreen({ mode: 'settle', trip })}
+                            className="min-h-[38px] px-3 py-1.5 rounded-xl border-2 border-amber-500 bg-amber-100 hover:bg-amber-200 text-amber-900 font-black text-xs cursor-pointer"
+                          >
+                            Close &amp; Settle
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedTripId(trip.id);
+                              if (isLowVision) speakAssistiveText(`Switched to active vehicle ${trip.vehicle}.`);
+                            }}
+                            className="min-h-[38px] px-3.5 py-1.5 rounded-xl border-2 border-slate-300 bg-white hover:bg-slate-50 text-slate-800 font-black text-xs flex items-center gap-1 cursor-pointer transition-colors"
+                          >
+                            <span>Switch to this Run</span>
+                            <ArrowRight size={13} />
+                          </button>
                         </div>
                       </div>
                     );
-                  })
-                )}
-                {showTripHistory && matchedTrips.length > shownTrips.length && (
-                  <button
-                    type="button"
-                    onClick={() => setTripLimit((n) => n + 30)}
-                    className="w-full min-h-[44px] rounded-xl border-2 border-slate-300 bg-white text-sm font-black text-slate-700 cursor-pointer hover:bg-slate-50"
-                  >
-                    Show more ({matchedTrips.length - shownTrips.length} older)
-                  </button>
-                )}
-              </div>
+                  })}
+                </div>
+              )}
+
+              {/* Past / Closed Trip History (separate from Active Run — never duplicates Out on Run) */}
+              {olderOrClosedTrips.length > 0 && (
+                <div className="space-y-2.5 pt-1 border-t border-slate-200/80">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="text-xs font-black uppercase tracking-wider text-slate-500">
+                      {showTripHistory ? `Trip History (${olderOrClosedTrips.length})` : 'Past Runs'}
+                    </div>
+                    <button
+                      type="button"
+                      id="btn-trips-view-toggle-history"
+                      onClick={() => setShowTripHistory(!showTripHistory)}
+                      className="text-xs font-black text-sky-700 hover:text-blue-900 underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <HistoryIcon size={14} />
+                      <span>{showTripHistory ? 'Hide Trip History' : `Trip History (${olderOrClosedTrips.length} past runs)`}</span>
+                    </button>
+                  </div>
+
+                  {showTripHistory && (
+                    <>
+                      <input
+                        type="search"
+                        value={tripSearch}
+                        onChange={(e) => {
+                          setTripSearch(e.target.value);
+                          setTripLimit(30);
+                        }}
+                        enterKeyHint="search"
+                        placeholder="Search vehicle, route, date or trip no."
+                        className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border-2 text-sm font-semibold focus:outline-none focus:border-sky-600"
+                        style={{ borderColor: palette.line }}
+                      />
+
+                      {shownHistoryTrips.length === 0 ? (
+                        <div className="p-6 text-center rounded-xl border border-dashed text-xs font-semibold text-slate-500" style={{ borderColor: palette.line }}>
+                          No past trips match "{tripSearch}".
+                        </div>
+                      ) : (
+                        shownHistoryTrips.map((trip) => {
+                          const tripLoadTotal = Object.values(trip.loaded || {}).reduce((sum, q) => sum + (Number(q) || 0), 0);
+                          const billsForTrip = bills.filter((b) => b.tripId === trip.id || trip.billIds.includes(b.id));
+                          const totalTripBilled = billsForTrip.reduce((sum, b) => sum + (Number(b.total) || 0), 0);
+
+                          return (
+                            <div
+                              key={trip.id}
+                              id={`salesman-trip-item-${trip.id}`}
+                              className="p-3.5 sm:p-4 rounded-xl border-2 bg-white border-slate-200 hover:border-slate-300 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors"
+                            >
+                              <div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-black text-base text-slate-900">
+                                    {trip.vehicle}
+                                  </span>
+                                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-slate-100 text-slate-700">
+                                    Closed
+                                  </span>
+                                  <span className="text-xs font-bold text-slate-500 font-mono">
+                                    {trip.date}
+                                  </span>
+                                  <span className="text-[11px] font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-200">
+                                    {warehouses.find((w) => w.id === trip.warehouseId)?.name || 'Main Godown'}
+                                  </span>
+                                </div>
+
+                                <div className="text-xs font-semibold text-slate-600 mt-1">
+                                  Route: {trip.route || 'Delivery Route'} • Loaded: {tripLoadTotal} cases • Bills: {billsForTrip.length} (₹{money(totalTripBilled)})
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 self-end sm:self-center flex-wrap justify-end">
+                                <button
+                                  type="button"
+                                  id={`btn-salesman-edit-trip-${trip.id}`}
+                                  onClick={() => setTripScreen({ mode: 'edit', trip })}
+                                  className="min-h-[36px] px-3 py-1 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs cursor-pointer"
+                                >
+                                  View Load
+                                </button>
+                                <span className="px-3 py-1 text-xs font-bold text-slate-500 bg-slate-100 rounded-lg">
+                                  Completed Run
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+
+                      {matchedHistoryTrips.length > shownHistoryTrips.length && (
+                        <button
+                          type="button"
+                          onClick={() => setTripLimit((n) => n + 30)}
+                          className="w-full min-h-[44px] rounded-xl border-2 border-slate-300 bg-white text-sm font-black text-slate-700 cursor-pointer hover:bg-slate-50"
+                        >
+                          Show more ({matchedHistoryTrips.length - shownHistoryTrips.length} older)
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </section>
         )}

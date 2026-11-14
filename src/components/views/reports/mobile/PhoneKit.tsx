@@ -384,8 +384,8 @@ export const PhoneDownloadBar: React.FC<{
 
   return (
     <>
-      <div className="h-20" aria-hidden="true" />
-      <div className="fixed inset-x-0 z-30 bottom-[calc(4rem+env(safe-area-inset-bottom,0px))] px-3 py-2 bg-[#f6f4ef]/95 backdrop-blur border-t border-black/5">
+      <div className="h-32" aria-hidden="true" />
+      <div className="fixed inset-x-0 z-40 bottom-[calc(5.75rem+env(safe-area-inset-bottom,0px))] px-3 py-2.5 bg-white/95 backdrop-blur-md border-t border-slate-200/80 shadow-[0_-4px_16px_rgba(0,0,0,0.08)]">
         {err && <div className="text-[11px] text-rose-700 text-center pb-1">{err}</div>}
         <div className="flex gap-2.5">
           <button
@@ -393,7 +393,7 @@ export const PhoneDownloadBar: React.FC<{
             disabled={disabled || busy !== null}
             onClick={() => run('xlsx', onExcel)}
             aria-label="Download Excel"
-            className="flex-1 min-h-[52px] rounded-2xl border-2 border-[var(--primary)] bg-white text-[var(--primary)] text-[15px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer active:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 min-h-[50px] rounded-2xl border-2 border-[var(--primary)] bg-white text-[var(--primary)] text-[15px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer active:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {busy === 'xlsx' ? <Loader2 size={18} className="animate-spin" /> : <FileSpreadsheet size={18} />}
             Excel
@@ -403,7 +403,7 @@ export const PhoneDownloadBar: React.FC<{
             disabled={disabled || busy !== null}
             onClick={() => run('pdf', onPdf)}
             aria-label="Download PDF"
-            className="flex-1 min-h-[52px] rounded-2xl border-2 border-[var(--primary)] bg-[var(--primary)] text-white text-[15px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer active:bg-[#093d2e] disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 min-h-[50px] rounded-2xl border-2 border-[var(--primary)] bg-[var(--primary)] text-white text-[15px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer active:bg-[#093d2e] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {busy === 'pdf' ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
             PDF

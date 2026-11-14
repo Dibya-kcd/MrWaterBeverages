@@ -4,6 +4,7 @@ import {
   gstRateFromHsn as gstRateFromHsnShared,
   lineTaxDetail,
   resolveProductHsn,
+  normalizeTo8DigitHsn,
 } from './billing';
 import { CATS } from '../constants/initialData';
 import { todayISO } from "./dateLocal";
@@ -75,10 +76,14 @@ function customerGstinMap(customers: Customer[]): Record<string, string> {
 }
 
 function hsnForItem(item: BillItem, products: Product[]): string {
-  if (item.hsn) return String(item.hsn).trim();
+  const rawHsn = item.hsn ? String(item.hsn).trim() : '';
   const p = products.find((x) => Number(x.id) === Number(item.productId));
-  if (p?.hsn) return String(p.hsn).trim();
-  return resolveProductHsn(p, item.category);
+  const productHsn = p?.hsn ? String(p.hsn).trim() : '';
+  const candidate = rawHsn || productHsn || resolveProductHsn(p, item.category);
+  const digits = candidate.replace(/\D+/g, '');
+  if (digits === '2202') return '22021090';
+  if (digits.length === 8) return digits;
+  return normalizeTo8DigitHsn(candidate, p?.category || item.category, item.productName || p?.name);
 }
 
 export const gstRateFromHsn = gstRateFromHsnShared;

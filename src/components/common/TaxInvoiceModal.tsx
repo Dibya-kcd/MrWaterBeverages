@@ -10,11 +10,11 @@ import {
   X,
   Edit,
   ArrowRight,
+  Paperclip,
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { Bill } from '../../types';
 import {
-  buildBillText,
   money,
   freeStockInvoiceDisplay,
   cgstSgstLabels,
@@ -23,9 +23,19 @@ import {
   whatsappLink,
   nonGstSummary,
 } from '../../utils/billing';
-import { downloadInvoicePdf, inrToWords } from '../../utils/invoicePdf';
+import {
+  downloadInvoicePdf,
+  inrToWords,
+  printInvoicePdf,
+  resolveInvoicePaper,
+  shareInvoicePdf,
+  type InvoicePaper,
+} from '../../utils/invoicePdf';
 import { billNetTotal } from '../../utils/salesReturns';
 import { billTaxBreakdown } from '../../utils/gstReports';
+import { buildBillMessage } from '../../utils/receipt80';
+import { sendBillOnWhatsApp, whatsAppResultMessage } from '../../utils/whatsappBill';
+import { notify } from '../../utils/toast';
 
 interface TaxInvoiceModalProps {
   bill: Bill;
@@ -45,15 +55,24 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
   const [copiedUpi, setCopiedUpi] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
   const [copiedInvoiceText, setCopiedInvoiceText] = useState(false);
+  // Paper for Download / Print / Share PDF: starts from Settings -> Billing, can be switched here per invoice.
+  const [paper, setPaper] = useState<InvoicePaper>(() => resolveInvoicePaper(billingSettings));
+  const [sharing, setSharing] = useState(false);
+  const [shareNote, setShareNote] = useState<string | null>(null);
 
-  // Invoice Format state: 'gst' (B2B Tax Invoice) vs 'non_gst' (B2C Retail Bill / Bill of Supply)
-  const [invoiceFormat, setInvoiceFormat] = useState<'gst' | 'non_gst'>(() => {
+  // Bills issued by a composition / unregistered business cannot be printed as a Tax Invoice.
+  const formatLocked = Boolean(bill.taxStamp && bill.taxStamp.registrationType !== 'regular');
+  const invoiceFormat: 'gst' | 'non_gst' = (() => {
+    if (formatLocked) return 'non_gst';
+    if (bill.invoiceType === 'retail' || bill.invoiceType === 'bill_of_supply' || bill.isGstInvoice === false) {
+      return 'non_gst';
+    }
+    if (bill.invoiceType === 'tax_invoice' || bill.isGstInvoice === true) {
+      return 'gst';
+    }
     if (defaultFormat) return defaultFormat;
-    if (bill.invoiceType === 'retail' || bill.invoiceType === 'bill_of_supply') return 'non_gst';
-    if (bill.invoiceType === 'tax_invoice' || bill.isGstInvoice) return 'gst';
     return bill.supplyType === 'B2B' && Boolean(bill.customerGstin) ? 'gst' : 'non_gst';
-  });
-
+  })();
   const isGst = invoiceFormat === 'gst';
   // Per-line GST and the tax summary by HSN / rate
   const taxBreakdown = isGst ? billTaxBreakdown(bill, []) : null;
@@ -84,7 +103,7 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
   const handleDownload = () => {
     setDownloading(true);
     try {
-      downloadInvoicePdf(bill, orgProfile, billingSettings, invoiceFormat, { showBatch: false });
+      downloadInvoicePdf(bill, orgProfile, billingSettings, invoiceFormat, { showBatch: false, paper });
     } catch (err) {
       console.error('Error downloading invoice PDF:', err);
     } finally {
@@ -93,7 +112,32 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
   };
 
   const handlePrint = () => {
+    // A4 prints the on-screen invoice as before; the 80 mm receipt prints its own narrow PDF.
+    if (paper === '80mm') {
+      printInvoicePdf(bill, orgProfile, billingSettings, invoiceFormat, { showBatch: false, paper });
+      return;
+    }
     window.print();
+  };
+
+  // Opens the phone's share sheet with the PDF attached (choose WhatsApp there). A wa.me link can only carry
+  // text, so this is the way to forward the actual file. Browsers that cannot share files get a download.
+  const handleSharePdf = async () => {
+    setSharing(true);
+    setShareNote(null);
+    try {
+      const result = await shareInvoicePdf(bill, orgProfile, billingSettings, invoiceFormat, { showBatch: false, paper });
+      if (result === 'downloaded') {
+        setShareNote('This browser cannot attach files directly, so the PDF was saved. Attach it in WhatsApp from your downloads.');
+      } else if (result === 'shared') {
+        setShowShareModal(false);
+      }
+    } catch (err) {
+      console.error('Error sharing invoice PDF:', err);
+      setShareNote('Could not open the share sheet. Try Download PDF instead.');
+    } finally {
+      setSharing(false);
+    }
   };
 
   const handleCopyUpi = () => {
@@ -104,7 +148,7 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
   };
 
   const handleNativeShare = async () => {
-    const text = buildBillText(bill, orgProfile, billingSettings, invoiceFormat);
+    const text = buildBillMessage(bill, orgProfile, billingSettings, invoiceFormat);
     if (navigator.share) {
       try {
         await navigator.share({
@@ -203,10 +247,10 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
         {/* =====================================================================
             SCROLLABLE INVOICE SHEET (Responsive: Fits Mobile & Desktop cleanly)
             ===================================================================== */}
-        <div className="overflow-y-auto p-2.5 sm:p-6 print:p-0 print:overflow-visible flex-1">
+        <div className="overflow-y-auto p-2 sm:p-4 md:p-6 print:p-0 print:overflow-visible flex-1">
           <div
             id="printable-tax-invoice"
-            className="border-2 p-3.5 sm:p-8 bg-white text-slate-900 font-sans print:border-0 print:p-0 rounded-xl"
+            className="border-2 p-3 sm:p-5 md:p-7 lg:p-8 bg-white text-slate-900 font-sans print:border-0 print:p-0 rounded-xl"
             style={{ borderColor: palette.line }}
           >
             {/* 1. Header Firm Info */}
@@ -323,20 +367,20 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
             {/* 3. Items Presentation — Mobile-Optimized List & Desktop Tabular Grid */}
             {/* Desktop Table (Visible on sm+ and when printing) */}
             <div className="hidden sm:block print:block py-3 sm:py-4 overflow-x-auto rounded-xl border border-slate-200 bg-white">
-              <table className="w-full text-left data-table border-collapse border text-xs sm:text-sm">
+              <table className="w-full min-w-[840px] text-left data-table border-collapse border text-xs sm:text-sm">
                 <thead>
                   <tr className="bg-slate-900 text-white font-bold text-xs uppercase tracking-wider">
-                    <th className="p-2 border text-center w-8">#</th>
-                    <th className="p-2 border">Description of Goods</th>
-                    {isGst && <th className="p-2 border text-center w-14">HSN</th>}
-                    <th className="p-2 border text-center w-16">Total Crates</th>
-                    <th className="p-2 border text-center w-16">Free (Incl.)</th>
-                    <th className="p-2 border text-right w-18">Rate (₹)</th>
-                    <th className="p-2 border text-right w-20">Gross (₹)</th>
-                    <th className="p-2 border text-right w-18">{isGst ? 'Scheme (₹)' : 'Discount (₹)'}</th>
-                    {isGst && <th className="p-2 border text-center w-14">GST %</th>}
-                    {isGst && <th className="p-2 border text-right w-20">GST (₹)</th>}
-                    <th className="p-2 border text-right w-22">{isGst ? 'Total (₹)' : 'Net Total (₹)'}</th>
+                    <th className="p-2 border text-center w-8 whitespace-nowrap">#</th>
+                    <th className="p-2 border min-w-[180px] whitespace-normal">Description of Goods</th>
+                    {isGst && <th className="p-2 border text-center w-14 whitespace-nowrap">HSN</th>}
+                    <th className="p-2 border text-center w-16 whitespace-nowrap">Total Crates</th>
+                    <th className="p-2 border text-center w-16 whitespace-nowrap">Free (Incl.)</th>
+                    <th className="p-2 border text-right w-18 whitespace-nowrap">Rate (₹)</th>
+                    <th className="p-2 border text-right w-20 whitespace-nowrap">Gross (₹)</th>
+                    <th className="p-2 border text-right w-18 whitespace-nowrap">{isGst ? 'Scheme (₹)' : 'Discount (₹)'}</th>
+                    {isGst && <th className="p-2 border text-center w-14 whitespace-nowrap">GST %</th>}
+                    {isGst && <th className="p-2 border text-right w-20 whitespace-nowrap">GST (₹)</th>}
+                    <th className="p-2 border text-right w-22 whitespace-nowrap">{isGst ? 'Total (₹)' : 'Net Total (₹)'}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -347,8 +391,8 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
                         key={it.key || `item_row_${idx}`}
                         className={`border-b hover:bg-slate-50 ${d.isFreeStock ? 'bg-emerald-50/60' : ''}`}
                       >
-                        <td className="p-2 border text-center text-slate-500 font-mono">{idx + 1}</td>
-                        <td className="p-2 border font-semibold text-slate-900">
+                        <td className="p-2 border text-center text-slate-500 font-mono whitespace-nowrap">{idx + 1}</td>
+                        <td className="p-2 border font-semibold text-slate-900 min-w-[180px]">
                           {it.productName}
                           {d.isFreeStock ? (
                             <div className="mt-0.5">
@@ -372,17 +416,17 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
                           ) : null}
                         </td>
                         {isGst && (
-                          <td className="p-2 border text-center text-slate-600 font-mono font-semibold">
+                          <td className="p-2 border text-center text-slate-600 font-mono font-semibold whitespace-nowrap">
                             {normalizeTo8DigitHsn(it.hsn || taxBreakdown?.lines[idx]?.hsn, it.category, it.productName)}
                           </td>
                         )}
-                        <td className="p-2 border text-center font-bold text-slate-900 font-mono">{it.qty}</td>
-                        <td className="p-2 border text-center font-mono font-bold text-emerald-800">
+                        <td className="p-2 border text-center font-bold text-slate-900 font-mono whitespace-nowrap">{it.qty}</td>
+                        <td className="p-2 border text-center font-mono font-bold text-emerald-800 whitespace-nowrap">
                           {d.isFreeStock ? d.freeLabel : it.freeQty > 0 ? `${it.freeQty} incl.` : '—'}
                         </td>
-                        <td className="p-2 border text-right font-mono">₹{money(d.rate)}</td>
-                        <td className="p-2 border text-right font-mono">₹{money(d.gross)}</td>
-                        <td className="p-2 border text-right font-mono text-amber-800 font-bold">
+                        <td className="p-2 border text-right font-mono whitespace-nowrap">₹{money(d.rate)}</td>
+                        <td className="p-2 border text-right font-mono whitespace-nowrap">₹{money(d.gross)}</td>
+                        <td className="p-2 border text-right font-mono text-amber-800 font-bold whitespace-nowrap">
                           {d.isFreeStock
                             ? `100% (−₹${money(d.discount)})`
                             : d.discount > 0
@@ -390,16 +434,16 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
                               : '—'}
                         </td>
                         {isGst && (
-                          <td className="p-2 border text-center font-mono text-slate-600">
+                          <td className="p-2 border text-center font-mono text-slate-600 whitespace-nowrap">
                             {!d.isFreeStock && (taxBreakdown?.lines[idx]?.ratePct || 0) > 0 ? `${taxBreakdown!.lines[idx].ratePct}%` : '—'}
                           </td>
                         )}
                         {isGst && (
-                          <td className="p-2 border text-right font-mono text-slate-700">
+                          <td className="p-2 border text-right font-mono text-slate-700 whitespace-nowrap">
                             {!d.isFreeStock && (taxBreakdown?.lines[idx]?.tax || 0) > 0 ? `₹${money(taxBreakdown!.lines[idx].tax)}` : '—'}
                           </td>
                         )}
-                        <td className={`p-2 border text-right font-bold font-mono ${d.isFreeStock ? 'text-emerald-700' : 'text-slate-900'}`}>
+                        <td className={`p-2 border text-right font-bold font-mono whitespace-nowrap ${d.isFreeStock ? 'text-emerald-700' : 'text-slate-900'}`}>
                           {d.isFreeStock ? '₹0.00 FREE' : `₹${money(d.amount)}`}
                         </td>
                       </tr>
@@ -408,20 +452,20 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
                 </tbody>
                 <tfoot>
                   <tr className="bg-slate-100 font-bold border-t-2 border-slate-300 text-xs sm:text-sm">
-                    <td colSpan={isGst ? 3 : 2} className="p-2 border text-right font-black text-slate-800 uppercase tracking-wide">
+                    <td colSpan={isGst ? 3 : 2} className="p-2 border text-right font-black text-slate-800 uppercase tracking-wide whitespace-nowrap">
                       Total Crates Delivered:
                     </td>
-                    <td className="p-2 border text-center font-mono font-black text-slate-900 bg-emerald-50">
+                    <td className="p-2 border text-center font-mono font-black text-slate-900 bg-emerald-50 whitespace-nowrap">
                       {bill.items.reduce((sum, it) => sum + (Number(it.qty) || 0), 0)} cs
                     </td>
-                    <td className="p-2 border text-center font-mono font-bold text-emerald-800 bg-emerald-50/70">
+                    <td className="p-2 border text-center font-mono font-bold text-emerald-800 bg-emerald-50/70 whitespace-nowrap">
                       {(() => {
                         const freeSum = bill.items.reduce((sum, it) => sum + (Number(it.freeQty) || 0), 0);
                         return freeSum > 0 ? `${freeSum} incl.` : '—';
                       })()}
                     </td>
                     <td colSpan={isGst ? 5 : 2} className="p-2 border"></td>
-                    <td className="p-2 border text-right font-mono font-black text-slate-900">
+                    <td className="p-2 border text-right font-mono font-black text-slate-900 whitespace-nowrap">
                       ₹{money(bill.total)}
                     </td>
                   </tr>
@@ -733,50 +777,41 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
             <div className="text-center text-[10px] text-slate-400 mt-4 pt-2 border-t">
               {isGst
                 ? 'This is a Computer Generated Tax Invoice. E. & O.E.'
-                : 'This is a Computer Generated Retail Bill of Supply (Non-GST / B2C). Thank You for Your Business!'}
+                : bill.taxStamp?.declaration
+                  ? `${bill.taxStamp.declaration}. Computer generated Bill of Supply.`
+                  : 'This is a Computer Generated Retail Bill of Supply (Non-GST / B2C). Thank You for Your Business!'}
             </div>
           </div>
         </div>
         {/* =====================================================================
-            BOTTOM BAR (GST Toggle Switch & Share Action)
+            BOTTOM BAR (Issued Document Type Badge & Share Action)
             ===================================================================== */}
         <div
           className="px-4 py-3 bg-slate-50 border-t-2 flex items-center justify-between gap-3 shrink-0 print:hidden select-none"
           style={{ borderColor: palette.line }}
         >
-          {/* Single GST / Non-GST Toggle Switch */}
-          <div className="flex items-center gap-2.5">
+          {/* Read-only issued document type badge */}
+          <div className="flex items-center gap-2.5 min-w-0">
             <div
-              className={`w-7 h-7 rounded-lg flex items-center justify-center font-black text-[10px] border shrink-0 ${
+              className={`px-2 h-7 rounded-lg flex items-center justify-center font-black text-[10px] tracking-wide border shrink-0 ${
                 isGst
                   ? 'bg-amber-100 text-amber-800 border-amber-300'
                   : 'bg-emerald-100 text-emerald-800 border-emerald-300'
               }`}
             >
-              {isGst ? 'GST' : 'CASH'}
+              {isGst ? 'GST' : bill.taxStamp ? 'BOS' : 'CASH'}
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-slate-800">
-                {isGst ? 'GST Tax Invoice' : 'Non-GST Retail Bill'}
-              </span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={isGst}
-                onClick={() => setInvoiceFormat(isGst ? 'non_gst' : 'gst')}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  isGst ? 'bg-amber-600' : 'bg-emerald-700'
-                }`}
-                id="invoice-modal-bottom-gst-toggle"
-                title={`Switch to ${isGst ? 'Non-GST Retail' : 'GST Invoice'}`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                    isGst ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            </div>
+            <span className="text-xs font-bold text-slate-800 truncate">
+              {isGst
+                ? 'GST Tax Invoice'
+                : bill.taxStamp?.registrationType === 'composition'
+                  ? 'Bill of Supply · Composition'
+                  : bill.taxStamp?.registrationType === 'unregistered'
+                    ? 'Bill of Supply · Unregistered'
+                    : bill.invoiceType === 'bill_of_supply'
+                      ? 'Bill of Supply'
+                      : 'Non-GST Retail Bill'}
+            </span>
           </div>
 
           {/* Quick Share action button */}
@@ -824,13 +859,36 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
               </button>
             </div>
 
+            {/* Paper size for the PDF buttons below */}
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">PDF paper size</div>
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-slate-100 border border-slate-200" role="group" aria-label="PDF paper size">
+                {([['a4', 'A4 invoice'], ['80mm', '80 mm receipt']] as [InvoicePaper, string][]).map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setPaper(key)}
+                    aria-pressed={paper === key}
+                    id={`share-paper-${key}`}
+                    className={`min-h-[40px] rounded-lg text-xs font-bold cursor-pointer transition-colors ${
+                      paper === key ? 'bg-white text-slate-900 shadow-xs border border-slate-200' : 'text-slate-500'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="space-y-2">
               {/* WhatsApp Button */}
-              <a
-                href={whatsappLink(bill.phone, buildBillText(bill, orgProfile, billingSettings, invoiceFormat))}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => setShowShareModal(false)}
+              <button
+                type="button"
+                onClick={async () => {
+                  setShowShareModal(false);
+                  const msg = whatsAppResultMessage(await sendBillOnWhatsApp(bill, orgProfile, billingSettings, invoiceFormat));
+                  if (msg) notify(msg.text, msg.kind);
+                }}
                 className="w-full py-2.5 px-3 rounded-xl border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 font-bold text-xs sm:text-sm flex items-center justify-between cursor-pointer transition-colors shadow-2xs"
                 id="share-modal-whatsapp-link"
               >
@@ -842,11 +900,39 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
                     <div className="font-bold text-slate-900">Send via WhatsApp</div>
                     <div className="text-[10px] text-slate-500 font-normal">
                       {bill.phone ? `To ${bill.retailer} (${bill.phone})` : 'Send to contact / number'}
+                      {' · 80 mm receipt PDF attached'}
                     </div>
                   </div>
                 </div>
                 <ArrowRight size={15} className="text-emerald-700" />
-              </a>
+              </button>
+
+              {/* Forward the PDF file itself (phone share sheet -> WhatsApp) */}
+              <button
+                type="button"
+                onClick={handleSharePdf}
+                disabled={sharing}
+                className="w-full py-2.5 px-3 rounded-xl border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-900 font-bold text-xs sm:text-sm flex items-center justify-between cursor-pointer transition-colors shadow-2xs disabled:opacity-50"
+                id="share-modal-pdf-share-btn"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <Paperclip size={18} />
+                  </div>
+                  <div className="text-left">
+                    <div className="font-bold text-slate-900">Share PDF file</div>
+                    <div className="text-[10px] text-slate-500 font-normal">
+                      {paper === '80mm' ? '80 mm receipt' : 'A4 invoice'} · pick WhatsApp in the share sheet
+                    </div>
+                  </div>
+                </div>
+                <ArrowRight size={15} className="text-emerald-700" />
+              </button>
+              {shareNote && (
+                <p role="status" className="text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                  {shareNote}
+                </p>
+              )}
 
               {/* Download PDF Button */}
               <button
@@ -866,7 +952,7 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
                   <div className="text-left">
                     <div className="font-bold text-slate-900">Download PDF</div>
                     <div className="text-[10px] text-slate-500 font-normal">
-                      {isGst ? 'Official GST Tax Invoice' : 'Retail Bill of Supply'} PDF
+                      {paper === '80mm' ? '80 mm receipt' : isGst ? 'Official GST Tax Invoice' : 'Retail Bill of Supply'} PDF
                     </div>
                   </div>
                 </div>
@@ -890,7 +976,7 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
                   <div className="text-left">
                     <div className="font-bold text-slate-900">Print Invoice</div>
                     <div className="text-[10px] text-slate-500 font-normal">
-                      Send to printer or save thermal slip
+                      {paper === '80mm' ? 'Print the 80 mm receipt (thermal printer)' : 'Send to printer or save thermal slip'}
                     </div>
                   </div>
                 </div>
@@ -901,7 +987,7 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  const text = buildBillText(bill, orgProfile, billingSettings, invoiceFormat);
+                  const text = buildBillMessage(bill, orgProfile, billingSettings, invoiceFormat);
                   navigator.clipboard.writeText(text);
                   setCopiedInvoiceText(true);
                   setTimeout(() => setCopiedInvoiceText(false), 2000);

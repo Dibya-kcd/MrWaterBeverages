@@ -16,7 +16,7 @@ import {
   Zap,
   UserPlus,
 } from 'lucide-react';
-import { ExistingCustomer } from '../../types';
+import { ExistingCustomer, PaletteTokens } from '../../types';
 import { money } from '../../utils/billing';
 import { AddCustomerModal } from './AddCustomerModal';
 import { useBeatFilter } from '../../hooks/useBeatFilter';
@@ -32,7 +32,7 @@ interface CustomerSelectorProps {
   customers: ExistingCustomer[];
   onSelect: (c: ExistingCustomer) => void;
   onClose: () => void;
-  palette: any;
+  palette: PaletteTokens;
   scale: number;
   currentRetailer?: string;
 }
@@ -177,9 +177,9 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
           highContrastMode
             ? {}
             : {
-                borderColor: palette.accent || '#1e3a8a',
-                backgroundColor: palette.cardBg || '#ffffff',
-                color: palette.text,
+                borderColor: palette.navy || '#1e3a8a',
+                backgroundColor: palette.panel || '#ffffff',
+                color: palette.ink,
               }
         }
         onClick={(e) => e.stopPropagation()}
@@ -192,7 +192,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
           style={
             highContrastMode
               ? {}
-              : { borderColor: palette.border, backgroundColor: palette.bg }
+              : { borderColor: palette.line, backgroundColor: palette.cream }
           }
         >
           <div className="flex items-center gap-3">
@@ -200,14 +200,14 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
               className={`w-10 h-10 rounded-lg flex items-center justify-center font-black shadow-sm ${
                 highContrastMode ? 'bg-yellow-400 text-black' : 'text-white'
               }`}
-              style={highContrastMode ? {} : { backgroundColor: palette.accent }}
+              style={highContrastMode ? {} : { backgroundColor: palette.navy }}
             >
               <UserCheck size={22} />
             </div>
             <div>
               <h3
                 className="font-black text-lg sm:text-xl tracking-tight leading-tight"
-                style={highContrastMode ? { color: '#facc15' } : { color: palette.text }}
+                style={highContrastMode ? { color: '#facc15' } : { color: palette.ink }}
               >
                 Select Customer / Retailer
               </h3>
@@ -230,7 +230,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
               title="Add New Customer / Retailer"
             >
               <UserPlus size={14} />
-              <span>+ Customer</span>
+              <span>Customer</span>
             </button>
 
             {/* High Contrast Accessibility Toggle */}
@@ -302,7 +302,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
           className={`p-3 sm:p-4 border-b space-y-3 ${
             highContrastMode ? 'border-yellow-400 bg-black' : ''
           }`}
-          style={highContrastMode ? {} : { borderColor: palette.border }}
+          style={highContrastMode ? {} : { borderColor: palette.line }}
         >
           <BeatFilterBar value={beatFilter.value} onChange={beatFilter.setValue} options={beatFilter.options} />
           <div className="flex items-center gap-2">
@@ -465,7 +465,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
                     className="px-5 py-2.5 rounded-lg font-black text-sm border-2 bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 cursor-pointer shadow-md flex items-center gap-1.5"
                   >
                     <UserPlus size={16} />
-                    <span>+ Register "{searchTerm.trim()}" as Customer</span>
+                    <span>Register "{searchTerm.trim()}" as Customer</span>
                   </button>
                   <button
                     type="button"

@@ -24,6 +24,7 @@ import {
 import { Bill, Product, Trip, TripStatus, Warehouse, Salesman } from '../../types';
 import { money, billBelongsToTrip, attachableBillsForTrip } from '../../utils/billing';
 import { todayISO, toLocalISODate } from "../../utils/dateLocal";
+import { compareProductsInSequence } from '../../utils/sizeColor';
 
 interface TripEditScreenProps {
   trip: Trip;
@@ -429,7 +430,12 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
       if (filter === 'low') return billed > (Number(loaded[pid]) || 0);
       return true;
     })
-    .sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+    .sort((a, b) =>
+      compareProductsInSequence(
+        products.find((p) => p.id === a) || { name: nameOf(a) },
+        products.find((p) => p.id === b) || { name: nameOf(b) },
+      ),
+    );
 
   const chip = (on: boolean) =>
     `shrink-0 min-h-[36px] px-3 rounded-full border text-[12px] font-bold whitespace-nowrap cursor-pointer ${
@@ -452,7 +458,12 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
             noteTone: changed ? ('changed' as const) : ('normal' as const),
           };
         })
-        .sort((a, b) => a.name.localeCompare(b.name))
+        .sort((a, b) =>
+          compareProductsInSequence(
+            a.product || { name: a.name },
+            b.product || { name: b.name },
+          ),
+        )
     : [];
 
   const statusPill =
@@ -668,10 +679,29 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
 
           {/* Product cards */}
           <section className="space-y-2" aria-label="Loaded beverages">
-            {activeProductIds.length === 0 && (
-              <div className="rounded-2xl border border-dashed border-black/20 bg-white px-4 py-8 text-center text-sm text-slate-500">
-                Nothing loaded yet. {readOnly ? '' : 'Tap “Add products” below.'}
+            {!readOnly && activeProductIds.length > 0 && (
+              <div className="flex items-center justify-between gap-2 px-1">
+                <span className="text-xs font-black uppercase tracking-wider text-slate-500">
+                  Loaded products · {activeProductIds.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowAdd(true)}
+                  className="inline-flex items-center gap-1 rounded-xl border border-[var(--primary)]/40 bg-white px-3 py-1.5 text-xs font-black text-[var(--primary)] hover:bg-emerald-50 cursor-pointer"
+                >
+                  <Plus size={14} /> Add product
+                </button>
               </div>
+            )}
+            {activeProductIds.length === 0 && (
+              <button
+                type="button"
+                disabled={readOnly}
+                onClick={() => !readOnly && setShowAdd(true)}
+                className="w-full rounded-2xl border-2 border-dashed border-black/20 bg-white px-4 py-8 text-center text-sm text-slate-500 cursor-pointer disabled:cursor-default hover:border-[var(--primary)]/50"
+              >
+                Nothing loaded yet. {readOnly ? '' : 'Tap here or “Add products” below.'}
+              </button>
             )}
             {activeProductIds.length > 0 && shownIds.length === 0 && (
               <div className="rounded-2xl border border-black/10 bg-white px-4 py-6 text-center text-sm text-slate-500">No items match.</div>

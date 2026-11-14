@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { MessageCircle, Plus } from 'lucide-react';
 import { money } from '../../../utils/billing';
+import { dueGapNote } from '../../../utils/dueSummary';
 import { todayISO, toLocalISODate } from '../../../utils/dateLocal';
 import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
@@ -52,6 +53,8 @@ interface DebtorItem {
 
 interface ReceivablesReportProps {
   debtorsLedger: DebtorItem[];
+  /** Customer-ledger total due (opening balance + billed - paid): the one "due" figure every report shares. */
+  ledgerTotalDue?: number;
   orgProfile?: { name?: string };
   onRecordPayment: (retailer: string) => void;
 }
@@ -95,7 +98,7 @@ const formatFriendlyDate = (dateStr?: string) => {
  * Party credit, laid out like "Daily collection": totals on top, always-visible search + filters, then one
  * collapsed card per customer (open it for the ageing split, invoiced / paid and the Pay / WhatsApp buttons).
  */
-export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLedger, orgProfile, onRecordPayment }) => {
+export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLedger, orgProfile, onRecordPayment, ledgerTotalDue }) => {
   const [sortOrder, setSortOrder] = useState<SortOrder>('latestDay');
   const [ageFilter, setAgeFilter] = useState<AgeFilter>('all');
   const [search, setSearch] = useState('');
@@ -121,6 +124,10 @@ export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLed
     [debtorsLedger],
   );
   const overdueTotal = totals.d15 + totals.d30;
+  // Headline = customer-ledger total (same as Overview, Home and the Beat report). The ageing below is built from
+  // unpaid bills, so any opening balance / advance is shown as the gap instead of silently changing the total.
+  const headlineDue = ledgerTotalDue ?? totals.due;
+  const dueGap = ledgerTotalDue !== undefined ? dueGapNote(headlineDue, totals.due) : '';
 
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
   const q = search.toLowerCase().trim();
@@ -220,7 +227,7 @@ export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLed
     downloadPdf({
       filename: `party-credit-${fileStamp()}.pdf`,
       title: 'Party credit',
-      subtitle: [shop, `Total market credit: Rs. ${money(totals.due)}`, `As on: ${fileStamp()}`, ...(filterText ? [`Filtered: ${filterText}`] : [])],
+      subtitle: [shop, `Total market credit: Rs. ${money(headlineDue)}`, `As on: ${fileStamp()}`, ...(filterText ? [`Filtered: ${filterText}`] : [])],
       landscape: true,
       sections: [
         {
@@ -293,7 +300,7 @@ export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLed
       <div className="md:hidden space-y-3" id="report-party-credit-phone">
         <PhoneHeader title="Party credit" sub="Outstanding as on today" />
 
-        <HeroCard tone="red" label="Total due" value={rs(totals.due)}>
+        <HeroCard tone="red" label="Total due" value={rs(headlineDue)}>
           <SplitBar
             label="Current, 16-30 days and 30+ days"
             parts={[
@@ -455,7 +462,7 @@ export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLed
         />
 
         <ReportStatGrid>
-          <ReportStat label="Total due" value={`₹${money(totals.due)}`} tone="red" sub={`across ${debtorsLedger.length} customers`} />
+          <ReportStat label="Total due" value={`₹${money(headlineDue)}`} tone="red" sub={dueGap ? `${debtorsLedger.length} customers on bills · ${dueGap}` : `across ${debtorsLedger.length} customers`} />
           <ReportStat label="Overdue 15+ days" value={`₹${money(overdueTotal)}`} tone={overdueTotal > 0 ? 'amber' : 'ink'} sub="collect these first" />
           <ReportStat label="Current 0-15 days" value={`₹${money(totals.current)}`} sub="within normal terms" />
           <ReportStat label="Collected so far" value={`₹${money(totals.paid)}`} tone="green" sub={`on ₹${money(totals.billed)} invoiced`} />
@@ -526,8 +533,9 @@ export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLed
 
       {explainOpen && (
         <ReportExplainModal ariaLabel="How party credit is calculated" onClose={() => setExplainOpen(false)}>
-          <ExplainBox tone="rose" title={`Total due: ₹${money(totals.due)}`}>
-            <p>Unpaid balance on every live bill, after payments and sales returns, as of today.</p>
+          <ExplainBox tone="rose" title={`Total due: ₹${money(headlineDue)}`}>
+            <p>What customers owe today on the customer ledger (opening balance + billed - paid, after sales returns). Cancelled bills are not counted. This is the same total shown on Overview, Home and Beat-wise sales &amp; due.</p>
+            {dueGap && <p className="mt-1">The ageing below covers unpaid bills (₹{money(totals.due)}); the total {dueGap}.</p>}
           </ExplainBox>
           <ExplainBox tone="slate" title="Ageing">
             <p>

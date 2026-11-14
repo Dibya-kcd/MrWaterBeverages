@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { Download, FileText, Hash, Landmark, ShoppingBag, Users } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, FileText, Hash, Landmark, ShoppingBag, Users, Zap } from "lucide-react";
 import { Bill, Customer, OrganizationProfile, Product } from "../../../types";
 import { money } from "../../../utils/billing";
 import { useLedger } from "../../../context/LedgerContext";
@@ -22,6 +22,7 @@ import {
   exportCaGstPack,
   hsnSummary,
   orgStateCodeFromProfile,
+  resolveLineGstRate,
   summarizeInvoices, invoiceSeriesSummary } from "../../../utils/gstReports";
 
 interface TaxReportProps {
@@ -160,7 +161,7 @@ export const TaxReport: React.FC<TaxReportProps> = ({
 
   // Reconciliation: every invoice must read the same in the GST report and in the sales report.
   // Any invoice where the two disagree is listed with the reason (no silent "ghost" amounts).
-  const { repairBillTotals, repairNonGstBillTaxes, recordMissingSeriesAsCancelled, cancelledBills, bills: allActiveBills } = useLedger();
+  const { repairBillTotals, repairNonGstBillTaxes, convertBillsToTaxInvoices, recordMissingSeriesAsCancelled, cancelledBills, bills: allActiveBills } = useLedger();
   const [repairMsg, setRepairMsg] = useState<string | null>(null);
   const [seriesMsg, setSeriesMsg] = useState<string | null>(null);
   const mismatches = useMemo(() => {
@@ -186,7 +187,7 @@ export const TaxReport: React.FC<TaxReportProps> = ({
       const totalDiff = Math.abs(inv.invoiceTotal - salesTotal);
       const taxDiff = Math.abs(gstTax - salesTax);
       if (totalDiff <= 1 && taxDiff <= 1) continue;
-      const nonGst = b.invoiceType === "retail" || b.invoiceType === "bill_of_supply" || b.isGstInvoice === false || !b.customerGstin;
+      const nonGst = b.invoiceType === "retail" || b.invoiceType === "bill_of_supply" || b.isGstInvoice === false;
       const extra = Number(b.additionalDiscount) || 0;
       let reason = "Saved totals differ from the invoice lines.";
       let repairable = false;
@@ -198,6 +199,9 @@ export const TaxReport: React.FC<TaxReportProps> = ({
         repairable = true;
       } else if (totalDiff > 1 && (b.retailer === "Free Sampling" || Number(b.discount) > 0)) {
         reason = `Bill discount of ₹${money(Number(b.discount) || 0)} was not factored into the lines. Saved ₹${money(salesTotal)} vs lines ₹${money(inv.invoiceTotal)}.`;
+        repairable = true;
+      } else if (taxDiff > 1) {
+        reason = `Tax split mismatch: saved tax is ₹${money(salesTax)} (CGST ₹${money(b.cgst)} + SGST ₹${money(b.sgst)}) vs ₹${money(gstTax)} on invoice lines.`;
         repairable = true;
       }
       out.push({
@@ -216,6 +220,27 @@ export const TaxReport: React.FC<TaxReportProps> = ({
   }, [invoices, filteredBills]);
   const repairable = mismatches.filter((m) => m.repairable);
   const nonGstRepairable = mismatches.filter((m) => m.reason.startsWith("Non-GST invoice:"));
+
+  const zeroGstBills = useMemo(() => {
+    const zeroBillIds = new Set(
+      lines
+        .filter((l) => l.gstRatePct === 0 && (l.taxable > 0 || l.qty > 0))
+        .map((l) => l.billId)
+    );
+    return filteredBills.filter((b) => {
+      if (b.status === "cancelled" || !(b.items || []).length) return false;
+      if (zeroBillIds.has(b.id)) return true;
+      const isNonGst = b.invoiceType === "retail" || b.invoiceType === "bill_of_supply" || b.isGstInvoice === false;
+      const zeroTaxStored = (Number(b.cgst) || 0) + (Number(b.sgst) || 0) < 0.01;
+      return (isNonGst || zeroTaxStored) && (Number(b.total) || 0) > 0;
+    });
+  }, [filteredBills, lines]);
+
+  const zeroUnits = useMemo(() => {
+    const fromLines = lines.filter((l) => l.gstRatePct === 0).reduce((s, l) => s + (Number(l.qty) || 0), 0);
+    if (fromLines > 0) return fromLines;
+    return zeroGstBills.reduce((s, b) => s + (b.items || []).reduce((iq, it) => iq + (Number(it.qty) || 0), 0), 0);
+  }, [lines, zeroGstBills]);
 
   const series = useMemo(
     () => invoiceSeriesSummary(filteredBills, cancelledBills || [], allActiveBills || []),
@@ -442,6 +467,34 @@ export const TaxReport: React.FC<TaxReportProps> = ({
 
       {/* Warnings / helpers: on a phone they belong to the list screen, not inside a section page */}
       <div className={phoneOpen === null ? "contents" : "hidden md:contents"}>
+      {zeroGstBills.length > 0 && (
+        <div className="rounded-2xl border-2 border-rose-300 bg-rose-50/90 p-4 space-y-2">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="text-sm font-bold text-rose-900 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>0% Non-GST Invoices Detected: ₹{money(fromLines.taxableNil)} ({zeroGstBills.length} bills · {zeroUnits} units)</span>
+              </div>
+              <div className="text-xs text-rose-800 leading-relaxed">
+                Sales to village shops were saved as Non-GST / Retail bills with ₹0 tax. In GST law, MRP is tax-inclusive. Click below to backward-calculate 40% & 5% GST and legally merge these {zeroUnits} units into their proper tax rows.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const r = convertBillsToTaxInvoices(zeroGstBills.map((m) => m.id));
+                setRepairMsg(`Done! ${r.fixed} invoice(s) converted to B2C Tax Invoices. Tax backward-calculated at 40% & 5%. The 0% row will now become ₹0.00.`);
+              }}
+              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold whitespace-nowrap cursor-pointer transition-colors shadow-sm flex items-center justify-center gap-1.5 shrink-0"
+            >
+              <Zap className="w-4 h-4 text-amber-300 fill-current" />
+              <span>Fix 0% Bills (Convert to Tax Invoices)</span>
+            </button>
+          </div>
+          {repairMsg && <div className="text-xs font-semibold text-emerald-800">{repairMsg}</div>}
+        </div>
+      )}
+
       {series && (
         <div
           className={`rounded-2xl border p-4 space-y-1 ${
@@ -573,12 +626,22 @@ export const TaxReport: React.FC<TaxReportProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  const r = convertBillsToTaxInvoices(nonGstRepairable.map((m) => m.billId));
+                  setRepairMsg(`Done! ${r.fixed} invoice(s) converted to B2C Tax Invoices with GST recognized in report.`);
+                }}
+                className="px-3.5 py-1.5 rounded-full bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
+              >
+                Convert {nonGstRepairable.length} invoice(s) to B2C Tax Invoices (Include GST in returns)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
                   const r = repairNonGstBillTaxes(nonGstRepairable.map((m) => m.billId));
                   setRepairMsg(`Done! ${r.fixed} Non-GST invoice(s) updated to ₹0.00 tax${r.skipped ? `, ${r.skipped} skipped` : ""}.`);
                 }}
-                className="px-3.5 py-1.5 rounded-full bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
+                className="px-3.5 py-1.5 rounded-full bg-slate-600 hover:bg-slate-700 active:bg-slate-800 text-white text-xs font-medium cursor-pointer transition-colors shadow-xs"
               >
-                Fix {nonGstRepairable.length} Non-GST invoice(s) (Set stored tax to ₹0.00)
+                Or Set stored tax to ₹0.00 (Keep as 0% Non-GST)
               </button>
               {repairMsg && <span className="text-xs font-semibold text-emerald-700">{repairMsg}</span>}
             </div>
@@ -846,22 +909,46 @@ export const TaxReport: React.FC<TaxReportProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-black/5">
-                {b2cByRate.map((row) => (
-                  <tr key={`${row.rate}-${row.inter}`}>
-                    <td className={td}>
-                      {row.inter ? "Inter-state" : "Intra-state"}
-                    </td>
-                    <td className={tdR}>
-                      {row.rate % 1 === 0
-                        ? row.rate.toFixed(0)
-                        : row.rate.toFixed(2)}
-                      %
-                    </td>
-                    <td className={tdR}>₹{money(row.taxable)}</td>
-                    <td className={tdR}>₹{money(row.tax)}</td>
-                    <td className={tdR}>₹{money(row.cess)}</td>
-                  </tr>
-                ))}
+                {b2cByRate.map((row) => {
+                  const isZeroWithFix = row.rate === 0 && zeroGstBills.length > 0;
+                  return (
+                    <tr key={`${row.rate}-${row.inter}`} className={isZeroWithFix ? "bg-rose-50/80 ring-1 ring-rose-300" : ""}>
+                      <td className={td}>
+                        <span>{row.inter ? "Inter-state" : "Intra-state"}</span>
+                        {isZeroWithFix && (
+                          <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300">
+                            Non-GST Error
+                          </span>
+                        )}
+                      </td>
+                      <td className={tdR}>
+                        {row.rate % 1 === 0
+                          ? row.rate.toFixed(0)
+                          : row.rate.toFixed(2)}
+                        %
+                      </td>
+                      <td className={tdR}>₹{money(row.taxable)}</td>
+                      <td className={tdR}>₹{money(row.tax)}</td>
+                      <td className={tdR}>
+                        <div className="flex items-center justify-end gap-2">
+                          <span>₹{money(row.cess)}</span>
+                          {isZeroWithFix && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const r = convertBillsToTaxInvoices(zeroGstBills.map((m) => m.id));
+                                setRepairMsg(`Done! ${r.fixed} invoice(s) converted to B2C Tax Invoices. 0% row is now ₹0.00.`);
+                              }}
+                              className="px-2 py-0.5 text-[11px] font-bold bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded cursor-pointer transition-colors shadow-xs"
+                            >
+                              Fix
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -909,23 +996,49 @@ export const TaxReport: React.FC<TaxReportProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-black/5">
-                {hsnRows.map((row) => (
-                  <tr key={`${row.hsn}-${row.rate}`}>
-                    <td className={`${td} font-mono`}>{row.hsn}</td>
-                    <td className={tdR}>
-                      {row.rate % 1 === 0
-                        ? row.rate.toFixed(0)
-                        : row.rate.toFixed(2)}
-                      %
-                    </td>
-                    <td className={tdR}>{row.qty}</td>
-                    <td className={tdR}>₹{money(row.taxable)}</td>
-                    <td className={tdR}>
-                      ₹{money(row.cgst + row.sgst + row.igst)}
-                    </td>
-                    <td className={tdR}>₹{money(row.cess)}</td>
-                  </tr>
-                ))}
+                {hsnRows.map((row) => {
+                  const isZeroHsn = row.rate === 0 && zeroGstBills.length > 0;
+                  return (
+                    <tr key={`${row.hsn}-${row.rate}`} className={isZeroHsn ? "bg-rose-50/70" : ""}>
+                      <td className={`${td} font-mono`}>
+                        <span>{row.hsn}</span>
+                        {isZeroHsn && (
+                          <span className="ml-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 border border-rose-300">
+                            0% Error
+                          </span>
+                        )}
+                      </td>
+                      <td className={tdR}>
+                        {row.rate % 1 === 0
+                          ? row.rate.toFixed(0)
+                          : row.rate.toFixed(2)}
+                        %
+                      </td>
+                      <td className={tdR}>{row.qty}</td>
+                      <td className={tdR}>₹{money(row.taxable)}</td>
+                      <td className={tdR}>
+                        ₹{money(row.cgst + row.sgst + row.igst)}
+                      </td>
+                      <td className={tdR}>
+                        <div className="flex items-center justify-end gap-2">
+                          <span>₹{money(row.cess)}</span>
+                          {isZeroHsn && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const r = convertBillsToTaxInvoices(zeroGstBills.map((m) => m.id));
+                                setRepairMsg(`Done! ${r.fixed} invoice(s) converted to B2C Tax Invoices. 0% HSN lines merged into 40% & 5%.`);
+                              }}
+                              className="px-2 py-0.5 text-[11px] font-bold bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded cursor-pointer transition-colors shadow-xs"
+                            >
+                              Fix
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

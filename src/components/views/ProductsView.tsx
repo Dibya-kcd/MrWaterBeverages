@@ -8,7 +8,7 @@ import { useAutoOdiaNameMap, nameFromMap } from "../../hooks/useAutoOdiaName";
 import { CategoryKey, Product } from "../../types";
 import { CATS } from "../../constants/initialData";
 import { CASE_PACK_SIZES, gstRateFromHsn, money, resolveProductGstRate, resolveProductHsn, volumeFromName, detectPack } from "../../utils/billing";
-import { ConfirmModal } from "../ui";
+import { ConfirmModal, ToggleSwitch } from "../ui";
 
 // Current GST slabs for beverages (12% and 28% no longer exist). An old product that still carries
 // another rate keeps showing it until you pick a valid one.
@@ -428,7 +428,7 @@ export const ProductsView: React.FC = () => {
           </div>
         </div>
 
-        <div className="sticky bottom-0 bg-[var(--bg)] border-t border-black/5 px-4 sm:px-6 py-3">
+        <div className="sticky bottom-0 z-10 bg-[var(--bg)] border-t border-black/5 px-4 sm:px-6 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <button
             type="button"
             onClick={handleSave}
@@ -613,23 +613,7 @@ function Toggle({
   on: boolean;
   onChange: (v: boolean) => void;
 }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      onClick={() => onChange(!on)}
-      className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer shrink-0 ${
-        on ? "bg-[var(--primary)]" : "bg-slate-300"
-      }`}
-    >
-      <span
-        className={`absolute top-0.5 left-0.5 size-5 rounded-full bg-white shadow transition-transform ${
-          on ? "translate-x-5" : "translate-x-0"
-        }`}
-      />
-    </button>
-  );
+  return <ToggleSwitch checked={on} onChange={onChange} />;
 }
 
 function ToggleRow({

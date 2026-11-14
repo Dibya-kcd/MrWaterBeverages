@@ -161,7 +161,7 @@ export const PaymentCollectionPanel: React.FC<PaymentCollectionPanelProps> = ({
                   type="number" inputMode="decimal"
                   min="0"
                   max={totalAmount}
-                  placeholder={paymentMode === 'credit' ? '0' : String(totalAmount)}
+                  placeholder="0"
                   value={amountPaidDraft}
                   onChange={(e) => onAmountPaidChange(e.target.value)}
                   className="w-32 pl-6 pr-2 py-1.5 text-sm font-black text-right bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600/30 focus:border-blue-600"

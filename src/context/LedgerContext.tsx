@@ -1,3 +1,4 @@
+import { setOdiaNameLookup, warmOdiaFont } from '../utils/odiaNameLookup';
 import { serverSignIn, setApiSession } from "../lib/authFetch";
 import React, {
   createContext,
@@ -235,7 +236,12 @@ import {
   attachableBillsForTrip,
   resolveItemCrateCost,
   resolveItemLandedCrateCost,
+  lineTaxDetail,
+  normalizeGstFraction,
 } from "../utils/billing";
+import { resolveLineGstRate } from "../utils/gstReports";
+import { resolveTaxRegime, noOutputTax, stripOutputTax, checkSaleForRegime, isNoOutputTaxBill } from "../tax/appRegime";
+import { stockCrateCost, costBasisFor } from "../tax/purchaseCost";
 import { previewPricing, totalsMatch } from "../utils/schemeEngine";
 import { creditNoteStatus } from "../utils/supplierSchemes";
 import {
@@ -307,6 +313,7 @@ import {
   normalizePromotion,
   pickNewerBill,
   pickNewerTrip,
+  planCustomerUpdate,
   productStampMs,
   purgeLegacyLocalStorageKeys,
   readCustomerTombstones,
@@ -320,6 +327,7 @@ import {
   readPaymentTombstones,
   refillDocReservation,
   releaseDocReservations,
+  renameCustomerCrateDeposits,
   reserveDocNumber,
   saveCachedCustomProductPrices,
   saveCachedCustomerProductPrices,
@@ -679,6 +687,8 @@ interface LedgerContextType {
   repairBillTotals: (billIds: number[]) => { fixed: number; skipped: number };
   /** Clears stored tax on Non-GST bills where no tax was collected from customer */
   repairNonGstBillTaxes: (billIds: number[]) => { fixed: number; skipped: number };
+  /** Converts retail / Non-GST bills with stored tax into B2C Tax Invoices */
+  convertBillsToTaxInvoices: (billIds: number[]) => { fixed: number; skipped: number };
   /** Generates journal payments for bills marked as paid but missing a payment entry */
   repairMissingBillPayments: () => number;
   /** Registers deleted test numbers as Cancelled for GSTR-1 document series continuity */
@@ -787,7 +797,8 @@ interface LedgerContextType {
   updateCustomer: (
     customer: Customer,
     syncLinkedBillsAndPayments?: boolean,
-  ) => void;
+    previousIdentity?: { name: string; phone?: string },
+  ) => Customer;
   deleteCustomer: (customerId: string, rectificationReason?: string) => void;
   existingCustomers: ExistingCustomer[];
   startBillForCustomer: (customerName: string, customerPhone?: string) => void;
@@ -1008,6 +1019,15 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
   const [activeGrnToEdit, setActiveGrnToEdit] = useState<GRN | null>(null);
 
   const [products, setProducts] = useState<Product[]>(initial.products);
+  // Receipts look up saved Odia product names through this (see utils/odiaNameLookup).
+  useEffect(() => {
+    warmOdiaFont();
+    setOdiaNameLookup((id, name) => {
+      const key = (name || '').trim().toLowerCase();
+      const hit = products.find((p) => (id !== undefined && p.id === id) || (p.name || '').trim().toLowerCase() === key);
+      return hit?.nameOr || '';
+    });
+  }, [products]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>(initial.warehouses);
   const [inventoryBatches, setInventoryBatches] = useState<InventoryBatch[]>(
     initial.inventoryBatches,
@@ -1222,6 +1242,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     const fromBills = extractCustomPricesFromBills(initial.bills || []);
     return { ...fromBills.customerPrices, ...cached };
   });
+  const customerProductPricesRef = useRef<Record<string, number>>(customerProductPrices);
+  customerProductPricesRef.current = customerProductPrices;
 
   const setCustomProductPrice = useCallback(
     (productId: number, rate: number, customerName?: string) => {
@@ -1443,6 +1465,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     );
     return reconcilePaymentsFromBills(base, initial.bills);
   });
+  const paymentsRef = useRef<PaymentRecord[]>(payments);
+  paymentsRef.current = payments;
 
   // Reconcile payments whenever allBills changes so all bill payments show up on Payment screen
   useEffect(() => {
@@ -1960,63 +1984,6 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       .catch(() => {});
   }, []);
 
-  // Sync Products and Batches whenever GRNs or Warehouses change (without wiping manually registered products)
-  useEffect(() => {
-    if (grns.length === 0) return;
-    const { products: derivedProducts, batches: derivedBatches } =
-      buildCatalogFromGrns(grns, warehouses);
-    if (derivedProducts.length > 0) {
-      setProducts((prev) => {
-        const merged = [...prev];
-        for (const dp of derivedProducts) {
-          const idx = merged.findIndex(
-            (p) =>
-              p.id === dp.id ||
-              p.name.trim().toLowerCase() === dp.name.trim().toLowerCase() ||
-              (p.sku && dp.sku && p.sku === dp.sku),
-          );
-          if (idx >= 0) {
-            merged[idx] = {
-              ...merged[idx],
-              opening: dp.opening,
-              cost: dp.cost,
-              effectiveCost: dp.effectiveCost,
-              sku: merged[idx].sku || dp.sku,
-              batchNumber: merged[idx].batchNumber || dp.batchNumber,
-            };
-          } else {
-            merged.push(dp);
-          }
-        }
-        return merged;
-      });
-    }
-    if (derivedBatches.length > 0) {
-      setInventoryBatches((prev) => {
-        const merged = [...prev];
-        for (const db of derivedBatches) {
-          const idx = merged.findIndex((b) => b.id === db.id);
-          if (idx >= 0) {
-            // Live batch already exists: keep its quantity (transfers, edits) and cost. Only fill gaps.
-            const cur = merged[idx];
-            merged[idx] = {
-              ...cur,
-              hsn: cur.hsn || db.hsn,
-              cgstRate: cur.cgstRate ?? db.cgstRate,
-              sgstRate: cur.sgstRate ?? db.sgstRate,
-              effectiveCostPrice: cur.effectiveCostPrice || db.effectiveCostPrice,
-              supplierName: cur.supplierName || db.supplierName,
-              supplierInvoiceNo: cur.supplierInvoiceNo || db.supplierInvoiceNo,
-            };
-          } else {
-            merged.push(db);
-          }
-        }
-        return merged;
-      });
-    }
-  }, [grns, warehouses]);
-
   // Cart & editing state
   const [cart, setCart] = useState<CartState>(emptyCart());
   const [editingBillId, setEditingBillId] = useState<number | null>(null);
@@ -2492,6 +2459,64 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
   const [orgProfile, setOrgProfile] = useState<OrganizationProfile>(
     initial.orgProfile,
   );
+
+  // Sync Products and Batches whenever GRNs or Warehouses change (without wiping manually registered products)
+  useEffect(() => {
+    if (grns.length === 0) return;
+    const { products: derivedProducts, batches: derivedBatches } =
+      buildCatalogFromGrns(grns, warehouses, (d) => costBasisFor(orgProfile, d));
+    if (derivedProducts.length > 0) {
+      setProducts((prev) => {
+        const merged = [...prev];
+        for (const dp of derivedProducts) {
+          const idx = merged.findIndex(
+            (p) =>
+              p.id === dp.id ||
+              p.name.trim().toLowerCase() === dp.name.trim().toLowerCase() ||
+              (p.sku && dp.sku && p.sku === dp.sku),
+          );
+          if (idx >= 0) {
+            merged[idx] = {
+              ...merged[idx],
+              opening: dp.opening,
+              cost: dp.cost,
+              effectiveCost: dp.effectiveCost,
+              sku: merged[idx].sku || dp.sku,
+              batchNumber: merged[idx].batchNumber || dp.batchNumber,
+            };
+          } else {
+            merged.push(dp);
+          }
+        }
+        return merged;
+      });
+    }
+    if (derivedBatches.length > 0) {
+      setInventoryBatches((prev) => {
+        const merged = [...prev];
+        for (const db of derivedBatches) {
+          const idx = merged.findIndex((b) => b.id === db.id);
+          if (idx >= 0) {
+            // Live batch already exists: keep its quantity (transfers, edits) and cost. Only fill gaps.
+            const cur = merged[idx];
+            merged[idx] = {
+              ...cur,
+              hsn: cur.hsn || db.hsn,
+              cgstRate: cur.cgstRate ?? db.cgstRate,
+              sgstRate: cur.sgstRate ?? db.sgstRate,
+              effectiveCostPrice: cur.effectiveCostPrice || db.effectiveCostPrice,
+              supplierName: cur.supplierName || db.supplierName,
+              supplierInvoiceNo: cur.supplierInvoiceNo || db.supplierInvoiceNo,
+            };
+          } else {
+            merged.push(db);
+          }
+        }
+        return merged;
+      });
+    }
+  }, [grns, warehouses, orgProfile.gstRegistrationType, orgProfile.gstEngineStartDate]);
+
   const billingSettingsRef = useRef<BillingSettings | null>(null);
   const [billingSettings, setBillingSettings] = useState<BillingSettings>(
     initial.billingSettings,
@@ -3069,7 +3094,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         setGrns(mergedGrns);
         saveGrns(mergedGrns).catch(() => {});
         const { products: derivedProducts, batches: derivedBatches } =
-          buildCatalogFromGrns(mergedGrns, remote.warehouses || warehouses);
+          buildCatalogFromGrns(mergedGrns, remote.warehouses || warehouses, (d) => costBasisFor(orgProfile, d));
         const candidateProducts = (() => {
           const map = new Map<number, Product>();
           const nameMap = new Map<string, Product>();
@@ -3795,7 +3820,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
             item.category || "energy",
             maxProductId,
           );
-        const crateCost = resolveItemCrateCost(item);
+        const crateCost = stockCrateCost(item, costBasisFor(orgProfile, newGrn.inwardDate)); // GST-inclusive for composition GRNs dated on/after the engine start
         const crateLanded = resolveItemLandedCrateCost(item);
         nextCatalog.push({
           id: maxProductId,
@@ -3834,7 +3859,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         });
         item.productId = maxProductId;
       } else {
-        const crateCost = resolveItemCrateCost(item);
+        const crateCost = stockCrateCost(item, costBasisFor(orgProfile, newGrn.inwardDate)); // GST-inclusive for composition GRNs dated on/after the engine start
         const crateLanded = resolveItemLandedCrateCost(item);
         item.productId = existing.id;
         nextCatalog = nextCatalog.map((p) =>
@@ -3918,7 +3943,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         taxableBase > 0 && overallDisc > 0
           ? (lineTaxable / taxableBase) * overallDisc
           : 0;
-      const crateCost = resolveItemCrateCost(item);
+      const crateCost = stockCrateCost(item, costBasisFor(orgProfile, newGrn.inwardDate)); // GST-inclusive for composition GRNs dated on/after the engine start
       let unitEff =
         item.supplierSchemeFreeQty &&
         item.supplierSchemeFreeQty > 0 &&
@@ -4129,7 +4154,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
             item.category || "energy",
             maxProductId,
           );
-        const crateCost = resolveItemCrateCost(item);
+        const crateCost = stockCrateCost(item, costBasisFor(orgProfile, mergedGrn.inwardDate)); // GST-inclusive for composition GRNs dated on/after the engine start
         const crateLanded = resolveItemLandedCrateCost(item);
         nextCatalog.push({
           id: maxProductId,
@@ -4162,7 +4187,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         });
         item.productId = maxProductId;
       } else {
-        const crateCost = resolveItemCrateCost(item);
+        const crateCost = stockCrateCost(item, costBasisFor(orgProfile, mergedGrn.inwardDate)); // GST-inclusive for composition GRNs dated on/after the engine start
         const crateLanded = resolveItemLandedCrateCost(item);
         item.productId = existing.id;
         nextCatalog = nextCatalog.map((p) =>
@@ -4210,7 +4235,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
 
     // 2. Replace batches for this GRN with fresh ones reflecting new counts & warehouse
     const freshBatchesList: InventoryBatch[] = targetItems.map((item) => {
-      const crateCost = resolveItemCrateCost(item);
+      const crateCost = stockCrateCost(item, costBasisFor(orgProfile, mergedGrn.inwardDate)); // GST-inclusive for composition GRNs dated on/after the engine start
       return {
         // Deterministic id — must match what buildCatalogFromGrns derives
         // (`batch_${grn.id}_${item.id}`) or the reactive [grns, warehouses] effect duplicates this
@@ -4381,6 +4406,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     const { products: rebuilt } = buildCatalogFromGrns(
       remainingGrns,
       warehouses,
+      (d) => costBasisFor(orgProfile, d),
     );
     const rebuiltByName = new Map(rebuilt.map((p) => [norm(p.name), p]));
 
@@ -7717,7 +7743,28 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         Number(b.effectiveCostPrice) || Number(b.costPrice) || 0,
       ]),
     );
-    const billItems = fefo.items.map((it) => {
+    // ---- GST tax engine gate (OFF unless the organisation sets a registration type + start date) -------------
+    // Composition / unregistered businesses never charge GST: the engine validates the sale (GSTIN, inter-state
+    // block, declaration), and every tax split is removed so the customer pays exactly the quoted amount.
+    const taxRegime = resolveTaxRegime(orgProfile, effectiveBillDate);
+    const saleCheck = taxRegime.active
+      ? checkSaleForRegime(orgProfile, {
+          date: effectiveBillDate,
+          customerGstin: extras?.customerGstin,
+          items: effCart.items,
+        })
+      : null;
+    if (saleCheck && !saleCheck.ok) {
+      notify(
+        "Cannot save this bill - GST rules:\n" + saleCheck.errors.map((e) => `• ${e.message}`).join("\n"),
+      );
+      return null;
+    }
+    const outputTaxOff = noOutputTax(taxRegime);
+    if (outputTaxOff) {
+      extras = { ...(extras || {}), invoiceType: "bill_of_supply", isGstInvoice: false };
+    }
+    const billItemsRaw = fefo.items.map((it) => {
       const prod = products.find((p) => p.id === it.productId);
       const fallback = Number(prod?.effectiveCost ?? prod?.cost) || 0;
       let q = 0;
@@ -7735,11 +7782,12 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         ? { ...it, costExGst: Math.round(cost * 100) / 100 }
         : it;
     });
+    const billItems = outputTaxOff ? stripOutputTax(billItemsRaw) : billItemsRaw;
     const discountToApply =
       overallDiscount !== undefined
         ? overallDiscount
         : effCart.additionalDiscount || 0;
-    const totals = billTotals(effCart.items, gstMode, discountToApply);
+    const totals = billTotals(effCart.items, outputTaxOff ? "off" : gstMode, discountToApply);
     const paid =
       amountPaid !== undefined
         ? Math.min(Math.max(0, amountPaid), totals.total)
@@ -7848,6 +7896,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
                 ? false
                 : extras?.supplyType === "B2B" && Boolean(extras?.customerGstin),
         isRetrospective: extras?.isRetrospective === true,
+        ...(saleCheck?.stamp ? { taxStamp: saleCheck.stamp } : {}),
         editHistory: originalForEdit
           ? [
               ...(originalForEdit.editHistory || []),
@@ -7991,6 +8040,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
                 ? false
                 : extras?.supplyType === "B2B" && Boolean(extras?.customerGstin),
         isRetrospective: extras?.isRetrospective === true,
+        ...(saleCheck?.stamp ? { taxStamp: saleCheck.stamp } : {}),
       };
 
       // Server-side scheme recompute at commit (do not trust client preview alone)
@@ -9472,59 +9522,90 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
   function updateCustomer(
     updated: Customer,
     syncLinkedBillsAndPayments = true,
-  ) {
-    const old = customers.find((c) => c.id === updated.id);
-    const stamped: Customer = {
-      ...updated,
-      updatedAt: new Date().toISOString(),
-    };
-    setCustomers((prev) =>
-      prev.map((c) => (c.id === updated.id ? stamped : c)),
-    );
+    previousIdentity?: { name: string; phone?: string },
+  ): Customer {
+    const plan = planCustomerUpdate({
+      customers: customersRef.current,
+      bills: allBillsRef.current,
+      payments: paymentsRef.current,
+      customerProductPrices: customerProductPricesRef.current,
+      updated,
+      syncLinkedBillsAndPayments,
+      previousIdentity,
+    });
+
+    customersRef.current = plan.customers;
+    setCustomers(plan.customers);
+    saveCustomers(plan.customers).catch(() => {});
+
+    if (plan.unhideNormalizedName && hiddenCustNames.has(plan.unhideNormalizedName)) {
+      const next = new Set(hiddenCustNames);
+      next.delete(plan.unhideNormalizedName);
+      writeHiddenCustomerNames(next);
+      setHiddenCustNames(next);
+    }
+
+    if (plan.retiredDuplicateIds.length > 0) {
+      addCustomerTombstones(plan.retiredDuplicateIds);
+      const retiredNow = new Date().toISOString();
+      pushDeletionRecordsToSupabase(
+        plan.retiredDuplicateIds.map((id) => ({
+          kind: "customer" as const,
+          id,
+          deletedAt: retiredNow,
+          by: currentUser?.name || "Admin",
+          reason: `Merged duplicate customer into ${plan.savedCustomer.name}`,
+        })),
+      ).catch(() => {});
+    }
+
+    if (plan.changedBills.length > 0) {
+      const changedMap = new Map<number, Bill>(plan.changedBills.map((b) => [b.id, b]));
+      setBills((bs) => {
+        const next = bs.map((b) => changedMap.get(b.id) ?? b);
+        saveOrders(next as any).catch(() => {});
+        return next;
+      });
+      for (const upBill of plan.changedBills) {
+        cloud("pushBillToSupabase", pushBillToSupabase(upBill));
+        cloudFetch("/api/bills", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(upBill),
+        });
+      }
+    }
+
+    if (plan.paymentsChanged) {
+      const changedPayMap = new Map<string, PaymentRecord>(
+        plan.payments.map((p) => [p.id, p]),
+      );
+      setPayments((ps) => {
+        const next = ps.map((p) => changedPayMap.get(p.id) ?? p);
+        savePayments(next).catch(() => {});
+        pushPaymentsToSupabase(next).catch(() => {});
+        return next;
+      });
+    }
 
     if (
-      syncLinkedBillsAndPayments &&
-      old &&
-      (old.name !== updated.name || old.phone !== updated.phone)
+      plan.customerProductPrices &&
+      plan.customerProductPrices !== customerProductPricesRef.current
     ) {
-      // The customer ID is the only link. A bill or receipt that carries another customer's ID is never touched,
-      // even if the name text is identical (two different shops can share a name). Only an old record that has NO
-      // id at all is matched by name, and only when that name belonged to this customer alone; it is then given
-      // the id so it follows every later rename.
-      const oldKey = normCustName(old.name);
-      const nameIsShared = customers.some((c) => c.id !== old.id && normCustName(c.name) === oldKey);
-      const isThisCustomer = (recId?: string | null, recName?: string): boolean => {
-        if (recId) return String(recId) === String(old.id);
-        return !nameIsShared && !!oldKey && normCustName(recName) === oldKey;
-      };
-      const stampNow = new Date().toISOString();
-      setBills((bs) =>
-        bs.map((b) => {
-          if (!isThisCustomer(b.customerId, b.retailer)) return b;
-          const upBill = {
-            ...b,
-            customerId: old.id,
-            retailer: updated.name,
-            phone: updated.phone || b.phone,
-            updatedAt: stampNow,
-          };
-          cloud("pushBillToSupabase", pushBillToSupabase(upBill));
-          return upBill;
-        }),
-      );
-      setPayments((ps) =>
-        ps.map((p) => {
-          if (!isThisCustomer(p.customerId, p.customerName)) return p;
-          return {
-            ...p,
-            customerId: old.id,
-            customerName: updated.name,
-            customerPhone: updated.phone || p.customerPhone,
-            updatedAt: stampNow,
-          };
-        }),
+      customerProductPricesRef.current = plan.customerProductPrices;
+      setCustomerProductPrices(plan.customerProductPrices);
+      saveCachedCustomerProductPrices(plan.customerProductPrices);
+    }
+
+    if (plan.canSyncCrateDeposits) {
+      renameCustomerCrateDeposits(
+        plan.oldName,
+        plan.savedCustomer.name,
+        plan.savedCustomer.phone,
       );
     }
+
+    return plan.savedCustomer;
   }
 
   /** Another customer that already uses this name (renaming onto it would blur two shops into one ledger). */
@@ -10838,16 +10919,40 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         skipped++;
         continue;
       }
-      const t = billTotals(b.items, issuedGstMode(b, gstMode), Number(b.additionalDiscount) || 0, {
-        round: isWholeRupee(b.total),
-      });
-      if (Math.abs(t.total - (Number(b.total) || 0)) < 0.5) {
+      // Bills issued by a composition / unregistered business carry no GST by law: never re-add a tax split.
+      if (isNoOutputTaxBill(b)) {
         skipped++;
         continue;
       }
+      const t = billTotals(b.items, issuedGstMode(b, gstMode), Number(b.additionalDiscount) || 0, {
+        round: isWholeRupee(b.total),
+      });
+      const totalDiff = Math.abs(t.total - (Number(b.total) || 0));
+      const cgstDiff = Math.abs(t.cgst - (Number(b.cgst) || 0));
+      const sgstDiff = Math.abs(t.sgst - (Number(b.sgst) || 0));
+      if (totalDiff < 0.5 && cgstDiff < 0.5 && sgstDiff < 0.5) {
+        skipped++;
+        continue;
+      }
+      const updatedItems = (b.items || []).map((it) => {
+        const rate = normalizeGstFraction(it.gst);
+        const factor = Number(b.total) > 0 && t.total > 0 ? (Number(b.total) / t.total) : 1;
+        const lineGross = Math.max(0, Number(it.amount) || Number(it.gross) || 0) * factor;
+        const lineTaxable = rate > 0 ? Number((lineGross / (1 + rate)).toFixed(2)) : lineGross;
+        const lineTax = Number((lineGross - lineTaxable).toFixed(2));
+        const lineCgst = Number((lineTax / 2).toFixed(2));
+        const lineSgst = Number((lineTax - lineCgst).toFixed(2));
+        return {
+          ...it,
+          taxable: lineTaxable,
+          cgst: lineCgst,
+          sgst: lineSgst,
+        };
+      });
       const ok = updateBill(
         {
           ...b,
+          items: updatedItems,
           subtotal: t.subtotal,
           cgst: t.cgst,
           sgst: t.sgst,
@@ -10856,7 +10961,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           discount: t.discount,
           amountPaid: Math.min(Number(b.amountPaid) || 0, t.total),
         },
-        { comment: "Saved totals recalculated from the invoice lines and invoice discount (report audit fix)" },
+        { comment: "Saved totals and tax recalculated from the invoice lines and invoice discount (report audit fix)" },
       );
       if (ok) fixed++;
       else skipped++;
@@ -10880,8 +10985,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         const isNonGst =
           b.invoiceType === "retail" ||
           b.invoiceType === "bill_of_supply" ||
-          b.isGstInvoice === false ||
-          !b.customerGstin;
+          b.isGstInvoice === false;
         if (!isNonGst) {
           skipped++;
           return b;
@@ -10914,6 +11018,95 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           roundOff: 0,
           additionalDiscount: addDiscount,
           items: updatedItems,
+          updatedAt: new Date().toISOString(),
+        };
+        changedBills.push(updated);
+        return updated;
+      });
+      saveOrders(newBills).catch(() => {});
+      return newBills;
+    });
+
+    for (const b of changedBills) {
+      cloud("pushBillToSupabase", pushBillToSupabase(b));
+    }
+    return { fixed, skipped };
+  }
+
+  // Convert retail / Non-GST bills into B2C Tax Invoices with backward-calculated tax
+  function convertBillsToTaxInvoices(billIds: number[]): { fixed: number; skipped: number } {
+    const idSet = new Set(billIds);
+    let fixed = 0;
+    let skipped = 0;
+    const changedBills: Bill[] = [];
+    setBills((prev) => {
+      const newBills = prev.map((b) => {
+        if (!idSet.has(b.id)) return b;
+        if (b.status === "cancelled" || !(b.items || []).length) {
+          skipped++;
+          return b;
+        }
+        // A composition / unregistered business can never issue a Tax Invoice: leave its Bills of Supply untouched.
+        if (isNoOutputTaxBill(b)) {
+          skipped++;
+          return b;
+        }
+
+        const billTotal = Number(b.total) || (b.items || []).reduce((s, it) => s + (Number(it.amount) || 0), 0);
+
+        // Backward-calculate tax from inclusive retail price for each item line
+        let billCgst = 0;
+        let billSgst = 0;
+        let billSubtotal = 0;
+
+        const updatedItems = (b.items || []).map((item) => {
+          const p = products.find((x) => Number(x.id) === Number(item.productId));
+          const hsnDigits = String(item.hsn || p?.hsn || "").replace(/\D+/g, "");
+
+          let rate = 0;
+          if (p?.gstRate != null && Number(p.gstRate) > 0) {
+            rate = Number(p.gstRate) > 1 ? Number(p.gstRate) / 100 : Number(p.gstRate);
+          } else if (hsnDigits.startsWith("22029920") || hsnDigits.startsWith("3004")) {
+            rate = 0.05;
+          } else if (hsnDigits.startsWith("220210") || hsnDigits.startsWith("2202")) {
+            rate = 0.40;
+          } else if (hsnDigits) {
+            rate = gstRateFromHsn(hsnDigits) ?? 0.18;
+          } else {
+            rate = 0.18;
+          }
+
+          const lineGross = Math.max(0, Number(item.amount) || Number(item.gross) || ((Number(item.qty) || 0) * (Number(item.rate) || 0)) || 0);
+          const lineTaxable = rate > 0 ? Number((lineGross / (1 + rate)).toFixed(2)) : lineGross;
+          const lineTax = Number((lineGross - lineTaxable).toFixed(2));
+          const lineCgst = Number((lineTax / 2).toFixed(2));
+          const lineSgst = Number((lineTax - lineCgst).toFixed(2));
+
+          billCgst += lineCgst;
+          billSgst += lineSgst;
+          billSubtotal += lineTaxable;
+
+          return {
+            ...item,
+            gst: Math.round(rate * 100),
+            cgst: lineCgst,
+            sgst: lineSgst,
+            amount: lineGross,
+          };
+        });
+
+        const billTax = billCgst + billSgst;
+        fixed++;
+        const updated: Bill = {
+          ...b,
+          items: updatedItems,
+          cgst: Number(billCgst.toFixed(2)),
+          sgst: Number(billSgst.toFixed(2)),
+          subtotal: Number(Math.max(0, billTotal - billTax).toFixed(2)),
+          total: billTotal,
+          invoiceType: "tax_invoice",
+          isGstInvoice: true,
+          supplyType: b.supplyType || "B2C",
           updatedAt: new Date().toISOString(),
         };
         changedBills.push(updated);
@@ -11760,6 +11953,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         updateBill,
         repairBillTotals,
         repairNonGstBillTaxes,
+        convertBillsToTaxInvoices,
         repairMissingBillPayments,
         recordMissingSeriesAsCancelled,
         previewBillEdit,

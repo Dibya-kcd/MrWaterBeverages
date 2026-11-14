@@ -399,7 +399,7 @@ export const CustomerQuickSelect: React.FC<CustomerQuickSelectProps> = ({
                   className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100/80 text-emerald-950 transition-colors cursor-pointer text-[11px] font-bold"
                 >
                   <UserPlus size={13} className="text-emerald-700" />
-                  <span>+ New Customer</span>
+                  <span>New Customer</span>
                 </button>
               </div>
 

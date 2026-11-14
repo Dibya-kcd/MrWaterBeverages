@@ -549,8 +549,11 @@ async function sendWriteInner(
   if (isStaticDeployment() && staticCollectionKey(url)) {
     notifySyncStatus({ isSyncing: true });
     const ok = await saveToStaticCollection(url, payload);
-    if (ok) unqueue();
-    else queue((existing?.attempts || 0) + 1);
+    if (ok) {
+      unqueue();
+      // GitHub Pages saves go straight to Supabase: tell the other devices too (tiny message, no data).
+      announceCloudChange();
+    } else queue((existing?.attempts || 0) + 1);
     return ok;
   }
 

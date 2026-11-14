@@ -23,7 +23,7 @@ import {
   Search,
   RotateCcw,
 } from 'lucide-react';
-import { Bill, BillItem, ExistingCustomer, PriceType, Product, Promotion, Trip, Warehouse } from '../../types';
+import { Bill, BillItem, ExistingCustomer, PaletteTokens, PriceType, Product, Promotion, Trip, Warehouse } from '../../types';
 import type { BillEditPreview } from '../../context/LedgerContext';
 import { CATS } from '../../constants/initialData';
 import { billTotals, issuedGstMode, isWholeRupee, computeLine,
@@ -32,6 +32,8 @@ import { CustomerSelector } from './CustomerSelector';
 import { SizeChip } from './SizeChip';
 import { sizeStripe } from '../../utils/sizeColor';
 import { ConfirmModal } from '../ui/ConfirmModal';
+import { ToggleSwitch } from '../ui/ToggleSwitch';
+import { isNoOutputTaxBill } from '../../tax/appRegime';
 import { todayISO } from "../../utils/dateLocal";
 
 interface EditBillModalProps {
@@ -50,7 +52,7 @@ interface EditBillModalProps {
   warehouses: Warehouse[];
   existingCustomers: ExistingCustomer[];
   gstMode: 'inclusive' | 'exclusive' | 'off';
-  palette: any;
+  palette: PaletteTokens;
   invoicePrefix?: string;
   remainingStock: (productId: number) => number;
 }
@@ -123,8 +125,10 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       setWarehouseId(bill.warehouseId || '');
       setItems(bill.items ? JSON.parse(JSON.stringify(bill.items)) : []);
       setAmountPaid(bill.amountPaid || 0);
-      const isGst =
-        bill.invoiceType === 'tax_invoice' || bill.isGstInvoice === true
+      const lockedNoTax = isNoOutputTaxBill(bill);
+      const isGst = lockedNoTax
+        ? false
+        : bill.invoiceType === 'tax_invoice' || bill.isGstInvoice === true
           ? true
           : bill.invoiceType === 'retail' || bill.invoiceType === 'bill_of_supply' || bill.isGstInvoice === false
             ? false
@@ -310,6 +314,8 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       ? trips.find((t) => Number(t.id) === preview.source.tripId)
       : undefined;
   const blockedByStock = !!preview && preview.problems.length > 0;
+  const formatLocked = isNoOutputTaxBill(bill);
+  const effectiveFormat: 'gst' | 'non_gst' = formatLocked ? 'non_gst' : invoiceFormat;
 
   if (!bill) return null;
 
@@ -342,10 +348,22 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       total: totals.total,
       discount: totals.discount,
       amountPaid: Math.min(totals.total, Math.max(0, amountPaid)),
-      supplyType: invoiceFormat === 'gst' && customerGstin.trim() ? 'B2B' : 'B2C',
-      customerGstin: invoiceFormat === 'gst' && customerGstin.trim() ? customerGstin.trim().toUpperCase() : undefined,
-      invoiceType: invoiceFormat === 'gst' ? 'tax_invoice' : 'retail',
-      isGstInvoice: invoiceFormat === 'gst',
+      supplyType: formatLocked
+        ? bill.supplyType
+        : effectiveFormat === 'gst' && customerGstin.trim()
+          ? 'B2B'
+          : 'B2C',
+      customerGstin: formatLocked
+        ? bill.customerGstin
+        : effectiveFormat === 'gst' && customerGstin.trim()
+          ? customerGstin.trim().toUpperCase()
+          : undefined,
+      invoiceType: formatLocked
+        ? (bill.invoiceType === 'bill_of_supply' ? 'bill_of_supply' : 'retail')
+        : effectiveFormat === 'gst'
+          ? 'tax_invoice'
+          : 'retail',
+      isGstInvoice: effectiveFormat === 'gst',
       ewayBillNo: ewayBillNo.replace(/\D/g, '').slice(0, 12) || undefined,
       irn: irn.trim() || undefined,
       transporterName: transporterName.trim() || undefined,
@@ -428,16 +446,16 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       <div
         className="w-full max-w-4xl max-h-[92vh] flex flex-col rounded-xl shadow-2xl border-2 overflow-hidden bg-white text-stone-900 animate-in zoom-in-95 duration-150 my-auto"
         style={{
-          borderColor: palette.accent,
-          backgroundColor: palette.cardBg || '#ffffff',
-          color: palette.text,
+          borderColor: palette.navy,
+          backgroundColor: palette.panel || '#ffffff',
+          color: palette.ink,
         }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header - Clean & Non-Redundant for Mobile */}
         <div
           className="px-4 py-3 flex items-center justify-between border-b shrink-0 bg-stone-50"
-          style={{ borderColor: palette.border }}
+          style={{ borderColor: palette.line }}
         >
           <div className="flex items-center gap-2 min-w-0">
             <FileText size={18} className="text-amber-600 shrink-0" />
@@ -468,7 +486,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
           {/* Customer & Bill Details Bar */}
           <div
             className="p-4 rounded-xl border space-y-3"
-            style={{ borderColor: palette.border, backgroundColor: palette.bg }}
+            style={{ borderColor: palette.line, backgroundColor: palette.cream }}
           >
             <div className="flex items-center justify-between flex-wrap gap-2">
               <span className="text-xs font-bold uppercase tracking-wider opacity-75 flex items-center gap-1.5">
@@ -479,9 +497,9 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                 onClick={() => setShowCustomerPicker(true)}
                 className="text-xs font-bold px-2.5 py-1 rounded-md border flex items-center gap-1.5 shadow-sm hover:shadow-sm transition-all"
                 style={{
-                  borderColor: palette.accent,
-                  color: palette.accent,
-                  backgroundColor: `${palette.accent}0d`,
+                  borderColor: palette.focus,
+                  color: palette.focus,
+                  backgroundColor: `${palette.focus}12`,
                 }}
                 id="edit-modal-pick-customer-btn"
               >
@@ -503,9 +521,9 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   onChange={(e) => setRetailer(e.target.value)}
                   className="w-full px-3 py-2 text-sm border-2 rounded-lg font-medium focus:outline-none focus:ring-1"
                   style={{
-                    borderColor: palette.border,
-                    backgroundColor: palette.cardBg || '#ffffff',
-                    color: palette.text,
+                    borderColor: palette.line,
+                    backgroundColor: palette.panel || '#ffffff',
+                    color: palette.ink,
                   }}
                   id="edit-modal-retailer-input"
                 />
@@ -523,9 +541,9 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   onChange={(e) => setPhone(e.target.value)}
                   className="w-full px-3 py-2 text-sm border-2 rounded-lg font-mono focus:outline-none focus:ring-1"
                   style={{
-                    borderColor: palette.border,
-                    backgroundColor: palette.cardBg || '#ffffff',
-                    color: palette.text,
+                    borderColor: palette.line,
+                    backgroundColor: palette.panel || '#ffffff',
+                    color: palette.ink,
                   }}
                   id="edit-modal-phone-input"
                 />
@@ -542,9 +560,9 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   onChange={(e) => setDate(e.target.value)}
                   className="w-full px-3 py-2 text-sm border-2 rounded-lg focus:outline-none focus:ring-1"
                   style={{
-                    borderColor: palette.border,
-                    backgroundColor: palette.cardBg || '#ffffff',
-                    color: palette.text,
+                    borderColor: palette.line,
+                    backgroundColor: palette.panel || '#ffffff',
+                    color: palette.ink,
                   }}
                   id="edit-modal-date-input"
                 />
@@ -562,9 +580,9 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   onChange={(e) => setWarehouseId(e.target.value)}
                   className="w-full px-3 py-2 text-sm border-2 rounded-lg focus:outline-none focus:ring-1"
                   style={{
-                    borderColor: palette.border,
-                    backgroundColor: palette.cardBg || '#ffffff',
-                    color: palette.text,
+                    borderColor: palette.line,
+                    backgroundColor: palette.panel || '#ffffff',
+                    color: palette.ink,
                   }}
                   id="edit-modal-warehouse-select"
                 >
@@ -578,53 +596,58 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
               </div>
             </div>
 
-            {/* Document Format Option - Compact GST / Non-GST Toggle Button */}
+            {/* Document Format Option - Compact GST / Non-GST Toggle (locked for Composition / Unregistered bills) */}
             <div
               className="p-3 rounded-xl border bg-stone-50/80 space-y-2.5"
-              style={{ borderColor: palette.border }}
+              style={{ borderColor: palette.line }}
             >
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5 min-w-0">
                   <div
-                    className={`w-8 h-8 rounded-lg flex items-center justify-center font-black text-[11px] shrink-0 border ${
-                      invoiceFormat === 'gst'
+                    className={`px-1.5 min-w-8 h-8 rounded-lg flex items-center justify-center font-black text-[11px] shrink-0 border ${
+                      effectiveFormat === 'gst'
                         ? 'bg-amber-100 text-amber-800 border-amber-300'
                         : 'bg-emerald-100 text-emerald-800 border-emerald-300'
                     }`}
                   >
-                    {invoiceFormat === 'gst' ? 'GST' : 'CASH'}
+                    {effectiveFormat === 'gst' ? 'GST' : formatLocked ? 'BOS' : 'CASH'}
                   </div>
                   <div className="min-w-0">
                     <div className="text-xs font-black text-stone-900 truncate">
-                      {invoiceFormat === 'gst' ? 'GST Tax Invoice' : 'Non-GST Retail Bill'}
+                      {effectiveFormat === 'gst'
+                        ? 'GST Tax Invoice'
+                        : formatLocked
+                          ? 'Bill of Supply (No Output GST)'
+                          : 'Non-GST Retail Bill'}
                     </div>
                     <div className="text-[10.5px] text-stone-500 font-semibold truncate">
-                      {invoiceFormat === 'gst' ? 'Official tax invoice with B2B GSTIN' : 'Standard retail cash memo'}
+                      {effectiveFormat === 'gst'
+                        ? 'Official tax invoice with B2B GSTIN'
+                        : formatLocked
+                          ? `Locked by ${bill.taxStamp?.registrationType === 'composition' ? 'Composition' : 'Unregistered'} tax regime`
+                          : 'Standard retail cash memo'}
                     </div>
                   </div>
                 </div>
 
-                {/* Single Toggle Switch */}
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={invoiceFormat === 'gst'}
-                  onClick={() => setInvoiceFormat(invoiceFormat === 'gst' ? 'non_gst' : 'gst')}
-                  className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                    invoiceFormat === 'gst' ? 'bg-amber-600' : 'bg-emerald-600'
-                  }`}
-                  id="edit-modal-gst-toggle"
-                  title={`Toggle between Non-GST and GST (Currently: ${invoiceFormat === 'gst' ? 'GST' : 'Non-GST'})`}
-                >
-                  <span
-                    className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
-                      invoiceFormat === 'gst' ? 'translate-x-5' : 'translate-x-0'
-                    }`}
+                {formatLocked ? (
+                  <span className="px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide bg-emerald-50 text-emerald-800 border border-emerald-200 shrink-0">
+                    Locked
+                  </span>
+                ) : (
+                  <ToggleSwitch
+                    id="edit-modal-gst-toggle"
+                    size="lg"
+                    tone="gst"
+                    checked={effectiveFormat === 'gst'}
+                    onChange={(next) => setInvoiceFormat(next ? 'gst' : 'non_gst')}
+                    title={`Toggle between Non-GST and GST (Currently: ${effectiveFormat === 'gst' ? 'GST' : 'Non-GST'})`}
+                    ariaLabel="Toggle GST Tax Invoice format"
                   />
-                </button>
+                )}
               </div>
 
-              {invoiceFormat === 'gst' && (
+              {effectiveFormat === 'gst' && (
                 <div className="pt-2 border-t border-stone-200">
                   <label className="block text-[11px] font-bold text-stone-700 uppercase tracking-wider mb-1">
                     Buyer GSTIN (15 Digits)
@@ -640,7 +663,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                     placeholder="e.g. 21AAAAA0000A1Z5"
                     maxLength={15}
                     className="w-full px-3 py-2 text-xs font-mono font-bold uppercase border rounded-xl bg-white focus:outline-none focus:ring-1 focus:border-amber-600"
-                    style={{ borderColor: palette.border }}
+                    style={{ borderColor: palette.line }}
                   />
                 </div>
               )}
@@ -663,7 +686,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                       onChange={(e) => setEwayBillNo(e.target.value.replace(/\D/g, '').slice(0, 12))}
                       placeholder="12 digits"
                       className="w-full px-2 py-1 text-xs font-mono font-bold border rounded-lg bg-white focus:outline-none"
-                      style={{ borderColor: palette.border }}
+                      style={{ borderColor: palette.line }}
                     />
                   </div>
                   <div>
@@ -676,7 +699,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                       onChange={(e) => setTransporterName(e.target.value)}
                       placeholder="Vehicle / Name"
                       className="w-full px-2 py-1 text-xs font-bold border rounded-lg bg-white focus:outline-none"
-                      style={{ borderColor: palette.border }}
+                      style={{ borderColor: palette.line }}
                     />
                   </div>
                   <div>
@@ -689,7 +712,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                       onChange={(e) => setIrn(e.target.value.trim().slice(0, 64))}
                       placeholder="64-char IRN"
                       className="w-full px-2 py-1 text-xs font-mono font-bold border rounded-lg bg-white focus:outline-none"
-                      style={{ borderColor: palette.border }}
+                      style={{ borderColor: palette.line }}
                     />
                   </div>
                   <div>
@@ -703,7 +726,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                       onChange={(e) => setTransportDistanceKm(e.target.value.replace(/\D/g, '').slice(0, 4))}
                       placeholder="km"
                       className="w-full px-2 py-1 text-xs font-bold border rounded-lg bg-white focus:outline-none"
-                      style={{ borderColor: palette.border }}
+                      style={{ borderColor: palette.line }}
                     />
                   </div>
                 </div>
@@ -715,7 +738,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
           {preview && (
             <div
               className="p-4 rounded-xl border space-y-2.5"
-              style={{ borderColor: palette.border, backgroundColor: palette.bg }}
+              style={{ borderColor: palette.line, backgroundColor: palette.cream }}
               id="edit-modal-source-panel"
             >
               <div className="flex items-center justify-between flex-wrap gap-2">
@@ -828,7 +851,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
             {items.length === 0 ? (
               <div
                 className="p-8 text-center rounded-xl border-2 border-dashed opacity-70"
-                style={{ borderColor: palette.border }}
+                style={{ borderColor: palette.line }}
               >
                 <p className="font-medium text-sm">No products on this bill.</p>
                 <p className="text-xs opacity-75 mt-1">Use the form below to add products.</p>
@@ -846,7 +869,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                     <div
                       key={`m-${it.productId}-${idx}`}
                       className="rounded-2xl border bg-white shadow-sm overflow-hidden"
-                      style={{ borderColor: palette.border, ...sizeStripe(product?.volume, it.productName) }}
+                      style={{ borderColor: palette.line, ...sizeStripe(product?.volume, it.productName) }}
                     >
                       <div className="p-3 space-y-3">
                         {/* Name + remove */}
@@ -898,7 +921,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                         <div className="grid grid-cols-2 gap-3">
                           <div>
                             <div className="text-[10px] font-bold uppercase tracking-wider text-stone-500 mb-1">Qty (Cases)</div>
-                            <div className="flex items-stretch rounded-xl border overflow-hidden bg-white" style={{ borderColor: palette.border }}>
+                            <div className="flex items-stretch rounded-xl border overflow-hidden bg-white" style={{ borderColor: palette.line }}>
                               <button
                                 type="button"
                                 onClick={() => updateLineItem(idx, { qty: it.qty - 1 })}
@@ -945,7 +968,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                                   updateLineItem(idx, { rate: Math.max(0, parseFloat(e.target.value) || 0) })
                                 }
                                 className="w-full h-11 pl-7 pr-2 text-base font-bold border rounded-xl focus:outline-none focus:ring-1 bg-white"
-                                style={{ borderColor: palette.border }}
+                                style={{ borderColor: palette.line }}
                                 id={`m-edit-rate-input-${idx}`}
                               />
                             </div>
@@ -979,7 +1002,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                       {/* Line total */}
                       <div
                         className="flex items-center justify-between px-3 py-2 border-t"
-                        style={{ backgroundColor: palette.bg, borderColor: palette.border }}
+                        style={{ backgroundColor: palette.cream, borderColor: palette.line }}
                       >
                         <span className="text-[11px] font-bold uppercase tracking-wider opacity-70">Line total</span>
                         <span className="text-base font-extrabold">₹{money(it.amount)}</span>
@@ -991,26 +1014,26 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
 
               <div
                 className="hidden md:block border-2 rounded-xl overflow-hidden shadow-sm"
-                style={{ borderColor: palette.border }}
+                style={{ borderColor: palette.line }}
               >
                 <div className="overflow-x-auto overscroll-x-contain rounded-2xl border border-slate-200 bg-white shadow-sm">
-                  <table className="w-full text-xs text-left border-collapse">
+                  <table className="w-full min-w-[700px] text-xs text-left border-collapse">
                     <thead
                       className="border-b uppercase tracking-wider font-bold opacity-80"
                       style={{
-                        backgroundColor: palette.bg,
-                        borderColor: palette.border,
+                        backgroundColor: palette.cream,
+                        borderColor: palette.line,
                       }}
                     >
                       <tr>
-                        <th className="px-3 py-2.5">#</th>
-                        <th className="px-3 py-2.5">Product Name</th>
-                        <th className="px-3 py-2.5">Type</th>
-                        <th className="px-3 py-2.5 w-32">Qty (Cases)</th>
-                        <th className="px-3 py-2.5 w-28">Rate (₹)</th>
-                        <th className="px-3 py-2.5">Scheme / Free</th>
-                        <th className="px-3 py-2.5 text-right">Line Total</th>
-                        <th className="px-2 py-2.5 text-center w-10"></th>
+                        <th className="px-3 py-2.5 whitespace-nowrap">#</th>
+                        <th className="px-3 py-2.5 whitespace-nowrap min-w-[150px]">Product Name</th>
+                        <th className="px-3 py-2.5 whitespace-nowrap">Type</th>
+                        <th className="px-3 py-2.5 w-32 whitespace-nowrap">Qty (Cases)</th>
+                        <th className="px-3 py-2.5 w-28 whitespace-nowrap">Rate (₹)</th>
+                        <th className="px-3 py-2.5 whitespace-nowrap">Scheme / Free</th>
+                        <th className="px-3 py-2.5 text-right whitespace-nowrap">Line Total</th>
+                        <th className="px-2 py-2.5 text-center w-10 whitespace-nowrap"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-stone-200">
@@ -1046,7 +1069,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                                   })
                                 }
                                 className="px-2 py-1 text-xs border rounded font-medium bg-white"
-                                style={{ borderColor: palette.border }}
+                                style={{ borderColor: palette.line }}
                                 id={`edit-line-type-${idx}`}
                               >
                                 <option value="Retail">Retail</option>
@@ -1056,7 +1079,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
 
                             {/* Inline Quantity with +/- Tactile Buttons */}
                             <td className="px-3 py-2.5">
-                              <div className="inline-flex items-center rounded-lg border overflow-hidden bg-white shadow-sm" style={{ borderColor: palette.border }}>
+                              <div className="inline-flex items-center rounded-lg border overflow-hidden bg-white shadow-sm" style={{ borderColor: palette.line }}>
                                 <button
                                   type="button"
                                   onClick={() => updateLineItem(idx, { qty: it.qty - 1 })}
@@ -1109,7 +1132,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                                   }
                                   className="w-24 pl-5 pr-2 py-1 text-xs font-bold border rounded-lg focus:outline-none focus:ring-1"
                                   style={{
-                                    borderColor: palette.border,
+                                    borderColor: palette.line,
                                     backgroundColor: '#ffffff',
                                   }}
                                   id={`edit-rate-input-${idx}`}
@@ -1188,13 +1211,13 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                 id="edit-modal-show-add-product-btn"
               >
                 <Plus size={16} className="text-sky-600" />
-                <span>+ Add Another Product to this Bill</span>
+                <span>Add Another Product to this Bill</span>
               </button>
             ) : (
               <div
                 className="p-3.5 sm:p-4 rounded-xl border-2 space-y-3 bg-sky-50/50 shadow-sm"
                 style={{
-                  borderColor: palette.border,
+                  borderColor: palette.line,
                 }}
               >
                 <div className="flex items-center justify-between pb-2 border-b border-sky-200">
@@ -1220,7 +1243,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                     value={selectedProductId}
                     onChange={(e) => setSelectedProductId(Number(e.target.value))}
                     className="w-full px-3 py-2 text-xs font-semibold border rounded-lg bg-white text-stone-900 focus:outline-none focus:ring-1 focus:border-sky-600"
-                    style={{ borderColor: palette.border }}
+                    style={{ borderColor: palette.line }}
                     id="edit-modal-add-product-select"
                   >
                     {products.map((p) => {
@@ -1262,7 +1285,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                     <label className="block text-[10.5px] font-bold uppercase tracking-wider text-stone-600 mb-1">
                       Quantity (Cases)
                     </label>
-                    <div className="flex items-stretch rounded-lg border overflow-hidden bg-white" style={{ borderColor: palette.border }}>
+                    <div className="flex items-stretch rounded-lg border overflow-hidden bg-white" style={{ borderColor: palette.line }}>
                       <button
                         type="button"
                         onClick={() => setDraftQty((q) => Math.max(1, q - 1))}
@@ -1307,7 +1330,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                         value={draftCustomRate}
                         onChange={(e) => setDraftCustomRate(e.target.value)}
                         className="w-full h-9 pl-6 pr-2 text-xs font-bold border rounded-lg bg-white focus:outline-none focus:ring-1"
-                        style={{ borderColor: palette.border }}
+                        style={{ borderColor: palette.line }}
                         id="edit-modal-draft-rate"
                         title="Rate per case"
                       />
@@ -1324,7 +1347,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                       notify(`Added ${draftProduct?.name || 'item'} to bill!`, 'success');
                     }}
                     className="flex-1 py-2.5 px-4 rounded-xl text-xs font-black text-white shadow-sm transition-all hover:opacity-90 flex items-center justify-center gap-1.5 cursor-pointer"
-                    style={{ backgroundColor: palette.accent }}
+                    style={{ backgroundColor: palette.navy }}
                     id="edit-modal-add-item-btn"
                   >
                     <Plus size={16} />
@@ -1347,7 +1370,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
             {/* Bill Summary Breakdown */}
             <div
               className="p-4 rounded-xl border text-xs space-y-2"
-              style={{ borderColor: palette.border, backgroundColor: palette.bg }}
+              style={{ borderColor: palette.line, backgroundColor: palette.cream }}
             >
               <h4 className="font-bold text-xs uppercase tracking-wider opacity-75">
                 Financial Breakdown
@@ -1382,10 +1405,10 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
               )}
               <div
                 className="pt-2 border-t flex justify-between text-sm font-bold"
-                style={{ borderColor: palette.border }}
+                style={{ borderColor: palette.line }}
               >
                 <span>Net Total Bill Amount:</span>
-                <span className="text-base" style={{ color: palette.accent }}>
+                <span className="text-base" style={{ color: palette.navy }}>
                   ₹{money(totals.total)}
                 </span>
               </div>
@@ -1394,7 +1417,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
             {/* Payment & Due Settlement */}
             <div
               className="p-4 rounded-xl border space-y-3"
-              style={{ borderColor: palette.border, backgroundColor: palette.bg }}
+              style={{ borderColor: palette.line, backgroundColor: palette.cream }}
             >
               <h4 className="font-bold text-xs uppercase tracking-wider opacity-75 flex items-center justify-between">
                 <span>Payment Settlement</span>
@@ -1419,9 +1442,9 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   onChange={(e) => setAmountPaid(parseFloat(e.target.value) || 0)}
                   className="w-full px-3 py-2 text-sm font-bold border-2 rounded-lg focus:outline-none focus:ring-1"
                   style={{
-                    borderColor: palette.border,
-                    backgroundColor: palette.cardBg || '#ffffff',
-                    color: palette.text,
+                    borderColor: palette.line,
+                    backgroundColor: palette.panel || '#ffffff',
+                    color: palette.ink,
                   }}
                   id="edit-modal-amount-paid-input"
                 />
@@ -1433,7 +1456,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   type="button"
                   onClick={() => setAmountPaid(totals.total)}
                   className="px-2 py-1 text-xs rounded border font-medium bg-white hover:bg-stone-100 transition-colors"
-                  style={{ borderColor: palette.border }}
+                  style={{ borderColor: palette.line }}
                 >
                   Full Paid (₹{money(totals.total)})
                 </button>
@@ -1441,7 +1464,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   type="button"
                   onClick={() => setAmountPaid(0)}
                   className="px-2 py-1 text-xs rounded border font-medium bg-white hover:bg-stone-100 transition-colors"
-                  style={{ borderColor: palette.border }}
+                  style={{ borderColor: palette.line }}
                 >
                   Credit (₹0)
                 </button>
@@ -1449,7 +1472,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   type="button"
                   onClick={() => setAmountPaid(Math.round(totals.total / 2))}
                   className="px-2 py-1 text-xs rounded border font-medium bg-white hover:bg-stone-100 transition-colors"
-                  style={{ borderColor: palette.border }}
+                  style={{ borderColor: palette.line }}
                 >
                   50% (₹{money(Math.round(totals.total / 2))})
                 </button>
@@ -1457,7 +1480,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
 
               <div
                 className="pt-2 border-t flex items-center justify-between text-xs font-bold"
-                style={{ borderColor: palette.border }}
+                style={{ borderColor: palette.line }}
               >
                 <span>Outstanding Balance Due:</span>
                 <span
@@ -1472,13 +1495,13 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
 
           {/* Edit history (scrolls with the bill; the reason for a NEW edit is asked in the save popup) */}
           {bill.editHistory && bill.editHistory.length > 0 && (
-            <details className="text-[11px] rounded-xl border px-3 py-2" style={{ borderColor: palette.border }}>
+            <details className="text-[11px] rounded-xl border px-3 py-2" style={{ borderColor: palette.line }}>
               <summary className="cursor-pointer font-bold opacity-75">
                 Edit history ({bill.editHistory.length})
               </summary>
               <ul className="mt-2 space-y-1.5">
                 {[...bill.editHistory].reverse().map((h, i) => (
-                  <li key={i} className="border-l-2 pl-2" style={{ borderColor: palette.border }}>
+                  <li key={i} className="border-l-2 pl-2" style={{ borderColor: palette.line }}>
                     <b>{new Date(h.at).toLocaleString('en-IN')}</b> · {h.by} · “{h.comment}”
                     {h.changes.length > 0 && <div className="opacity-70">{h.changes.join('; ')}</div>}
                     {h.stockChanged && <div className="text-amber-700">Stock was adjusted</div>}
@@ -1492,7 +1515,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
         {saveError && (
           <p
             className="px-5 py-2 border-t shrink-0 text-xs text-red-600 font-semibold whitespace-pre-line max-h-24 overflow-y-auto"
-            style={{ borderColor: palette.border }}
+            style={{ borderColor: palette.line }}
             id="edit-modal-save-error"
           >
             {saveError}
@@ -1502,7 +1525,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
         {/* Footer Actions - Cancel replaced with Delete Bill per mobile-first request */}
         <div
           className="px-4 sm:px-5 py-3 bg-stone-50 border-t flex items-center justify-between gap-2.5 shrink-0"
-          style={{ borderColor: palette.border, backgroundColor: palette.bg }}
+          style={{ borderColor: palette.line, backgroundColor: palette.cream }}
         >
           <button
             type="button"

@@ -4,6 +4,7 @@ import {
   AlertTriangle, ArrowLeft, CheckCircle2, Lock, Plus, Truck, X } from 'lucide-react';
 import { Bill, Product, Salesman, Warehouse } from '../../../types';
 import { todayISO, toLocalISODate } from '../../../utils/dateLocal';
+import { compareProductsInSequence } from '../../../utils/sizeColor';
 import {
   ActionBar,
   AddProductsSheet,
@@ -192,9 +193,21 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
           ? ('bad' as const)
           : ('normal' as const),
     }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) =>
+      compareProductsInSequence(
+        a.product || { name: a.name },
+        b.product || { name: b.name },
+      ),
+    );
 
-  const loadedLines = lines.filter((l) => Number(l.qty) > 0);
+  const loadedLines = lines
+    .filter((l) => Number(l.qty) > 0)
+    .sort((a, b) =>
+      compareProductsInSequence(
+        productOf(a.productId) || { name: productName(a.productId) },
+        productOf(b.productId) || { name: productName(b.productId) },
+      ),
+    );
 
   return (
     <div
@@ -398,6 +411,18 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
             </button>
           ) : (
             <div className="space-y-2.5">
+              <div className="flex items-center justify-between gap-2 px-1">
+                <span className="text-xs font-black uppercase tracking-wider text-slate-500">
+                  Loaded products · {loadedLines.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowAdd(true)}
+                  className="inline-flex items-center gap-1 rounded-xl border border-[var(--primary)]/40 bg-white px-3 py-1.5 text-xs font-black text-[var(--primary)] hover:bg-emerald-50 cursor-pointer"
+                >
+                  <Plus size={14} /> Add product
+                </button>
+              </div>
               {loadedLines.map((l) => {
                 const p = productOf(l.productId);
                 const over = (Number(l.qty) || 0) > stockIn(l.warehouseId, l.productId);

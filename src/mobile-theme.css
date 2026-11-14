@@ -317,7 +317,7 @@ button[disabled] {
 }
 /* Swipe strips clip overflow, so chips inside stay flat. */
 .no-scrollbar button,
-button.rounded-full:not([class*="size-"]):not([class*="w-1"]) {
+button.rounded-full:not([class*="size-"]):not([class*="w-1"]):not(.hh-switch) {
   box-shadow: none !important;
 }
 
@@ -364,7 +364,7 @@ textarea:focus-visible {
 }
 
 /* Toggle switches keep their small size (see MOBILE_UI_CHANGES.md); just recolour. */
-[role="switch"][aria-checked="true"] {
+[role="switch"]:not(.hh-switch)[aria-checked="true"] {
   background-color: var(--primary);
 }
 

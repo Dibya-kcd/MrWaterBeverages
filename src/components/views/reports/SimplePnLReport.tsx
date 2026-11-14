@@ -256,7 +256,7 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
                 hint={pnl.writeOffRecovered > 0.004 ? `After ₹${money(pnl.writeOffRecovered)} compensated by the supplier` : 'Damaged, expired or free issues'}
               />
             )}
-            {pnl.supplierCredits > 0.004 && <Line label="Supplier scheme credits received" value={pnl.supplierCredits} kind="add" />}
+            {pnl.supplierCredits > 0.004 && <Line label="Supplier scheme credits received (as entered, should be without GST)" value={pnl.supplierCredits} kind="add" />}
             <Line label="Gross profit" value={grossProfit} kind="subtotal" />
           </>
         )}
@@ -275,7 +275,7 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
       </section>
 
       <p className="text-xs text-slate-500 px-1">
-        GST collected from customers (₹{money(pnl.totalOutputGstNet)}) is not income, so it is left out. See the GST report.
+        GST in your sales (₹{money(pnl.totalOutputGstNet)}) is owed to the government, not income, so it is left out. See the GST report.
       </p>
 
       {detail && (

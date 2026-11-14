@@ -239,7 +239,7 @@ export const DesktopSidebar: React.FC = () => {
       </button>
 
       <nav className="hh-sidebar__nav">
-        {MENU_ITEMS.map((item) => {
+        {MENU_ITEMS.filter((item) => item.id !== 'settings').map((item) => {
           const Icon = item.icon;
           const isActive = active === item.id;
           return (
@@ -259,6 +259,24 @@ export const DesktopSidebar: React.FC = () => {
       </nav>
 
       <div className="hh-sidebar__foot">
+        {/* Settings is pinned here so it is always visible, even on short laptop screens where the list above scrolls. */}
+        {MENU_ITEMS.filter((item) => item.id === 'settings').map((item) => {
+          const Icon = item.icon;
+          const isActive = active === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setTab(item.id)}
+              aria-current={isActive ? 'page' : undefined}
+              className="hh-sidebar__item"
+              data-active={isActive ? 'true' : 'false'}
+            >
+              <Icon size={22} strokeWidth={isActive ? 2.3 : 1.9} aria-hidden="true" />
+              <span>{t(item.labelKey)}</span>
+            </button>
+          );
+        })}
         <div className="hh-usercard">
           <span className="hh-usercard__avatar" aria-hidden="true"><UserAvatar initial={initial} size={20} /></span>
           <span className="min-w-0">
