@@ -4,4 +4,4 @@ dev-dist/
 .env
 .env.local
 # Server runtime cache of your live data: never ship or commit it (a stale copy overrides the database)
-data/
+/data/
