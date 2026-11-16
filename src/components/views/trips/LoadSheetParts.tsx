@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, Check, CheckCircle2, Lock, Minus, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import { Product, Warehouse } from '../../../types';
 import { SizeChip } from '../../common/SizeChip';
+import { PackIcon } from '../../common/PackIcon';
 import {
   PackGroupInfo,
   PackGroupKey,
@@ -85,15 +86,18 @@ export const LoadLineCard: React.FC<LoadLineCardProps> = ({
       style={{ borderLeftWidth: 6, borderLeftColor: stripe }}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-[15px] font-bold text-slate-900 leading-snug break-words">{name}</div>
-          <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-            <SizeChip volume={product?.volume} pack={product?.pack} name={name} />
-            {product?.unitsPerCrate ? (
-              <span className="text-[10.5px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
-                {product.unitsPerCrate} pcs/cs
-              </span>
-            ) : null}
+        <div className="flex items-start gap-2.5 min-w-0">
+          <PackIcon pack={product?.pack} name={name} className="mt-0.5" />
+          <div className="min-w-0">
+            <div className="text-[15px] font-bold text-slate-900 leading-snug break-words">{name}</div>
+            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+              <SizeChip volume={product?.volume} pack={product?.pack} name={name} />
+              {product?.unitsPerCrate ? (
+                <span className="text-[10.5px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                  {product.unitsPerCrate} pcs/cs
+                </span>
+              ) : null}
+            </div>
           </div>
         </div>
         {!readOnly && onRemove && (
@@ -451,16 +455,19 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
           type="button"
           disabled={Boolean(onTrip)}
           onClick={() => openEntryPopup(p)}
-          className="min-w-0 flex-1 text-left cursor-pointer disabled:cursor-default"
+          className="min-w-0 flex-1 text-left cursor-pointer disabled:cursor-default flex items-start gap-2.5"
         >
-          <div className="text-[13.5px] font-bold text-slate-900 leading-snug break-words flex items-center gap-1.5 flex-wrap">
-            <OdiaName name={p.name} nameOr={p.nameOr} />
-            <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
-          </div>
-          <div className={`text-[11.5px] mt-0.5 ${over ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
-            {stockLine(p)}
-            {p.unitsPerCrate ? ` · ${p.unitsPerCrate} pcs/cs` : ''}
-            {over ? ' — more than in stock' : ''}
+          <PackIcon pack={p.pack} name={p.name} className="mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[13.5px] font-bold text-slate-900 leading-snug break-words flex items-center gap-1.5 flex-wrap">
+              <OdiaName name={p.name} nameOr={p.nameOr} />
+              <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
+            </div>
+            <div className={`text-[11.5px] mt-0.5 ${over ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
+              {stockLine(p)}
+              {p.unitsPerCrate ? ` · ${p.unitsPerCrate} pcs/cs` : ''}
+              {over ? ' — more than in stock' : ''}
+            </div>
           </div>
         </button>
 
@@ -685,21 +692,24 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
             className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl border border-black/10 p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] space-y-4"
           >
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <SizeChip volume={entryProduct.volume} pack={entryProduct.pack} name={entryProduct.name} />
-                  {entryProduct.unitsPerCrate ? (
-                    <span className="text-[11px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                      {entryProduct.unitsPerCrate} pcs/cs
-                    </span>
-                  ) : null}
+              <div className="flex items-start gap-2.5 min-w-0">
+                <PackIcon pack={entryProduct.pack} name={entryProduct.name} className="mt-0.5" />
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <SizeChip volume={entryProduct.volume} pack={entryProduct.pack} name={entryProduct.name} />
+                    {entryProduct.unitsPerCrate ? (
+                      <span className="text-[11px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                        {entryProduct.unitsPerCrate} pcs/cs
+                      </span>
+                    ) : null}
+                  </div>
+                  <h3 id="product-entry-popup-title" className="mt-1.5 text-base font-black text-slate-900 leading-snug break-words">
+                    <OdiaName name={entryProduct.name} nameOr={entryProduct.nameOr} />
+                  </h3>
+                  <p className="mt-0.5 text-xs font-semibold text-slate-500">
+                    {stockLine(entryProduct)}
+                  </p>
                 </div>
-                <h3 id="product-entry-popup-title" className="mt-1.5 text-base font-black text-slate-900 leading-snug break-words">
-                  <OdiaName name={entryProduct.name} nameOr={entryProduct.nameOr} />
-                </h3>
-                <p className="mt-0.5 text-xs font-semibold text-slate-500">
-                  {stockLine(entryProduct)}
-                </p>
               </div>
               <button
                 type="button"
@@ -856,13 +866,16 @@ export const ReviewSheet: React.FC<{
       <div className="rounded-2xl border border-black/10 bg-white divide-y divide-black/5">
         {rows.map((r) => (
           <div key={r.key} className="flex items-center justify-between gap-3 px-3 py-2.5" style={{ borderLeft: `6px solid ${sizeTheme(r.product?.volume, r.name).hex}`, borderRadius: 4 }}>
-            <div className="min-w-0">
-              <div className="text-[13.5px] font-bold text-slate-900 leading-snug break-words"><OdiaName name={r.name} /></div>
-              {r.note && (
-                <div className={`text-[11.5px] ${r.noteTone === 'bad' ? 'text-rose-700 font-bold' : r.noteTone === 'changed' ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
-                  {r.note}
-                </div>
-              )}
+            <div className="flex items-start gap-2.5 min-w-0">
+              <PackIcon size="sm" pack={r.product?.pack} name={r.name} className="mt-0.5" />
+              <div className="min-w-0">
+                <div className="text-[13.5px] font-bold text-slate-900 leading-snug break-words"><OdiaName name={r.name} /></div>
+                {r.note && (
+                  <div className={`text-[11.5px] ${r.noteTone === 'bad' ? 'text-rose-700 font-bold' : r.noteTone === 'changed' ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
+                    {r.note}
+                  </div>
+                )}
+              </div>
             </div>
             <div className="shrink-0 text-lg font-black tabular-nums text-slate-900">
               {r.qty} <span className="text-xs font-bold text-slate-500">cs</span>

@@ -30,7 +30,6 @@ import {
 } from 'lucide-react';
 import { Bill, BillItem, ExistingCustomer, PriceType, Product, Trip } from '../../types';
 import { money } from '../../utils/billing';
-import { downloadInvoicePdf } from '../../utils/invoicePdf';
 import { InvoiceSuccessCard } from '../billing/InvoiceSuccessCard';
 import { normCustName } from '../../context/ledgerHelpers';
 import { AddCustomerModal } from '../common/AddCustomerModal';

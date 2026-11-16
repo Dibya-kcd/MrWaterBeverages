@@ -965,7 +965,8 @@ html[data-theme="high-contrast"] .hh-switch__thumb {
 .hh-partycard__name { font-weight: 800; font-size: calc(16px * var(--app-font-scale, 1)); color: var(--text); overflow-wrap: anywhere; }
 .hh-partycard__sub { font-size: calc(13px * var(--app-font-scale, 1)); color: var(--text-2); overflow-wrap: anywhere; }
 .hh-partycard__due { color: var(--due); font-weight: 700; }
-.hh-chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.hh-chips { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; -ms-overflow-style: none; }
+.hh-chips::-webkit-scrollbar { display: none; }
 .hh-chip { flex: 0 0 auto; min-height: 44px; padding: 0 18px; border-radius: var(--r-pill); border: 0; background: var(--surface-soft); color: var(--text-2); font-weight: 700; font-size: calc(14px * var(--app-font-scale, 1)); cursor: pointer; white-space: nowrap; }
 .hh-chip[data-active="true"] { background: var(--primary); color: #fff; }
 .hh-cartpane { display: none; }

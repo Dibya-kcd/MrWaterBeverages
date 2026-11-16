@@ -1,6 +1,7 @@
 import { useLanguage } from '../../i18n/LanguageContext';
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { SizeChip } from "../common/SizeChip";
+import { PackIcon } from "../common/PackIcon";
 import { sizeTheme, packTheme } from "../../utils/sizeColor";
 import {
   X,
@@ -34,6 +35,7 @@ import { getProductOdiaName, getCustomerOdiaName } from '../../utils/displayName
 import { ToggleSwitch } from '../ui/ToggleSwitch';
 import { useLedger } from '../../context/LedgerContext';
 import { sendBillOnWhatsApp, whatsAppResultMessage } from '../../utils/whatsappBill';
+import { preloadInvoicePdf } from '../../utils/invoicePdfLazy';
 import { notify } from '../../utils/toast';
 
 interface SalesmanCartModalProps {
@@ -118,6 +120,8 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
   isPriceLocked = false,
 }) => {
   const { orgProfile, billingSettings } = useLedger();
+  const hasWhatsAppBill = Boolean(lastFinalizedWhatsApp);
+  useEffect(() => { if (hasWhatsAppBill) preloadInvoicePdf().catch(() => {}); }, [hasWhatsAppBill]);
   const { isOdia } = useLanguage();
 
   // Beverage browsing mode state (allows adding beverages without leaving modal)
@@ -564,30 +568,33 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                   >
                     <div>
                       <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <h4 className="font-black text-sm sm:text-base leading-snug">
-                              <div>{prod.name}</div>
-                              {isOdia && (prod.nameOr || getProductOdiaName(prod.id, products)) && (
-                                <div className="text-xs font-bold text-sky-800 font-odia mt-0.5">
-                                  {prod.nameOr || getProductOdiaName(prod.id, products)}
-                                </div>
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          <PackIcon pack={prod.pack} name={prod.name} className="mt-0.5" />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <h4 className="font-black text-sm sm:text-base leading-snug">
+                                <div>{prod.name}</div>
+                                {isOdia && (prod.nameOr || getProductOdiaName(prod.id, products)) && (
+                                  <div className="text-xs font-bold text-sky-800 font-odia mt-0.5">
+                                    {prod.nameOr || getProductOdiaName(prod.id, products)}
+                                  </div>
+                                )}
+                              </h4>
+                              {(nameCounts.get(prod.name.trim().toLowerCase()) || 0) > 1 && (
+                                <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
+                                  ⚠️ Check Size/Pack
+                                </span>
                               )}
-                            </h4>
-                            {(nameCounts.get(prod.name.trim().toLowerCase()) || 0) > 1 && (
-                              <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
-                                ⚠️ Check Size/Pack
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-xs font-semibold opacity-75 mt-0.5 flex items-center gap-1.5 flex-wrap">
-                            <SizeChip volume={prod.volume} pack={prod.pack} name={prod.name} className="mr-1" />
-                            {prod.unitsPerCrate && (
-                              <span className="text-[10.5px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
-                                {prod.unitsPerCrate} pcs/case
-                              </span>
-                            )}
-                            <span>· {prod.category}</span>
+                            </div>
+                            <div className="text-xs font-semibold opacity-75 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                              <SizeChip volume={prod.volume} pack={prod.pack} name={prod.name} className="mr-1" />
+                              {prod.unitsPerCrate && (
+                                <span className="text-[10.5px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                  {prod.unitsPerCrate} pcs/case
+                                </span>
+                              )}
+                              <span>· {prod.category}</span>
+                            </div>
                           </div>
                         </div>
 

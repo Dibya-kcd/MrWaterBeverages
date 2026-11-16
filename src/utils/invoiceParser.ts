@@ -1,4 +1,3 @@
-import * as XLSX from 'xlsx';
 import { CategoryKey, GrnSchemeType, Product } from '../types';
 import {
   generateBatchNumber,
@@ -258,6 +257,8 @@ export async function parseSpreadsheetInvoice(
   file: File,
   catalog: Product[]
 ): Promise<ParsedInvoiceData> {
+  // xlsx is big: load it only now, when a spreadsheet is actually being read.
+  const XLSX = await import('xlsx');
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array' });
 

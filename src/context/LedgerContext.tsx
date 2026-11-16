@@ -11,6 +11,13 @@ import React, {
 } from "react";
 import { allocateReceipt, billPaymentGaps, buildAdvanceRestoreRow, buildReceiptRows, isAdvanceAdjustmentRow, isAdvanceRow, splitUnlinkedPayments } from "../utils/paymentAllocation";
 import {
+  applyBillCostRepairPlan,
+  applyCrossWarehouseRestorePlan,
+  BillCostRepairPlan,
+  CrossWarehouseShiftPlan,
+  RepairApplyMode,
+} from "../utils/billCostRepair";
+import {
   CATS,
   DEFAULT_BILLING_SETTINGS,
   DEFAULT_ORG_PROFILE,
@@ -689,6 +696,15 @@ interface LedgerContextType {
   repairNonGstBillTaxes: (billIds: number[]) => { fixed: number; skipped: number };
   /** Converts retail / Non-GST bills with stored tax into B2C Tax Invoices */
   convertBillsToTaxInvoices: (billIds: number[]) => { fixed: number; skipped: number };
+  /** Links matching stock batches and/or freezes costExGst on bills using estimated product cost; leaves totals, GST, dues, and payments untouched. */
+  repairEstimatedBillCosts: (
+    plan: BillCostRepairPlan,
+    mode?: RepairApplyMode,
+  ) => { fixedBills: number; fixedLines: number; linkedLines: number; frozenOnlyLines: number; fixedCases: number };
+  /** Restores godown stock allocation on bills without a warehouse tag that were linked to a batch in another godown, while preserving frozen costExGst. */
+  restoreCrossWarehouseAllocations: (
+    plan: CrossWarehouseShiftPlan,
+  ) => { restoredBills: number; restoredLines: number; restoredCases: number };
   /** Generates journal payments for bills marked as paid but missing a payment entry */
   repairMissingBillPayments: () => number;
   /** Registers deleted test numbers as Cancelled for GSTR-1 document series continuity */
@@ -1006,6 +1022,37 @@ let cloudPullInFlight: {
   auto: boolean;
   startedAt: number;
 } | null = null;
+
+/**
+ * The "second copy" of bills / GRNs inside the STORAGE_KEY backup blob used to be rewritten (read the whole blob,
+ * JSON.parse, change one field, JSON.stringify, write) on every single change, which blocks the screen once the
+ * ledger is large. Now the latest copy is written at most once a second, and immediately when the page is
+ * hidden or closed, so nothing is lost. The main cache and the cloud save still happen right away, as before.
+ */
+const pendingBackupCopies = new Map<string, () => void>();
+let backupCopyTimer: ReturnType<typeof setTimeout> | null = null;
+const BACKUP_COPY_DELAY_MS = 1000;
+
+function flushBackupCopies(): void {
+  if (backupCopyTimer) {
+    clearTimeout(backupCopyTimer);
+    backupCopyTimer = null;
+  }
+  const jobs = Array.from(pendingBackupCopies.values());
+  pendingBackupCopies.clear();
+  for (const job of jobs) {
+    try {
+      job();
+    } catch {
+      // same as before: a failed backup copy never stops the app
+    }
+  }
+}
+
+function scheduleBackupCopy(field: string, write: () => void): void {
+  pendingBackupCopies.set(field, write); // a newer copy replaces an older one that has not been written yet
+  if (!backupCopyTimer) backupCopyTimer = setTimeout(flushBackupCopies, BACKUP_COPY_DELAY_MS);
+}
 
 const LedgerContext = createContext<LedgerContextType | null>(null);
 
@@ -1801,20 +1848,39 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     saveOrders(allBills as any).catch(() => {});
     // Second copy of the bills (startup merges it with the main cache so a bill is never lost on refresh). If the
     // device is short of space, drop this second copy rather than fail silently: the main cache above keeps them.
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      parsed.bills = allBills;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
-    } catch {
+    // Written at most once a second (and when the page is hidden), see scheduleBackupCopy.
+    scheduleBackupCopy("bills", () => {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
         const parsed = raw ? JSON.parse(raw) : {};
-        delete parsed.bills;
+        parsed.bills = allBills;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
-      } catch {}
-    }
+      } catch {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          const parsed = raw ? JSON.parse(raw) : {};
+          delete parsed.bills;
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+        } catch {}
+      }
+    });
   }, [allBills]);
+
+  // Write any waiting backup copy right away when the page is hidden, closed or the provider goes away.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onHide = () => flushBackupCopies();
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flushBackupCopies();
+    };
+    window.addEventListener("pagehide", onHide);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      document.removeEventListener("visibilitychange", onVisibility);
+      flushBackupCopies();
+    };
+  }, []);
 
   // Auto-persist GRNs so inward stock is never lost
   const isGrnsMountedRef = useRef(false);
@@ -1825,12 +1891,14 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     }
     if (grns && grns.length > 0) {
       saveGrns(grns).catch(() => {});
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        const parsed = raw ? JSON.parse(raw) : {};
-        parsed.grns = grns;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
-      } catch {}
+      scheduleBackupCopy("grns", () => {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          const parsed = raw ? JSON.parse(raw) : {};
+          parsed.grns = grns;
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+        } catch {}
+      });
     }
   }, [grns]);
 
@@ -11122,6 +11190,70 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     return { fixed, skipped };
   }
 
+  // Safely links matching stock batches (same warehouse) and/or freezes costExGst on bills whose
+  // COGS was estimated from product average cost. Never alters totals, GST, dues, or payments.
+  function repairEstimatedBillCosts(
+    plan: BillCostRepairPlan,
+    mode: RepairApplyMode = "link_and_freeze",
+  ): { fixedBills: number; fixedLines: number; linkedLines: number; frozenOnlyLines: number; fixedCases: number } {
+    const res = applyBillCostRepairPlan({
+      bills: allBillsRef.current,
+      plan,
+      mode,
+    });
+    if (res.changedBills.length === 0) {
+      notify("All selected bill lines already have a saved batch or frozen cost.");
+      return { fixedBills: 0, fixedLines: 0, linkedLines: 0, frozenOnlyLines: 0, fixedCases: 0 };
+    }
+    allBillsRef.current = res.updatedBills;
+    setBills(res.updatedBills);
+    saveOrders(res.updatedBills).catch(() => {});
+    for (const b of res.changedBills) {
+      cloud("pushBillToSupabase", pushBillToSupabase(b));
+    }
+    notify(
+      `Updated cost metadata on ${res.fixedBills} bill(s) (${res.fixedCases} cases): ` +
+        (res.linkedLines > 0 ? `${res.linkedLines} batch-linked` : "") +
+        (res.linkedLines > 0 && res.frozenOnlyLines > 0 ? ", " : "") +
+        (res.frozenOnlyLines > 0 ? `${res.frozenOnlyLines} cost-frozen` : "") +
+        ". Totals, GST, dues & payments unchanged.",
+    );
+    return {
+      fixedBills: res.fixedBills,
+      fixedLines: res.fixedLines,
+      linkedLines: res.linkedLines,
+      frozenOnlyLines: res.frozenOnlyLines,
+      fixedCases: res.fixedCases,
+    };
+  }
+
+  function restoreCrossWarehouseAllocations(
+    plan: CrossWarehouseShiftPlan,
+  ): { restoredBills: number; restoredLines: number; restoredCases: number } {
+    const res = applyCrossWarehouseRestorePlan({
+      bills: allBillsRef.current,
+      plan,
+    });
+    if (res.changedBills.length === 0) {
+      notify("No cross-godown batch shifts found.");
+      return { restoredBills: 0, restoredLines: 0, restoredCases: 0 };
+    }
+    allBillsRef.current = res.updatedBills;
+    setBills(res.updatedBills);
+    saveOrders(res.updatedBills).catch(() => {});
+    for (const b of res.changedBills) {
+      cloud("pushBillToSupabase", pushBillToSupabase(b));
+    }
+    notify(
+      `Restored exact godown stock on ${res.restoredBills} bill(s) (${res.restoredCases} cases). Frozen costs, totals, GST & payments unchanged.`,
+    );
+    return {
+      restoredBills: res.restoredBills,
+      restoredLines: res.restoredLines,
+      restoredCases: res.restoredCases,
+    };
+  }
+
   // Registers deleted test numbers as Cancelled for GSTR-1 document series continuity
   function recordMissingSeriesAsCancelled(missingIds: number[]): number {
     const newCancelled: Bill[] = missingIds.map((id) => ({
@@ -11954,6 +12086,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         repairBillTotals,
         repairNonGstBillTaxes,
         convertBillsToTaxInvoices,
+        repairEstimatedBillCosts,
+        restoreCrossWarehouseAllocations,
         repairMissingBillPayments,
         recordMissingSeriesAsCancelled,
         previewBillEdit,

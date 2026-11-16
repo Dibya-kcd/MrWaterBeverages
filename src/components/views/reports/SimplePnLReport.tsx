@@ -8,6 +8,8 @@ import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownl
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
 import { ReportTitleBar, reportCard } from './ReportKit';
 import { useSalesMarginPnl } from './SalesMarginPnLReport';
+import { BillCostRepairModal } from './BillCostRepairModal';
+import { buildCrossWarehouseShiftPlan } from '../../../utils/billCostRepair';
 
 /**
  * Profit & Loss in the usual accounting order, one screen, nothing repeated:
@@ -81,8 +83,20 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
   purchaseStats,
   detail,
 }) => {
-  const { expenses } = useLedger();
+  const { expenses, bills: allActiveBills, inventoryBatches, warehouses, restoreCrossWarehouseAllocations } = useLedger();
   const [showDetail, setShowDetail] = useState(false);
+  const [repairModalOpen, setRepairModalOpen] = useState(false);
+
+  const crossWhPlan = useMemo(
+    () =>
+      buildCrossWarehouseShiftPlan({
+        bills: allActiveBills || filteredBills,
+        products,
+        inventoryBatches: inventoryBatches || [],
+        warehouses: warehouses || [],
+      }),
+    [allActiveBills, filteredBills, products, inventoryBatches, warehouses],
+  );
 
   const { pnl } = useSalesMarginPnl({
     filteredBills,
@@ -208,6 +222,24 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
         </div>
       </div>
 
+      {crossWhPlan.affectedBillCount > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-start gap-2 flex-1 min-w-[200px]">
+            <AlertTriangle size={16} className="shrink-0 mt-0.5 text-amber-600" />
+            <span>
+              <b>Godown stock shift detected:</b> {crossWhPlan.affectedBillCount} bill(s) ({crossWhPlan.totalShiftedCases} cases) without a warehouse tag are linked to a batch in a different godown, which can increase displayed stock.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => restoreCrossWarehouseAllocations(crossWhPlan)}
+            className="inline-flex items-center gap-1 rounded-lg bg-amber-900 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-amber-950 cursor-pointer shrink-0"
+          >
+            Restore Exact Inventory ({crossWhPlan.totalShiftedCases} cs)
+          </button>
+        </div>
+      )}
+
       {(missingCost || estimatedCost) && (
         <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 flex gap-2">
           <AlertTriangle size={16} className="shrink-0 mt-0.5 text-amber-600" />
@@ -220,8 +252,17 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
               </div>
             )}
             {estimatedCost && (
-              <div>
-                {pnl.costChecks.estimatedCostCases} cases use the product&apos;s average cost because no stock batch was recorded on the bill.
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  {pnl.costChecks.estimatedCostCases} cases use the product&apos;s average cost because no stock batch was recorded on the bill.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setRepairModalOpen(true)}
+                  className="inline-flex items-center gap-1 rounded-lg bg-amber-900 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-amber-950 cursor-pointer shrink-0"
+                >
+                  Preview &amp; Fix ({pnl.costChecks.billsWithEstimatedCost} bill{pnl.costChecks.billsWithEstimatedCost === 1 ? '' : 's'})
+                </button>
               </div>
             )}
           </div>
@@ -288,6 +329,14 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
           <ChevronRight size={16} className="text-slate-400" />
         </button>
       )}
+
+      <BillCostRepairModal
+        open={repairModalOpen}
+        onClose={() => setRepairModalOpen(false)}
+        filteredBills={filteredBills}
+        products={products}
+        periodLabel={periodLabel}
+      />
     </div>
   );
 };

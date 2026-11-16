@@ -38,6 +38,7 @@ import { collectExpiryAlerts } from '../../utils/fefo';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { EmptyState } from '../common/EmptyState';
 import { SizeChip } from '../common/SizeChip';
+import { PackIcon } from '../common/PackIcon';
 import { sizeStripe } from '../../utils/sizeColor';
 import { LoadingSkeleton } from '../common/LoadingSkeleton';
 import { AuditView } from './AuditView';
@@ -49,6 +50,7 @@ import { trackedStage } from './ExpiryReturnsTracker';
 import { InfoTip } from "../common/InfoTip";
 import { todayISO } from "../../utils/dateLocal";
 import { downloadAllGrnsCsv, downloadSingleGrnCsv } from '../../utils/grnCsvExport';
+import { buildCrossWarehouseShiftPlan } from '../../utils/billCostRepair';
 
 export type InventorySubTab = 'realtime' | 'consignments' | 'audit' | 'transfers' | 'warehouses' | 'batches' | 'dispositions';
 
@@ -81,7 +83,20 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
     saveAudit,
     bookStock,
     inventoryDispositions,
+    bills,
+    restoreCrossWarehouseAllocations,
   } = useLedger();
+
+  const crossWhPlan = useMemo(
+    () =>
+      buildCrossWarehouseShiftPlan({
+        bills: bills || [],
+        products,
+        inventoryBatches,
+        warehouses,
+      }),
+    [bills, products, inventoryBatches, warehouses],
+  );
 
   // Customer expired returns still waiting for a decision / handover (badge on the Returns tab).
   const pendingExpiryReturns = (inventoryDispositions || []).filter(
@@ -364,6 +379,26 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         </div>
       </div>
 
+      {crossWhPlan.affectedBillCount > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-start gap-2 min-w-0 flex-1">
+            <AlertTriangle size={16} className="shrink-0 mt-0.5 text-amber-600" />
+            <div>
+              <b>Stock shifted across godowns on {crossWhPlan.affectedBillCount} bill(s) ({crossWhPlan.totalShiftedCases} cases):</b>{' '}
+              Bills without a godown tag were linked to batches in another godown, which can make available units look higher. Restore them to their original godown while keeping saved costs frozen.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => restoreCrossWarehouseAllocations(crossWhPlan)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-amber-900 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-amber-950 cursor-pointer shrink-0"
+          >
+            <RotateCcw size={13} />
+            Restore Exact Inventory ({crossWhPlan.totalShiftedCases} cs)
+          </button>
+        </div>
+      )}
+
       {/* Sub-tabs — pill segmented control (Customers screen pattern), scrollable on mobile */}
       <div className="w-full">
         <div className="grid grid-cols-5 w-full bg-[#ebe8e1] rounded-2xl sm:rounded-full p-1 gap-0.5">
@@ -542,9 +577,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                         className="w-full flex items-center justify-between gap-3 px-3 sm:px-4 py-3 sm:py-3.5 text-left cursor-pointer hover:bg-slate-50/80 transition-colors"
                         aria-expanded={expanded}
                       >
-                        <span className="text-[13px] sm:text-sm font-bold text-slate-900 leading-snug break-words min-w-0">
-                          {p.name}{' '}
-                          <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
+                        <span className="flex items-center gap-2.5 min-w-0">
+                          <PackIcon pack={p.pack} name={p.name} />
+                          <span className="text-[13px] sm:text-sm font-bold text-slate-900 leading-snug break-words min-w-0">
+                            {p.name}{' '}
+                            <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
+                          </span>
                         </span>
                         <span
                           className={`text-sm font-extrabold tabular-nums shrink-0 ${
@@ -789,38 +827,44 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
 
                           {(g.items || []).length > 0 && (
                             <ul className="rounded-xl border border-black/5 bg-white divide-y divide-black/5 overflow-hidden">
-                              {(g.items || []).map((item, idx) => (
+                              {(g.items || []).map((item, idx) => {
+                                const prod = products.find((p) => p.id === item.productId);
+                                return (
                                 <li
                                   key={item.id || idx}
-                                  className="px-3 py-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-sm"
+                                  className="px-3 py-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5 text-sm"
                                 >
-                                  <div className="min-w-0">
-                                    <span className="font-semibold text-slate-800">
-                                      {item.productName}
-                                    </span>{' '}
-                                    <SizeChip
-                                      volume={products.find((p) => p.id === item.productId)?.volume}
-                                      pack={products.find((p) => p.id === item.productId)?.pack}
-                                      name={item.productName}
-                                    />
-                                    {item.schemeText && (
-                                      <span className="ml-1.5 text-[10px] text-purple-700">
-                                        {item.schemeText}
-                                      </span>
-                                    )}
-                                    <div className="text-[11px] text-slate-500">
-                                      {item.qty} cs
-                                      {item.freeQty ? ` + ${item.freeQty} free` : ''}
-                                      {item.unitPrice != null
-                                        ? ` · ₹${money(item.unitPrice)}/cs`
-                                        : ''}
+                                  <div className="flex items-start gap-2 min-w-0">
+                                    <PackIcon size="sm" pack={prod?.pack} name={item.productName} className="mt-0.5" />
+                                    <div className="min-w-0">
+                                      <span className="font-semibold text-slate-800">
+                                        {item.productName}
+                                      </span>{' '}
+                                      <SizeChip
+                                        volume={prod?.volume}
+                                        pack={prod?.pack}
+                                        name={item.productName}
+                                      />
+                                      {item.schemeText && (
+                                        <span className="ml-1.5 text-[10px] text-purple-700">
+                                          {item.schemeText}
+                                        </span>
+                                      )}
+                                      <div className="text-[11px] text-slate-500">
+                                        {item.qty} cs
+                                        {item.freeQty ? ` + ${item.freeQty} free` : ''}
+                                        {item.unitPrice != null
+                                          ? ` · ₹${money(item.unitPrice)}/cs`
+                                          : ''}
+                                      </div>
                                     </div>
                                   </div>
                                   <span className="font-bold tabular-nums text-slate-900 shrink-0">
                                     ₹{money(Number(item.lineTotal) || 0)}
                                   </span>
                                 </li>
-                              ))}
+                                );
+                              })}
                             </ul>
                           )}
 
@@ -970,12 +1014,15 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
               }`}
               style={sizeStripe(auditProd?.volume, opts.name)}
             >
-              <div className="col-span-3 sm:col-span-1 min-w-0">
-                <div className="text-[13px] sm:text-sm font-semibold text-slate-900 leading-snug break-words">
-                  {opts.name}{' '}
-                  <SizeChip volume={auditProd?.volume} pack={auditProd?.pack} name={opts.name} />
+              <div className="col-span-3 sm:col-span-1 min-w-0 flex items-start gap-2.5">
+                <PackIcon size="sm" pack={auditProd?.pack} name={opts.name} className="mt-0.5" />
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] sm:text-sm font-semibold text-slate-900 leading-snug break-words">
+                    {opts.name}{' '}
+                    <SizeChip volume={auditProd?.volume} pack={auditProd?.pack} name={opts.name} />
+                  </div>
+                  <div className="text-[11px] text-slate-500 leading-tight mt-0.5">{opts.meta}</div>
                 </div>
-                <div className="text-[11px] text-slate-500 leading-tight mt-0.5">{opts.meta}</div>
               </div>
               <div className="sm:text-right">
                 <div className="sm:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400">System</div>
@@ -1286,6 +1333,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                       className="flex items-center gap-2 sm:gap-3 py-2.5 pl-2 border-b border-black/5 last:border-0"
                       style={sizeStripe(prod?.volume, prod?.name)}
                     >
+                      <PackIcon size="sm" pack={prod?.pack} name={prod?.name} />
                       <div className="min-w-0 flex-1">
                         <div className="text-[13px] sm:text-sm font-semibold text-slate-900 leading-snug break-words">
                           {prod?.name || `Product #${line.productId}`}{' '}
@@ -1409,9 +1457,12 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                         style={sizeStripe(prod?.volume, prod?.name)}
                       >
                         <div className="flex items-start justify-between gap-3">
-                          <span className="font-semibold text-slate-800 leading-snug break-words min-w-0">
-                            {prod?.name || `Product #${st.productId}`}{' '}
-                            <SizeChip volume={prod?.volume} pack={prod?.pack} name={prod?.name} />
+                          <span className="flex items-start gap-2 min-w-0">
+                            <PackIcon size="sm" pack={prod?.pack} name={prod?.name} className="mt-0.5" />
+                            <span className="font-semibold text-slate-800 leading-snug break-words min-w-0">
+                              {prod?.name || `Product #${st.productId}`}{' '}
+                              <SizeChip volume={prod?.volume} pack={prod?.pack} name={prod?.name} />
+                            </span>
                           </span>
                           <span className="font-bold tabular-nums text-slate-800 shrink-0">{st.quantity} cs</span>
                         </div>

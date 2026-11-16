@@ -58,7 +58,6 @@ import { OdiaName } from '../common/OdiaName';
 import { normCustName, splitSameNameShops } from '../../context/ledgerHelpers';
 import { Bill, BillItem, ExistingCustomer, PriceType, Product, Trip } from '../../types';
 import { billTotals, computeLine, normalizeGstFraction, money, schemeLabel, whatsappLink, resolveProductGstRate, resolveProductHsn, formatProductVolPack, volumeFromName } from '../../utils/billing';
-import { downloadInvoicePdf } from '../../utils/invoicePdf';
 import { getProductOdiaName, getCustomerOdiaName } from '../../utils/displayName';
 import { isSpeechRecognitionSupported, speakAssistiveText, startSpeechRecognition } from '../../utils/speechRecognition';
 import { CustomerSelector } from '../common/CustomerSelector';
@@ -71,7 +70,7 @@ import { billBalance } from '../../utils/salesReturns';
 import { formatBeatStops, beatLabel } from '../../constants/beats';
 import { useBeats } from '../../hooks/useBeats';
 import { todayISO } from "../../utils/dateLocal";
-import { buildBillMessage } from '../../utils/receipt80';
+import { buildBillMessage } from '../../utils/receiptText';
 
 export const SalesmanView: React.FC = () => {
   const { activeBeats } = useBeats();

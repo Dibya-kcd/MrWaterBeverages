@@ -1,4 +1,3 @@
-import * as XLSX from 'xlsx';
 import { CategoryKey, ImportRow } from '../types';
 import { normalizeTo8DigitHsn } from './billing';
 
@@ -79,10 +78,11 @@ export function normalizeImportRow(raw: Record<string, unknown>): ImportRow | nu
   };
 }
 
-export function parseExcelOrCsv(
+export async function parseExcelOrCsv(
   fileData: string | ArrayBuffer
-): { rows: ImportRow[]; error: string } {
+): Promise<{ rows: ImportRow[]; error: string }> {
   try {
+    const XLSX = await import('xlsx');
     const wb = XLSX.read(fileData, { type: typeof fileData === 'string' ? 'binary' : 'array' });
     let sheetName = wb.SheetNames[0];
 
@@ -254,7 +254,8 @@ export function downloadImportTemplate(): void {
  * Downloads multi-sheet Excel (.xlsx) template capturing dedicated Invoice Provider Details sheet,
  * Inward Items Table sheet, and GST Slabs guide sheet.
  */
-export function downloadImportTemplateXlsx(): void {
+export async function downloadImportTemplateXlsx(): Promise<void> {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
 
   // Sheet 1: Invoice Provider Details (Metadata)

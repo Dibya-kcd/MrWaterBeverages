@@ -1,7 +1,8 @@
 import React, { useMemo, useState, useCallback } from "react";
 import { SizeChip } from "../common/SizeChip";
+import { PackIcon } from "../common/PackIcon";
 import { sizeTheme } from "../../utils/sizeColor";
-import { Package, Plus, Search, Trash2, X, Languages, Loader2 } from "lucide-react";
+import { Plus, Search, Trash2, X, Languages, Loader2 } from "lucide-react";
 import { useLedger } from "../../context/LedgerContext";
 import { useLanguage } from "../../i18n/LanguageContext";
 import { useAutoOdiaNameMap, nameFromMap } from "../../hooks/useAutoOdiaName";
@@ -542,9 +543,7 @@ export const ProductsView: React.FC = () => {
                   style={{ borderLeftWidth: 6, borderLeftColor: sizeTheme(p.volume, p.name).hex }}
                   className="w-full text-left bg-white rounded-2xl border border-black/5 shadow-sm px-3 sm:px-4 py-3 flex items-center gap-2.5 sm:gap-3 hover:border-black/10 cursor-pointer active:scale-[0.99] transition"
                 >
-                  <div className="hidden min-[400px]:flex size-10 rounded-xl bg-[#ebe8e1] text-[var(--primary)] items-center justify-center shrink-0">
-                    <Package className="w-5 h-5" />
-                  </div>
+                  <PackIcon pack={p.pack} name={p.name} />
                   <div className="min-w-0 flex-1">
                     <div className="text-[13px] sm:text-base font-semibold text-slate-900 leading-snug break-words">
                       {nameFromMap(productNameMap, p, language)}{' '}

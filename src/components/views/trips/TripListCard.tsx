@@ -4,6 +4,7 @@ import { Trip } from '../../../types';
 import { money } from '../../../utils/billing';
 import { useLedger } from '../../../context/LedgerContext';
 import { SizeChip } from '../../common/SizeChip';
+import { PackIcon } from '../../common/PackIcon';
 import { compareProductsInSequence, sizeStripe } from '../../../utils/sizeColor';
 import { OdiaName } from '../../common/OdiaName';
 
@@ -196,12 +197,14 @@ export const TripListCard: React.FC<TripListCardProps> = ({
               .map((r) => {
               const left = isActive ? Math.max(0, r.loaded - r.sold) : r.returned;
               return (
-                <li key={r.productId} className="px-3 py-2.5" style={sizeStripe(productOf(r.productId)?.volume, r.name)}>
-                  <div className="text-[13px] font-semibold text-slate-900 leading-snug break-words">
-                    <OdiaName name={r.name} />{' '}
-                    <SizeChip volume={productOf(r.productId)?.volume} pack={productOf(r.productId)?.pack} name={r.name} />
-                  </div>
-                  <div className="mt-1 text-[11px] text-slate-500 flex flex-wrap gap-x-3">
+                <li key={r.productId} className="px-3 py-2.5 flex items-start gap-2.5" style={sizeStripe(productOf(r.productId)?.volume, r.name)}>
+                  <PackIcon size="sm" pack={productOf(r.productId)?.pack} name={r.name} className="mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-semibold text-slate-900 leading-snug break-words">
+                      <OdiaName name={r.name} />{' '}
+                      <SizeChip volume={productOf(r.productId)?.volume} pack={productOf(r.productId)?.pack} name={r.name} />
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500 flex flex-wrap gap-x-3">
                     <span>Loaded <strong className="text-slate-800">{r.loaded}</strong></span>
                     <span>Sold <strong className="text-emerald-700">{r.sold}</strong></span>
                     <span>
@@ -222,6 +225,7 @@ export const TripListCard: React.FC<TripListCardProps> = ({
                     {!isActive && r.discrepancy > 0 && r.reasonNote && (
                       <span className="text-slate-500 italic">“{r.reasonNote}”</span>
                     )}
+                  </div>
                   </div>
                 </li>
               );

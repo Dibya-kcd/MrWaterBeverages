@@ -1,7 +1,7 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { notify } from "../../utils/toast";
-import { SizeChip } from "../common/SizeChip";
-import { sizeTheme, packTheme } from "../../utils/sizeColor";
+import { sizeTheme, packTheme, compareProductsInSequence } from "../../utils/sizeColor";
+import { PackIcon, packTextColor } from "../common/PackIcon";
 import {
   Calendar,
   Check,
@@ -12,6 +12,7 @@ import {
   Gift,
   Minus,
   Package,
+  Pencil,
   Plus,
   RotateCcw,
   Search,
@@ -148,9 +149,6 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   // Custom price per case per product
   const [customRates, setCustomRates] = useState<Record<number, number>>({});
 
-  // Local string drafts for rate input while typing
-  const [rateInputDrafts, setRateInputDrafts] = useState<Record<number, string>>({});
-
   // Active / chosen promotion overrides per product
   const [customSchemes, setCustomSchemes] = useState<Record<number, Promotion | null>>({});
 
@@ -168,8 +166,12 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     }
   }, [billingSettings?.schemesEnabled, billingSettings?.autoApplyPromotions]);
 
-  // Scheme selector modal
+  // Scheme selector modal & Quick Product Entry popup
   const [schemeModalProduct, setSchemeModalProduct] = useState<Product | null>(null);
+  const [quickEntryProduct, setQuickEntryProduct] = useState<Product | null>(null);
+  const [quickEntryQty, setQuickEntryQty] = useState<string>('1');
+  const [quickEntryRate, setQuickEntryRate] = useState<string>('');
+  const quickEntryQtyRef = useRef<HTMLInputElement | null>(null);
 
   // Cart Review Modal / Drawer
   const [showCartReview, setShowCartReview] = useState<boolean>(false);
@@ -187,14 +189,9 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   const [newCustGstin, setNewCustGstin] = useState('');
   const [newCustAddress, setNewCustAddress] = useState('');
   const [newCustBeat, setNewCustBeat] = useState('');
-  const [isAddingBeatInModal, setIsAddingBeatInModal] = useState(false);
-  const [newBeatNameInput, setNewBeatNameInput] = useState('');
 
-  // Sale Page Beat filter and Add Beat modal
+  // Sale Page Beat filter (beats are configured in Settings only)
   const [selectedBeatFilter, setSelectedBeatFilter] = useState<string>('all');
-  const [showAddBeatModal, setShowAddBeatModal] = useState<boolean>(false);
-  const [salePageNewBeatName, setSalePageNewBeatName] = useState('');
-  const [salePageNewBeatHub, setSalePageNewBeatHub] = useState('');
 
   // Van Trip modal state (for starting a new delivery van dispatch)
   const [showNewTripModal, setShowNewTripModal] = useState<boolean>(false);
@@ -203,10 +200,9 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   const [beverageSearch, setBeverageSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedPackFilter, setSelectedPackFilter] = useState<'all' | 'can' | 'pet' | 'glass' | 'tetra'>('all');
-  // Size chips (All / each size you actually stock / Soda): view-only filter, nothing is saved.
-  // 'all' | 'soda' | the size in ml as text, e.g. '500'
+  // Size filter (All / each size you actually stock / Soda): view-only filter, nothing is saved.
   const [selectedSize, setSelectedSize] = useState<string>('all');
-  const { beats, activeBeats, addBeat } = useBeats();
+  const { beats, activeBeats } = useBeats();
   const createTrip = useCreateTrip();
 
   const nameCounts = useMemo(() => {
@@ -226,7 +222,6 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     setSelectedItems({});
     setItemOrder([]);
     setCustomRates({});
-    setRateInputDrafts({});
     setCustomSchemes({});
     setSelectedCustomerId('');
     setCustomerName('');
@@ -392,11 +387,6 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
         beats.find((b) => b.name.toLowerCase() === cleanBeat.toLowerCase());
       if (match) {
         assignedBeatId = match.id;
-      } else {
-        const res = addBeat(cleanBeat);
-        if (res.ok && res.beat) {
-          assignedBeatId = res.beat.id;
-        }
       }
     }
 
@@ -420,7 +410,6 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     setNewCustGstin('');
     setNewCustAddress('');
     setNewCustBeat('');
-    setIsAddingBeatInModal(false);
     notify(`Customer "${created.name}" saved${cleanBeat ? ` in Beat "${cleanBeat}"` : ''}.`);
     checkAndPromptProducts(created.name, stockSource);
   };
@@ -489,48 +478,103 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     }
   }, [sizeOptions, selectedSize]);
 
+  // Products matching search, size, pack & stock (before category filter) sorted in sequence (PET -> Can -> Glass -> Tetra, ascending volume)
+  const baseFilteredProducts = useMemo(() => {
+    return products
+      .filter((p) => {
+        if (selectedSize === 'soda') {
+          if (!isSodaProduct(p)) return false;
+        } else if (selectedSize !== 'all') {
+          if (String(sizeOf(p)) !== selectedSize) return false;
+        }
+        if (selectedPackFilter !== 'all') {
+          const pTheme = packTheme(p.pack, p.name);
+          const pLabel = pTheme.label.toLowerCase();
+          if (selectedPackFilter === 'can' && !pLabel.includes('can') && !pLabel.includes('tin')) return false;
+          if (selectedPackFilter === 'pet' && !pLabel.includes('pet') && !pLabel.includes('bottle')) return false;
+          if (selectedPackFilter === 'glass' && !pLabel.includes('glass') && !pLabel.includes('rgb')) return false;
+          if (selectedPackFilter === 'tetra' && !pLabel.includes('tetra') && !pLabel.includes('pouch')) return false;
+        }
+
+        const q = beverageSearch.toLowerCase().trim();
+        const sTheme = sizeTheme(p.volume, p.name);
+        const pTheme = packTheme(p.pack, p.name);
+        const matchesSearch =
+          !q ||
+          p.name.toLowerCase().includes(q) ||
+          (p.sku && p.sku.toLowerCase().includes(q)) ||
+          sTheme.label.toLowerCase().includes(q) ||
+          pTheme.label.toLowerCase().includes(q) ||
+          (p.pack && p.pack.toLowerCase().includes(q)) ||
+          (p.volume && String(p.volume).includes(q)) ||
+          (p.category && p.category.toLowerCase().includes(q));
+
+        if (!matchesSearch) return false;
+
+        // Filter to only show products available in the selected warehouse or vehicle
+        if (inStockOnly) {
+          const available = getProductStock(p.id);
+          const inCart = (selectedItems[p.id] || 0) > 0;
+          return available > 0 || inCart;
+        }
+        return true;
+      })
+      .sort(compareProductsInSequence);
+  }, [products, beverageSearch, selectedPackFilter, selectedSize, inStockOnly, getProductStock, selectedItems]);
+
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of baseFilteredProducts) {
+      const catKey = p.category || 'other';
+      counts.set(catKey, (counts.get(catKey) || 0) + 1);
+    }
+    return counts;
+  }, [baseFilteredProducts]);
+
   // Filtered products inside "Select Beverages & Crates"
   const filteredProducts = useMemo(() => {
-    return products.filter((p) => {
-      if (selectedSize === 'soda') {
-        if (!isSodaProduct(p)) return false;
-      } else if (selectedSize !== 'all') {
-        if (String(sizeOf(p)) !== selectedSize) return false;
-      }
-      if (selectedPackFilter !== 'all') {
-        const pTheme = packTheme(p.pack, p.name);
-        const pLabel = pTheme.label.toLowerCase();
-        if (selectedPackFilter === 'can' && !pLabel.includes('can') && !pLabel.includes('tin')) return false;
-        if (selectedPackFilter === 'pet' && !pLabel.includes('pet') && !pLabel.includes('bottle')) return false;
-        if (selectedPackFilter === 'glass' && !pLabel.includes('glass') && !pLabel.includes('rgb')) return false;
-        if (selectedPackFilter === 'tetra' && !pLabel.includes('tetra') && !pLabel.includes('pouch')) return false;
-      }
+    if (selectedCategory === 'all') return baseFilteredProducts;
+    return baseFilteredProducts.filter((p) => (p.category || 'other') === selectedCategory);
+  }, [baseFilteredProducts, selectedCategory]);
 
-      const q = beverageSearch.toLowerCase().trim();
-      const sTheme = sizeTheme(p.volume, p.name);
-      const pTheme = packTheme(p.pack, p.name);
-      const matchesSearch =
-        !q ||
-        p.name.toLowerCase().includes(q) ||
-        (p.sku && p.sku.toLowerCase().includes(q)) ||
-        sTheme.label.toLowerCase().includes(q) ||
-        pTheme.label.toLowerCase().includes(q) ||
-        (p.pack && p.pack.toLowerCase().includes(q)) ||
-        (p.volume && String(p.volume).includes(q)) ||
-        (p.category && p.category.toLowerCase().includes(q));
+  // Group filtered products category-wise in canonical category order
+  const categorySections = useMemo(() => {
+    const map = new Map<string, Product[]>();
+    for (const p of filteredProducts) {
+      const catKey = p.category || 'other';
+      const arr = map.get(catKey);
+      if (arr) arr.push(p);
+      else map.set(catKey, [p]);
+    }
+    const orderedKeys: string[] = [];
+    for (const cat of categories) {
+      if (cat !== 'all' && map.has(cat)) orderedKeys.push(cat);
+    }
+    for (const k of map.keys()) {
+      if (!orderedKeys.includes(k)) orderedKeys.push(k);
+    }
+    return orderedKeys.map((k) => ({
+      key: k,
+      label: (CATS as Record<string, { name: string }>)[k]?.name || k || 'Beverages',
+      items: map.get(k) || [],
+    }));
+  }, [filteredProducts, categories]);
 
-      const matchesCategory = selectedCategory === 'all' || p.category === selectedCategory;
-      if (!matchesSearch || !matchesCategory) return false;
-
-      // Filter to only show products available in the selected warehouse or vehicle
-      if (inStockOnly) {
-        const available = getProductStock(p.id);
-        const inCart = (selectedItems[p.id] || 0) > 0;
-        return available > 0 || inCart;
-      }
-      return true;
-    });
-  }, [products, beverageSearch, selectedCategory, selectedPackFilter, selectedSize, inStockOnly, getProductStock, selectedItems]);
+  const openQuickEntry = useCallback(
+    (prod: Product) => {
+      const inCart = selectedItems[prod.id] || 0;
+      const defRate = getProductDefaultPrice(prod);
+      const curRate = customRates[prod.id] !== undefined ? customRates[prod.id] : defRate;
+      setQuickEntryProduct(prod);
+      setQuickEntryQty(inCart > 0 ? String(inCart) : '1');
+      setQuickEntryRate(String(curRate));
+      setTimeout(() => {
+        quickEntryQtyRef.current?.focus();
+        quickEntryQtyRef.current?.select();
+      }, 30);
+    },
+    [selectedItems, customRates],
+  );
 
   // Set custom price per case
   const handleSetProductRate = (productId: number, rate: number) => {
@@ -825,53 +869,37 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
 
       {/* Main Configuration Card */}
       <div className="bg-white rounded-2xl border border-slate-200/90 p-3 sm:p-4 shadow-xs space-y-4">
-        {/* Route / Beat Filter & Add Beat action directly on Sale Page */}
-        <div className="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-slate-100">
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 max-w-full">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider shrink-0 flex items-center gap-1 mr-1">
-              <Truck size={13} className="text-indigo-600 shrink-0" />
-              <span>Route / Beat:</span>
-            </span>
+        {/* Route / Beat Filter on Sale Page */}
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-2 border-b border-slate-100">
+          <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider shrink-0 flex items-center gap-1 mr-1">
+            <Truck size={13} className="text-indigo-600 shrink-0" />
+            <span>Route / Beat:</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setSelectedBeatFilter('all')}
+            className={`px-2.5 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-colors cursor-pointer shrink-0 ${
+              selectedBeatFilter === 'all'
+                ? 'bg-slate-900 text-white shadow-2xs'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+            }`}
+          >
+            All Beats
+          </button>
+          {activeBeats.map((b) => (
             <button
+              key={b.id}
               type="button"
-              onClick={() => setSelectedBeatFilter('all')}
-              className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition-colors cursor-pointer shrink-0 ${
-                selectedBeatFilter === 'all'
-                  ? 'bg-slate-900 text-white shadow-2xs'
+              onClick={() => setSelectedBeatFilter(b.name)}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-colors cursor-pointer shrink-0 ${
+                selectedBeatFilter.toLowerCase() === b.name.toLowerCase()
+                  ? 'bg-indigo-600 text-white shadow-2xs'
                   : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
               }`}
             >
-              All Beats
+              {b.name}
             </button>
-            {activeBeats.map((b) => (
-              <button
-                key={b.id}
-                type="button"
-                onClick={() => setSelectedBeatFilter(b.name)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition-colors cursor-pointer shrink-0 ${
-                  selectedBeatFilter.toLowerCase() === b.name.toLowerCase()
-                    ? 'bg-indigo-600 text-white shadow-2xs'
-                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                }`}
-              >
-                {b.name}
-              </button>
-            ))}
-          </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              setSalePageNewBeatName('');
-              setSalePageNewBeatHub('');
-              setShowAddBeatModal(true);
-            }}
-            className="inline-flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
-            title="Add a new Beat / Route to your system"
-          >
-            <Plus size={13} className="shrink-0" />
-            <span>Add Beat</span>
-          </button>
+          ))}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
@@ -1072,8 +1100,8 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
 
             {/* Filters + beverage list share one body, so on a short screen they scroll together and the list is never squeezed out */}
             <div className="hh-picker__body">
-            {/* Search & Category Filter Bar */}
-            <div className="hh-picker__filters p-3 sm:p-3.5 border-b border-slate-200 space-y-2 bg-white shrink-0">
+            {/* Search & Category-Wise Filter Bar */}
+            <div className="hh-picker__filters px-3 sm:px-4 py-2.5 border-b border-slate-200 space-y-2 bg-white shrink-0">
               {customerName.trim() && (() => {
                 const cust = (customers || []).find((c) => c.name === customerName);
                 const beatName = (cust && (beatOfCustomer(cust, beats)?.name || cust.city)) || '';
@@ -1092,539 +1120,378 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                   </div>
                 );
               })()}
-              <div className="hh-chips" role="group" aria-label={t('sell.sizeFilter')}>
-                {[
-                  { id: 'all', label: t('sell.sizeAll') },
-                  ...sizeOptions,
-                  { id: 'soda', label: t('sell.sizeSoda') },
-                ].map(({ id, label }) => (
-                  <button key={id} type="button" className="hh-chip" data-active={selectedSize === id ? 'true' : 'false'} aria-pressed={selectedSize === id} onClick={() => setSelectedSize(id)}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                <input
-                  type="text"
-                  placeholder="Search beverage by name, size, or category..."
-                  value={beverageSearch}
-                  onChange={(e) => setBeverageSearch(e.target.value)}
-                  className="w-full pl-9 pr-8 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700 bg-white"
-                />
-                {beverageSearch && (
-                  <button
-                    type="button"
-                    onClick={() => setBeverageSearch('')}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs font-black text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
 
-              {/* Category Filter Pills & Stock Filter Toggle */}
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5 flex-1 min-w-0">
-                  {categories.map((cat, idx) => (
+              {/* Row 1: Search + Stock toggle side-by-side (never collides) */}
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1 min-w-0">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    enterKeyHint="search"
+                    placeholder="Search name, size or pack..."
+                    value={beverageSearch}
+                    onChange={(e) => setBeverageSearch(e.target.value)}
+                    className="w-full min-h-[42px] pl-9 pr-8 py-1.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700 bg-white"
+                  />
+                  {beverageSearch && (
                     <button
-                      key={cat || `cat_${idx}`}
                       type="button"
-                      onClick={() => setSelectedCategory(cat)}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer transition-colors ${
-                        selectedCategory === cat
-                          ? 'bg-[var(--primary)] text-white shadow-2xs'
-                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                      }`}
+                      onClick={() => setBeverageSearch('')}
+                      aria-label="Clear search"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 size-7 flex items-center justify-center text-slate-400 hover:text-slate-600 cursor-pointer"
                     >
-                      {cat === 'all' ? 'All Beverages' : (CATS as Record<string, { name: string }>)[cat]?.name || cat}
+                      <X className="w-4 h-4" />
                     </button>
-                  ))}
+                  )}
                 </div>
 
                 <button
                   type="button"
                   id="btn-toggle-stock-filter"
                   onClick={() => setInStockOnly((prev) => !prev)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shrink-0 border ${
+                  className={`min-h-[42px] px-3 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 border whitespace-nowrap ${
                     inStockOnly
-                      ? 'bg-emerald-700 text-white border-emerald-700 shadow-2xs'
+                      ? 'bg-emerald-700 text-white border-emerald-700'
                       : 'bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100'
                   }`}
                   title={inStockOnly ? `Showing items available in ${selectedStockLabel}. Click to show all catalog.` : `Showing all products. Click to show only items available in ${selectedStockLabel}.`}
                 >
-                  <Package className="w-3.5 h-3.5" />
-                  <span>{inStockOnly ? `In Stock (${inStockCount})` : `All Catalog (${products.length})`}</span>
+                  <Package className="w-3.5 h-3.5 shrink-0" />
+                  <span>{inStockOnly ? `In Stock (${inStockCount})` : `All (${products.length})`}</span>
                 </button>
               </div>
 
-              {/* Packaging Container Type Pills: All, Can (Blue), PET (Red), Glass, Tetra */}
-              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 border-t border-slate-100 pt-2">
-                <span className="text-[11px] font-black text-slate-500 uppercase px-1 shrink-0">Pack:</span>
-                <button
-                  type="button"
-                  onClick={() => setSelectedPackFilter('all')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer transition-colors ${
-                    selectedPackFilter === 'all'
-                      ? 'bg-slate-900 text-white shadow-2xs'
-                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                  }`}
-                >
-                  All Packaging
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedPackFilter('can')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-black whitespace-nowrap cursor-pointer transition-colors ${
-                    selectedPackFilter === 'can'
-                      ? 'bg-blue-600 text-white shadow-2xs'
-                      : 'bg-blue-50 text-blue-700 border border-blue-300 hover:bg-blue-100'
-                  }`}
-                >
-                  🥫 Can / Tin (Blue)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedPackFilter('pet')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-black whitespace-nowrap cursor-pointer transition-colors ${
-                    selectedPackFilter === 'pet'
-                      ? 'bg-red-600 text-white shadow-2xs'
-                      : 'bg-red-50 text-red-700 border border-red-300 hover:bg-red-100'
-                  }`}
-                >
-                  🍾 PET Bottle (Red)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedPackFilter('glass')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer transition-colors ${
-                    selectedPackFilter === 'glass'
-                      ? 'bg-emerald-700 text-white shadow-2xs'
-                      : 'bg-emerald-50 text-emerald-800 border border-emerald-300 hover:bg-emerald-100'
-                  }`}
-                >
-                  🍶 Glass RGB
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSelectedPackFilter('tetra')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer transition-colors ${
-                    selectedPackFilter === 'tetra'
-                      ? 'bg-amber-600 text-white shadow-2xs'
-                      : 'bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100'
-                  }`}
-                >
-                  🧃 Tetra
-                </button>
+              {/* Row 2: Clean Category-Wise Tabs (swipeable, no scrollbar) */}
+              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar" role="tablist" aria-label="Product categories">
+                {categories.map((cat, idx) => {
+                  const count = cat === 'all' ? baseFilteredProducts.length : (categoryCounts.get(cat) || 0);
+                  if (cat !== 'all' && count === 0 && selectedCategory !== cat) return null;
+                  const label = cat === 'all' ? 'All' : (CATS as Record<string, { name: string }>)[cat]?.name || cat;
+                  const active = selectedCategory === cat;
+                  return (
+                    <button
+                      key={cat || `cat_${idx}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => setSelectedCategory(cat)}
+                      className={`min-h-[38px] px-3 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer transition-colors shrink-0 border ${
+                        active
+                          ? 'bg-[var(--primary)] text-white border-[var(--primary)]'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {label} <span className={`tabular-nums ${active ? 'text-emerald-100' : 'text-slate-400'}`}>({count})</span>
+                    </button>
+                  );
+                })}
               </div>
+
+              {/* Row 3: Compact Pack + Size Dropdowns (zero horizontal clipping or scrollbar on 360px phones) */}
+              <div className="grid grid-cols-2 gap-2">
+                <div className="relative">
+                  <select
+                    aria-label="Filter by packaging"
+                    value={selectedPackFilter}
+                    onChange={(e) => setSelectedPackFilter(e.target.value as 'all' | 'can' | 'pet' | 'glass' | 'tetra')}
+                    className={`w-full min-h-[38px] appearance-none pl-3 pr-8 rounded-xl border text-xs font-bold cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-700/20 ${
+                      selectedPackFilter !== 'all'
+                        ? 'bg-emerald-50 border-emerald-600 text-emerald-950'
+                        : 'bg-slate-50 border-slate-200 text-slate-700'
+                    }`}
+                  >
+                    <option value="all">Pack: All types</option>
+                    <option value="pet">PET Bottle</option>
+                    <option value="can">Can / Tin</option>
+                    <option value="glass">Glass RGB</option>
+                    <option value="tetra">Tetra / Pouch</option>
+                  </select>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+
+                <div className="relative">
+                  <select
+                    aria-label={t('sell.sizeFilter')}
+                    value={selectedSize}
+                    onChange={(e) => setSelectedSize(e.target.value)}
+                    className={`w-full min-h-[38px] appearance-none pl-3 pr-8 rounded-xl border text-xs font-bold cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-700/20 ${
+                      selectedSize !== 'all'
+                        ? 'bg-emerald-50 border-emerald-600 text-emerald-950'
+                        : 'bg-slate-50 border-slate-200 text-slate-700'
+                    }`}
+                  >
+                    <option value="all">Size: {t('sell.sizeAll')}</option>
+                    {sizeOptions.map(({ id, label }) => (
+                      <option key={id} value={id}>{label}</option>
+                    ))}
+                    <option value="soda">{t('sell.sizeSoda')}</option>
+                  </select>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              </div>
+
+              {(selectedCategory !== 'all' || selectedPackFilter !== 'all' || selectedSize !== 'all' || beverageSearch.trim() !== '') && (
+                <div className="flex items-center justify-between text-[11px] text-slate-500 pt-0.5">
+                  <span className="tabular-nums">Showing {filteredProducts.length} beverage{filteredProducts.length === 1 ? '' : 's'}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedCategory('all');
+                      setSelectedPackFilter('all');
+                      setSelectedSize('all');
+                      setBeverageSearch('');
+                    }}
+                    className="font-bold text-emerald-800 hover:underline cursor-pointer"
+                  >
+                    Clear filters
+                  </button>
+                </div>
+              )}
             </div>
 
-            {/* Beverage Cards Grid (Smart Quantity Card, Custom Rate & Scheme Selector) */}
+            {/* Category-Wise Product List + Live Bill Panel */}
             <div className="hh-picker__lists flex-1 min-h-0 flex">
-            <div className="hh-picker__list flex-1 min-w-0 overflow-y-auto p-3 sm:p-4 bg-slate-50/60">
+            <div className="hh-picker__list flex-1 min-w-0 overflow-y-auto p-3 sm:p-4 bg-slate-50/70 space-y-5">
               {filteredProducts.length === 0 ? (
-                <div className="text-center py-16 px-4 text-slate-500 text-sm space-y-3">
+                <div className="text-center py-14 px-4 text-slate-500 text-sm space-y-3">
                   <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center mx-auto text-slate-400">
                     <Package className="w-6 h-6" />
                   </div>
                   <div>
                     <p className="font-bold text-slate-800">
                       {inStockOnly
-                        ? `No beverages currently available in ${selectedStockLabel}`
-                        : 'No beverages match your search'}
+                        ? `No beverages available for these filters in ${selectedStockLabel}`
+                        : 'No beverages match your filters'}
                     </p>
                     <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
                       {inStockOnly
-                        ? `This warehouse or vehicle currently has 0 stock for this filter. You can toggle to view all products or choose another warehouse/vehicle.`
-                        : 'Try searching for another beverage name or selecting "All Beverages".'}
+                        ? 'Try showing all catalog items or clearing active filters.'
+                        : 'Try clearing search, pack, or size filters.'}
                     </p>
                   </div>
-                  {inStockOnly && (
-                    <button
-                      type="button"
-                      onClick={() => setInStockOnly(false)}
-                      className="px-3.5 py-1.5 rounded-xl bg-[var(--primary)] text-white text-xs font-bold hover:bg-[var(--primary)] cursor-pointer shadow-xs"
-                    >
-                      Show All Catalog ({products.length} products)
-                    </button>
-                  )}
+                  <div className="flex items-center justify-center gap-2 flex-wrap">
+                    {(selectedCategory !== 'all' || selectedPackFilter !== 'all' || selectedSize !== 'all' || beverageSearch.trim() !== '') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedCategory('all');
+                          setSelectedPackFilter('all');
+                          setSelectedSize('all');
+                          setBeverageSearch('');
+                        }}
+                        className="px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-slate-700 text-xs font-bold hover:bg-slate-50 cursor-pointer"
+                      >
+                        Reset Filters
+                      </button>
+                    )}
+                    {inStockOnly && (
+                      <button
+                        type="button"
+                        onClick={() => setInStockOnly(false)}
+                        className="px-3.5 py-2 rounded-xl bg-[var(--primary)] text-white text-xs font-bold cursor-pointer"
+                      >
+                        Show All Catalog ({products.length})
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-3.5">
-                  {filteredProducts.map((prod, idx) => {
-                    const available = getProductStock(prod.id);
-                    const inCartQty = selectedItems[prod.id] || 0;
-                    const defaultRate = getProductDefaultPrice(prod);
-                    const customRate = customRates[prod.id];
-                    const currentRate = customRate !== undefined ? customRate : defaultRate;
-                    const isCustom = customRate !== undefined && customRate !== defaultRate;
+                categorySections.map((section) => (
+                  <section key={section.key} className="space-y-2">
+                    {/* Sticky Category Section Heading */}
+                    <div className="sticky top-0 z-10 flex items-center justify-between py-1.5 px-1 bg-slate-50/95 backdrop-blur-xs border-b border-slate-200/80">
+                      <h4 className="text-xs font-black uppercase tracking-wider text-slate-700">
+                        {section.label}
+                      </h4>
+                      <span className="text-[11px] font-bold text-slate-400 tabular-nums">
+                        {section.items.length} SKU{section.items.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
 
-                    // Active Promo
-                    const userChoice = customSchemes[prod.id];
-                    let activePromo: Promotion | null = null;
-                    if (userChoice !== undefined) {
-                      activePromo = userChoice;
-                    } else if (schemeMode === 'none' || billingSettings?.schemesEnabled === false || billingSettings?.autoApplyPromotions === false) {
-                      activePromo = null;
-                    } else {
-                      activePromo = activePromoFor ? activePromoFor(prod.id) : null;
-                    }
-                    const promoLabel = activePromo ? schemeLabel(activePromo, products) : null;
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                      {section.items.map((prod, idx) => {
+                        const available = getProductStock(prod.id);
+                        const inCartQty = selectedItems[prod.id] || 0;
+                        const defaultRate = getProductDefaultPrice(prod);
+                        const customRate = customRates[prod.id];
+                        const currentRate = customRate !== undefined ? customRate : defaultRate;
+                        const isCustom = customRate !== undefined && customRate !== defaultRate;
 
-                    // Check if scheme applied in cart
-                    const cartLine = lineItems.find((li) => li.productId === prod.id);
-                    const comp = cartLine || (inCartQty > 0 ? computeLine(prod, 'Retail', inCartQty, activePromo, currentRate, 0) : null);
-                    const itemGross = cartLine ? cartLine.gross : (comp ? comp.gross : inCartQty * currentRate);
+                        const sTheme = sizeTheme(prod.volume, prod.name);
+                        const pTheme = packTheme(prod.pack, prod.name);
 
-                    const draftVal = rateInputDrafts[prod.id];
-                    const displayRateVal = draftVal !== undefined ? draftVal : (currentRate !== undefined ? String(currentRate) : '');
+                        // Active Promo
+                        const userChoice = customSchemes[prod.id];
+                        let activePromo: Promotion | null = null;
+                        if (userChoice !== undefined) {
+                          activePromo = userChoice;
+                        } else if (schemeMode === 'none' || billingSettings?.schemesEnabled === false || billingSettings?.autoApplyPromotions === false) {
+                          activePromo = null;
+                        } else {
+                          activePromo = activePromoFor ? activePromoFor(prod.id) : null;
+                        }
+                        const promoLabel = activePromo ? schemeLabel(activePromo, products) : null;
 
-                    return (
-                      <div
-                        key={prod.id !== undefined ? `prod_${prod.id}` : `prod_idx_${idx}`}
-                        onClick={() => setItemQty(prod.id, inCartQty + 1)}
-                        className={`rounded-2xl border p-3 sm:p-3.5 transition-all flex flex-col justify-between gap-2.5 cursor-pointer select-none active:scale-[0.99] relative ${
-                          inCartQty > 0
-                            ? 'border-2 border-emerald-600 bg-emerald-50/40 ring-4 ring-emerald-600/15 shadow-md'
-                            : 'bg-white border-slate-200/90 hover:border-emerald-300 hover:bg-slate-50/50 hover:shadow-2xs'
-                        }`}
-                        title="Touch anywhere to add 1 case to cart"
-                        style={{ borderLeftWidth: 6, borderLeftColor: sizeTheme(prod.volume, prod.name).hex }}
-                      >
-                        <div className="space-y-2">
-                          {/* Top Row: Beverage Name, Pack, Stock & Scheme */}
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="font-extrabold text-slate-900 text-sm sm:text-base leading-snug break-words">
-                                  {prod.name}
-                                </span>
-                                {(nameCounts.get(prod.name.trim().toLowerCase()) || 0) > 1 && (
-                                  <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 shrink-0">
-                                    ⚠️ Check Size/Pack
-                                  </span>
-                                )}
-                                {prod.category && (
-                                  <span className="text-[10.5px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 shrink-0">
-                                    {prod.category}
-                                  </span>
-                                )}
-                                <SizeChip volume={prod.volume} pack={prod.pack} name={prod.name} />
-                                {prod.unitsPerCrate && (
-                                  <span className="text-[10.5px] font-bold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 shrink-0">
-                                    {prod.unitsPerCrate} pcs/case
-                                  </span>
-                                )}
-                              </div>
+                        // Check if scheme applied in cart
+                        const cartLine = lineItems.find((li) => li.productId === prod.id);
+                        const comp = cartLine || (inCartQty > 0 ? computeLine(prod, 'Retail', inCartQty, activePromo, currentRate, 0) : null);
+                        const itemGross = cartLine ? cartLine.gross : (comp ? comp.gross : inCartQty * currentRate);
 
-                              {/* Stock status indicator */}
-                              <div className="mt-1 flex items-center gap-1.5 text-xs">
-                                {stockSource.startsWith('trip_') ? (
-                                  <span
-                                    className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md ${
-                                      available > 0
-                                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200/70'
-                                        : 'bg-amber-50 text-amber-800 border border-amber-200/70'
-                                    }`}
-                                  >
-                                    <Truck className="w-3.5 h-3.5 text-current shrink-0" />
-                                    <span>{available > 0 ? `${available} cs on van` : '0 on van'}</span>
-                                  </span>
-                                ) : (
-                                  <span
-                                    className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md ${
-                                      available > 0
-                                        ? 'bg-slate-100 text-slate-700'
-                                        : 'bg-rose-50 text-rose-700 border border-rose-200/70'
-                                    }`}
-                                  >
-                                    <Package className="w-3.5 h-3.5 text-current shrink-0" />
-                                    <span>{available > 0 ? `${available} in stock` : remainingStock(prod.id) < 0 ? `Oversold (${remainingStock(prod.id)} cs)` : 'Out of stock'}</span>
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-
-                            {/* Top Right Badges: In-Cart indicator & Scheme Button */}
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              {inCartQty > 0 && (
-                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-emerald-700 text-white font-black text-xs shadow-xs animate-in zoom-in-75 duration-100 shrink-0">
-                                  <Check className="w-3.5 h-3.5 stroke-[3]" />
-                                  <span>{inCartQty} in cart</span>
-                                </span>
-                              )}
-
-                              {/* Scheme Button */}
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSchemeModalProduct(prod);
-                                }}
-                                className={`px-2.5 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-all cursor-pointer shrink-0 ${
-                                  activePromo
-                                    ? 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 shadow-2xs'
-                                    : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
-                                }`}
-                                title="Apply or change promotion / scheme"
-                              >
-                                <Gift className={`w-3.5 h-3.5 ${activePromo ? 'text-amber-700' : 'text-slate-400'}`} />
-                                <span className="max-w-[90px] sm:max-w-[120px] truncate text-[11px]">
-                                  {promoLabel || 'Scheme'}
-                                </span>
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* Scheme feedback banners */}
-                          {comp && comp.freeQty > 0 && (
-                            <div className="px-2.5 py-1 rounded-lg bg-emerald-100/80 border border-emerald-300 text-emerald-900 text-xs font-bold flex items-center gap-1.5 shadow-2xs">
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
-                              <span className="truncate">+{comp.freeQty} free crate(s) awarded ({comp.chargeableQty} paid)</span>
-                            </div>
-                          )}
-                          {comp && comp.discount > 0 && comp.freeQty === 0 && (
-                            <div className="px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-bold flex items-center gap-1.5">
-                              <Tag className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                              <span>Scheme discount: −₹{money(comp.discount)}</span>
-                            </div>
-                          )}
-
-                          {/* Rate Customization Bar: NO Retail label, Rate can be customized and set to 0 */}
+                        return (
                           <div
-                            className="p-2 sm:p-2.5 rounded-xl bg-slate-50/90 border border-slate-200/80 flex items-center justify-between gap-2 flex-wrap"
-                            onClick={(e) => e.stopPropagation()}
+                            key={prod.id !== undefined ? `prod_${prod.id}` : `prod_idx_${idx}`}
+                            onClick={() => openQuickEntry(prod)}
+                            style={{ borderLeftWidth: 5, borderLeftColor: sTheme.hex }}
+                            className={`rounded-2xl border p-3 transition-colors flex flex-col gap-2 cursor-pointer ${
+                              inCartQty > 0
+                                ? 'border-emerald-600 bg-emerald-50/60 ring-2 ring-emerald-600/15'
+                                : 'bg-white border-slate-200 hover:border-emerald-300'
+                            }`}
                           >
-                            <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                              <label
-                                htmlFor={`rate-input-${prod.id}`}
-                                className="text-[11px] font-black text-slate-600 uppercase tracking-wide shrink-0"
-                              >
-                                Rate:
-                              </label>
-                              <div className="relative flex items-center shrink-0">
-                                <span className="absolute left-2 text-xs font-black text-slate-400 pointer-events-none">
-                                  ₹
-                                </span>
-                                <input
-                                  id={`rate-input-${prod.id}`}
-                                  type="number" inputMode="numeric"
-                                  step="any"
-                                  min="0"
-                                  value={displayRateVal}
-                                  onChange={(e) => {
-                                    const raw = e.target.value;
-                                    setRateInputDrafts((prev) => ({ ...prev, [prod.id]: raw }));
-                                    if (raw.trim() !== '') {
-                                      const parsed = parseFloat(raw);
-                                      if (!isNaN(parsed) && parsed >= 0) {
-                                        handleSetProductRate(prod.id, parsed);
-                                      }
-                                    }
-                                  }}
-                                  onBlur={() => {
-                                    const draft = rateInputDrafts[prod.id];
-                                    if (draft !== undefined) {
-                                      if (draft.trim() === '') {
-                                        handleSetProductRate(prod.id, 0);
-                                      } else {
-                                        const parsed = parseFloat(draft);
-                                        handleSetProductRate(prod.id, isNaN(parsed) || parsed < 0 ? 0 : parsed);
-                                      }
-                                      setRateInputDrafts((prev) => {
-                                        const next = { ...prev };
-                                        delete next[prod.id];
-                                        return next;
-                                      });
-                                    }
-                                  }}
-                                  placeholder="0"
-                                  className="w-20 sm:w-22 pl-5 pr-1.5 py-1 text-xs sm:text-sm font-black text-slate-900 bg-white rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-700/30 focus:border-emerald-700 tabular-nums shadow-2xs"
-                                  title="Custom price per crate (can be 0 for samples/complimentary)"
-                                />
-                              </div>
-                              <span className="text-[11px] text-slate-500 font-semibold shrink-0">/cs</span>
+                            {/* Top Row: PackIcon + Clean Identity + Right Quick Entry / Stepper */}
+                            <div className="flex items-start justify-between gap-2.5">
+                              <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                                <PackIcon pack={prod.pack} name={prod.name} className="mt-0.5" />
+                                <div className="min-w-0 flex-1">
+                                  <div className="font-extrabold text-slate-900 text-sm leading-snug break-words">
+                                    {prod.name}
+                                    {(nameCounts.get(prod.name.trim().toLowerCase()) || 0) > 1 && (
+                                      <span className="ml-1.5 text-[10px] font-bold text-amber-800">
+                                        (Check size/pack)
+                                      </span>
+                                    )}
+                                  </div>
 
-                              {/* Helper button to quickly make 0 */}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  handleSetProductRate(prod.id, 0);
-                                  setRateInputDrafts((prev) => {
-                                    const next = { ...prev };
-                                    delete next[prod.id];
-                                    return next;
-                                  });
-                                }}
-                                className={`px-2 py-0.5 rounded text-[11px] font-bold border transition-colors cursor-pointer shrink-0 ${
-                                  currentRate === 0
-                                    ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
-                                    : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
-                                }`}
-                                title="Set rate to ₹0 (Free sample or promotional gift)"
-                              >
-                                ₹0 Free
-                              </button>
-
-                              {/* Custom indicator & Reset button */}
-                              {isCustom && (
-                                <div className="flex items-center gap-1 shrink-0">
-                                  <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
-                                    Custom
+                                  {/* Clean unboxed typographic metadata (no pill clutter) */}
+                                  <div className="mt-1 text-xs text-slate-600 tabular-nums leading-relaxed">
+                                    {sTheme.label && (
+                                      <span className="font-extrabold" style={{ color: sTheme.hex }}>
+                                        {sTheme.label}
+                                      </span>
+                                    )}
+                                    {pTheme.label && (
+                                      <span className={`font-bold ${packTextColor(prod.pack, prod.name)}`}>
+                                        {sTheme.label ? ' · ' : ''}{pTheme.label}
+                                      </span>
+                                    )}
+                                  {prod.unitsPerCrate ? (
+                                    <span> · {prod.unitsPerCrate} pcs</span>
+                                  ) : null}
+                                  <span> · </span>
+                                  <span
+                                    className={`font-bold ${
+                                      available > 0
+                                        ? 'text-emerald-700'
+                                        : 'text-rose-600'
+                                    }`}
+                                  >
+                                    {stockSource.startsWith('trip_')
+                                      ? `${available} on van`
+                                      : available > 0
+                                        ? `${available} in stock`
+                                        : '0 in stock'}
                                   </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setCustomRates((prev) => {
-                                        const next = { ...prev };
-                                        delete next[prod.id];
-                                        return next;
-                                      });
-                                      setRateInputDrafts((prev) => {
-                                        const next = { ...prev };
-                                        delete next[prod.id];
-                                        return next;
-                                      });
-                                    }}
-                                    className="text-[10px] text-slate-500 hover:text-slate-900 underline font-bold cursor-pointer"
-                                    title="Reset to default rate"
-                                  >
-                                    Reset
-                                  </button>
                                 </div>
-                              )}
-                            </div>
 
-                            {currentRate === 0 && (
-                              <span className="text-[10.5px] font-black text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded shrink-0">
-                                Complimentary
-                              </span>
-                            )}
-                          </div>
-                        </div>
+                                {/* Price & Scheme summary */}
+                                <div className="mt-1 flex items-center gap-1.5 flex-wrap text-xs">
+                                  <span className={`font-black tabular-nums ${currentRate === 0 ? 'text-emerald-700' : 'text-slate-900'}`}>
+                                    {currentRate === 0 ? '₹0 Free' : `₹${money(currentRate)}/cs`}
+                                  </span>
+                                  {isCustom && currentRate > 0 && (
+                                    <span className="text-[11px] font-bold text-amber-700">· Custom rate</span>
+                                  )}
+                                  {promoLabel && (
+                                    <span className="text-[11px] font-bold text-amber-700 truncate max-w-[170px]">
+                                      · {promoLabel}
+                                    </span>
+                                  )}
+                                </div>
+                                </div>
+                              </div>
 
-                        {/* SMART QUANTITY CARD: Fit to screen, Mobile & Tablet optimized */}
-                        <div className="pt-2 border-t border-slate-100" onClick={(e) => e.stopPropagation()}>
-                          {inCartQty === 0 ? (
-                            /* Unselected: Smart Add Button + Quick +5 & +10 Accelerators */
-                            <div className="flex items-center gap-1.5">
-                              <button
-                                type="button"
-                                id={`btn-add-beverage-${prod.id}`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setItemQty(prod.id, 1);
-                                }}
-                                className="flex-1 min-h-[42px] px-3.5 py-2 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary)] active:scale-[0.98] text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer"
-                              >
-                                <Plus className="w-4 h-4" />
-                                <span>Add Case</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setItemQty(prod.id, 5);
-                                }}
-                                className="min-h-[42px] px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-800 text-xs font-black transition-all cursor-pointer border border-slate-200"
-                                title="Add 5 crates"
-                              >
-                                +5
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setItemQty(prod.id, 10);
-                                }}
-                                className="min-h-[42px] px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-800 text-xs font-black transition-all cursor-pointer border border-slate-200"
-                                title="Add 10 crates"
-                              >
-                                +10
-                              </button>
-                            </div>
-                          ) : (
-                            /* Selected: Interactive Stepper with Direct Input, Accelerators & Real-time Live Subtotal */
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-between gap-1.5 flex-wrap sm:flex-nowrap">
-                                {/* Stepper with direct quantity input */}
-                                <div className="hh-stepper">
+                              {/* Right Action: + Add (1-tap) OR Compact Stepper + Qty/Rate Edit */}
+                              <div className="shrink-0 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                                {inCartQty === 0 ? (
                                   <button
                                     type="button"
-                                    onClick={() => setItemQty(prod.id, inCartQty - 1)}
-                                    className="hh-stepper__btn"
-                                    aria-label="Decrease quantity"
-                                  >
-                                    <Minus className="w-4 h-4" />
-                                  </button>
-                                  <input
-                                    type="number" inputMode="numeric"
-                                    min="0"
-                                    value={inCartQty}
-                                    onChange={(e) => {
-                                      const val = parseInt(e.target.value, 10);
-                                      setItemQty(prod.id, isNaN(val) ? 0 : Math.max(0, val));
-                                    }}
-                                    className="hh-stepper__input"
-                                    title="Type custom quantity"
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={() => setItemQty(prod.id, inCartQty + 1)}
-                                    className="hh-stepper__btn hh-stepper__btn--plus"
-                                    aria-label="Increase quantity"
+                                    id={`btn-add-beverage-${prod.id}`}
+                                    onClick={() => setItemQty(prod.id, 1)}
+                                    className="min-h-[42px] px-3.5 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] active:scale-95 text-white text-xs font-black flex items-center gap-1 cursor-pointer shadow-2xs"
+                                    title="Tap to add 1 case, or tap product name to enter exact qty / rate"
                                   >
                                     <Plus className="w-4 h-4" />
+                                    <span>Add</span>
                                   </button>
-                                </div>
-
-                                {/* Quick +5 & +10 accelerators + Remove */}
-                                <div className="flex items-center gap-1">
-                                  <button
-                                    type="button"
-                                    onClick={() => setItemQty(prod.id, inCartQty + 5)}
-                                    className="h-8 px-2.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 active:scale-95 text-emerald-900 text-xs font-bold transition-all cursor-pointer border border-emerald-200"
-                                    title="Add 5 more crates"
-                                  >
-                                    +5
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setItemQty(prod.id, inCartQty + 10)}
-                                    className="h-8 px-2.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 active:scale-95 text-emerald-900 text-xs font-bold transition-all cursor-pointer border border-emerald-200"
-                                    title="Add 10 more crates"
-                                  >
-                                    +10
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setItemQty(prod.id, 0)}
-                                    className="h-8 px-2 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold transition-all cursor-pointer border border-rose-200 flex items-center gap-1"
-                                    title="Remove this beverage from cart"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                    <span className="hidden sm:inline">Remove</span>
-                                  </button>
-                                </div>
-                              </div>
-
-                              {/* Live Subtotal Strip */}
-                              <div className="flex items-center justify-between text-xs py-1.5 px-3 rounded-lg bg-emerald-50/80 border border-emerald-200/80">
-                                <span className="text-slate-600 font-semibold">
-                                  {inCartQty} cs × ₹{currentRate}
-                                </span>
-                                <span className="font-black text-emerald-950 font-mono text-xs sm:text-sm">
-                                  Item Total: ₹{money(itemGross)} {currentRate === 0 && <span className="text-[10px] text-emerald-700 font-sans font-bold">(Free)</span>}
-                                </span>
+                                ) : (
+                                  <div className="flex items-center gap-1">
+                                    <div className="flex items-center rounded-xl border border-emerald-600 bg-white overflow-hidden shadow-2xs">
+                                      <button
+                                        type="button"
+                                        onClick={() => setItemQty(prod.id, inCartQty - 1)}
+                                        aria-label={`Decrease ${prod.name}`}
+                                        className="w-9 h-10 flex items-center justify-center text-slate-700 hover:bg-slate-100 cursor-pointer"
+                                      >
+                                        <Minus className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => openQuickEntry(prod)}
+                                        className="min-w-[40px] h-10 px-1.5 font-black text-sm text-emerald-900 tabular-nums hover:bg-emerald-50 cursor-pointer"
+                                        title="Tap to type exact quantity, rate, or scheme"
+                                      >
+                                        {inCartQty}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setItemQty(prod.id, inCartQty + 1)}
+                                        aria-label={`Increase ${prod.name}`}
+                                        className="w-9 h-10 flex items-center justify-center bg-emerald-700 text-white hover:bg-emerald-800 cursor-pointer"
+                                      >
+                                        <Plus className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+
+                            {/* Active Line Summary & Edit Rate/Scheme Bar (only when in cart or scheme active) */}
+                            {inCartQty > 0 && (
+                              <div
+                                className="pt-2 border-t border-emerald-200/70 flex items-center justify-between gap-2 text-xs"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                                  <button
+                                    type="button"
+                                    onClick={() => openQuickEntry(prod)}
+                                    className="inline-flex items-center gap-1 font-bold text-emerald-900 hover:underline cursor-pointer"
+                                  >
+                                    <Pencil className="w-3 h-3 shrink-0" />
+                                    <span>Edit qty / rate</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSchemeModalProduct(prod)}
+                                    className="inline-flex items-center gap-1 font-bold text-amber-800 hover:underline cursor-pointer"
+                                  >
+                                    <Gift className="w-3 h-3 shrink-0" />
+                                    <span>{promoLabel ? 'Change scheme' : 'Scheme'}</span>
+                                  </button>
+                                </div>
+                                <span className="font-black text-emerald-950 font-mono tabular-nums shrink-0">
+                                  ₹{money(itemGross)}
+                                  {comp && comp.freeQty > 0 ? ` (+${comp.freeQty} free)` : ''}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))
               )}
             </div>
             {/* Live bill panel (desktop): what is on the bill right now */}
@@ -1680,6 +1547,227 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
         </div>
       )}
 
+      {/* QUICK ENTRY POPUP: Quantity, Rate & Scheme for mobile & desktop */}
+      {quickEntryProduct && (() => {
+        const prod = quickEntryProduct;
+        const available = getProductStock(prod.id);
+        const sTheme = sizeTheme(prod.volume, prod.name);
+        const pTheme = packTheme(prod.pack, prod.name);
+        const defaultRate = getProductDefaultPrice(prod);
+        const parsedQty = Math.max(0, parseInt(quickEntryQty, 10) || 0);
+        const parsedRate = quickEntryRate.trim() === '' ? 0 : Math.max(0, parseFloat(quickEntryRate) || 0);
+        const isCustomRate = parsedRate !== defaultRate;
+
+        const userChoice = customSchemes[prod.id];
+        let activePromo: Promotion | null = null;
+        if (userChoice !== undefined) {
+          activePromo = userChoice;
+        } else if (schemeMode !== 'none' && billingSettings?.schemesEnabled !== false && billingSettings?.autoApplyPromotions !== false) {
+          activePromo = activePromoFor ? activePromoFor(prod.id) : null;
+        }
+        const promoLabel = activePromo ? schemeLabel(activePromo, products) : null;
+        const previewComp = parsedQty > 0 ? computeLine(prod, 'Retail', parsedQty, activePromo, parsedRate, 0) : null;
+
+        const commitPopup = (e?: React.FormEvent) => {
+          e?.preventDefault();
+          if (parsedRate !== (customRates[prod.id] !== undefined ? customRates[prod.id] : defaultRate)) {
+            handleSetProductRate(prod.id, parsedRate);
+          }
+          setItemQty(prod.id, parsedQty);
+          setQuickEntryProduct(null);
+        };
+
+        return (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Enter quantity for ${prod.name}`}
+            className="fixed inset-0 z-[55] flex items-end sm:items-center justify-center sm:p-4 bg-slate-900/60 backdrop-blur-xs"
+            onClick={() => setQuickEntryProduct(null)}
+          >
+            <form
+              onSubmit={commitPopup}
+              onClick={(e) => e.stopPropagation()}
+              style={{ borderTopWidth: 4, borderTopColor: sTheme.hex }}
+              className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-2xl border border-slate-200 shadow-2xl p-4 sm:p-5 space-y-4"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-2.5 min-w-0">
+                  <PackIcon pack={prod.pack} name={prod.name} className="mt-0.5" />
+                  <div className="min-w-0">
+                    <h3 className="text-base font-black text-slate-900 leading-snug">{prod.name}</h3>
+                    <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
+                      {sTheme.label && <span className="font-bold" style={{ color: sTheme.hex }}>{sTheme.label}</span>}
+                      {pTheme.label && <span className={`font-bold ${packTextColor(prod.pack, prod.name)}`}>{sTheme.label ? ' · ' : ''}{pTheme.label}</span>}
+                      {prod.unitsPerCrate ? ` · ${prod.unitsPerCrate} pcs` : ''}
+                      {' · '}
+                      <span className={available > 0 ? 'font-bold text-emerald-700' : 'font-bold text-rose-600'}>
+                        {stockSource.startsWith('trip_') ? `${available} on van` : `${available} in stock`}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setQuickEntryProduct(null)}
+                  aria-label="Close entry popup"
+                  className="size-9 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 flex items-center justify-center cursor-pointer shrink-0"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Quantity Stepper + Quick Accelerators */}
+              <div className="space-y-2">
+                <label htmlFor="popup-qty-input" className="block text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                  Cases / Crates
+                </label>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setQuickEntryQty(String(Math.max(0, parsedQty - 1)))}
+                    aria-label="Decrease quantity"
+                    className="w-12 h-12 rounded-xl border border-slate-300 bg-slate-50 hover:bg-slate-100 flex items-center justify-center text-slate-800 cursor-pointer shrink-0"
+                  >
+                    <Minus className="w-5 h-5" />
+                  </button>
+                  <input
+                    id="popup-qty-input"
+                    ref={quickEntryQtyRef}
+                    type="number"
+                    inputMode="numeric"
+                    min="0"
+                    value={quickEntryQty}
+                    onChange={(e) => setQuickEntryQty(e.target.value)}
+                    className="flex-1 min-w-0 h-12 text-center text-xl font-black text-slate-900 rounded-xl border-2 border-emerald-600/50 focus:border-emerald-700 focus:outline-none tabular-nums"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setQuickEntryQty(String(parsedQty + 1))}
+                    aria-label="Increase quantity"
+                    className="w-12 h-12 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white flex items-center justify-center cursor-pointer shrink-0"
+                  >
+                    <Plus className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-5 gap-1.5 pt-0.5">
+                  {[1, 2, 5, 10, 20].map((inc) => (
+                    <button
+                      key={inc}
+                      type="button"
+                      onClick={() => setQuickEntryQty(String(parsedQty + inc))}
+                      className="min-h-[38px] rounded-xl border border-slate-200 bg-slate-50 hover:bg-emerald-50 hover:border-emerald-300 text-xs font-black text-slate-800 cursor-pointer tabular-nums"
+                    >
+                      +{inc}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Rate & Scheme Row */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-slate-100">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label htmlFor={`rate-input-${prod.id}`} className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                      Rate (₹ / cs)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setQuickEntryRate('0')}
+                        className={`text-[11px] font-bold cursor-pointer ${parsedRate === 0 ? 'text-emerald-700 underline' : 'text-slate-500 hover:text-slate-800'}`}
+                      >
+                        ₹0 Free
+                      </button>
+                      {isCustomRate && (
+                        <button
+                          type="button"
+                          onClick={() => setQuickEntryRate(String(defaultRate))}
+                          className="text-[11px] font-bold text-amber-700 hover:underline cursor-pointer"
+                        >
+                          Reset (₹{defaultRate})
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <input
+                    id={`rate-input-${prod.id}`}
+                    type="number"
+                    inputMode="decimal"
+                    step="any"
+                    min="0"
+                    value={quickEntryRate}
+                    onChange={(e) => setQuickEntryRate(e.target.value)}
+                    className="w-full min-h-[42px] px-3 rounded-xl border border-slate-300 text-sm font-black text-slate-900 tabular-nums focus:outline-none focus:border-emerald-700"
+                  />
+                </div>
+
+                <div>
+                  <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                    Scheme / Promo
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSchemeModalProduct(prod)}
+                    className={`w-full min-h-[42px] px-3 rounded-xl border text-xs font-bold flex items-center justify-between gap-2 cursor-pointer ${
+                      activePromo
+                        ? 'bg-amber-50 border-amber-300 text-amber-900'
+                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span className="flex items-center gap-1.5 min-w-0 truncate">
+                      <Gift className="w-4 h-4 shrink-0" />
+                      <span className="truncate">{promoLabel || 'No scheme'}</span>
+                    </span>
+                    <span className="text-[11px] underline shrink-0">Change</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Preview & Actions */}
+              <div className="flex items-center justify-between rounded-xl bg-slate-50 border border-slate-200 px-3 py-2 text-xs">
+                <span className="text-slate-600 font-semibold tabular-nums">
+                  {parsedQty} cs × ₹{parsedRate}
+                  {previewComp && previewComp.freeQty > 0 ? ` (+${previewComp.freeQty} free)` : ''}
+                </span>
+                <span className="text-sm font-black text-slate-900 font-mono tabular-nums">
+                  ₹{money(previewComp ? previewComp.gross : parsedQty * parsedRate)}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                {(selectedItems[prod.id] || 0) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setItemQty(prod.id, 0);
+                      setQuickEntryProduct(null);
+                    }}
+                    className="min-h-[46px] px-3.5 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-xs font-bold hover:bg-rose-100 cursor-pointer shrink-0"
+                  >
+                    Remove
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setQuickEntryProduct(null)}
+                  className="min-h-[46px] px-4 rounded-xl border border-slate-200 text-slate-700 text-xs font-bold hover:bg-slate-100 cursor-pointer shrink-0"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 min-h-[46px] rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-sm font-black cursor-pointer"
+                >
+                  {parsedQty === 0 ? 'Remove Item' : (selectedItems[prod.id] || 0) > 0 ? 'Update Item' : `Add ${parsedQty} Case${parsedQty === 1 ? '' : 's'}`}
+                </button>
+              </div>
+            </form>
+          </div>
+        );
+      })()}
+
       {/* SCHEME SELECTOR MODAL (Full Promotions & BOGO Support) */}
       {schemeModalProduct && (
         <SchemeSelectorModal
@@ -1703,316 +1791,397 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
         />
       )}
 
-      {/* MODAL: Cart Review & Finalize (Captures and finalizes bill here!) */}
+      {/* MODAL: Cart Review & Finalize (Mobile-First Single-Scroll + Tablet 2-Column Split) */}
       {showCartReview && (
         <div
           role="dialog"
           aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
+          aria-label="Cart Review & Finalize"
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
           onClick={() => setShowCartReview(false)}
         >
           <div
-            className="w-full max-w-2xl bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh] animate-in zoom-in-95 duration-150"
+            className="w-full h-[100dvh] sm:h-auto sm:max-h-[92dvh] sm:max-w-3xl lg:max-w-5xl bg-white sm:border border-slate-200 rounded-none sm:rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Header */}
-            <div className="px-4 sm:px-5 py-3.5 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-base font-bold text-slate-900 tracking-tight">
+            {/* Slim Sticky Header */}
+            <div className="px-4 sm:px-5 py-3 border-b border-slate-200 flex items-center justify-between gap-2 bg-slate-50/90 shrink-0">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-base sm:text-lg font-black text-slate-900 tracking-tight">
                     Cart Review & Finalize
                   </h3>
-                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-700 text-white font-black text-xs shadow-2xs">
-                    {totalCartQty} Crates Total {totalFreeQty > 0 ? `(${totalFreeQty} free incl.)` : ''}
+                  <span className="text-xs font-extrabold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md tabular-nums">
+                    {totalCartQty} cs{totalFreeQty > 0 ? ` · ${totalFreeQty} free` : ''}
                   </span>
                 </div>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Party: <span className="font-semibold text-slate-800">{customerName || 'Apt / Walk-in sale'}</span> · {selectedStockLabel}
+                <p className="text-xs text-slate-500 mt-0.5 truncate">
+                  <span className="font-semibold text-slate-800">{customerName || 'Apt / Walk-in sale'}</span> · {selectedStockLabel}
                 </p>
               </div>
-              <button aria-label="Close"
+              <button
+                aria-label="Close cart review"
                 type="button"
                 onClick={() => setShowCartReview(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/50 rounded-lg transition-colors cursor-pointer"
+                className="size-10 flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-xl transition-colors cursor-pointer shrink-0"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* Cart Items List */}
-            <div className="p-4 overflow-y-auto space-y-3 divide-y divide-slate-100 flex-1 max-h-[48vh]">
-              {lineItems.length === 0 ? (
-                <div className="py-12 text-center text-slate-400 text-sm">
-                  Your cart is empty. Add beverages to review.
+            {/* Unified Responsive Body:
+                - Mobile (< md): single smooth scroll container so items are completely visible (never squished!)
+                - Tablet / Desktop (>= md): side-by-side 2-column grid (Items on left, Summary + Payment on right) */}
+            <div className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden md:grid md:grid-cols-[1.25fr_1fr] bg-slate-50/60">
+              {/* LEFT / TOP: Review Items List */}
+              <div className="p-3 sm:p-4 md:overflow-y-auto md:h-full space-y-2.5">
+                <div className="flex items-center justify-between gap-2 px-0.5">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-slate-600 tabular-nums">
+                    Review Items ({lineItems.length})
+                  </h4>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowCartReview(false);
+                      setShowProductSelector(true);
+                    }}
+                    className="inline-flex items-center gap-1 text-xs font-bold text-emerald-800 hover:underline cursor-pointer py-1 px-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add more items</span>
+                  </button>
                 </div>
-              ) : (
-                lineItems.map((item, idx) => (
-                  <div key={item.key || `cart_item_${item.productId}_${idx}`} className="pt-3 first:pt-0 flex items-center justify-between gap-3 text-sm">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-slate-900">{item.productName}</span>
-                        <SizeChip volume={products.find((p) => p.id === item.productId)?.volume} pack={products.find((p) => p.id === item.productId)?.pack} name={item.productName} />
-                        {(() => {
-                          const p = products.find((prod) => prod.id === item.productId);
-                          return p?.unitsPerCrate ? (
-                            <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
-                              {p.unitsPerCrate} pcs/cs
-                            </span>
-                          ) : null;
-                        })()}
-                        {item.appliedPromo && (
-                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 inline-flex items-center gap-1">
-                            <span>{item.promoLabel || 'Scheme'}</span>
-                            <button
-                              type="button"
-                              onClick={() => setCustomSchemes((prev) => ({ ...prev, [item.productId]: null }))}
-                              className="text-rose-600 hover:text-rose-800 font-black ml-0.5 cursor-pointer"
-                              title="Clear scheme: switch to full rate"
-                            >
-                              ✕
-                            </button>
-                          </span>
-                        )}
-                        {item.freeQty > 0 && (
-                          <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
-                            {item.freeQty} Free (incl.)
-                          </span>
-                        )}
-                        {!item.appliedPromo && !item.isBundleFreeItem && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const prod = products.find((p) => p.id === item.productId);
-                              if (prod) setSchemeModalProduct(prod);
-                            }}
-                            className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 hover:bg-slate-200 cursor-pointer"
-                            title="Choose a scheme for this item"
-                          >
-                            + Add Scheme
-                          </button>
-                        )}
-                      </div>
-                      <div className="text-xs text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
-                        <span>Rate: ₹{item.rate} / cs {item.rate === 0 && <span className="text-emerald-700 font-bold">(Free)</span>}</span>
-                        <span>·</span>
-                        <span>
-                          {item.qty} crate{item.qty === 1 ? '' : 's'}
-                          {item.freeQty > 0 ? ` (${item.chargeableQty} paid + ${item.freeQty} free incl.)` : ''}
-                        </span>
-                        {item.cgstRate > 0 && <span>· GST {item.cgstRate * 2}%</span>}
-                      </div>
-                      {(() => {
-                        // Margin guard: realised ex-GST revenue per physical case vs ex-GST purchase cost
-                        const prod = products.find((p) => p.id === item.productId);
-                        const cost = Number(prod?.effectiveCost ?? prod?.cost) || 0;
-                        const cases = Number(item.qty) || 0;
-                        if (item.isFree || item.isBundleFreeItem || cost <= 0 || cases <= 0) return null;
-                        const perCase = (Number(item.taxable) || 0) / cases;
-                        const profit = perCase - cost;
-                        if (profit >= 0) {
-                          return (
-                            <div className="text-[10px] text-emerald-700 mt-0.5">
-                              Margin ₹{money(profit)} / cs (cost ₹{money(cost)} {compositionLocked ? 'incl. purchase GST' : 'ex-GST'})
-                            </div>
-                          );
-                        }
-                        return (
-                          <div className="text-[10px] font-bold text-rose-700 mt-0.5">
-                            Below cost: earns ₹{money(perCase)} / cs ex-GST vs cost ₹{money(cost)} (loss ₹{money(-profit * cases)})
-                          </div>
-                        );
-                      })()}
-                    </div>
 
-                    <div className="flex items-center gap-3 shrink-0">
-                      {/* Stepper */}
-                      {!item.isBundleFreeItem && (
-                        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg">
-                          <button aria-label="Decrease"
-                            type="button"
-                            onClick={() => setItemQty(item.productId, item.qty - 1)}
-                            className="w-7 h-7 flex items-center justify-center rounded bg-white text-slate-700 hover:bg-slate-200 shadow-xs cursor-pointer"
-                          >
-                            <Minus className="w-3.5 h-3.5" />
-                          </button>
-                          <span className="w-8 text-center font-mono font-bold text-xs text-slate-800">
-                            {item.qty}
-                          </span>
-                          <button aria-label="Increase"
-                            type="button"
-                            onClick={() => setItemQty(item.productId, item.qty + 1)}
-                            className="w-7 h-7 flex items-center justify-center rounded bg-white text-slate-700 hover:bg-slate-200 shadow-xs cursor-pointer"
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      )}
-
-                      <div className="text-right min-w-[4.5rem]">
-                        <div className="font-bold text-slate-900 font-mono">
-                          ₹{money(item.gross)}
-                        </div>
-                        {item.discount > 0 && (
-                          <div className="text-[10px] font-bold text-emerald-700 font-mono">
-                            Save ₹{money(item.discount)}
-                          </div>
-                        )}
-                        {!item.isBundleFreeItem && (
-                          <button
-                            type="button"
-                            onClick={() => setItemQty(item.productId, 0)}
-                            className="text-[11px] text-rose-500 hover:underline cursor-pointer block ml-auto mt-0.5"
-                          >
-                            Remove
-                          </button>
-                        )}
-                      </div>
-                    </div>
+                {lineItems.length === 0 ? (
+                  <div className="py-12 px-4 text-center bg-white rounded-2xl border border-dashed border-slate-300 space-y-3">
+                    <p className="text-slate-500 text-sm font-semibold">
+                      Your cart is empty. Add beverages to review.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCartReview(false);
+                        setShowProductSelector(true);
+                      }}
+                      className="px-4 py-2.5 rounded-xl bg-[var(--primary)] text-white text-xs font-bold cursor-pointer"
+                    >
+                      + Select Beverages
+                    </button>
                   </div>
-                ))
-              )}
+                ) : (
+                  <div className="space-y-2.5">
+                    {lineItems.map((item, idx) => {
+                      const prod = products.find((p) => p.id === item.productId);
+                      const sTheme = sizeTheme(prod?.volume, item.productName);
+                      const pTheme = packTheme(prod?.pack, item.productName);
+                      const cost = Number(prod?.effectiveCost ?? prod?.cost) || 0;
+                      const cases = Number(item.qty) || 0;
+                      const perCase = cases > 0 ? (Number(item.taxable) || 0) / cases : 0;
+                      const profit = cost > 0 && cases > 0 && !item.isFree && !item.isBundleFreeItem ? perCase - cost : null;
+
+                      return (
+                        <div
+                          key={item.key || `cart_item_${item.productId}_${idx}`}
+                          style={{ borderLeftWidth: 5, borderLeftColor: sTheme.hex }}
+                          className="bg-white rounded-2xl border border-slate-200 p-3 space-y-2.5 shadow-2xs"
+                        >
+                          {/* Top Row: PackIcon + Product Name + Line Total */}
+                          <div className="flex items-start justify-between gap-2.5">
+                            <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                              <PackIcon pack={prod?.pack} name={item.productName} className="mt-0.5" />
+                              <div className="min-w-0 flex-1">
+                                <div className="font-extrabold text-slate-900 text-sm sm:text-[15px] leading-snug break-words">
+                                  {item.productName}
+                                </div>
+                                <div className="mt-1 text-xs text-slate-600 tabular-nums leading-relaxed">
+                                  {sTheme.label && (
+                                    <span className="font-extrabold" style={{ color: sTheme.hex }}>
+                                      {sTheme.label}
+                                    </span>
+                                  )}
+                                  {pTheme.label && (
+                                    <span className={`font-bold ${packTextColor(prod?.pack, item.productName)}`}>
+                                      {sTheme.label ? ' · ' : ''}{pTheme.label}
+                                    </span>
+                                  )}
+                                  {prod?.unitsPerCrate ? <span> · {prod.unitsPerCrate} pcs</span> : null}
+                                  <span> · ₹{money(item.rate)}/cs</span>
+                                  {item.rate === 0 && <span className="font-bold text-emerald-700"> (Free)</span>}
+                                  {item.cgstRate > 0 && <span> · GST {item.cgstRate * 2}%</span>}
+                                </div>
+
+                              {(item.freeQty > 0 || item.discount > 0 || profit !== null) && (
+                                <div className="mt-1 flex items-center gap-2 flex-wrap text-[11px] tabular-nums">
+                                  {item.freeQty > 0 && (
+                                    <span className="font-bold text-emerald-700">
+                                      {item.chargeableQty} paid + {item.freeQty} free incl.
+                                    </span>
+                                  )}
+                                  {item.discount > 0 && (
+                                    <span className="font-bold text-emerald-700">
+                                      Save ₹{money(item.discount)}
+                                    </span>
+                                  )}
+                                  {profit !== null && (
+                                    <span className={profit >= 0 ? 'text-emerald-700' : 'font-bold text-rose-700'}>
+                                      {profit >= 0
+                                        ? `Margin ₹${money(profit)}/cs`
+                                        : `Below cost (−₹${money(-profit)}/cs)`}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              </div>
+                            </div>
+
+                            <div className="text-right shrink-0">
+                              <div className="text-sm sm:text-base font-black text-slate-900 font-mono tabular-nums">
+                                ₹{money(item.gross)}
+                              </div>
+                              <div className="text-[11px] text-slate-500 font-semibold tabular-nums">
+                                {item.qty} crate{item.qty === 1 ? '' : 's'}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Bottom Row: Scheme + Edit Rate + Qty Stepper + Remove */}
+                          {!item.isBundleFreeItem && (
+                            <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+                              <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                                {item.appliedPromo ? (
+                                  <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2 py-1 rounded-lg">
+                                    <Gift className="w-3.5 h-3.5 shrink-0" />
+                                    <span className="truncate max-w-[130px]">{item.promoLabel || 'Scheme'}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setCustomSchemes((prev) => ({ ...prev, [item.productId]: null }))}
+                                      className="text-rose-600 hover:text-rose-800 font-black cursor-pointer pl-0.5"
+                                      title="Clear scheme"
+                                      aria-label="Clear scheme"
+                                    >
+                                      ✕
+                                    </button>
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (prod) setSchemeModalProduct(prod);
+                                    }}
+                                    className="inline-flex items-center gap-1 min-h-[36px] px-2.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-bold text-slate-700 cursor-pointer"
+                                  >
+                                    <Gift className="w-3.5 h-3.5 text-slate-500" />
+                                    <span>Scheme</span>
+                                  </button>
+                                )}
+
+                                {prod && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openQuickEntry(prod)}
+                                    className="inline-flex items-center gap-1 min-h-[36px] px-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 cursor-pointer"
+                                    title="Edit quantity or rate"
+                                  >
+                                    <Pencil className="w-3 h-3 text-slate-500" />
+                                    <span>Rate</span>
+                                  </button>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <div className="flex items-center rounded-xl border border-slate-300 bg-slate-50 overflow-hidden">
+                                  <button
+                                    aria-label={`Decrease ${item.productName}`}
+                                    type="button"
+                                    onClick={() => setItemQty(item.productId, item.qty - 1)}
+                                    className="w-9 h-9 flex items-center justify-center text-slate-700 hover:bg-slate-200 cursor-pointer"
+                                  >
+                                    <Minus className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => prod && openQuickEntry(prod)}
+                                    className="min-w-[38px] h-9 px-1.5 font-mono font-black text-sm text-slate-900 bg-white border-x border-slate-200 tabular-nums cursor-pointer"
+                                    title="Tap to type exact quantity"
+                                  >
+                                    {item.qty}
+                                  </button>
+                                  <button
+                                    aria-label={`Increase ${item.productName}`}
+                                    type="button"
+                                    onClick={() => setItemQty(item.productId, item.qty + 1)}
+                                    className="w-9 h-9 flex items-center justify-center bg-emerald-700 text-white hover:bg-emerald-800 cursor-pointer"
+                                  >
+                                    <Plus className="w-4 h-4" />
+                                  </button>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => setItemQty(item.productId, 0)}
+                                  aria-label={`Remove ${item.productName}`}
+                                  title="Remove item"
+                                  className="w-9 h-9 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-600 flex items-center justify-center cursor-pointer"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* RIGHT / BOTTOM: Bill Totals & Payment Collection */}
+              <div className="p-3 sm:p-4 md:border-l md:border-slate-200 md:overflow-y-auto md:h-full bg-white md:bg-slate-50/40 space-y-3 border-t md:border-t-0 border-slate-200">
+                <h4 className="text-xs font-black uppercase tracking-wider text-slate-600">
+                  Summary & Payment
+                </h4>
+
+                {/* Compact Totals Grid */}
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className="bg-slate-50 md:bg-white p-2.5 rounded-xl border border-slate-200">
+                    <span className="text-slate-500 block">Taxable Value</span>
+                    <span className="font-bold font-mono text-slate-900 text-sm tabular-nums">₹{money(taxableAmount)}</span>
+                  </div>
+                  <div className="bg-slate-50 md:bg-white p-2.5 rounded-xl border border-slate-200">
+                    <span className="text-slate-500 block">Taxes (GST Incl.)</span>
+                    <span className="font-bold font-mono text-slate-900 text-sm tabular-nums">₹{money(totalTax)}</span>
+                  </div>
+                  <div className="bg-slate-50 md:bg-white p-2.5 rounded-xl border border-slate-200">
+                    <span className="text-slate-500 block">Total Crates</span>
+                    <span className="font-bold font-mono text-slate-900 text-sm tabular-nums">
+                      {totalCartQty} cs{totalFreeQty > 0 ? ` (${totalFreeQty} free)` : ''}
+                    </span>
+                  </div>
+                  <div className="bg-emerald-50 p-2.5 rounded-xl border border-emerald-200">
+                    <span className="text-emerald-800 block font-semibold">Grand Total</span>
+                    <span className="font-black font-mono text-emerald-950 text-sm sm:text-base tabular-nums">₹{money(grandTotal)}</span>
+                  </div>
+                </div>
+
+                {billType === 'tax_invoice' && (
+                  <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2.5 py-1.5 rounded-lg border border-emerald-200/70">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0" />
+                    <span>GST tax is inclusive in the bill amount · No extra surcharge added</span>
+                  </div>
+                )}
+
+                {/* Payment Details */}
+                <div className="pt-2 border-t border-slate-200 space-y-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1 uppercase tracking-wider">
+                      Payment Mode
+                    </label>
+                    <select
+                      value={paymentMode}
+                      onChange={(e) => {
+                        const nextMode = e.target.value as PaymentMode;
+                        setPaymentMode(nextMode);
+                        if (nextMode === 'credit') {
+                          setPaymentAmount('0');
+                        }
+                      }}
+                      className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-700/20"
+                    >
+                      <option value="cash">Cash</option>
+                      <option value="upi">UPI (GPay / PhonePe / Paytm)</option>
+                      <option value="credit">Credit (Due)</option>
+                      <option value="bank">Bank Transfer (NEFT/RTGS)</option>
+                      <option value="cheque">Cheque</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                        Amount Collected
+                      </label>
+                      <div className="flex items-center gap-2 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPaymentAmount(String(grandTotal));
+                            if (paymentMode === 'credit') setPaymentMode('cash');
+                          }}
+                          className="text-emerald-700 font-bold hover:underline cursor-pointer"
+                        >
+                          Full
+                        </button>
+                        <span className="text-slate-300">·</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPaymentAmount('0');
+                            setPaymentMode('credit');
+                          }}
+                          className="text-amber-700 font-bold hover:underline cursor-pointer"
+                        >
+                          Credit (0)
+                        </button>
+                      </div>
+                    </div>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step="any"
+                      min="0"
+                      placeholder="0"
+                      value={paymentAmount}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPaymentAmount(val);
+                        const num = Number(val);
+                        if (val.trim() !== '' && num > 0 && paymentMode === 'credit') {
+                          setPaymentMode('cash');
+                        }
+                      }}
+                      className="w-full min-h-[42px] px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm font-bold font-mono focus:outline-none focus:ring-2 focus:ring-emerald-700/20 tabular-nums"
+                    />
+                    <p
+                      className={`mt-1.5 text-xs font-semibold ${
+                        collectedAmountPreview <= 0 || balanceDuePreview > 0.005
+                          ? 'text-amber-700'
+                          : 'text-emerald-700'
+                      }`}
+                    >
+                      {collectedAmountPreview <= 0
+                        ? `Defaults to ₹0 (Credit) · Due ₹${money(grandTotal)}`
+                        : balanceDuePreview > 0.005
+                          ? `Partial payment · Credit due ₹${money(balanceDuePreview)}`
+                          : 'Paid in full · Due ₹0.00'}
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            {/* Financial Summary & Payment Collection */}
-            <div className="p-4 bg-slate-50 border-t border-slate-200/80 space-y-3 shrink-0">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                <div className="bg-white p-2 rounded-xl border border-slate-200">
-                  <span className="text-slate-500 block">Taxable Value</span>
-                  <span className="font-bold font-mono text-slate-900 text-sm">₹{money(taxableAmount)}</span>
-                </div>
-                <div className="bg-white p-2 rounded-xl border border-slate-200">
-                  <span className="text-slate-500 block">Taxes (GST Incl.)</span>
-                  <span className="font-bold font-mono text-slate-900 text-sm">₹{money(totalTax)}</span>
-                </div>
-                <div className="bg-white p-2 rounded-xl border border-slate-200">
-                  <span className="text-slate-500 block">Total Crates</span>
-                  <span className="font-bold font-mono text-slate-900 text-sm">
-                    {totalCartQty} cs {totalFreeQty > 0 ? `(${totalFreeQty} free incl.)` : ''}
-                  </span>
-                </div>
-                <div className="bg-emerald-50 p-2 rounded-xl border border-emerald-200">
-                  <span className="text-emerald-800 block font-semibold">Grand Total</span>
-                  <span className="font-black font-mono text-emerald-900 text-sm sm:text-base">₹{money(grandTotal)}</span>
-                </div>
-              </div>
-              {billType === 'tax_invoice' && (
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200/70">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0" />
-                  <span>GST tax is inclusive in the bill amount · No extra surcharge added for tax invoice</span>
-                </div>
-              )}
+            {/* Slim Pinned Action Bar (always reachable on mobile & tablet) */}
+            <div className="px-3 sm:px-5 py-3 bg-white border-t border-slate-200 flex items-center justify-between gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCartReview(false);
+                  setShowProductSelector(true);
+                }}
+                className="min-h-[44px] px-3.5 sm:px-4 rounded-xl border border-slate-300 text-xs font-bold text-slate-700 hover:bg-slate-100 cursor-pointer shrink-0 whitespace-nowrap"
+              >
+                + Add More
+              </button>
 
-              {/* Payment Details */}
-              <div className="pt-2 border-t border-slate-200 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                    PAYMENT MODE
-                  </label>
-                  <select
-                    value={paymentMode}
-                    onChange={(e) => {
-                      const nextMode = e.target.value as PaymentMode;
-                      setPaymentMode(nextMode);
-                      if (nextMode === 'credit') {
-                        setPaymentAmount('0');
-                      }
-                    }}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-semibold focus:outline-none"
-                  >
-                    <option value="cash">Cash</option>
-                    <option value="upi">UPI (GPay / PhonePe / Paytm)</option>
-                    <option value="credit">Credit (Due)</option>
-                    <option value="bank">Bank Transfer (NEFT/RTGS)</option>
-                    <option value="cheque">Cheque</option>
-                  </select>
-                </div>
-
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className="block text-[11px] font-bold text-slate-600">
-                      AMOUNT COLLECTED
-                    </label>
-                    <div className="flex items-center gap-1.5 text-[10px]">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPaymentAmount(String(grandTotal));
-                          if (paymentMode === 'credit') setPaymentMode('cash');
-                        }}
-                        className="text-emerald-700 font-bold hover:underline cursor-pointer"
-                      >
-                        Full
-                      </button>
-                      <span>·</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setPaymentAmount('0');
-                          setPaymentMode('credit');
-                        }}
-                        className="text-amber-700 font-bold hover:underline cursor-pointer"
-                      >
-                        Credit (0)
-                      </button>
-                    </div>
-                  </div>
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    step="any"
-                    min="0"
-                    placeholder="0"
-                    value={paymentAmount}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setPaymentAmount(val);
-                      const num = Number(val);
-                      if (val.trim() !== '' && num > 0 && paymentMode === 'credit') {
-                        setPaymentMode('cash');
-                      }
-                    }}
-                    className="w-full px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-xs font-bold font-mono focus:outline-none"
-                  />
-                  <p
-                    className={`mt-1 text-[11px] font-semibold ${
-                      collectedAmountPreview <= 0 || balanceDuePreview > 0.005
-                        ? 'text-amber-700'
-                        : 'text-emerald-700'
-                    }`}
-                  >
-                    {collectedAmountPreview <= 0
-                      ? `Defaults to ₹0 (Credit) · Due ₹${money(grandTotal)}`
-                      : balanceDuePreview > 0.005
-                        ? `Partial payment · Credit due ₹${money(balanceDuePreview)}`
-                        : 'Paid in full · Due ₹0.00'}
-                  </p>
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="pt-2 flex items-center justify-between gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowCartReview(false);
-                    setShowProductSelector(true);
-                  }}
-                  className="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
-                >
-                  + Add More Products
-                </button>
-
-                <button
-                  type="button"
-                  id="btn-finalize-save-bill"
-                  onClick={handleSaveBill}
-                  disabled={lineItems.length === 0}
-                  className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary)] active:scale-95 text-white text-sm font-bold shadow-md transition-all cursor-pointer disabled:opacity-50"
-                >
-                  <Check className="w-4 h-4" />
-                  <span>Finalize & Save Bill (₹{money(grandTotal)})</span>
-                </button>
-              </div>
+              <button
+                type="button"
+                id="btn-finalize-save-bill"
+                onClick={handleSaveBill}
+                disabled={lineItems.length === 0}
+                className="flex-1 sm:flex-initial min-h-[44px] inline-flex items-center justify-center gap-2 px-4 sm:px-6 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] active:scale-95 text-white text-sm font-black shadow-md transition-all cursor-pointer disabled:opacity-50"
+              >
+                <Check className="w-4 h-4 shrink-0" />
+                <span className="truncate">Finalize · ₹{money(grandTotal)}</span>
+              </button>
             </div>
           </div>
         </div>
@@ -2081,89 +2250,27 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                 />
               </div>
 
-              {/* Route / Beat Selection */}
+              {/* Route / Beat Selection (Beats configured in Settings) */}
               <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <label className="block text-xs font-semibold text-slate-700">
-                    Route / Beat
-                  </label>
-                  {!isAddingBeatInModal ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAddingBeatInModal(true);
-                        setNewBeatNameInput('');
-                      }}
-                      className="text-[11px] font-bold text-indigo-600 hover:underline cursor-pointer"
-                    >
-                      + Add New Beat
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setIsAddingBeatInModal(false)}
-                      className="text-[11px] font-bold text-slate-500 hover:underline cursor-pointer"
-                    >
-                      Pick existing
-                    </button>
-                  )}
-                </div>
+                <label className="block text-xs font-semibold text-slate-700">
+                  Route / Beat
+                </label>
 
-                {isAddingBeatInModal ? (
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="text"
-                      placeholder="e.g. Bhojpur Beat, Main Road"
-                      value={newBeatNameInput}
-                      onChange={(e) => setNewBeatNameInput(e.target.value)}
-                      className="flex-1 px-3 py-2 rounded-xl border border-indigo-300 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                      autoFocus
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const clean = newBeatNameInput.trim();
-                        if (clean) {
-                          const res = addBeat(clean);
-                          if (res.ok) {
-                            setNewCustBeat(clean);
-                            notify(`Beat "${clean}" created.`);
-                          } else {
-                            setNewCustBeat(clean);
-                          }
-                          setIsAddingBeatInModal(false);
-                        }
-                      }}
-                      className="px-3 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 whitespace-nowrap cursor-pointer shadow-xs"
-                    >
-                      Save Beat
-                    </button>
-                  </div>
-                ) : (
-                  <select
-                    value={newCustBeat}
-                    onChange={(e) => {
-                      if (e.target.value === '__add_new__') {
-                        setIsAddingBeatInModal(true);
-                        setNewBeatNameInput('');
-                      } else {
-                        setNewCustBeat(e.target.value);
-                      }
-                    }}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-700/20 bg-white cursor-pointer"
-                  >
-                    <option value="">-- Select Beat / Route --</option>
-                    {activeBeats.map((b) => (
-                      <option key={b.id} value={b.name}>
-                        {b.name}
-                      </option>
-                    ))}
-                    <option value="__add_new__">+ Add New Beat...</option>
-                  </select>
-                )}
+                <select
+                  value={newCustBeat}
+                  onChange={(e) => setNewCustBeat(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-700/20 bg-white cursor-pointer"
+                >
+                  <option value="">-- Select Beat / Route --</option>
+                  {activeBeats.map((b) => (
+                    <option key={b.id} value={b.name}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
 
                 {/* 1-Tap Quick Beat Chips */}
-                {!isAddingBeatInModal && activeBeats.length > 0 && (
+                {activeBeats.length > 0 && (
                   <div className="flex flex-wrap gap-1 pt-1">
                     {activeBeats.slice(0, 6).map((b) => (
                       <button
@@ -2212,95 +2319,6 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                 className="px-5 py-2 rounded-xl bg-[var(--primary)] text-white text-xs font-semibold hover:bg-[var(--primary-hover)] disabled:opacity-50"
               >
                 Save & Select Customer
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add Beat Modal directly from Sale Page */}
-      {showAddBeatModal && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in"
-          onClick={() => setShowAddBeatModal(false)}
-        >
-          <div
-            className="w-full max-w-sm bg-white border border-slate-200 rounded-2xl shadow-xl p-5 space-y-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <Truck className="w-5 h-5 text-indigo-600" />
-                <h3 className="font-bold text-slate-900 text-base">Add New Beat / Route</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowAddBeatModal(false)}
-                className="text-slate-400 hover:text-slate-700"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Beat / Route Name *
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Bhojpur Route, Station Road"
-                  value={salePageNewBeatName}
-                  onChange={(e) => setSalePageNewBeatName(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                  autoFocus
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Hub / Base Godown (optional)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Main Godown"
-                  value={salePageNewBeatHub}
-                  onChange={(e) => setSalePageNewBeatHub(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setShowAddBeatModal(false)}
-                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const clean = salePageNewBeatName.trim();
-                  if (!clean) return;
-                  const res = addBeat(clean, { hub: salePageNewBeatHub.trim() || undefined });
-                  if (res.ok) {
-                    setSelectedBeatFilter(clean);
-                    notify(`Beat "${clean}" added successfully.`);
-                    setShowAddBeatModal(false);
-                    setSalePageNewBeatName('');
-                    setSalePageNewBeatHub('');
-                  } else {
-                    notify(res.error || 'Could not add beat.');
-                  }
-                }}
-                disabled={!salePageNewBeatName.trim()}
-                className="px-5 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 cursor-pointer shadow-xs"
-              >
-                Add Beat
               </button>
             </div>
           </div>

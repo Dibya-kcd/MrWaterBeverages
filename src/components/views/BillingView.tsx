@@ -16,7 +16,7 @@ import {
   money,
   whatsappLink,
 } from '../../utils/billing';
-import { downloadInvoicePdf } from '../../utils/invoicePdf';
+import { downloadInvoicePdf, preloadInvoicePdf } from '../../utils/invoicePdfLazy';
 import { IconButton } from '../common/IconButton';
 import { TaxInvoiceModal } from '../common/TaxInvoiceModal';
 import { DeleteConfirmModal } from '../common/DeleteConfirmModal';
@@ -93,6 +93,8 @@ export const BillingView: React.FC = () => {
   );
 
   const justBill = justFinalizedBillId ? bills.find((b) => b.id === justFinalizedBillId) : null;
+  const hasJustBill = Boolean(justBill);
+  useEffect(() => { if (hasJustBill) preloadInvoicePdf().catch(() => {}); }, [hasJustBill]);
 
   return (
     <div id="view-billing" className="hh-view mw-workspace space-y-4 min-w-0 max-w-full overflow-x-hidden">
@@ -156,7 +158,7 @@ export const BillingView: React.FC = () => {
             <button
               type="button"
               id="btn-download-just-saved-pdf"
-              onClick={() => downloadInvoicePdf(justBill, orgProfile, billingSettings)}
+              onClick={() => { Promise.resolve(downloadInvoicePdf(justBill, orgProfile, billingSettings)).catch((err) => console.error('Error downloading invoice PDF:', err)); }}
               className="inline-flex items-center gap-1.5 border-2 px-3 py-1.5 focus-ring cursor-pointer hover:opacity-95 font-bold shadow-sm text-xs rounded-xl"
               style={{
                 backgroundColor: palette.navy,

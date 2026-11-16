@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Check, Download, MessageCircle, Printer, Plus, ArrowRight } from 'lucide-react';
 import { Bill } from '../../types';
 import { money } from '../../utils/billing';
-import { downloadInvoicePdf } from '../../utils/invoicePdf';
+import { downloadInvoicePdf, preloadInvoicePdf } from '../../utils/invoicePdfLazy';
 import { useLedger } from '../../context/LedgerContext';
 import { sendBillOnWhatsApp, whatsAppResultMessage } from '../../utils/whatsappBill';
 import { notify } from '../../utils/toast';
@@ -21,6 +21,7 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
   onOpenHistory,
 }) => {
   const { orgProfile, billingSettings } = useLedger();
+  useEffect(() => { preloadInvoicePdf().catch(() => {}); }, []);
 
   // Document format toggle (GST B2B Tax Invoice vs Non-GST B2C Retail Bill)
   const [selectedFormat, setSelectedFormat] = useState<'gst' | 'non_gst'>(() => {
@@ -33,7 +34,8 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
   const isPaidInFull = balanceDue === 0;
 
   const handleDownloadPdf = () => {
-    downloadInvoicePdf(bill, orgProfile, billingSettings, selectedFormat);
+    Promise.resolve(downloadInvoicePdf(bill, orgProfile, billingSettings, selectedFormat))
+      .catch((err) => console.error('Error downloading invoice PDF:', err));
   };
 
   const [sendingWa, setSendingWa] = useState(false);

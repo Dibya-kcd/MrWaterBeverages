@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Check,
   Copy,
@@ -23,17 +23,12 @@ import {
   whatsappLink,
   nonGstSummary,
 } from '../../utils/billing';
-import {
-  downloadInvoicePdf,
-  inrToWords,
-  printInvoicePdf,
-  resolveInvoicePaper,
-  shareInvoicePdf,
-  type InvoicePaper,
-} from '../../utils/invoicePdf';
+import { inrToWords } from '../../utils/invoiceCommon';
+import { resolveInvoicePaper, type InvoicePaper } from '../../utils/invoicePdfMeta';
+import { downloadInvoicePdf, printInvoicePdf, shareInvoicePdf, preloadInvoicePdf } from '../../utils/invoicePdfLazy';
 import { billNetTotal } from '../../utils/salesReturns';
 import { billTaxBreakdown } from '../../utils/gstReports';
-import { buildBillMessage } from '../../utils/receipt80';
+import { buildBillMessage } from '../../utils/receiptText';
 import { sendBillOnWhatsApp, whatsAppResultMessage } from '../../utils/whatsappBill';
 import { notify } from '../../utils/toast';
 
@@ -52,6 +47,8 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
 }) => {
   const { orgProfile, billingSettings, palette, fz, scale } = useLedger();
   const [downloading, setDownloading] = useState(false);
+  // Fetch the PDF code in the background so Download / Print / Share work instantly (and straight after the tap).
+  useEffect(() => { preloadInvoicePdf().catch(() => {}); }, []);
   const [copiedUpi, setCopiedUpi] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
   const [copiedInvoiceText, setCopiedInvoiceText] = useState(false);
@@ -100,10 +97,10 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
       : stateCode;
   const buyerStateName = buyerStateCode === '21' ? 'Odisha' : stateName;
 
-  const handleDownload = () => {
+  const handleDownload = async () => {
     setDownloading(true);
     try {
-      downloadInvoicePdf(bill, orgProfile, billingSettings, invoiceFormat, { showBatch: false, paper });
+      await downloadInvoicePdf(bill, orgProfile, billingSettings, invoiceFormat, { showBatch: false, paper });
     } catch (err) {
       console.error('Error downloading invoice PDF:', err);
     } finally {
@@ -114,7 +111,8 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
   const handlePrint = () => {
     // A4 prints the on-screen invoice as before; the 80 mm receipt prints its own narrow PDF.
     if (paper === '80mm') {
-      printInvoicePdf(bill, orgProfile, billingSettings, invoiceFormat, { showBatch: false, paper });
+      Promise.resolve(printInvoicePdf(bill, orgProfile, billingSettings, invoiceFormat, { showBatch: false, paper }))
+        .catch((err) => console.error('Error printing invoice PDF:', err));
       return;
     }
     window.print();

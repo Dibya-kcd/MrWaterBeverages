@@ -38,7 +38,6 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import * as XLSX from 'xlsx';
 import { CATS } from '../../constants/initialData';
 import { useLedger } from '../../context/LedgerContext';
 import { CategoryKey, GrnImportWarning, GrnLineItem, GrnSchemeMode, GrnSchemeType, Product } from '../../types';
@@ -1236,7 +1235,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
 
   // Download Comprehensive Sample Excel Template (With Provider Details sheet, Items table & GST Guide)
   const handleDownloadSample = () => {
-    downloadImportTemplateXlsx();
+    downloadImportTemplateXlsx().catch((err) => console.error('Could not create the Excel template:', err));
   };
 
   // Download Comprehensive CSV Template (With Provider Details headers & columns)

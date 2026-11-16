@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { LayoutGrid, List } from 'lucide-react';
 import { PaletteTokens } from '../../types';
 import { SizeChip } from '../common/SizeChip';
+import { PackIcon } from '../common/PackIcon';
 import { sizeTheme } from '../../utils/sizeColor';
 
 export interface TripProductReconciliationRow {
@@ -101,17 +102,20 @@ export const TripReconciliationCards: React.FC<TripReconciliationCardsProps> = (
                 <div>
                   {/* Card Header: Product Name & Status Badge */}
                   <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="font-extrabold text-slate-900 text-sm leading-tight">
-                        {r.name}
-                      </div>
-                      <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                        <SizeChip volume={r.volume} name={r.name} pack={r.pack} />
-                        {r.unitsPerCrate && (
-                          <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1 py-0.2 rounded border border-slate-200">
-                            {r.unitsPerCrate} pcs/cs
-                          </span>
-                        )}
+                    <div className="flex items-start gap-2 min-w-0">
+                      <PackIcon size="sm" pack={r.pack} name={r.name} className="mt-0.5" />
+                      <div className="min-w-0">
+                        <div className="font-extrabold text-slate-900 text-sm leading-tight">
+                          {r.name}
+                        </div>
+                        <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                          <SizeChip volume={r.volume} name={r.name} pack={r.pack} />
+                          {r.unitsPerCrate && (
+                            <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1 py-0.2 rounded border border-slate-200">
+                              {r.unitsPerCrate} pcs/cs
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <span
@@ -224,14 +228,19 @@ export const TripReconciliationCards: React.FC<TripReconciliationCardsProps> = (
                       className="px-3 py-2"
                       style={{ borderLeftWidth: 6, borderLeftStyle: 'solid', borderLeftColor: sTheme.hex }}
                     >
-                      <div className="font-bold text-slate-900">{r.name}</div>
-                      <div className="mt-0.5 flex items-center gap-1.5 flex-wrap">
-                        <SizeChip volume={r.volume} name={r.name} pack={r.pack} />
-                        {r.unitsPerCrate && (
-                          <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1 py-0.2 rounded border border-slate-200">
-                            {r.unitsPerCrate} pcs/cs
-                          </span>
-                        )}
+                      <div className="flex items-start gap-2">
+                        <PackIcon size="sm" pack={r.pack} name={r.name} className="mt-0.5" />
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-900">{r.name}</div>
+                          <div className="mt-0.5 flex items-center gap-1.5 flex-wrap">
+                            <SizeChip volume={r.volume} name={r.name} pack={r.pack} />
+                            {r.unitsPerCrate && (
+                              <span className="text-[10px] font-bold text-slate-600 bg-slate-100 px-1 py-0.2 rounded border border-slate-200">
+                                {r.unitsPerCrate} pcs/cs
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </div>
                       {deliveries.length > 0 && (
                         <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">

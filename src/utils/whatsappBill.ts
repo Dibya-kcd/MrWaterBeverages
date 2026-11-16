@@ -11,8 +11,9 @@
  */
 import type { Bill, BillingSettings, OrganizationProfile } from '../types';
 import { money, whatsappLink } from './billing';
-import { buildInvoicePdf, invoicePdfFilename, isBillGstInvoice } from './invoicePdf';
-import { sharePdfFile } from './receipt80';
+import { invoicePdfFilename } from './invoicePdfMeta';
+import { isBillGstInvoice } from './invoiceCommon';
+import { preloadInvoicePdf } from './invoicePdfLazy';
 
 export type WhatsAppBillResult = 'shared' | 'cancelled' | 'downloaded' | 'failed';
 
@@ -39,6 +40,8 @@ export async function sendBillOnWhatsApp(
   invoiceFormat?: 'gst' | 'non_gst',
 ): Promise<WhatsAppBillResult> {
   try {
+    // The PDF code loads on first use (already loaded when the screen opened, so this adds no wait).
+    const [{ buildInvoicePdf }, { sharePdfFile }] = await Promise.all([preloadInvoicePdf(), import('./receipt80')]);
     const doc = buildInvoicePdf(bill, org, settings, invoiceFormat, PAPER);
     const filename = invoicePdfFilename(bill, settings, invoiceFormat, PAPER);
     const isGst = isBillGstInvoice(bill, invoiceFormat);

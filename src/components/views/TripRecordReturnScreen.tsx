@@ -19,6 +19,7 @@ import { Bill, PaymentRecord, Product, Trip, TripShortageReason, Warehouse } fro
 import { billBelongsToTrip } from '../../utils/billing';
 import { billBalance } from '../../utils/salesReturns';
 import { SizeChip } from '../common/SizeChip';
+import { PackIcon } from '../common/PackIcon';
 import { OdiaName } from '../common/OdiaName';
 import { sizeTheme, compareProductsInSequence } from '../../utils/sizeColor';
 import { useIsMobile } from '../../hooks/useIsMobile';
@@ -66,17 +67,20 @@ const ReturnLineCard: React.FC<{
   return (
     <div className={`rounded-2xl border p-3 ${tone}`} style={{ borderLeftWidth: 6, borderLeftColor: sizeTheme(product?.volume, product?.name).hex }}>
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="text-[15px] font-bold text-slate-900 leading-snug break-words">
-            {product?.name ? <OdiaName name={product.name} nameOr={product.nameOr} /> : name}
-          </div>
-          <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-            <SizeChip volume={product?.volume} name={product?.name} pack={product?.pack} />
-            {product?.unitsPerCrate ? (
-              <span className="text-[10.5px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
-                {product.unitsPerCrate} pcs/cs
-              </span>
-            ) : null}
+        <div className="flex items-start gap-2.5 min-w-0">
+          <PackIcon size="sm" pack={product?.pack} name={product?.name} className="mt-0.5" />
+          <div className="min-w-0">
+            <div className="text-[15px] font-bold text-slate-900 leading-snug break-words">
+              {product?.name ? <OdiaName name={product.name} nameOr={product.nameOr} /> : name}
+            </div>
+            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+              <SizeChip volume={product?.volume} name={product?.name} pack={product?.pack} />
+              {product?.unitsPerCrate ? (
+                <span className="text-[10.5px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                  {product.unitsPerCrate} pcs/cs
+                </span>
+              ) : null}
+            </div>
           </div>
         </div>
         {diff === 0 ? (
@@ -833,17 +837,22 @@ export const TripRecordReturnScreen: React.FC<TripRecordReturnScreenProps> = ({
                       className="py-2.5 px-3"
                       style={{ borderLeftWidth: 6, borderLeftStyle: 'solid', borderLeftColor: sizeTheme(prod?.volume, prod?.name).hex }}
                     >
-                      <div className="font-bold text-slate-900 leading-snug">{prod?.name ? <OdiaName name={prod.name} nameOr={prod.nameOr} /> : `Product #${pid}`}</div>
-                      <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-                        <SizeChip volume={prod?.volume} name={prod?.name} pack={prod?.pack} />
-                        {prod?.unitsPerCrate && (
-                          <span className="text-[10.5px] font-bold text-slate-600 bg-slate-100 px-1 py-0.2 rounded border border-slate-200">
-                            {prod.unitsPerCrate} pcs/cs
-                          </span>
-                        )}
-                        <span className="text-[11px] text-slate-400 capitalize">
-                          · {prod?.category || 'General'}
-                        </span>
+                      <div className="flex items-start gap-2">
+                        <PackIcon size="sm" pack={prod?.pack} name={prod?.name} className="mt-0.5" />
+                        <div className="min-w-0">
+                          <div className="font-bold text-slate-900 leading-snug">{prod?.name ? <OdiaName name={prod.name} nameOr={prod.nameOr} /> : `Product #${pid}`}</div>
+                          <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                            <SizeChip volume={prod?.volume} name={prod?.name} pack={prod?.pack} />
+                            {prod?.unitsPerCrate && (
+                              <span className="text-[10.5px] font-bold text-slate-600 bg-slate-100 px-1 py-0.2 rounded border border-slate-200">
+                                {prod.unitsPerCrate} pcs/cs
+                              </span>
+                            )}
+                            <span className="text-[11px] text-slate-400 capitalize">
+                              · {prod?.category || 'General'}
+                            </span>
+                          </div>
+                        </div>
                       </div>
                     </td>
                     <td className="py-2.5 px-3 text-center font-semibold text-slate-700">{loaded} cs</td>

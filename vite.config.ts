@@ -38,6 +38,22 @@ export default defineConfig(() => {
     optimizeDeps: {
       include: ['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime'],
     },
+    build: {
+      rollupOptions: {
+        output: {
+          // Libraries that rarely change get their own files, so a normal deploy only makes phones download the
+          // app code again, not React / Supabase / icons. (jsPDF and xlsx stay out of this list on purpose:
+          // they are loaded on demand and must not be pulled into the startup files.)
+          manualChunks(id: string) {
+            if (!id.includes('node_modules')) return undefined;
+            if (/node_modules\/(react|react-dom|scheduler)\//.test(id)) return 'vendor-react';
+            if (id.includes('node_modules/@supabase/')) return 'vendor-supabase';
+            if (id.includes('node_modules/lucide-react/')) return 'vendor-icons';
+            return undefined;
+          },
+        },
+      },
+    },
     server: {
       port: 3000,
       host: '0.0.0.0',

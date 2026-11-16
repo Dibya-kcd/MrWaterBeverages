@@ -6,6 +6,7 @@ import { billTaxBreakdown } from './gstReports';
 import { todayISO } from "./dateLocal";
 import { inrToWords, isBillGstInvoice } from './invoiceCommon';
 import { generateReceiptPdf80, sharePdfFile } from './receipt80';
+import { resolveInvoicePaper, invoicePdfFilename, type InvoicePaper, type InvoicePdfOptions } from './invoicePdfMeta';
 
 export { inrToWords, isBillGstInvoice };
 
@@ -589,13 +590,8 @@ export function generateInvoicePdf(
   return doc;
 }
 
-export type InvoicePaper = 'a4' | '80mm';
-export type InvoicePdfOptions = { showBatch?: boolean; paper?: InvoicePaper };
-
-/** Paper for the PDF: what the caller asked for, else Settings -> Billing, else A4. */
-export function resolveInvoicePaper(settings?: BillingSettings, options?: InvoicePdfOptions): InvoicePaper {
-  return options?.paper ?? (settings?.defaultInvoicePaper === '80mm' ? '80mm' : 'a4');
-}
+export type { InvoicePaper, InvoicePdfOptions };
+export { resolveInvoicePaper };
 
 /** The invoice on A4 (full GST layout) or as an 80 mm receipt, same figures either way. */
 export function buildInvoicePdf(
@@ -610,20 +606,7 @@ export function buildInvoicePdf(
     : generateInvoicePdf(bill, org, settings, invoiceFormat, options);
 }
 
-export function invoicePdfFilename(
-  bill: Bill,
-  settings?: BillingSettings,
-  invoiceFormat?: 'gst' | 'non_gst',
-  options?: InvoicePdfOptions
-): string {
-  const isGst = isBillGstInvoice(bill, invoiceFormat);
-  const prefix = settings?.invoicePrefix || (isGst ? 'INV' : 'RET');
-  const cleanRetailer = (bill.retailer || 'Cash').replace(/[^a-zA-Z0-9_-]/g, '_');
-  const paper = resolveInvoicePaper(settings, options) === '80mm' ? '_80mm' : '';
-  return isGst
-    ? `Tax_Invoice_${prefix}-${bill.id}_${cleanRetailer}${paper}.pdf`
-    : `Retail_Bill_${prefix}-${bill.id}_${cleanRetailer}${paper}.pdf`;
-}
+export { invoicePdfFilename };
 
 export function downloadInvoicePdf(
   bill: Bill,

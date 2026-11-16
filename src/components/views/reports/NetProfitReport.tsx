@@ -16,6 +16,7 @@ import {
   salaryPool,
 } from '../../../utils/netProfit';
 import { todayISO } from "../../../utils/dateLocal";
+import { BillCostRepairModal } from './BillCostRepairModal';
 
 export interface NetProfitReportProps {
   filteredBills: Bill[];
@@ -82,6 +83,7 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
   const [amount, setAmount] = useState('');
   const [paidTo, setPaidTo] = useState('');
   const [note, setNote] = useState('');
+  const [repairModalOpen, setRepairModalOpen] = useState(false);
   const [poolPct, setPoolPct] = useState('40');
   const [tripId, setTripId] = useState('');
 
@@ -262,7 +264,7 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
 
       {(() => {
         const c = pnl.costChecks;
-        const items: { tone: 'bad' | 'warn' | 'info'; text: string }[] = [];
+        const items: { tone: 'bad' | 'warn' | 'info'; text: string; onFix?: () => void; fixLabel?: string }[] = [];
         if (c.zeroCostLines > 0)
           items.push({
             tone: 'bad',
@@ -274,6 +276,8 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
           items.push({
             tone: 'warn',
             text: `${c.estimatedCostLines} sale line(s) in ${c.billsWithEstimatedCost} bill(s) (${c.estimatedCostCases} cases) have no saved batch cost, so today's average product cost was used. Profit on old bills may differ from what it really was.`,
+            onFix: () => setRepairModalOpen(true),
+            fixLabel: `Preview & Fix (${c.billsWithEstimatedCost} bill${c.billsWithEstimatedCost === 1 ? '' : 's'})`,
           });
         if (periodExpenses.length === 0)
           items.push({
@@ -308,7 +312,7 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
             {items.map((it, i) => (
               <div
                 key={i}
-                className={`text-xs rounded-lg px-3 py-2 border ${
+                className={`text-xs rounded-lg px-3 py-2 border flex flex-wrap items-center justify-between gap-2 ${
                   it.tone === 'bad'
                     ? 'bg-rose-50 border-rose-200 text-rose-800'
                     : it.tone === 'warn'
@@ -316,7 +320,16 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
                       : 'bg-slate-50 border-slate-200 text-slate-700'
                 }`}
               >
-                {it.text}
+                <span className="flex-1 min-w-[200px]">{it.text}</span>
+                {it.onFix && it.fixLabel && (
+                  <button
+                    type="button"
+                    onClick={it.onFix}
+                    className="inline-flex items-center gap-1 rounded-lg bg-amber-900 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-amber-950 cursor-pointer shrink-0"
+                  >
+                    {it.fixLabel}
+                  </button>
+                )}
               </div>
             ))}
            </div>
@@ -507,6 +520,13 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
       </Panel>
 
       <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} />
+      <BillCostRepairModal
+        open={repairModalOpen}
+        onClose={() => setRepairModalOpen(false)}
+        filteredBills={filteredBills}
+        products={products}
+        periodLabel={periodLabel}
+      />
     </div>
   );
 };

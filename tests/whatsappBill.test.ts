@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildWhatsAppCaption, sendBillOnWhatsApp, whatsAppResultMessage } from "../src/utils/whatsappBill";
+import { preloadInvoicePdf } from "../src/utils/invoicePdfLazy";
+
+// In the app the PDF code is loaded when the invoice screen opens, before any tap. Do the same here, before the
+// tests replace window / navigator with small stand-ins that the PDF library cannot start up against.
+await preloadInvoicePdf();
 
 const bill: any = {
   id: 1042, date: "2026-11-11", retailer: "Sri Jagannath General Store", phone: "9437012345",
