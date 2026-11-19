@@ -3,8 +3,10 @@ import { AlertTriangle, Boxes, Trash2, Wallet, X } from 'lucide-react';
 import { Bill } from '../../types';
 import { money } from '../../utils/billing';
 import { billBalance } from '../../utils/salesReturns';
+import { looksLikeDuplicateOrMistakeReason } from '../../utils/ghostPayments';
 import { Button } from '../ui/Button';
 import type { BillDeletePaymentAction, BillDeletePreview } from '../../context/LedgerContext';
+import { formatBillNumber } from '../../utils/invoiceCommon';
 
 interface DeleteConfirmModalProps {
   bill: Bill | null;
@@ -28,6 +30,7 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
 }) => {
   const [reason, setReason] = useState('');
   const [paymentAction, setPaymentAction] = useState<BillDeletePaymentAction>('advance');
+  const [userPickedPaymentAction, setUserPickedPaymentAction] = useState(false);
 
   if (!bill) return null;
 
@@ -36,9 +39,17 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
   const received = preview?.receivedAmount ?? (Number(bill.amountPaid) || 0);
   const reasonOk = reason.trim().length >= 3;
   const canConfirm = reasonOk && blockers.length === 0;
+  const reasonLooksDuplicate = looksLikeDuplicateOrMistakeReason(reason);
+
+  const handleReasonChange = (val: string) => {
+    setReason(val);
+    if (!userPickedPaymentAction && received > 0) {
+      setPaymentAction(looksLikeDuplicateOrMistakeReason(val) ? 'remove' : 'advance');
+    }
+  };
 
   return (
-    <div
+    <div data-esc-close
       role="dialog"
       aria-modal="true"
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
@@ -55,8 +66,7 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
             </div>
             <div>
               <h3 className="text-base font-semibold text-slate-900 tracking-tight">
-                Delete Bill #{invoicePrefix}
-                {bill.id}
+                Delete Bill #{formatBillNumber(bill, invoicePrefix)}
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
                 {bill.retailer}
@@ -109,7 +119,7 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
                 <div className="divide-y divide-slate-100 max-h-36 overflow-y-auto">
                   {preview.stockLines.map((l) => (
                     <div key={l.productId} className="px-3 py-1.5 flex items-center justify-between text-xs gap-2">
-                      <span className="truncate text-slate-800">{l.productName}</span>
+                      <span className="min-w-0 break-words lg:truncate text-slate-800">{l.productName}</span>
                       <span className="font-mono font-semibold px-2 py-0.5 rounded text-emerald-700 bg-emerald-50 border border-emerald-200/60 shrink-0">
                         +{l.qty} cr
                       </span>
@@ -126,6 +136,19 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
             )}
           </div>
 
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-slate-700 block">
+              Reason for deleting * <span className="font-normal opacity-60">(saved in the payment audit trail)</span>
+            </label>
+            <textarea
+              rows={2}
+              value={reason}
+              onChange={(e) => handleReasonChange(e.target.value)}
+              placeholder="e.g. duplicate entry, wrong customer, test bill"
+              className="w-full text-xs p-2.5 rounded-xl border border-slate-300 bg-white text-slate-800 placeholder-slate-400 focus:outline-hidden focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all resize-none font-sans"
+            />
+          </div>
+
           {/* Money */}
           <div className="space-y-1.5">
             <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
@@ -137,16 +160,26 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
             </div>
             {received > 0 ? (
               <div className="space-y-1.5">
+                {reasonLooksDuplicate && (
+                  <p className="text-[11px] font-medium text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                    {paymentAction === 'remove'
+                      ? 'Switched to "Remove the receipts too" so this duplicate/mistake invoice does not leave a ghost advance payment.'
+                      : 'Warning: keeping ₹' + money(received) + ' as advance on a duplicate/mistake bill will show up as an advance credit on the customer ledger.'}
+                  </p>
+                )}
                 <label className="flex items-start gap-2 p-2.5 rounded-xl border border-slate-200 bg-white cursor-pointer text-xs">
                   <input
                     type="radio"
                     name="bill-delete-payment"
                     checked={paymentAction === 'advance'}
-                    onChange={() => setPaymentAction('advance')}
+                    onChange={() => {
+                      setUserPickedPaymentAction(true);
+                      setPaymentAction('advance');
+                    }}
                     className="mt-0.5 accent-emerald-600 cursor-pointer"
                   />
                   <span>
-                    <b>Keep ₹{money(received)} as customer advance</b> (recommended). The money stays on {bill.retailer}'s
+                    <b>Keep ₹{money(received)} as customer advance</b>. The money stays on {bill.retailer}&apos;s
                     account and can be used on another invoice or refunded.
                   </span>
                 </label>
@@ -155,12 +188,15 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
                     type="radio"
                     name="bill-delete-payment"
                     checked={paymentAction === 'remove'}
-                    onChange={() => setPaymentAction('remove')}
+                    onChange={() => {
+                      setUserPickedPaymentAction(true);
+                      setPaymentAction('remove');
+                    }}
                     className="mt-0.5 accent-rose-600 cursor-pointer"
                   />
                   <span>
-                    <b>Remove the receipts too.</b> Use this only if the money was never really received or was
-                    entered by mistake. The receipts are deleted from the customer's account.
+                    <b>Remove the receipts too</b> (recommended for duplicate/wrong/test bills). The receipts are
+                    deleted from the customer&apos;s account.
                   </span>
                 </label>
               </div>

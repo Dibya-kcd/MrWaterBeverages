@@ -1,3 +1,4 @@
+import { confirmDialog } from '../../utils/dialogs';
 import React, { useState } from 'react';
 import { useLedger } from '../../context/LedgerContext';
 import { validateGstin } from '../../tax/gstin';
@@ -13,7 +14,7 @@ export default function GstRegistrationCard() {
   const [start, setStart] = useState<string>(orgProfile.gstEngineStartDate || '');
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const save = () => {
+  const save = async () => {
     setMsg(null);
     if (!type) {
       updateOrgProfile({ gstRegistrationType: undefined, gstEngineStartDate: undefined, compositionCategory: undefined });
@@ -23,14 +24,16 @@ export default function GstRegistrationCard() {
     const g = validateGstin(orgProfile.gstin);
     if (!g.valid) return setMsg({ ok: false, text: `Your business GSTIN is not valid (${g.reason}). Fix it in the business profile first.` });
     if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return setMsg({ ok: false, text: 'Choose the first bill date the engine should govern.' });
-    if (
-      !window.confirm(
-        `From ${start}, every new bill will be issued as a ${type === 'composition' ? 'Bill of Supply with NO GST charged' : 'bill without GST'}.\n` +
-          'Purchase (GRN) stock cost for goods inwarded on/after this date will INCLUDE the GST paid to the supplier, because no input credit is claimable.\n' +
-          'Bills and GRNs dated before this are not changed.\n\nPlease confirm this matches your GST registration (ask your CA if unsure).',
-      )
-    )
-      return;
+    const confirmed = await confirmDialog({
+      title: 'Confirm your GST registration',
+      message:
+        `From ${start}, every new bill will be issued as a ${type === 'composition' ? 'Bill of Supply with NO GST charged' : 'bill without GST'}.\n\n` +
+        'Purchase (GRN) stock cost for goods inwarded on/after this date will INCLUDE the GST paid to the supplier, because no input credit is claimable.\n\n' +
+        'Bills and GRNs dated before this are not changed.\n\nPlease confirm this matches your GST registration (ask your CA if unsure).',
+      confirmLabel: 'Yes, save',
+      tone: 'warning',
+    });
+    if (!confirmed) return;
     updateOrgProfile({
       gstRegistrationType: type as 'composition' | 'unregistered',
       compositionCategory: type === 'composition' ? (category as 'trader') : undefined,

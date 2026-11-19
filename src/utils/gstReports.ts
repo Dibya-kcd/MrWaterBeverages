@@ -8,6 +8,7 @@ import {
 } from './billing';
 import { CATS } from '../constants/initialData';
 import { todayISO } from "./dateLocal";
+import { formatBillNumber, isGstExcludedBill, isLineNonGst } from './invoiceCommon';
 
 export type GstLineBreakdown = {
   billId: number;
@@ -78,6 +79,10 @@ function customerGstinMap(customers: Customer[]): Record<string, string> {
 function hsnForItem(item: BillItem, products: Product[]): string {
   const rawHsn = item.hsn ? String(item.hsn).trim() : '';
   const p = products.find((x) => Number(x.id) === Number(item.productId));
+  if (item.taxability === 'non_gst' || p?.taxability === 'non_gst') {
+    const candidate = rawHsn || (p?.hsn ? String(p.hsn).trim() : '');
+    return candidate || 'NON-GST';
+  }
   const productHsn = p?.hsn ? String(p.hsn).trim() : '';
   const candidate = rawHsn || productHsn || resolveProductHsn(p, item.category);
   const digits = candidate.replace(/\D+/g, '');
@@ -90,15 +95,19 @@ export const gstRateFromHsn = gstRateFromHsnShared;
 
 /**
  * Resolve GST fraction for a bill line.
- * Priority: explicit line gst (if meaningful) → product.gstRate (from supplier invoice / catalogue)
- * → HSN table → category default → 18%.
+ * Priority: Non-GST product -> explicit line gst (if meaningful) -> product.gstRate
+ * -> HSN table -> category default -> 18%.
  */
 export function resolveLineGstRate(
   item: BillItem,
   products: Product[],
 ): { rate: number; hsn: string; source: string } {
-  const hsn = hsnForItem(item, products);
   const p = products.find((x) => Number(x.id) === Number(item.productId));
+  if (item.taxability === 'non_gst' || p?.taxability === 'non_gst') {
+    const raw = String(item.hsn || p?.hsn || '').trim() || 'NON-GST';
+    return { rate: 0, hsn: raw, source: 'non_gst' };
+  }
+  const hsn = hsnForItem(item, products);
 
   // The rate actually charged on the invoice line always wins: the GST return must
   // match what the customer was billed, not what the product master says today.
@@ -271,6 +280,7 @@ export function buildGstLines(
 
   for (const b of bills) {
     if (b.status === 'cancelled' || (b as any).cancelled) continue;
+    if (isGstExcludedBill(b, products)) continue;
     const custKey = (b.retailer || '').trim().toLowerCase();
     // Invoice-level GSTIN wins; else customer master; supplyType B2C forces B2C
     const gstinRaw = (b.customerGstin || gstinMap[custKey] || '').trim().toUpperCase();
@@ -285,7 +295,7 @@ export function buildGstLines(
     // Place of supply: GSTIN state for B2B, customer-master state for B2C, else the supplier state
     const pos = gstin ? gstin.slice(0, 2) : stateMap[custKey] || '';
     const interState = !!orgState && !!pos && pos !== orgState;
-    const invoiceNo = `${invoicePrefix}-${b.id}`;
+    const invoiceNo = formatBillNumber(b, invoicePrefix);
 
     const ctx = billGstContext(b);
     // Non-GST / bill of supply, or a bill that was saved without charging any tax → force 0 rate
@@ -296,6 +306,9 @@ export function buildGstLines(
       ctx.mode === 'off';
 
     (b.items || []).forEach((item, itemIndex) => {
+      // Non-GST / trading lines (e.g. sitting inside a legacy mixed INV- bill before splitting)
+      // must never leak into GST returns (GSTR-1, B2B/B2C, HSN, tax summary, or zero-GST warnings).
+      if (isLineNonGst(item, products)) return;
       const resolved = resolveLineGstRate(item, products);
       const rate = nonGstBill ? 0 : resolved.rate;
       // Scale for the invoice-level (special) discount so the report matches the invoice total.
@@ -454,15 +467,19 @@ export function creditNoteSummary(
     if (!meta.has(l.billId)) meta.set(l.billId, { gstin: l.customerGstin, pos: l.placeOfSupply, inter: l.interState });
   }
   const rows: CreditNoteRow[] = [];
+  const billedById = new Set(lines.map((l) => l.billId));
   for (const b of bills) {
     if (b.status === 'cancelled' || (b as any).cancelled) continue;
+    if (isGstExcludedBill(b)) continue;
+    // If lines exist for other bills, also honor billedById when products weren't passed
+    if (!billedById.has(b.id) && (b.items || []).length > 0 && (b.items || []).every((it) => it.taxability === 'non_gst')) continue;
     const m = meta.get(b.id) || { gstin: '', pos: '', inter: false };
     for (const r of b.returns || []) {
       const total = Number(r.totalCredit) || 0;
       const tax = (Number(r.cgst) || 0) + (Number(r.sgst) || 0);
       rows.push({
         billId: b.id,
-        invoiceNo: `${invoicePrefix}-${b.id}`,
+        invoiceNo: formatBillNumber(b, invoicePrefix),
         creditNoteNo: r.creditNoteNo || r.id,
         date: (r.date || b.date || '').slice(0, 10),
         customerName: b.retailer || 'Cash Sale',
@@ -498,17 +515,29 @@ export function creditNoteSummary(
 export function invoiceSeriesSummary(
   periodBills: { id: number }[],
   cancelledBills: { id: number }[],
-  allBills: { id: number }[]
+  allBills: { id: number }[],
+  excludedBills: { id: number }[] = [],
 ) {
-  const ids = (periodBills || []).map((b) => Number(b.id)).filter((n) => Number.isFinite(n));
+  const excludedIds = new Set((excludedBills || []).map((b) => Number(b.id)));
+  const ids = (periodBills || [])
+    .map((b) => Number(b.id))
+    .filter((n) => Number.isFinite(n) && !excludedIds.has(n));
   if (ids.length === 0) return null;
   const from = Math.min(...ids);
   const to = Math.max(...ids);
-  const known = new Set<number>([...allBills, ...cancelledBills].map((b) => Number(b.id)));
+  const known = new Set<number>([...allBills, ...cancelledBills, ...excludedBills].map((b) => Number(b.id)));
   const missing: number[] = [];
   for (let n = from; n <= to && n - from < 50000; n++) if (!known.has(n)) missing.push(n);
-  const cancelled = cancelledBills.filter((b) => b.id >= from && b.id <= to).length;
-  return { from, to, numbers: to - from + 1, active: ids.length, cancelled, missing };
+  const cancelled = cancelledBills.filter((b) => !excludedIds.has(Number(b.id)) && b.id >= from && b.id <= to).length;
+  const nonGstInRange = Array.from(excludedIds).filter((id) => id >= from && id <= to).length;
+  return {
+    from,
+    to,
+    numbers: Math.max(ids.length, to - from + 1 - nonGstInRange),
+    active: ids.length,
+    cancelled,
+    missing,
+  };
 }
 
 /**
@@ -857,22 +886,24 @@ export function exportCaGstPack(opts: {
   }
   downloadCsv(`CA_GSTR1_HSN_${period}_${stamp}.csv`, hsnLines);
 
-  // ---- Documents issued (Table 13) incl. cancelled invoices ----
-  const docBills = [...opts.bills].sort((x, y) => Number(x.id) - Number(y.id));
+  // ---- Documents issued (Table 13) incl. cancelled invoices (excludes Non-GST trading memos) ----
+  const docBills = [...opts.bills]
+    .filter((b) => !isGstExcludedBill(b, opts.products))
+    .sort((x, y) => Number(x.id) - Number(y.id));
   const cancelled = docBills.filter((b) => b.status === 'cancelled' || (b as any).cancelled);
   const docs: string[] = [
     'GSTR-1 Documents issued (Table 13)',
     ['Nature of document', 'Sr. No. From', 'Sr. No. To', 'Total Number', 'Cancelled'].join(','),
     [
       'Invoices for outward supply',
-      docBills.length ? `${prefix}-${docBills[0].id}` : '',
-      docBills.length ? `${prefix}-${docBills[docBills.length - 1].id}` : '',
+      docBills.length ? formatBillNumber(docBills[0], prefix) : '',
+      docBills.length ? formatBillNumber(docBills[docBills.length - 1], prefix) : '',
       docBills.length,
       cancelled.length,
     ].join(','),
     ['Credit notes', '', '', cn.rows.length, 0].join(','),
     '',
-    'Cancelled invoice numbers: ' + (cancelled.map((b) => `${prefix}-${b.id}`).join(' | ') || 'none'),
+    'Cancelled invoice numbers: ' + (cancelled.map((b) => formatBillNumber(b, prefix)).join(' | ') || 'none'),
   ];
   downloadCsv(`CA_GSTR1_Documents_${period}_${stamp}.csv`, docs);
 

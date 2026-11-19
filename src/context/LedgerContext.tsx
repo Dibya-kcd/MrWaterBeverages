@@ -1,4 +1,11 @@
 import { setOdiaNameLookup, warmOdiaFont } from '../utils/odiaNameLookup';
+import {
+  diagnoseOversoldGodowns,
+  reassignBillsProductWarehouse as reassignBillsPure,
+  ReassignGuardError,
+  type OversoldItem,
+  type ReassignSummary,
+} from "../utils/oversoldDiagnostic";
 import { serverSignIn, setApiSession } from "../lib/authFetch";
 import React, {
   createContext,
@@ -17,6 +24,14 @@ import {
   CrossWarehouseShiftPlan,
   RepairApplyMode,
 } from "../utils/billCostRepair";
+import {
+  resolveBillWarehouseId,
+  resolveTripGodownDisplay,
+  tripPrimaryWarehouseId,
+  tripWarehouseIds,
+} from "../utils/tripLoads";
+import { cartTaxMix } from "../utils/invoiceCommon";
+import { planSplitMixedBill } from "../utils/mixedBillSplit";
 import {
   CATS,
   DEFAULT_BILLING_SETTINGS,
@@ -196,9 +211,12 @@ import {
   StickyTotalPosition,
   StockTransfer,
   TabId,
+  Taxability,
   Trip,
   TripCashRecovery,
   TripShortageReason,
+  TripShortageInput,
+  TRIP_WRITEOFF_REASONS,
   TripProductBreakdown,
   UserRole,
   Warehouse,
@@ -266,6 +284,12 @@ import {
   type GrnDraft,
 } from "../utils/stockLocations";
 import { keepLocalProductFields } from "../utils/billExtra";
+import {
+  findGhostPayments,
+  findPaymentsForDeletedCustomer,
+  isPaymentFromDeletedCustomerId,
+  type GhostPaymentCandidate,
+} from "../utils/ghostPayments";
 import { todayISO } from "../utils/dateLocal";
 import { startSyncSignal, holdSyncSignal, releaseSyncSignal } from "../lib/syncSignal";
 import {
@@ -280,6 +304,7 @@ import {
 } from "../utils/syncGate";
 
 import {
+  BILL_TOMBSTONE_KEY,
   CUSTOMER_HIDDEN_KEY,
   CUSTOMER_TOMBSTONE_KEY,
   DISP_TOMBSTONE_KEY,
@@ -295,6 +320,7 @@ import {
   PAYMENT_TOMBSTONE_KEY,
   PersistedState,
   STORAGE_KEY,
+  addBillTombstones,
   addCustomerTombstones,
   addDispositionTombstone,
   addExpenseTombstones,
@@ -302,6 +328,8 @@ import {
   buildCatalogFromGrns,
   cloud,
   cloudFetch,
+  dedupeSameShopCustomers,
+  findCustomerNameClash,
   findDuplicateCustomer,
   diffGrn,
   docReservationInFlight,
@@ -323,6 +351,7 @@ import {
   planCustomerUpdate,
   productStampMs,
   purgeLegacyLocalStorageKeys,
+  readBillTombstones,
   readCustomerTombstones,
   readDispositionTombstones,
   readDocCounters,
@@ -341,6 +370,7 @@ import {
   stampChangedBills,
   stampChangedTrips,
   tripFingerprint,
+  withoutDeletedBills,
   withoutDeletedCustomers,
   withoutDeletedPayments,
   writeHeld,
@@ -364,6 +394,7 @@ export interface BillEditPreview {
     tripStatus?: string;
     tripDate?: string;
     warehouseId?: string;
+    warehouseLabel?: string;
   };
   /** What a save does to money already received on this invoice (receipts follow the invoice). */
   payment: {
@@ -411,6 +442,7 @@ export interface InwardStockParams {
   volume?: number;
   sku?: string;
   hsn?: string;
+  taxability?: Taxability;
   gstRate?: number;
   cgstRate?: number;
   sgstRate?: number;
@@ -461,6 +493,7 @@ interface LedgerContextType {
     value: number | string | boolean,
   ) => void;
   updateProductFields: (id: number, patch: Partial<Omit<Product, "id">>) => void;
+  bulkSetProductTaxability: (productIds: number[], taxability: Taxability) => number;
   deleteProduct: (id: number) => void;
   applyBulkImport: (rows: ImportRow[]) => void;
   receiveInwardStock: (
@@ -469,6 +502,22 @@ interface LedgerContextType {
   productWarehouseStock: (
     productId: number,
   ) => { warehouseId: string; warehouseName: string; crates: number }[];
+  /**
+   * Owner-only. Moves a product's stock deduction on the selected bills from one godown to another by changing ONLY
+   * the batch link on those lines. Totals, GST, costs, payments and dues are never touched. `dryRun` previews only.
+   */
+  reassignBillsProductWarehouse: (args: {
+    productId: number;
+    fromWarehouseId: string;
+    toWarehouseId: string;
+    billIds: number[];
+    dryRun?: boolean;
+  }) => ReassignSummary;
+  /** Puts the batch links changed by the last reassignment back (other edits to those bills are kept). */
+  undoLastOversoldReassign: () => { ok: boolean; restoredBills: number; error?: string };
+  hasOversoldReassignUndo: boolean;
+  /** Every (product x godown) whose true book balance is negative, with the math and contributing bills. Read-only. */
+  oversoldReport: OversoldItem[];
   /** Foolproof per-warehouse batch/expiry lines for a product, derived live from inventoryBatches (never from the legacy p.warehouseId/batchNumber/expiry fields). */
   productBatchLines: (
     productId: number,
@@ -655,6 +704,8 @@ interface LedgerContextType {
   editingBillId: number | null;
   justFinalizedBillId: number | null;
   setJustFinalizedBillId: (id: number | null) => void;
+  justFinalizedSplitIds: number[];
+  setJustFinalizedSplitIds: (ids: number[]) => void;
   startEditBill: (bill: Bill) => void;
   cancelEditBill: () => void;
   finalizeBill: (
@@ -671,6 +722,10 @@ interface LedgerContextType {
       isRetrospective?: boolean;
       invoiceType?: "tax_invoice" | "bill_of_supply" | "retail";
       isGstInvoice?: boolean;
+      docNo?: string;
+      docSeries?: "gst" | "non_gst";
+      gstExclude?: boolean;
+      splitGroupId?: string;
       party?: {
         retailer?: string;
         phone?: string;
@@ -682,6 +737,30 @@ interface LedgerContextType {
       };
     },
   ) => number | null;
+  finalizeSplitBills: (params: {
+    amountPaid?: number;
+    tripId?: number;
+    overallDiscount?: number;
+    paymentDate?: string;
+    paymentMode?: PaymentMode;
+    paymentNote?: string;
+    billDate?: string;
+    extras?: {
+      supplyType?: "B2C" | "B2B";
+      customerGstin?: string;
+      isRetrospective?: boolean;
+      invoiceType?: "tax_invoice" | "bill_of_supply" | "retail";
+      isGstInvoice?: boolean;
+      party?: {
+        retailer?: string;
+        phone?: string;
+        salesman?: string;
+        vehicle?: string;
+        warehouseId?: string;
+        customerId?: string;
+      };
+    };
+  }) => SplitBillsResult | null;
   updateBill: (
     bill: Bill,
     opts?: {
@@ -690,6 +769,14 @@ interface LedgerContextType {
       requestedPaid?: number;
     },
   ) => boolean;
+  /** Splits a mixed bill (containing both GST and Non-GST items) into a linked GST invoice (INV-) + Non-GST memo (NG-). */
+  splitMixedBill: (
+    billOrId: Bill | number,
+    opts?: {
+      comment?: string;
+      requestedPaid?: number;
+    },
+  ) => { gstBill: Bill; nonGstBill: Bill } | null;
   /** Recalculate the saved total / taxable / GST of bills from their own lines and invoice discount. */
   repairBillTotals: (billIds: number[]) => { fixed: number; skipped: number };
   /** Clears stored tax on Non-GST bills where no tax was collected from customer */
@@ -784,6 +871,8 @@ interface LedgerContextType {
     customerId?: string,
   ) => boolean;
   deletePayment: (paymentId: string, rectificationReason?: string) => void;
+  ghostPayments: GhostPaymentCandidate[];
+  removeGhostPayments: (paymentIds: string[], reason?: string) => number;
   updatePayment: (updated: PaymentRecord) => void;
   paymentAudit: PaymentAuditEntry[];
   getCustomerCreditSummary: (customerName: string) => {
@@ -808,14 +897,22 @@ interface LedgerContextType {
   addCustomer: (
     customerData: Omit<Customer, "id" | "createdAt"> & { id?: string },
   ) => Customer;
-  customerNameClash: (customerId: string, name: string) => Customer | undefined;
+  customerNameClash: (
+    customerId: string,
+    name: string,
+    opts?: { oldName?: string; phone?: string },
+  ) => Customer | undefined;
   findBillingCustomer: (name?: string, phone?: string) => Customer | undefined;
   updateCustomer: (
     customer: Customer,
     syncLinkedBillsAndPayments?: boolean,
     previousIdentity?: { name: string; phone?: string },
   ) => Customer;
-  deleteCustomer: (customerId: string, rectificationReason?: string) => void;
+  deleteCustomer: (
+    customerId: string,
+    rectificationReason?: string,
+    opts?: { removePayments?: boolean },
+  ) => void;
   existingCustomers: ExistingCustomer[];
   startBillForCustomer: (customerName: string, customerPhone?: string) => void;
   getCustomerLedger: (customerNameOrId: string, customerPhone?: string, customerAltPhone?: string) => {
@@ -844,6 +941,7 @@ interface LedgerContextType {
     route?: string,
     salesmanId?: string,
     warehouseLoads?: Record<string, Record<number, number>>,
+    driver?: string,
   ) => Trip;
   toggleBillAssignment: (tripId: number, billId: number) => string | null;
   unassignBillFromTrip: (tripId: number, billId: number) => void;
@@ -851,7 +949,7 @@ interface LedgerContextType {
   saveReturn: (
     tripId: number,
     returned: Record<number, number>,
-    shortageReasons?: Record<number, { reason: TripShortageReason; note?: string }>,
+    shortageReasons?: Record<number, TripShortageInput>,
     cashHandedIn?: number | null,
     cashShortBooked?: number | null,
   ) => { ok: true } | { ok: false; error: string };
@@ -879,6 +977,22 @@ interface LedgerContextType {
     warehouseId?: string,
   ) => void;
   deleteAudit: (id: number) => void;
+  /** Batch-level stock audit (Inventory > Audit): one entry per batch, posted to live stock. Returns the audit id. */
+  saveBatchAudit: (input: {
+    date?: string;
+    warehouseId: string;
+    referenceNote?: string;
+    lines: {
+      productId: number;
+      batchKey?: string;
+      batchNumber?: string;
+      expiryDate?: string;
+      system: number;
+      counted: number;
+      kind?: AuditEntry["kind"];
+      reason?: string;
+    }[];
+  }) => number | null;
 
   // System & Settings
   gstMode: GstMode;
@@ -1008,7 +1122,7 @@ interface LedgerContextType {
  * Deleted payments & customers are remembered so that a later merge with a remote master or cached copy
  * cannot bring them back. The audit trail keeps who changed what.
  */
-export { PAYMENT_TOMBSTONE_KEY, PAYMENT_AUDIT_KEY, CUSTOMER_TOMBSTONE_KEY, EXPENSE_TOMBSTONE_KEY, readExpenseTombstones, addExpenseTombstones, normCustName, readPaymentTombstones, addPaymentTombstones, withoutDeletedPayments, readCustomerTombstones, addCustomerTombstones, withoutDeletedCustomers, CUSTOMER_HIDDEN_KEY, readHiddenCustomerNames, writeHiddenCustomerNames, pickNewerBill, productStampMs, newerProduct, tripFingerprint, stampChangedTrips, pickNewerTrip, stampChangedBills, mergeCustomersNewestWins, readPaymentAudit, DOC_COUNTER_KEY, readDocCounters, DOC_HELD_KEY, DOC_DEVICE_KEY, HELD_MAX_AGE_MS, getDeviceId, readHeldRaw, readHeldNumbers, writeHeld, docReservationInFlight, refillDocReservation, releaseDocReservations, reserveDocNumber, STORAGE_KEY, extractPromoProductIds, normalizePromotion, purgeLegacyLocalStorageKeys, DISP_TOMBSTONE_KEY, readDispositionTombstones, addDispositionTombstone, emptyCart, LINE_FIELD_LABELS, fmtVal, diffGrn, ensureUniqueGrnNumbers, buildCatalogFromGrns, loadInitialState, MRWATER_CUSTOM_PRODUCT_PRICES_KEY, MRWATER_CUSTOMER_PRODUCT_PRICES_KEY, loadCachedCustomProductPrices, saveCachedCustomProductPrices, loadCachedCustomerProductPrices, saveCachedCustomerProductPrices, extractCustomPricesFromBills, cloud, cloudFetch } from "./ledgerHelpers";
+export { BILL_TOMBSTONE_KEY, readBillTombstones, addBillTombstones, withoutDeletedBills, PAYMENT_TOMBSTONE_KEY, PAYMENT_AUDIT_KEY, CUSTOMER_TOMBSTONE_KEY, EXPENSE_TOMBSTONE_KEY, readExpenseTombstones, addExpenseTombstones, normCustName, readPaymentTombstones, addPaymentTombstones, withoutDeletedPayments, readCustomerTombstones, addCustomerTombstones, withoutDeletedCustomers, CUSTOMER_HIDDEN_KEY, readHiddenCustomerNames, writeHiddenCustomerNames, pickNewerBill, productStampMs, newerProduct, tripFingerprint, stampChangedTrips, pickNewerTrip, stampChangedBills, mergeCustomersNewestWins, readPaymentAudit, DOC_COUNTER_KEY, readDocCounters, DOC_HELD_KEY, DOC_DEVICE_KEY, HELD_MAX_AGE_MS, getDeviceId, readHeldRaw, readHeldNumbers, writeHeld, docReservationInFlight, refillDocReservation, releaseDocReservations, reserveDocNumber, STORAGE_KEY, extractPromoProductIds, normalizePromotion, purgeLegacyLocalStorageKeys, DISP_TOMBSTONE_KEY, readDispositionTombstones, addDispositionTombstone, emptyCart, LINE_FIELD_LABELS, fmtVal, diffGrn, ensureUniqueGrnNumbers, buildCatalogFromGrns, loadInitialState, MRWATER_CUSTOM_PRODUCT_PRICES_KEY, MRWATER_CUSTOMER_PRODUCT_PRICES_KEY, loadCachedCustomProductPrices, saveCachedCustomProductPrices, loadCachedCustomerProductPrices, saveCachedCustomerProductPrices, extractCustomPricesFromBills, cloud, cloudFetch } from "./ledgerHelpers";
 
 export interface PullFromCloudOptions {
   /** Background sync: ask a few tiny questions first and download everything only if the cloud changed. */
@@ -1405,15 +1519,31 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const reconcilePaymentsFromBills = useCallback(
     (currentPayments: PaymentRecord[], billsList: Bill[]): PaymentRecord[] => {
+      const deadBillIds = readBillTombstones();
+      const activeBillIds = new Set<number>();
+      for (const b of billsList) {
+        if (b.status === "cancelled" || b.cancelled || deadBillIds.has(Number(b.id))) continue;
+        activeBillIds.add(Number(b.id));
+      }
+
       const map = new Map<string, PaymentRecord>();
       currentPayments.forEach((p) => {
-        if (p && p.id) map.set(p.id, p);
+        if (!p || !p.id) return;
+        // Drop synthetic pay_bill_ / legacy_pay_ rows whose bill was deleted or cancelled
+        if (
+          (p.id.startsWith("pay_bill_") || p.id.startsWith("legacy_pay_")) &&
+          p.billId &&
+          !activeBillIds.has(Number(p.billId))
+        ) {
+          return;
+        }
+        map.set(p.id, p);
       });
 
       // Group active non-cancelled bills by customer name
       const billsByCust = new Map<string, Bill[]>();
       for (const b of billsList) {
-        if (b.status === "cancelled" || b.cancelled) continue;
+        if (b.status === "cancelled" || b.cancelled || deadBillIds.has(Number(b.id))) continue;
         const k = (b.retailer || "Cash Sale").trim().toLowerCase();
         const list = billsByCust.get(k) || [];
         list.push(b);
@@ -1621,10 +1751,13 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [allBills, reconcilePaymentsFromBills]);
 
   // Customer Master & Retailer Directory
+  const customersHydratedRef = useRef(false);
+  const customersFromSyntheticInitRef = useRef(false);
+
   const [customers, setCustomers] = useState<Customer[]>(() => {
     const cached = loadCachedCustomers();
     if (cached && cached.length > 0) {
-      // Drop legacy demo seed shops if still present in local cache
+      // Drop legacy demo seed shops if still present in local cache, plus any deleted customers
       const DEMO_NAMES = new Set([
         "sharma kirana",
         "gupta general store",
@@ -1637,14 +1770,19 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           !c.id?.startsWith("cust_seed_") &&
           !DEMO_NAMES.has((c.name || "").trim().toLowerCase()),
       );
-      return cleaned;
+      return dedupeSameShopCustomers(withoutDeletedCustomers(cleaned)).customers;
     }
-    // No auto-seed: only real shops from bills (no fake credit limits)
+    // No cached master yet: build temporary offline list from bills, but mark as synthetic so it is NEVER
+    // pushed up to /api/customers ahead of the real server/cloud customer master (which created duplicate cust_bill_* rows).
+    customersFromSyntheticInitRef.current = true;
+    const hidden = readHiddenCustomerNames();
+    const tomb = readCustomerTombstones();
     const map = new Map<string, Customer>();
     for (const b of initial.bills || []) {
       const name = b.retailer?.trim();
       if (!name || name.toLowerCase() === "cash sale") continue;
-      const key = name.toLowerCase();
+      const key = normCustName(name);
+      if (!key || hidden.has(key) || tomb.has(key)) continue;
       if (!map.has(key)) {
         map.set(key, {
           id: `cust_bill_${b.id}`,
@@ -1655,12 +1793,12 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         });
       }
     }
-    return Array.from(map.values());
+    return withoutDeletedCustomers(Array.from(map.values()));
   });
 
-  // Sync customers changes to local storage & backend
+  // Sync customers changes to local storage & backend only after server hydration or an explicit user edit
   useEffect(() => {
-    if (customers) {
+    if (customers && customersHydratedRef.current) {
       saveCustomers(customers).catch(() => {});
     }
   }, [customers]);
@@ -1742,15 +1880,42 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     customersRef.current = customers;
   }, [customers]);
 
-  // Pull remote customers on startup (deletions first, then a newest-edit-wins merge)
+  // Pull remote customers on startup (deletions first, then newest-edit-wins merge + same-shop deduplication)
   useEffect(() => {
     (async () => {
       await syncDeletionLog();
       const remote = await loadCustomers().catch(() => null);
+      customersHydratedRef.current = true;
       if (remote && Array.isArray(remote) && remote.length > 0) {
-        setCustomers((prev) =>
-          withoutDeletedCustomers(mergeCustomersNewestWins(prev, remote)),
-        );
+        const skipSyntheticPrev = customersFromSyntheticInitRef.current;
+        customersFromSyntheticInitRef.current = false;
+        const base = skipSyntheticPrev
+          ? remote
+          : mergeCustomersNewestWins(customersRef.current, remote);
+        const deduped = dedupeSameShopCustomers(withoutDeletedCustomers(base));
+        customersRef.current = deduped.customers;
+        setCustomers(deduped.customers);
+        // Re-point any on-account payment that referenced a retired duplicate customerId to the canonical winner
+        if (deduped.retiredToWinner.size > 0) {
+          setPayments((ps) => {
+            let changed = false;
+            const next = ps.map((p) => {
+              if (!p.customerId) return p;
+              const mapped = deduped.retiredToWinner.get(String(p.customerId));
+              if (!mapped || mapped === p.customerId) return p;
+              changed = true;
+              return { ...p, customerId: mapped };
+            });
+            if (changed) {
+              savePayments(next).catch(() => {});
+              pushPaymentsToSupabase(next).catch(() => {});
+            }
+            return changed ? next : ps;
+          });
+        }
+        if (deduped.customers.length < remote.length) {
+          saveCustomers(deduped.customers).catch(() => {});
+        }
       }
     })().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1784,11 +1949,13 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
                   .then(() => (key === "customers" ? loadCustomers() : null))
                   .then((remote) => {
                     if (remote && Array.isArray(remote)) {
-                      setCustomers((prev) =>
+                      const merged = dedupeSameShopCustomers(
                         withoutDeletedCustomers(
-                          mergeCustomersNewestWins(prev, remote),
+                          mergeCustomersNewestWins(customersRef.current, remote),
                         ),
-                      );
+                      ).customers;
+                      customersRef.current = merged;
+                      setCustomers(merged);
                     }
                   })
                   .catch(() => {});
@@ -2057,6 +2224,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
   const [editingBillId, setEditingBillId] = useState<number | null>(null);
   const [justFinalizedBillId, setJustFinalizedBillId] = useState<number | null>(
     null,
+  );
+  const [justFinalizedSplitIds, setJustFinalizedSplitIds] = useState<number[]>(
+    [],
   );
 
   // Salesmen & Authentication (RBAC)
@@ -3076,11 +3246,19 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       //     failed to delete, an old server copy, this device's own state).
       const dead = await pullTombstonesFromSupabase().catch(() => null);
       if (dead) {
+        const deadBillNums = Array.from(dead.bills)
+          .map(Number)
+          .filter((n) => Number.isFinite(n) && n > 0);
+        if (deadBillNums.length > 0) addBillTombstones(deadBillNums);
         dead.trips.forEach((x: any) => {
           const n = Number(x);
           if (Number.isFinite(n) && n > 0) deadTripIdsRef.current.add(n);
         });
-        const liveBill = (b: any) => !dead.bills.has(String(b?.id));
+        const localDeadBills = readBillTombstones();
+        const liveBill = (b: any) =>
+          b?.status === "cancelled" ||
+          Boolean(b?.cancellation) ||
+          (!dead.bills.has(String(b?.id)) && !localDeadBills.has(Number(b?.id)));
         const liveGrn = (g: any) => !dead.grns.has(String(g?.id));
         const liveTrip = (t: any) => t?.status === "out" || !dead.trips.has(String(t?.id));
         if (remote) {
@@ -3094,6 +3272,15 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         setBillsRaw((prev) => (prev.some((b) => !liveBill(b)) ? prev.filter(liveBill) : prev));
         setTrips((prev) => (prev.some((t) => !liveTrip(t)) ? prev.filter(liveTrip) : prev));
         setGrns((prev) => (prev.some((g) => !liveGrn(g)) ? prev.filter(liveGrn) : prev));
+      } else {
+        const localDeadBills = readBillTombstones();
+        if (localDeadBills.size > 0) {
+          const liveLocal = (b: any) =>
+            b?.status === "cancelled" || Boolean(b?.cancellation) || !localDeadBills.has(Number(b?.id));
+          if (remote?.bills) remote.bills = remote.bills.filter(liveLocal);
+          serverOrders = (serverOrders as any[]).filter(liveLocal) as typeof serverOrders;
+          setBillsRaw((prev) => (prev.some((b) => !liveLocal(b)) ? prev.filter(liveLocal) : prev));
+        }
       }
 
       // 2c. Products / batches / godowns deleted on purpose (another device, or the server's upsert-only copy,
@@ -3324,14 +3511,14 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
             const map = new Map<number, Bill>();
             prev.forEach((b) => map.set(b.id, b));
             remote.bills!.forEach((b) => map.set(b.id, pickNewerBill(map.get(b.id), b)));
-            return Array.from(map.values()).sort((a, b) => b.id - a.id);
+            return withoutDeletedBills(Array.from(map.values()).sort((a, b) => b.id - a.id));
           });
         } else if (serverOrders && serverOrders.length > 0) {
           setBillsRaw((prev) => {
             const map = new Map<number, Bill>();
             prev.forEach((b) => map.set(b.id, b));
             (serverOrders as any[]).forEach((b) => map.set(b.id, pickNewerBill(map.get(b.id), b)));
-            return Array.from(map.values()).sort((a, b) => b.id - a.id);
+            return withoutDeletedBills(Array.from(map.values()).sort((a, b) => b.id - a.id));
           });
         }
         // NOTE: when the cloud has no bills this device's copy is NOT uploaded any more. That "restore" let a stale
@@ -3346,12 +3533,12 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
             );
             return reconcilePaymentsFromBills(
               Array.from(map.values()),
-              remote.bills || allBills,
+              withoutDeletedBills(remote.bills || allBills),
             );
           });
         } else if (remote.bills && remote.bills.length > 0) {
           setPayments((prev) =>
-            reconcilePaymentsFromBills(prev, remote.bills!),
+            reconcilePaymentsFromBills(prev, withoutDeletedBills(remote.bills!)),
           );
         }
 
@@ -3542,7 +3729,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
             (serverOrders as any[]).forEach((b) =>
               map.set(b.id, pickNewerBill(map.get(b.id), b)),
             );
-            return Array.from(map.values()).sort((a, b) => b.id - a.id);
+            return withoutDeletedBills(Array.from(map.values()).sort((a, b) => b.id - a.id));
           });
         if (serverProducts && serverProducts.length > 0)
           setProducts((prev) => {
@@ -3890,6 +4077,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           );
         const crateCost = stockCrateCost(item, costBasisFor(orgProfile, newGrn.inwardDate)); // GST-inclusive for composition GRNs dated on/after the engine start
         const crateLanded = resolveItemLandedCrateCost(item);
+        const isNonGstItem = item.taxability === "non_gst";
+        const resolvedHsn = normalizeTo8DigitHsn(item.hsn, item.category, item.productName, item.taxability);
         nextCatalog.push({
           id: maxProductId,
           name: item.productName.trim().toUpperCase(),
@@ -3911,12 +4100,14 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           effectiveCost: crateCost,
           landedCostPerCrate: crateLanded,
           landedCostPerUnit: item.landedCostPerUnit,
+          labourCost: item.labourCost,
+          freightCost: item.freightCost,
           opening: 0,
-          hsn: normalizeTo8DigitHsn(item.hsn, item.category, item.productName),
-          gstRate:
-            gstRateFromHsn(
-              normalizeTo8DigitHsn(item.hsn, item.category, item.productName),
-            ) ?? ((item.cgstPercent || 0) + (item.sgstPercent || 0)) / 100,
+          taxability: isNonGstItem ? "non_gst" : undefined,
+          hsn: resolvedHsn,
+          gstRate: isNonGstItem
+            ? 0
+            : (gstRateFromHsn(resolvedHsn) ?? ((item.cgstPercent || 0) + (item.sgstPercent || 0)) / 100),
           scheme: item.schemeText,
           sku: autoSku,
           warehouseId: newGrn.warehouseId,
@@ -3929,6 +4120,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       } else {
         const crateCost = stockCrateCost(item, costBasisFor(orgProfile, newGrn.inwardDate)); // GST-inclusive for composition GRNs dated on/after the engine start
         const crateLanded = resolveItemLandedCrateCost(item);
+        const isNonGstItem = item.taxability === "non_gst";
         item.productId = existing.id;
         nextCatalog = nextCatalog.map((p) =>
           p.id === existing.id
@@ -3940,15 +4132,25 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
                   crateLanded || p.landedCostPerCrate,
                 landedCostPerUnit:
                   item.landedCostPerUnit || p.landedCostPerUnit,
+                labourCost: item.labourCost ?? p.labourCost,
+                freightCost: item.freightCost ?? p.freightCost,
                 unitsPerCrate: item.unitsPerCrate || p.unitsPerCrate,
                 packSize: item.packSize || p.packSize,
-                ...(item.hsn
+                ...(isNonGstItem
                   ? {
-                      hsn: normalizeTo8DigitHsn(item.hsn, p.category, p.name),
+                      taxability: "non_gst" as const,
+                      gstRate: 0,
+                      hsn: String(item.hsn || p.hsn || "").trim(),
+                    }
+                  : item.hsn
+                  ? {
+                      hsn: normalizeTo8DigitHsn(item.hsn, p.category, p.name, p.taxability),
                       gstRate:
-                        gstRateFromHsn(
-                          normalizeTo8DigitHsn(item.hsn, p.category, p.name),
-                        ) ?? p.gstRate,
+                        p.taxability === "non_gst"
+                          ? 0
+                          : (gstRateFromHsn(
+                              normalizeTo8DigitHsn(item.hsn, p.category, p.name),
+                            ) ?? p.gstRate),
                     }
                   : {}),
                 wholesale: item.wholesaleRate || p.wholesale,
@@ -4047,9 +4249,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         effectiveCostPrice: Math.round(unitEff * 100) / 100,
         mrp: item.retailRate || item.unitPrice * 1.2,
         scheme: item.schemeText,
-        cgstRate: item.cgstPercent,
-        sgstRate: item.sgstPercent,
-        hsn: normalizeTo8DigitHsn(item.hsn, item.category, item.productName),
+        cgstRate: item.taxability === "non_gst" ? 0 : item.cgstPercent,
+        sgstRate: item.taxability === "non_gst" ? 0 : item.sgstPercent,
+        hsn: normalizeTo8DigitHsn(item.hsn, item.category, item.productName, item.taxability),
         notes: `Inward: ${newGrn.grnNumber} · ${newGrn.supplierName}${discNote}`,
       };
     });
@@ -4224,6 +4426,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           );
         const crateCost = stockCrateCost(item, costBasisFor(orgProfile, mergedGrn.inwardDate)); // GST-inclusive for composition GRNs dated on/after the engine start
         const crateLanded = resolveItemLandedCrateCost(item);
+        const isNonGstItem = item.taxability === "non_gst";
+        const resolvedHsn = normalizeTo8DigitHsn(item.hsn, item.category, item.productName, item.taxability);
         nextCatalog.push({
           id: maxProductId,
           name: item.productName.trim().toUpperCase(),
@@ -4239,12 +4443,14 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           cost: item.unitPrice || crateCost,
           effectiveCost: crateCost,
           landedCostPerCrate: crateLanded,
+          labourCost: item.labourCost,
+          freightCost: item.freightCost,
           opening: 0,
-          hsn: normalizeTo8DigitHsn(item.hsn, item.category, item.productName),
-          gstRate:
-            gstRateFromHsn(
-              normalizeTo8DigitHsn(item.hsn, item.category, item.productName),
-            ) ?? ((item.cgstPercent || 0) + (item.sgstPercent || 0)) / 100,
+          taxability: isNonGstItem ? "non_gst" : undefined,
+          hsn: resolvedHsn,
+          gstRate: isNonGstItem
+            ? 0
+            : (gstRateFromHsn(resolvedHsn) ?? ((item.cgstPercent || 0) + (item.sgstPercent || 0)) / 100),
           scheme: item.schemeText,
           sku: autoSku,
           warehouseId: targetWhId,
@@ -4257,6 +4463,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       } else {
         const crateCost = stockCrateCost(item, costBasisFor(orgProfile, mergedGrn.inwardDate)); // GST-inclusive for composition GRNs dated on/after the engine start
         const crateLanded = resolveItemLandedCrateCost(item);
+        const isNonGstItem = item.taxability === "non_gst";
         item.productId = existing.id;
         nextCatalog = nextCatalog.map((p) =>
           p.id === existing.id
@@ -4279,6 +4486,15 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
                     : p.name,
                 effectiveCost: crateCost || p.effectiveCost,
                 landedCostPerCrate: crateLanded || p.landedCostPerCrate,
+                labourCost: item.labourCost ?? p.labourCost,
+                freightCost: item.freightCost ?? p.freightCost,
+                ...(isNonGstItem
+                  ? {
+                      taxability: "non_gst" as const,
+                      gstRate: 0,
+                      hsn: String(item.hsn || p.hsn || "").trim(),
+                    }
+                  : {}),
                 wholesale: item.wholesaleRate || p.wholesale,
                 retail: item.retailRate || p.retail,
                 batchNumber: item.batchNumber || p.batchNumber,
@@ -4334,9 +4550,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
             : crateCost,
         mrp: item.retailRate || item.unitPrice * 1.2,
         scheme: item.schemeText,
-        cgstRate: item.cgstPercent,
-        sgstRate: item.sgstPercent,
-        hsn: normalizeTo8DigitHsn(item.hsn, item.category, item.productName),
+        cgstRate: item.taxability === "non_gst" ? 0 : item.cgstPercent,
+        sgstRate: item.taxability === "non_gst" ? 0 : item.sgstPercent,
+        hsn: normalizeTo8DigitHsn(item.hsn, item.category, item.productName, item.taxability),
         notes: `Inward (Updated): ${mergedGrn.grnNumber} · ${mergedGrn.supplierName}`,
       };
     });
@@ -5623,12 +5839,14 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     const fallbackWh = fallbackWarehouseId(p);
+    const validWhIds = new Set(warehouses.map((w) => w.id));
     const whOf = (id?: string) =>
-      id && warehouses.some((w) => w.id === id) ? id : fallbackWh;
+      id && validWhIds.has(id) ? id : fallbackWh;
     const batchWh = new Map(inventoryBatches.map((b) => [b.id, b.warehouseId]));
 
     // Tally sales by warehouse. Prefer where the stock actually came from (batch allocations);
-    // whatever is not allocated goes to the bill's warehouse, or the fallback if it has none.
+    // whatever is not allocated goes to the bill's trip godown (for trip sales), else the bill's
+    // warehouse, or the fallback if it has none.
     const soldInWh: Record<string, number> = {};
     const addSold = (whId: string, qty: number) => {
       soldInWh[whId] = (soldInWh[whId] || 0) + qty;
@@ -5647,20 +5865,37 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
             left -= take;
           }
         }
-        if (left > 0) addSold(whOf(b.warehouseId), left);
+        if (left > 0) {
+          const tr = tripOfBill(b);
+          const tripWh = tr ? tripPrimaryWarehouseId(tr, validWhIds) : "";
+          addSold(tripWh || whOf(b.warehouseId), left);
+        }
       }
     }
     // In-progress cart (not yet a bill) already reserves stock in remainingStock; do the same here.
     const cartQty = cartSoldByProduct[productId] || 0;
-    if (cartQty > 0) addSold(whOf(cart.warehouseId), cartQty);
+    if (cartQty > 0) {
+      const cartTrip =
+        cart.tripId != null
+          ? trips.find((t) => Number(t.id) === Number(cart.tripId))
+          : null;
+      const cartWh = cartTrip
+        ? tripPrimaryWarehouseId(cartTrip, validWhIds) || whOf(cart.warehouseId)
+        : whOf(cart.warehouseId);
+      addSold(cartWh, cartQty);
+    }
 
     // Crates customers returned and that were restocked go back into the godown chosen for them.
     const restockedInWh: Record<string, number> = {};
     for (const b of bills) {
+      const billTrip = (b.returns || []).length > 0 ? tripOfBill(b) : null;
+      const billFallbackWh =
+        (b.warehouseId && validWhIds.has(b.warehouseId) ? b.warehouseId : "") ||
+        (billTrip ? tripPrimaryWarehouseId(billTrip, validWhIds) : "");
       for (const r of b.returns || []) {
         for (const l of r.lines) {
           if (l.productId === productId && l.restockQty > 0) {
-            for (const d of restockDestinations(l, b.warehouseId)) {
+            for (const d of restockDestinations(l, billFallbackWh || b.warehouseId)) {
               const wh = whOf(d.warehouseId);
               restockedInWh[wh] = (restockedInWh[wh] || 0) + d.qty;
             }
@@ -5706,6 +5941,24 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     [productWarehouseStock],
   );
 
+  const oversoldReport = useMemo(
+    () =>
+      diagnoseOversoldGodowns({
+        products,
+        warehouses,
+        inventoryBatches,
+        bills: bills.filter((b) => b.id !== editingBillId),
+        audits,
+        stockLedgerEntries,
+        inventoryDispositions,
+        trips,
+        cartSoldByProduct,
+        cartWarehouseId: cart.warehouseId,
+        cartTripId: cart.tripId,
+      }),
+    [products, warehouses, inventoryBatches, bills, editingBillId, audits, stockLedgerEntries, inventoryDispositions, trips, cartSoldByProduct, cart.warehouseId, cart.tripId],
+  );
+
   /**
    * Stock the books showed at the end of `dateISO`: today's balance with every later movement taken back out
    * (bills raised, crates received, restocked returns, audit and reconciliation adjustments, write-offs). A count made on a past day has to be
@@ -5721,7 +5974,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     const later = (d?: string) => String(d || "").slice(0, 10) > day;
     const p = products.find((x) => x.id === productId);
     const fallbackWh = p ? fallbackWarehouseId(p) : "";
-    const whOf = (id?: string) => (id && warehouses.some((w) => w.id === id) ? id : fallbackWh);
+    const validWhIds = new Set(warehouses.map((w) => w.id));
+    const whOf = (id?: string) => (id && validWhIds.has(id) ? id : fallbackWh);
     const batchWh = new Map(inventoryBatches.map((b) => [b.id, b.warehouseId]));
     const inScope = (wh?: string) => !warehouseId || whOf(wh) === warehouseId;
 
@@ -5739,14 +5993,22 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
               left -= take;
             }
           }
-          if (left > 0 && inScope(b.warehouseId)) sold += left;
+          if (left > 0) {
+            const tr = tripOfBill(b);
+            const tripWh = tr ? tripPrimaryWarehouseId(tr, validWhIds) : "";
+            if (inScope(tripWh || b.warehouseId)) sold += left;
+          }
         }
       }
+      const billTrip = (b.returns || []).length > 0 ? tripOfBill(b) : null;
+      const billFallbackWh =
+        (b.warehouseId && validWhIds.has(b.warehouseId) ? b.warehouseId : "") ||
+        (billTrip ? tripPrimaryWarehouseId(billTrip, validWhIds) : "");
       for (const r of b.returns || []) {
         if (!later(r.date)) continue;
         for (const l of r.lines) {
           if (l.productId !== productId || !(l.restockQty > 0)) continue;
-          for (const d of restockDestinations(l, b.warehouseId)) {
+          for (const d of restockDestinations(l, billFallbackWh || b.warehouseId)) {
             if (inScope(d.warehouseId)) restocked += d.qty;
           }
         }
@@ -5819,6 +6081,15 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         }
       }
+      // Batch-level stock audits: the count difference belongs to that exact batch
+      const auditAdjByKey: Record<string, number> = {};
+      for (const a of audits) {
+        if (!a.adjusted) continue;
+        for (const e of a.entries) {
+          if (e.productId !== productId || !e.batchKey) continue;
+          auditAdjByKey[e.batchKey] = (auditAdjByKey[e.batchKey] || 0) + (Number(e.diff) || 0);
+        }
+      }
       return buildProductBatchLines(
         productId,
         inventoryBatches,
@@ -5826,9 +6097,10 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         availableByWarehouse,
         new Date(),
         soldByBatchId,
+        auditAdjByKey,
       );
     },
-    [inventoryBatches, warehouses, productWarehouseStock, bills, editingBillId],
+    [inventoryBatches, warehouses, productWarehouseStock, bills, editingBillId, audits],
   );
 
   const productInWarehouse = useCallback(
@@ -6055,6 +6327,10 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       mrp: p.retail,
       scheme: p.scheme,
       effectiveCostPrice: p.effectiveCost || p.cost,
+      landedCostPerCrate: newProd.landedCostPerCrate,
+      hsn: newProd.hsn,
+      cgstRate: newProd.taxability === "non_gst" ? 0 : undefined,
+      sgstRate: newProd.taxability === "non_gst" ? 0 : undefined,
       notes: p.scheme
         ? `Registered with scheme: ${p.scheme}`
         : "Opening stock batch",
@@ -6103,6 +6379,47 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     productsRef.current = next;
     setProducts(next);
     cloud("pushProductToSupabase", pushProductToSupabase(mod));
+  }
+
+  function bulkSetProductTaxability(productIds: number[], taxability: Taxability): number {
+    const idSet = new Set(productIds.map(Number));
+    if (idSet.size === 0) return 0;
+    const now = new Date().toISOString();
+    const current = productsRef.current;
+    const modified: Product[] = [];
+    const next = current.map((p) => {
+      if (!idSet.has(Number(p.id))) return p;
+      let mod: Product;
+      if (taxability === "non_gst") {
+        mod = {
+          ...p,
+          taxability: "non_gst",
+          gstRate: 0,
+          ratesIncludeGst: false,
+          updatedAt: now,
+        };
+      } else {
+        const hsn = normalizeTo8DigitHsn(p.hsn, p.category, p.name, "taxable");
+        const gstRate =
+          p.gstRate && Number(p.gstRate) > 0
+            ? Number(p.gstRate)
+            : (gstRateFromHsn(hsn) ?? CATS[p.category]?.gst ?? 0.18);
+        mod = {
+          ...p,
+          taxability: "taxable",
+          hsn,
+          gstRate,
+          updatedAt: now,
+        };
+      }
+      modified.push(mod);
+      return mod;
+    });
+    if (modified.length === 0) return 0;
+    productsRef.current = next;
+    setProducts(next);
+    modified.forEach((m) => cloud("pushProductToSupabase", pushProductToSupabase(m)));
+    return modified.length;
   }
 
   // Deletions are written to the shared deletion log so another device (or the server's upsert-only copy) cannot
@@ -6172,7 +6489,11 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           retail: match.retail || existing.retail,
           wholesale: match.wholesale || existing.wholesale,
           expiry: match.expiry || existing.expiry,
-          hsn: match.hsn || existing.hsn,
+          hsn: match.hsn ?? existing.hsn,
+          taxability: match.taxability === "non_gst" ? "non_gst" : existing.taxability,
+          gstRate: match.taxability === "non_gst" || existing.taxability === "non_gst" ? 0 : existing.gstRate,
+          labourCost: match.labourCost ?? existing.labourCost,
+          freightCost: match.freightCost ?? existing.freightCost,
           batchNumber: batchNum,
           scheme: match.scheme || existing.scheme,
         };
@@ -6191,6 +6512,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           r.sku && r.sku.trim()
             ? r.sku.trim().toUpperCase()
             : generateSkuId(r.name, r.category, prodId);
+        const isNonGstImport = r.taxability === "non_gst";
+        const extraLanded = (Number(r.labourCost) || 0) + (Number(r.freightCost) || 0);
+        const landedCost = r.cost > 0 ? Math.round((r.cost + extraLanded) * 100) / 100 : undefined;
 
         newItems.push({
           id: prodId,
@@ -6202,9 +6526,15 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           expiry: r.expiry || "2026-12-31",
           opening: r.opening,
           cost: r.cost,
+          effectiveCost: landedCost,
+          landedCostPerCrate: landedCost,
+          labourCost: r.labourCost,
+          freightCost: r.freightCost,
           retail: r.retail,
           wholesale: r.wholesale,
-          hsn: normalizeTo8DigitHsn(r.hsn, r.category, r.name),
+          taxability: isNonGstImport ? "non_gst" : undefined,
+          gstRate: isNonGstImport ? 0 : undefined,
+          hsn: normalizeTo8DigitHsn(r.hsn, r.category, r.name, r.taxability),
           batchNumber: batchNum,
           scheme: r.scheme,
           warehouseId: assignedWh,
@@ -6224,8 +6554,13 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
             warehouseId: assignedWh,
             quantity: r.opening,
             costPrice: r.cost,
+            effectiveCostPrice: landedCost || r.cost,
+            landedCostPerCrate: landedCost,
             mrp: r.retail,
             scheme: r.scheme,
+            cgstRate: isNonGstImport ? 0 : undefined,
+            sgstRate: isNonGstImport ? 0 : undefined,
+            hsn: normalizeTo8DigitHsn(r.hsn, r.category, r.name, r.taxability),
             notes: "Imported spreadsheet batch",
           });
         }
@@ -6314,10 +6649,17 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         mfgDate: params.mfgDate,
         batchNumber: batchCode,
         warehouseId: assignedWh,
-        hsn: normalizeTo8DigitHsn(params.hsn || catDef.hsn, catKey, params.newProductName),
+        hsn:
+          params.taxability === "non_gst"
+            ? String(params.hsn || "").trim()
+            : normalizeTo8DigitHsn(params.hsn || catDef.hsn, catKey, params.newProductName, params.taxability),
+        taxability: params.taxability || "taxable",
         gstRate:
-          gstRateFromHsn(normalizeTo8DigitHsn(params.hsn || catDef.hsn, catKey, params.newProductName)) ??
-          (params.gstRate !== undefined ? params.gstRate : catDef.gst),
+          params.taxability === "non_gst"
+            ? 0
+            : gstRateFromHsn(normalizeTo8DigitHsn(params.hsn || catDef.hsn, catKey, params.newProductName, params.taxability)) ??
+              (params.gstRate !== undefined ? params.gstRate : catDef.gst),
+        ...(params.taxability === "non_gst" ? { ratesIncludeGst: false } : {}),
         scheme: params.scheme,
       };
 
@@ -7683,6 +8025,17 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     setCart(emptyCart());
   }
 
+  function nextNonGstDocNo(currentBills: Bill[]): string {
+    let maxSeq = 0;
+    for (const b of currentBills) {
+      const dn = String(b.docNo || "");
+      const m = dn.match(/^NG-(\d+)$/i);
+      if (m) maxSeq = Math.max(maxSeq, Number(m[1]) || 0);
+    }
+    const seq = reserveDocNumber("non_gst_bill", maxSeq);
+    return `NG-${seq}`;
+  }
+
   function finalizeBill(
     amountPaid?: number,
     tripId?: number,
@@ -7697,6 +8050,10 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       isRetrospective?: boolean;
       invoiceType?: "tax_invoice" | "bill_of_supply" | "retail";
       isGstInvoice?: boolean;
+      docNo?: string;
+      docSeries?: "gst" | "non_gst";
+      gstExclude?: boolean;
+      splitGroupId?: string;
       /**
        * Party details to use for THIS bill. setCart() is async, so a screen that has just chosen the
        * customer (salesman sale) passes them here; otherwise the bill would be saved with the stale
@@ -7733,11 +8090,12 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     const matchedTrip = finalTripId
       ? trips.find((t) => Number(t.id) === Number(finalTripId))
       : null;
-    const resolvedWarehouseId =
-      effCart.warehouseId ||
-      matchedTrip?.warehouseId ||
-      defaultWarehouse?.id ||
-      (warehouses.length > 0 ? warehouses[0].id : "");
+    const resolvedWarehouseId = resolveBillWarehouseId({
+      trip: matchedTrip,
+      cartWarehouseId: effCart.warehouseId,
+      defaultWarehouseId: defaultWarehouse?.id,
+      warehouses,
+    });
 
     let fefo: { items: BillItem[]; problems: string[] };
     let cartEditStockChanged = false;
@@ -7811,27 +8169,6 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         Number(b.effectiveCostPrice) || Number(b.costPrice) || 0,
       ]),
     );
-    // ---- GST tax engine gate (OFF unless the organisation sets a registration type + start date) -------------
-    // Composition / unregistered businesses never charge GST: the engine validates the sale (GSTIN, inter-state
-    // block, declaration), and every tax split is removed so the customer pays exactly the quoted amount.
-    const taxRegime = resolveTaxRegime(orgProfile, effectiveBillDate);
-    const saleCheck = taxRegime.active
-      ? checkSaleForRegime(orgProfile, {
-          date: effectiveBillDate,
-          customerGstin: extras?.customerGstin,
-          items: effCart.items,
-        })
-      : null;
-    if (saleCheck && !saleCheck.ok) {
-      notify(
-        "Cannot save this bill - GST rules:\n" + saleCheck.errors.map((e) => `• ${e.message}`).join("\n"),
-      );
-      return null;
-    }
-    const outputTaxOff = noOutputTax(taxRegime);
-    if (outputTaxOff) {
-      extras = { ...(extras || {}), invoiceType: "bill_of_supply", isGstInvoice: false };
-    }
     const billItemsRaw = fefo.items.map((it) => {
       const prod = products.find((p) => p.id === it.productId);
       const fallback = Number(prod?.effectiveCost ?? prod?.cost) || 0;
@@ -7850,12 +8187,82 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         ? { ...it, costExGst: Math.round(cost * 100) / 100 }
         : it;
     });
-    const billItems = outputTaxOff ? stripOutputTax(billItemsRaw) : billItemsRaw;
+    const allNonGstItems =
+      billItemsRaw.length > 0 &&
+      billItemsRaw.every((it) => {
+        const prod = products.find((p) => p.id === it.productId);
+        return it.taxability === "non_gst" || prod?.taxability === "non_gst";
+      });
+    const isNonGstSeries =
+      allNonGstItems ||
+      extras?.docSeries === "non_gst" ||
+      extras?.gstExclude === true ||
+      Boolean(extras?.docNo && extras.docNo.toUpperCase().startsWith("NG-"));
+
+    // ---- GST tax engine gate (skipped for pure Non-GST / Trading bills) ----
+    const taxRegime = resolveTaxRegime(orgProfile, effectiveBillDate);
+    const saleCheck =
+      !isNonGstSeries && taxRegime.active
+        ? checkSaleForRegime(orgProfile, {
+            date: effectiveBillDate,
+            customerGstin: extras?.customerGstin,
+            items: effCart.items,
+          })
+        : null;
+    if (saleCheck && !saleCheck.ok) {
+      notify(
+        "Cannot save this bill - GST rules:\n" + saleCheck.errors.map((e) => `• ${e.message}`).join("\n"),
+      );
+      return null;
+    }
+    const outputTaxOff = noOutputTax(taxRegime);
+    if (outputTaxOff) {
+      extras = { ...(extras || {}), invoiceType: "bill_of_supply", isGstInvoice: false };
+    }
+    const billItemsNorm = billItemsRaw.map((it) => {
+      const prod = products.find((p) => p.id === it.productId);
+      if (it.taxability === "non_gst" || prod?.taxability === "non_gst") {
+        return {
+          ...it,
+          taxability: "non_gst" as const,
+          gst: 0,
+          cgstRate: 0,
+          sgstRate: 0,
+          cgst: 0,
+          sgst: 0,
+          taxable: Number(it.amount) || 0,
+        };
+      }
+      return it;
+    });
+    if (isNonGstSeries) {
+      extras = {
+        ...(extras || {}),
+        invoiceType: "bill_of_supply",
+        isGstInvoice: false,
+        supplyType: "B2C",
+        customerGstin: undefined,
+        docSeries: "non_gst",
+        gstExclude: true,
+      };
+    }
+    const forceOffTax =
+      outputTaxOff ||
+      isNonGstSeries ||
+      extras?.invoiceType === "bill_of_supply" ||
+      extras?.invoiceType === "retail" ||
+      extras?.isGstInvoice === false;
+    const billItems =
+      outputTaxOff || isNonGstSeries ? stripOutputTax(billItemsNorm) : billItemsNorm;
     const discountToApply =
       overallDiscount !== undefined
         ? overallDiscount
         : effCart.additionalDiscount || 0;
-    const totals = billTotals(effCart.items, outputTaxOff ? "off" : gstMode, discountToApply);
+    const totals = billTotals(
+      billItems,
+      forceOffTax ? "off" : gstMode,
+      discountToApply,
+    );
     const paid =
       amountPaid !== undefined
         ? Math.min(Math.max(0, amountPaid), totals.total)
@@ -7923,9 +8330,23 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     const activePaymentNote = paymentNote || undefined;
 
     if (editingBillId !== null) {
+      const resolvedEditDocSeries: "gst" | "non_gst" = isNonGstSeries ? "non_gst" : "gst";
+      const resolvedEditDocNo =
+        extras?.docNo ||
+        (resolvedEditDocSeries === "non_gst"
+          ? originalForEdit?.docSeries === "non_gst" && originalForEdit?.docNo
+            ? originalForEdit.docNo
+            : nextNonGstDocNo(allBillsRef.current)
+          : originalForEdit?.docSeries === "gst" && originalForEdit?.docNo
+            ? originalForEdit.docNo
+            : `${billingSettings?.invoicePrefix || "INV"}-${editingBillId}`);
       const updated: Bill = {
         ...totals,
         id: editingBillId,
+        docNo: resolvedEditDocNo,
+        docSeries: resolvedEditDocSeries,
+        gstExclude: isNonGstSeries,
+        splitGroupId: extras?.splitGroupId ?? originalForEdit?.splitGroupId,
         retailer: effCart.retailer || "Cash Sale",
         phone: effCart.phone,
         date: effectiveBillDate,
@@ -7941,22 +8362,24 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         paymentMode: activePaymentMode,
         paymentNote: activePaymentNote,
         supplyType:
-          extras?.supplyType === "B2B" && extras?.customerGstin ? "B2B" : "B2C",
+          !isNonGstSeries && extras?.supplyType === "B2B" && extras?.customerGstin ? "B2B" : "B2C",
         customerGstin:
-          extras?.supplyType === "B2B"
+          !isNonGstSeries && extras?.supplyType === "B2B"
             ? extras?.customerGstin || undefined
             : undefined,
-        invoiceType:
-          extras?.invoiceType ||
-          (extras?.isGstInvoice === true
-            ? "tax_invoice"
-            : extras?.isGstInvoice === false
-              ? "retail"
-              : extras?.supplyType === "B2B" && extras?.customerGstin
-                ? "tax_invoice"
-                : "retail"),
-        isGstInvoice:
-          extras?.isGstInvoice !== undefined
+        invoiceType: isNonGstSeries
+          ? "bill_of_supply"
+          : extras?.invoiceType ||
+            (extras?.isGstInvoice === true
+              ? "tax_invoice"
+              : extras?.isGstInvoice === false
+                ? "retail"
+                : extras?.supplyType === "B2B" && extras?.customerGstin
+                  ? "tax_invoice"
+                  : "retail"),
+        isGstInvoice: isNonGstSeries
+          ? false
+          : extras?.isGstInvoice !== undefined
             ? extras.isGstInvoice
             : extras?.invoiceType === "tax_invoice"
               ? true
@@ -8015,6 +8438,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       const id = editingBillId;
       setEditingBillId(null);
       setCart(emptyCart());
+      setJustFinalizedSplitIds([]);
       setJustFinalizedBillId(id);
 
       keepReceivedMoneyOnEdit(
@@ -8064,11 +8488,21 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     } else {
       const nextId = reserveDocNumber(
         "bill",
-        allBills.length ? Math.max(...allBills.map((b) => b.id)) : 100,
+        allBillsRef.current.length ? Math.max(...allBillsRef.current.map((b) => b.id)) : 100,
       );
+      const resolvedDocSeries: "gst" | "non_gst" = isNonGstSeries ? "non_gst" : "gst";
+      const resolvedDocNo =
+        extras?.docNo ||
+        (resolvedDocSeries === "non_gst"
+          ? nextNonGstDocNo(allBillsRef.current)
+          : `${billingSettings?.invoicePrefix || "INV"}-${nextId}`);
       const newBill: Bill = {
         ...totals,
         id: nextId,
+        docNo: resolvedDocNo,
+        docSeries: resolvedDocSeries,
+        gstExclude: isNonGstSeries,
+        splitGroupId: extras?.splitGroupId,
         retailer: effCart.retailer || "Cash Sale",
         phone: effCart.phone,
         customerId: pickedCust?.id ?? resolveMasterCustomerId(effCart.retailer, effCart.phone),
@@ -8085,22 +8519,24 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         paymentMode: activePaymentMode,
         paymentNote: activePaymentNote,
         supplyType:
-          extras?.supplyType === "B2B" && extras?.customerGstin ? "B2B" : "B2C",
+          !isNonGstSeries && extras?.supplyType === "B2B" && extras?.customerGstin ? "B2B" : "B2C",
         customerGstin:
-          extras?.supplyType === "B2B"
+          !isNonGstSeries && extras?.supplyType === "B2B"
             ? extras?.customerGstin || undefined
             : undefined,
-        invoiceType:
-          extras?.invoiceType ||
-          (extras?.isGstInvoice === true
-            ? "tax_invoice"
-            : extras?.isGstInvoice === false
-              ? "retail"
-              : extras?.supplyType === "B2B" && extras?.customerGstin
-                ? "tax_invoice"
-                : "retail"),
-        isGstInvoice:
-          extras?.isGstInvoice !== undefined
+        invoiceType: isNonGstSeries
+          ? "bill_of_supply"
+          : extras?.invoiceType ||
+            (extras?.isGstInvoice === true
+              ? "tax_invoice"
+              : extras?.isGstInvoice === false
+                ? "retail"
+                : extras?.supplyType === "B2B" && extras?.customerGstin
+                  ? "tax_invoice"
+                  : "retail"),
+        isGstInvoice: isNonGstSeries
+          ? false
+          : extras?.isGstInvoice !== undefined
             ? extras.isGstInvoice
             : extras?.invoiceType === "tax_invoice"
               ? true
@@ -8167,6 +8603,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       }
 
+      allBillsRef.current = [newBill, ...allBillsRef.current];
       setBills((bs) => {
         const next = [newBill, ...bs];
         try {
@@ -8179,6 +8616,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         return next;
       });
       setCart(emptyCart());
+      setJustFinalizedSplitIds([]);
       setJustFinalizedBillId(nextId);
 
       // Create PaymentRecord if upfront payment was made
@@ -8192,7 +8630,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           amount: paid,
           mode: activePaymentMode,
           referenceNote:
-            activePaymentNote || `Initial payment on invoice #${nextId}`,
+            activePaymentNote || `Initial payment on ${resolvedDocNo}`,
           recordedBy: resolvedSalesmanName || currentUser?.name || "Admin",
           salesmanId: resolvedSalesmanId,
           createdAt: new Date().toISOString(),
@@ -8222,6 +8660,491 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
 
       return nextId;
     }
+  }
+
+  function finalizeSplitBills(params: {
+    amountPaid?: number;
+    tripId?: number;
+    overallDiscount?: number;
+    paymentDate?: string;
+    paymentMode?: PaymentMode;
+    paymentNote?: string;
+    billDate?: string;
+    extras?: {
+      supplyType?: "B2C" | "B2B";
+      customerGstin?: string;
+      isRetrospective?: boolean;
+      invoiceType?: "tax_invoice" | "bill_of_supply" | "retail";
+      isGstInvoice?: boolean;
+      party?: {
+        retailer?: string;
+        phone?: string;
+        salesman?: string;
+        vehicle?: string;
+        warehouseId?: string;
+        customerId?: string;
+      };
+    };
+  }): SplitBillsResult | null {
+    const {
+      amountPaid,
+      tripId,
+      overallDiscount,
+      paymentDate,
+      paymentMode,
+      paymentNote,
+      billDate,
+    } = params;
+    let extras = params.extras;
+    const effCart = extras?.party ? { ...cart, ...extras.party } : cart;
+    if (effCart.items.length === 0) return null;
+
+    const isItemNonGst = (it: BillItem) => {
+      const prod = products.find((p) => p.id === it.productId);
+      return it.taxability === "non_gst" || prod?.taxability === "non_gst";
+    };
+    const gstCartItems = effCart.items.filter((it) => !isItemNonGst(it));
+    const nonGstCartItems = effCart.items.filter((it) => isItemNonGst(it));
+
+    if (nonGstCartItems.length === 0) {
+      const id = finalizeBill(amountPaid, tripId, overallDiscount, paymentDate, paymentMode, paymentNote, billDate, extras);
+      return id
+        ? { gstBillId: id, nonGstBillId: null, splitGroupId: "", gstBill: allBillsRef.current.find((b) => b.id === id) ?? null, nonGstBill: null }
+        : null;
+    }
+    if (gstCartItems.length === 0) {
+      const id = finalizeBill(amountPaid, tripId, overallDiscount, paymentDate, paymentMode, paymentNote, billDate, {
+        ...(extras || {}),
+        docSeries: "non_gst",
+        gstExclude: true,
+        invoiceType: "bill_of_supply",
+        isGstInvoice: false,
+      });
+      return id
+        ? { gstBillId: null, nonGstBillId: id, splitGroupId: "", gstBill: null, nonGstBill: allBillsRef.current.find((b) => b.id === id) ?? null }
+        : null;
+    }
+
+    const pickedCust = (() => {
+      const pid = extras?.party?.customerId;
+      if (!pid) return undefined;
+      const c = customers.find((x) => x.id === pid);
+      return c && normCustName(c.name) === normCustName(effCart.retailer) ? c : undefined;
+    })();
+    const effectiveBillDate =
+      (billDate && billDate.trim()) ||
+      (effCart.date && effCart.date.trim()) ||
+      todayISO();
+    const finalTripId = tripId !== undefined ? tripId : effCart.tripId;
+    const matchedTrip = finalTripId
+      ? trips.find((t) => Number(t.id) === Number(finalTripId))
+      : null;
+    const resolvedWarehouseId = resolveBillWarehouseId({
+      trip: matchedTrip,
+      cartWarehouseId: effCart.warehouseId,
+      defaultWarehouseId: defaultWarehouse?.id,
+      warehouses,
+    });
+
+    const shortfalls = stockShortfalls(
+      effCart.items,
+      null,
+      matchedTrip,
+      resolvedWarehouseId,
+    );
+    if (shortfalls.length > 0) {
+      notify(
+        "Cannot save split bills — insufficient stock:\n" +
+          shortfalls
+            .map(
+              (s) =>
+                `• ${s.productName}: need ${s.required}, only ${Math.max(0, s.available)} available` +
+                (matchedTrip ? ` on van (${matchedTrip.vehicle})` : ""),
+            )
+            .join("\n"),
+      );
+      return null;
+    }
+
+    const fefo = allocateBatches(
+      effCart.items,
+      effectiveBillDate,
+      resolvedWarehouseId,
+      null,
+      matchedTrip,
+    );
+    if (fefo.problems.length > 0) {
+      notify(
+        "Cannot save split bills:\n" + fefo.problems.map((m) => `• ${m}`).join("\n"),
+      );
+      return null;
+    }
+
+    const taxRegime = resolveTaxRegime(orgProfile, effectiveBillDate);
+    const saleCheck = taxRegime.active
+      ? checkSaleForRegime(orgProfile, {
+          date: effectiveBillDate,
+          customerGstin: extras?.customerGstin,
+          items: gstCartItems,
+        })
+      : null;
+    if (saleCheck && !saleCheck.ok) {
+      notify(
+        "Cannot save GST bill — GST rules:\n" +
+          saleCheck.errors.map((e) => `• ${e.message}`).join("\n"),
+      );
+      return null;
+    }
+    const outputTaxOff = noOutputTax(taxRegime);
+
+    const batchCostById = new Map(
+      inventoryBatches.map((b) => [
+        b.id,
+        Number(b.effectiveCostPrice) || Number(b.costPrice) || 0,
+      ]),
+    );
+    const withCosts = fefo.items.map((it) => {
+      const prod = products.find((p) => p.id === it.productId);
+      const fallback = Number(prod?.effectiveCost ?? prod?.cost) || 0;
+      let q = 0;
+      let c = 0;
+      for (const a of it.batchAllocations || []) {
+        const bc = batchCostById.get(a.batchId) || 0;
+        const aq = Number(a.qty) || 0;
+        if (aq > 0 && bc > 0) {
+          q += aq;
+          c += aq * bc;
+        }
+      }
+      const cost = q > 0 ? c / q : fallback;
+      return cost > 0 ? { ...it, costExGst: Math.round(cost * 100) / 100 } : it;
+    });
+
+    const rawGstItems = withCosts.filter((it) => !isItemNonGst(it));
+    const rawNonGstItems = withCosts.filter((it) => isItemNonGst(it)).map((it) => ({
+      ...it,
+      taxability: "non_gst" as const,
+      gst: 0,
+      cgstRate: 0,
+      sgstRate: 0,
+      cgst: 0,
+      sgst: 0,
+      taxable: Number(it.amount) || 0,
+    }));
+
+    const gstItems = outputTaxOff ? stripOutputTax(rawGstItems) : rawGstItems;
+    const nonGstItems = stripOutputTax(rawNonGstItems);
+
+    const totalDiscount =
+      overallDiscount !== undefined
+        ? Math.max(0, Number(overallDiscount) || 0)
+        : Math.max(0, Number(effCart.additionalDiscount) || 0);
+    const gstAmtSum = gstItems.reduce((s, it) => s + Math.max(0, Number(it.amount) || 0), 0);
+    const nonGstAmtSum = nonGstItems.reduce((s, it) => s + Math.max(0, Number(it.amount) || 0), 0);
+    const totalAmtSum = gstAmtSum + nonGstAmtSum;
+    let gstDiscount =
+      totalDiscount > 0 && totalAmtSum > 0
+        ? Math.round((totalDiscount * (gstAmtSum / totalAmtSum)) * 100) / 100
+        : 0;
+    gstDiscount = Math.min(gstDiscount, gstAmtSum);
+    const nonGstDiscount = Math.min(
+      Math.max(0, Math.round((totalDiscount - gstDiscount) * 100) / 100),
+      nonGstAmtSum,
+    );
+
+    const gstForceOff =
+      outputTaxOff ||
+      extras?.invoiceType === "bill_of_supply" ||
+      extras?.invoiceType === "retail" ||
+      extras?.isGstInvoice === false;
+    const gstTotals = billTotals(gstItems, gstForceOff ? "off" : gstMode, gstDiscount);
+    const nonGstTotals = billTotals(nonGstItems, "off", nonGstDiscount);
+    const combinedTotal = Math.round((gstTotals.total + nonGstTotals.total) * 100) / 100;
+
+    const totalPaid =
+      amountPaid !== undefined
+        ? Math.min(Math.max(0, amountPaid), combinedTotal)
+        : combinedTotal;
+
+    const isAnonymousParty =
+      !effCart.retailer || effCart.retailer.trim().toLowerCase() === "cash sale";
+    if (isAnonymousParty && combinedTotal - totalPaid > 0.005) {
+      notify(
+        'An unpaid balance cannot be booked against "Cash Sale". Select or enter a customer for credit sales, or collect the full amount.',
+      );
+      return null;
+    }
+
+    // Combined credit limit validation across both split bills
+    {
+      const retailer = (effCart.retailer || "").trim();
+      const isCash =
+        !retailer ||
+        retailer.toLowerCase() === "cash sale" ||
+        retailer.toLowerCase() === "spot cash";
+      if (!isCash && totalPaid < combinedTotal - 0.005) {
+        const cust = pickedCust ?? findBillingCustomer(retailer, effCart.phone);
+        const limit = Number(cust?.creditLimit) || 0;
+        if (limit > 0) {
+          const led = getCustomerLedger(cust?.id || retailer, effCart.phone);
+          const existingDue = Math.max(0, Math.round(led.rawBalance * 100) / 100);
+          const thisCredit = Math.max(0, combinedTotal - totalPaid);
+          if (existingDue + thisCredit > limit + 0.009) {
+            notify(
+              `Credit limit exceeded for ${retailer}.\n` +
+                `Limit ₹${limit.toLocaleString("en-IN")} · Already due ₹${existingDue.toLocaleString("en-IN", { maximumFractionDigits: 0 })} · ` +
+                `Combined credit ₹${thisCredit.toLocaleString("en-IN", { maximumFractionDigits: 0 })}.\n` +
+                `Collect more payment or reduce the bill.`,
+            );
+            return null;
+          }
+        }
+      }
+    }
+
+    const gstPaid = Math.round(Math.min(totalPaid, gstTotals.total) * 100) / 100;
+    const nonGstPaid = Math.round(
+      Math.min(Math.max(0, totalPaid - gstPaid), nonGstTotals.total) * 100,
+    ) / 100;
+
+    const resolvedSalesmanId =
+      matchedTrip?.salesmanId ||
+      (currentUser?.role === "salesman" ? currentUser.id : undefined) ||
+      effCart.salesmanId;
+    const resolvedSalesmanName =
+      matchedTrip?.salesman ||
+      (currentUser?.role === "salesman" ? currentUser.name : undefined) ||
+      effCart.salesman;
+    const activePaymentDate =
+      paymentDate && paymentDate.trim() ? paymentDate.trim() : effectiveBillDate;
+    const activePaymentMode = paymentMode || "cash";
+    const activePaymentNote = paymentNote || undefined;
+    const resolvedCustomerId =
+      pickedCust?.id ?? resolveMasterCustomerId(effCart.retailer, effCart.phone);
+
+    const maxExistingId = allBillsRef.current.length
+      ? Math.max(...allBillsRef.current.map((b) => b.id))
+      : 100;
+    const gstId = reserveDocNumber("bill", maxExistingId);
+    const nonGstId = reserveDocNumber("bill", Math.max(maxExistingId, gstId));
+    const gstDocNo = `${billingSettings?.invoicePrefix || "INV"}-${gstId}`;
+    const nonGstDocNo = nextNonGstDocNo(allBillsRef.current);
+    const splitGroupId = `split_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
+    const gstBill: Bill = {
+      ...gstTotals,
+      id: gstId,
+      docNo: gstDocNo,
+      docSeries: "gst",
+      gstExclude: false,
+      splitGroupId,
+      retailer: effCart.retailer || "Cash Sale",
+      phone: effCart.phone,
+      customerId: resolvedCustomerId,
+      date: effectiveBillDate,
+      items: gstItems,
+      amountPaid: gstPaid,
+      warehouseId: resolvedWarehouseId || "",
+      tripId: finalTripId || undefined,
+      vehicle: matchedTrip?.vehicle || effCart.vehicle || undefined,
+      salesman: resolvedSalesmanName || undefined,
+      salesmanId: resolvedSalesmanId || undefined,
+      additionalDiscount: gstDiscount,
+      paymentDate: activePaymentDate,
+      paymentMode: activePaymentMode,
+      paymentNote: activePaymentNote,
+      supplyType: extras?.supplyType === "B2B" && extras?.customerGstin ? "B2B" : "B2C",
+      customerGstin:
+        extras?.supplyType === "B2B" ? extras?.customerGstin || undefined : undefined,
+      invoiceType: outputTaxOff
+        ? "bill_of_supply"
+        : extras?.invoiceType ||
+          (extras?.isGstInvoice === true
+            ? "tax_invoice"
+            : extras?.isGstInvoice === false
+              ? "retail"
+              : extras?.supplyType === "B2B" && extras?.customerGstin
+                ? "tax_invoice"
+                : "retail"),
+      isGstInvoice: outputTaxOff
+        ? false
+        : extras?.isGstInvoice !== undefined
+          ? extras.isGstInvoice
+          : extras?.invoiceType === "tax_invoice"
+            ? true
+            : extras?.invoiceType === "retail" || extras?.invoiceType === "bill_of_supply"
+              ? false
+              : extras?.supplyType === "B2B" && Boolean(extras?.customerGstin),
+      isRetrospective: extras?.isRetrospective === true,
+      ...(saleCheck?.stamp ? { taxStamp: saleCheck.stamp } : {}),
+    };
+
+    const nonGstBill: Bill = {
+      ...nonGstTotals,
+      id: nonGstId,
+      docNo: nonGstDocNo,
+      docSeries: "non_gst",
+      gstExclude: true,
+      splitGroupId,
+      retailer: effCart.retailer || "Cash Sale",
+      phone: effCart.phone,
+      customerId: resolvedCustomerId,
+      date: effectiveBillDate,
+      items: nonGstItems,
+      amountPaid: nonGstPaid,
+      warehouseId: resolvedWarehouseId || "",
+      tripId: finalTripId || undefined,
+      vehicle: matchedTrip?.vehicle || effCart.vehicle || undefined,
+      salesman: resolvedSalesmanName || undefined,
+      salesmanId: resolvedSalesmanId || undefined,
+      additionalDiscount: nonGstDiscount,
+      paymentDate: activePaymentDate,
+      paymentMode: activePaymentMode,
+      paymentNote: activePaymentNote,
+      supplyType: "B2C",
+      customerGstin: undefined,
+      invoiceType: "bill_of_supply",
+      isGstInvoice: false,
+      isRetrospective: extras?.isRetrospective === true,
+    };
+
+    // Schemes: defined per product, so they apply to GST and Non-GST items alike. Run the engine once on the
+    // whole cart (a scheme can span products), then give each bill the discount that sits on ITS lines.
+    if (billingSettings?.schemesEnabled === true) {
+      const preview = previewPricing(effCart.items, promotions, products, {
+        customerName: effCart.retailer,
+        customerPhone: effCart.phone,
+        billDate: effectiveBillDate,
+        schemesEnabled: true,
+        autoApply: billingSettings.autoApplyPromotions !== false,
+      });
+      const lineDisc = (items: BillItem[]) =>
+        items.reduce((sum, it) => sum + (Number(it.discountAmount ?? it.discount) || 0), 0);
+      const gstSchemeDisc = lineDisc(gstItems);
+      const nonGstSchemeDisc = lineDisc(nonGstItems);
+      const schemeDiscSum = gstSchemeDisc + nonGstSchemeDisc;
+      const freeIds = (items: BillItem[]) => new Set(items.map((i) => Number(i.productId)));
+      const gstIds = freeIds(gstItems);
+      const applied = preview.applications.filter((a) => a.status === "applied");
+      const stamp = (bill: Bill, billSchemeDisc: number, ids: Set<number>) => {
+        const share = schemeDiscSum > 0 ? billSchemeDisc / schemeDiscSum : 0;
+        const apps = applied
+          .map((a) => {
+            const isFreeHere = a.freeProductId !== undefined && ids.has(Number(a.freeProductId));
+            const discountAmount = Math.round((Number(a.discountAmount) || 0) * share * 100) / 100;
+            if (discountAmount <= 0 && !isFreeHere) return null;
+            return { ...a, discountAmount, freeQty: isFreeHere ? a.freeQty : 0 };
+          })
+          .filter(Boolean) as typeof applied;
+        bill.schemeDiscountTotal = Math.round(billSchemeDisc * 100) / 100;
+        bill.schemesApplied = apps;
+        bill.youSaved = Math.round(billSchemeDisc * 100) / 100;
+        bill.schemesEnabledAtSave = true;
+        bill.schemeVersionMap = Object.fromEntries(apps.map((a) => [String(a.schemeId), a.schemeVersion]));
+      };
+      stamp(gstBill, gstSchemeDisc, gstIds);
+      stamp(nonGstBill, nonGstSchemeDisc, freeIds(nonGstItems));
+      // Usage counters go up once per scheme for the whole sale, not once per bill.
+      for (const app of applied) {
+        setPromotions((prev) =>
+          prev.map((p) =>
+            Number(p.id) === Number(app.schemeId)
+              ? { ...p, usedCount: (Number(p.usedCount) || 0) + 1 }
+              : p,
+          ),
+        );
+      }
+    }
+
+    for (const it of effCart.items) {
+      if (
+        it.productId &&
+        it.customPriceEdited &&
+        typeof it.rate === "number" &&
+        it.rate >= 0
+      ) {
+        setCustomProductPrice(it.productId, it.rate, effCart.retailer);
+      }
+    }
+
+    allBillsRef.current = [nonGstBill, gstBill, ...allBillsRef.current];
+    setBills((bs) => {
+      const next = [nonGstBill, gstBill, ...bs];
+      try {
+        saveOrders(next as any).catch(() => {});
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        parsed.bills = next;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+      } catch {}
+      return next;
+    });
+    setCart(emptyCart());
+    setJustFinalizedBillId(gstId);
+    setJustFinalizedSplitIds([gstId, nonGstId]);
+
+    const newPayments: PaymentRecord[] = [];
+    if (gstPaid > 0) {
+      newPayments.push({
+        id: `pay_${Date.now()}_g_${Math.random().toString(36).slice(2, 5)}`,
+        billId: gstId,
+        customerName: gstBill.retailer,
+        customerPhone: gstBill.phone,
+        paymentDate: activePaymentDate,
+        amount: gstPaid,
+        mode: activePaymentMode,
+        referenceNote: activePaymentNote || `Initial payment on ${gstDocNo}`,
+        recordedBy: resolvedSalesmanName || currentUser?.name || "Admin",
+        salesmanId: resolvedSalesmanId,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    if (nonGstPaid > 0) {
+      newPayments.push({
+        id: `pay_${Date.now()}_n_${Math.random().toString(36).slice(2, 5)}`,
+        billId: nonGstId,
+        customerName: nonGstBill.retailer,
+        customerPhone: nonGstBill.phone,
+        paymentDate: activePaymentDate,
+        amount: nonGstPaid,
+        mode: activePaymentMode,
+        referenceNote: activePaymentNote || `Initial payment on ${nonGstDocNo}`,
+        recordedBy: resolvedSalesmanName || currentUser?.name || "Admin",
+        salesmanId: resolvedSalesmanId,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    if (newPayments.length > 0) {
+      setPayments((prev) => [...newPayments, ...prev]);
+    }
+
+    if (finalTripId) {
+      setTrips((ts) =>
+        ts.map((t) => {
+          if (t.id !== finalTripId) return t;
+          const addIds = [gstId, nonGstId].filter((x) => !t.billIds.includes(x));
+          if (addIds.length === 0) return t;
+          const updatedT = { ...t, billIds: [...t.billIds, ...addIds] };
+          cloud("pushTripToSupabase", pushTripToSupabase(updatedT));
+          return updatedT;
+        }),
+      );
+    }
+
+    cloud("pushBillToSupabase", pushBillToSupabase(gstBill));
+    cloud("pushBillToSupabase", pushBillToSupabase(nonGstBill));
+    cloudFetch("/api/bills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(gstBill),
+    });
+    cloudFetch("/api/bills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(nonGstBill),
+    });
+
+    return { gstBillId: gstId, nonGstBillId: nonGstId, splitGroupId, gstBill, nonGstBill };
   }
 
   // Make the payment records for a bill add up to `paid`: add the difference as a new record, or trim
@@ -9354,6 +10277,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     }
     const next = [...(restoreRow ? [restoreRow] : []), ...payments.filter((p) => p.id !== paymentId)];
     setPayments(next);
+    cloudFetch(`/api/payments/${encodeURIComponent(paymentId)}`, { method: "DELETE" });
     // The save effect skips an empty list (so a not-yet-loaded list can never wipe saved data).
     // When the last payment is deleted on purpose, save the empty list here, otherwise the
     // deleted payment comes back after a reload.
@@ -9361,6 +10285,75 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       savePayments([]).catch(() => {});
       pushPaymentsToSupabase([], true).catch(() => {});
     }
+  }
+
+  const ghostPayments = useMemo(
+    () =>
+      findGhostPayments({
+        payments,
+        bills: allBills,
+        customers,
+        deletedBillIds: readBillTombstones(),
+        deletedCustomerIds: readCustomerTombstones(),
+        hiddenCustomerNames: hiddenCustNames,
+      }),
+    [payments, allBills, customers, hiddenCustNames],
+  );
+
+  function removeGhostPayments(paymentIds: string[], reason = "Ghost payment cleanup"): number {
+    const idSet = new Set(paymentIds);
+    const targets = payments.filter((p) => idSet.has(p.id));
+    if (targets.length === 0) return 0;
+
+    const tombIds: string[] = [];
+    const billUpdates = new Map<number, Bill>();
+    for (const target of targets) {
+      tombIds.push(target.id);
+      if (target.billId) {
+        tombIds.push(`pay_bill_${target.billId}`);
+        tombIds.push(`legacy_pay_${target.billId}`);
+        const b = billUpdates.get(target.billId) ?? allBillsRef.current.find((x) => x.id === target.billId);
+        if (b && b.status !== "cancelled" && !b.cancelled) {
+          billUpdates.set(b.id, {
+            ...b,
+            amountPaid: Math.max(0, (Number(b.amountPaid) || 0) - (Number(target.amount) || 0)),
+          });
+        }
+      }
+      logPaymentAudit({
+        action: "delete",
+        paymentId: target.id,
+        billId: target.billId,
+        customerName: target.customerName,
+        amount: target.amount,
+        note: `${reason}: removed ₹${target.amount}${target.billId ? ` (Inv #${target.billId})` : ""}`,
+        before: target,
+      });
+    }
+    if (billUpdates.size > 0) commitBillUpdates(billUpdates);
+    addPaymentTombstones(tombIds);
+    pushDeletionRecordsToSupabase(
+      targets.map((t) => ({
+        kind: "payment" as const,
+        id: t.id,
+        name: t.customerName,
+        deletedAt: new Date().toISOString(),
+        by: currentUser?.name || "Admin",
+        reason,
+        note: `₹${t.amount}${t.billId ? ` on invoice #${t.billId}` : ""}`,
+      })),
+    ).catch(() => {});
+    for (const id of targets.map((t) => t.id)) {
+      cloudFetch(`/api/payments/${encodeURIComponent(id)}`, { method: "DELETE" });
+    }
+    const next = payments.filter((p) => !idSet.has(p.id));
+    setPayments(next);
+    if (next.length === 0 && payments.length > 0) {
+      savePayments([]).catch(() => {});
+      pushPaymentsToSupabase([], true).catch(() => {});
+    }
+    notify(`Removed ${targets.length} ghost payment${targets.length === 1 ? "" : "s"}.`);
+    return targets.length;
   }
 
   // Edit a receipt. The invoice's paid amount and the journal row are always kept equal:
@@ -9573,6 +10566,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    customersHydratedRef.current = true;
+    customersFromSyntheticInitRef.current = false;
     customersRef.current = [newCust, ...customersRef.current.filter((c) => c.id !== id)];
     setCustomers((prev) => [newCust, ...prev.filter((c) => c.id !== id)]);
     {
@@ -9602,6 +10597,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       previousIdentity,
     });
 
+    customersHydratedRef.current = true;
+    customersFromSyntheticInitRef.current = false;
     customersRef.current = plan.customers;
     setCustomers(plan.customers);
     saveCustomers(plan.customers).catch(() => {});
@@ -9677,13 +10674,24 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
   }
 
   /** Another customer that already uses this name (renaming onto it would blur two shops into one ledger). */
-  function customerNameClash(customerId: string, name: string): Customer | undefined {
-    const key = normCustName(name);
-    if (!key) return undefined;
-    return customers.find((c) => c.id !== customerId && normCustName(c.name) === key);
+  function customerNameClash(
+    customerId: string,
+    name: string,
+    opts?: { oldName?: string; phone?: string },
+  ): Customer | undefined {
+    return findCustomerNameClash(customers, {
+      customerId,
+      oldName: opts?.oldName,
+      newName: name,
+      phone: opts?.phone,
+    });
   }
 
-  function deleteCustomer(customerId: string, rectificationReason?: string) {
+  function deleteCustomer(
+    customerId: string,
+    rectificationReason?: string,
+    opts?: { removePayments?: boolean },
+  ) {
     const target = customers.find((c) => c.id === customerId);
     const reason = (rectificationReason || "").trim();
     const opening = Number(target?.openingBalance) || 0;
@@ -9695,19 +10703,52 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       return;
     }
-    setCustomers((prev) => prev.filter((c) => c.id !== customerId));
+    customersHydratedRef.current = true;
+    customersFromSyntheticInitRef.current = false;
+    const remainingCustomers = customers.filter((c) => c.id !== customerId);
+    customersRef.current = remainingCustomers;
+    setCustomers(remainingCustomers);
     if (!target) return;
 
     // Remember locally (by id only, so a new customer with the same name is never blocked)...
     addCustomerTombstones([customerId]);
-    // ...hide the name so the directory does not rebuild it from old bills (bills are kept)...
+    // ...hide the name ONLY if no surviving duplicate customer still uses this same name...
     const n = normCustName(target.name);
-    if (n) {
+    const hasSurvivingSameName = n && remainingCustomers.some((c) => normCustName(c.name) === n);
+    if (n && !hasSurvivingSameName) {
       const next = new Set(hiddenCustNames);
       next.add(n);
       writeHiddenCustomerNames(next);
       setHiddenCustNames(next);
     }
+
+    // Optionally clean up payments belonging to this deleted (e.g. duplicate) customer so they do not
+    // become ghost payments on the Payments screen or bleed into another customer's ledger.
+    if (opts?.removePayments) {
+      const linkedPays = findPaymentsForDeletedCustomer({
+        customer: target,
+        allCustomers: customers,
+        payments: paymentsRef.current,
+      });
+      if (linkedPays.length > 0) {
+        removeGhostPayments(
+          linkedPays.map((p) => p.id),
+          reason ? `Deleted duplicate customer (${target.name}): ${reason}` : `Deleted customer (${target.name})`,
+        );
+      }
+    }
+
+    // Remove on local Express server & flush disk immediately so dev server restarts never bring it back
+    cloudFetch(`/api/customers/${encodeURIComponent(customerId)}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: target.name,
+        by: currentUser?.name || "Admin",
+        reason,
+      }),
+    });
+
     // ...and record it in the cloud so every device agrees.
     pushDeletionRecordsToSupabase([
       {
@@ -9775,7 +10816,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
   const existingCustomers: ExistingCustomer[] = useMemo(() => {
     const map = new Map<string, ExistingCustomer>();
 
-    // 1. Initialize from registered Customer master
+    // 1. Initialize from registered Customer master (preferring beat-mapped / real master records over legacy bill ghosts)
+    const masterByKey = new Map<string, Customer>();
     customers.forEach((c) => {
       const key = normCustName(c.name);
       if (!key) return;
@@ -9784,6 +10826,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       const cleanAltPhone = isDummyPhone(c.altPhone) ? "" : c.altPhone;
 
       if (!existing) {
+        masterByKey.set(key, c);
         map.set(key, {
           id: c.id,
           name: c.name,
@@ -9802,6 +10845,15 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           lastPaymentDate: "",
         });
       } else {
+        const prevMaster = masterByKey.get(key);
+        const prevHasBeat = Boolean((prevMaster?.beatId && prevMaster.beatId.trim()) || (prevMaster?.route && prevMaster.route.trim()));
+        const curHasBeat = Boolean((c.beatId && c.beatId.trim()) || (c.route && c.route.trim()));
+        const prevIsBillGhost = String(prevMaster?.id || "").startsWith("cust_bill_");
+        const curIsBillGhost = String(c.id || "").startsWith("cust_bill_");
+        if ((!prevHasBeat && curHasBeat) || (prevIsBillGhost && !curIsBillGhost && (curHasBeat || !prevHasBeat))) {
+          masterByKey.set(key, c);
+          existing.id = c.id;
+        }
         if ((!existing.phone || isDummyPhone(existing.phone)) && cleanPhone) {
           existing.phone = cleanPhone;
         }
@@ -9867,6 +10919,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     });
 
     // 3. Aggregate payments cleanly without double-counting
+    const deletedCustIds = readCustomerTombstones();
+    const activeCustIds = new Set(customers.map((c) => c.id));
+
     map.forEach((record, key) => {
       const matchMasterList = customers.filter(
         (c) => normCustName(c.name) === key || (record.id && c.id === record.id),
@@ -9898,6 +10953,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       const custBillIds = new Set(custBills.map((b) => b.id));
 
       const custPayments = payments.filter((p) => {
+        if (isPaymentFromDeletedCustomerId(p, deletedCustIds, activeCustIds, custBillIds)) {
+          return false;
+        }
         if (p.billId && custBillIds.has(p.billId)) return true;
         const pCust = normCustName(p.customerName);
         return (
@@ -10133,10 +11191,15 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const matchedBillIds = new Set(matchedBills.map((b) => b.id));
 
-    // 3. Match payments
+    // 3. Match payments (never pull payments tagged with a deleted duplicate customer's ID via name fallback)
+    const deletedCustIdsForLedger = readCustomerTombstones();
+    const activeCustIdsForLedger = new Set(customers.map((c) => c.id));
     const matchedPayments = payments
       .filter((p) => {
         if (p.billId && matchedBillIds.has(p.billId)) return true;
+        if (isPaymentFromDeletedCustomerId(p, deletedCustIdsForLedger, activeCustIdsForLedger, matchedBillIds)) {
+          return false;
+        }
         if (p.customerId && matchingCustIds.has(p.customerId)) {
           return true;
         }
@@ -10335,12 +11398,24 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       0,
       Math.round(((Number(target?.amountPaid) || 0) - held) * 100) / 100,
     );
+    // Record local bill tombstone immediately so reloads / localStorage backups never resurrect it.
+    addBillTombstones([billId]);
+
     if (paymentAction === "remove") {
+      // Always tombstone synthetic IDs for this bill even when heldRows is empty (e.g. legacy unjournaled paid)
+      const synthIds = [`pay_bill_${billId}`, `legacy_pay_${billId}`];
+      const ids = Array.from(new Set([...heldRows.map((p) => p.id), ...synthIds]));
+      addPaymentTombstones(ids);
+      setPayments((prev) => {
+        const next = prev.filter((p) => p.billId !== billId && !ids.includes(p.id));
+        if (next.length === 0 && prev.length > 0) {
+          savePayments([]).catch(() => {});
+          pushPaymentsToSupabase([], true).catch(() => {});
+        }
+        return next;
+      });
       if (heldRows.length > 0) {
-        const ids = heldRows.map((p) => p.id);
-        addPaymentTombstones(ids);
-        setPayments((prev) => prev.filter((p) => p.billId !== billId));
-        heldRows.forEach((p) =>
+        heldRows.forEach((p) => {
           logPaymentAudit({
             action: "delete",
             paymentId: p.id,
@@ -10349,8 +11424,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
             amount: p.amount,
             note: `Invoice #${billId} deleted: receipt of ₹${p.amount} removed${reasonSuffix}`,
             before: p,
-          }),
-        );
+          });
+          cloudFetch(`/api/payments/${encodeURIComponent(p.id)}`, { method: "DELETE" });
+        });
         pushDeletionRecordsToSupabase(
           heldRows.map((p) => ({
             kind: "payment" as const,
@@ -10669,7 +11745,11 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       out.push(`Total: ${rs(orig.total)} → ${rs(upd.total)}`);
     if (Math.abs((orig.amountPaid || 0) - (upd.amountPaid || 0)) > 0.004)
       out.push(`Paid: ${rs(orig.amountPaid)} → ${rs(upd.amountPaid)}`);
-    if ((orig.warehouseId || "") !== (upd.warehouseId || ""))
+    const sameTrip =
+      orig.tripId != null &&
+      upd.tripId != null &&
+      Number(orig.tripId) === Number(upd.tripId);
+    if (!sameTrip && (orig.warehouseId || "") !== (upd.warehouseId || ""))
       out.push("Godown changed");
     if ((orig.phone || "") !== (upd.phone || "")) out.push("Phone changed");
     if ((orig.invoiceType || "") !== (upd.invoiceType || ""))
@@ -10828,6 +11908,24 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         normCustName(p.customerName) !== normCustName(updated.retailer) ||
         (!!updated.phone && p.customerPhone !== updated.phone),
     );
+    const tripWhInfo = nextTrip
+      ? resolveTripGodownDisplay({
+          trip: nextTrip,
+          bill: updated,
+          warehouses,
+          inventoryBatches,
+          includeLocation: true,
+        })
+      : null;
+    const tripShortWhInfo = nextTrip
+      ? resolveTripGodownDisplay({
+          trip: nextTrip,
+          bill: updated,
+          warehouses,
+          inventoryBatches,
+          includeLocation: false,
+        })
+      : null;
     return {
       payment: {
         receivedBefore,
@@ -10843,16 +11941,24 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       source: nextTrip
         ? {
             kind: "trip",
-            label: `Trip #${nextTrip.id} · ${nextTrip.vehicle} · ${nextTrip.date}`,
+            label: `Trip #${nextTrip.id} · ${nextTrip.vehicle} · ${nextTrip.date}${
+              tripShortWhInfo?.label ? ` · ${tripShortWhInfo.label}` : ""
+            }`,
             tripId: Number(nextTrip.id),
             tripStatus: nextTrip.status,
             tripDate: nextTrip.date,
-            warehouseId: nextTrip.warehouseId,
+            warehouseId: tripWhInfo?.primaryWarehouseId || nextTrip.warehouseId || undefined,
+            warehouseLabel: tripWhInfo?.label || undefined,
           }
         : {
             kind: "warehouse",
             label: wh?.name || "Default godown",
             warehouseId: wh?.id,
+            warehouseLabel: wh
+              ? wh.location
+                ? `${wh.name} (${wh.location})`
+                : wh.name
+              : undefined,
           },
     };
   }
@@ -10872,9 +11978,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       return false;
     }
     const originalBill = allBills.find((b) => b.id === updated.id);
+    const billTrip = resolveEditTrip(updated);
     let editStockChanged = false;
     if (Array.isArray(updated.items)) {
-      const billTrip = resolveEditTrip(updated);
       const plan = planBillEditStock(updated, billTrip);
       if (plan.problems.length > 0) {
         notify(
@@ -10923,6 +12029,43 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         setCart(emptyCart());
       }
       return true;
+    }
+    // When saving a real edit on a trip-linked bill whose stored warehouseId was empty or stale,
+    // align it silently with the trip's loaded godown so future reads show the true dispatch godown.
+    if (billTrip) {
+      const validWhIds = new Set(warehouses.map((w) => w.id));
+      const tripWhIds = tripWarehouseIds(billTrip, validWhIds);
+      const currentWh = String(updated.warehouseId || "").trim();
+      if (tripWhIds.length > 0 && (!currentWh || !tripWhIds.includes(currentWh))) {
+        const primaryWh = tripPrimaryWarehouseId(billTrip, validWhIds);
+        if (primaryWh) {
+          updated = { ...updated, warehouseId: primaryWh };
+        }
+      }
+    }
+    // If an edited bill now consists exclusively of Non-GST items, classify it in the Non-GST series.
+    if (Array.isArray(updated.items) && cartTaxMix(updated.items, products).allNonGst) {
+      const cleanTotal = Math.round(
+        Math.max(
+          0,
+          updated.items.reduce((s, it) => s + (Number(it.amount) || 0), 0) -
+            Math.max(0, Number(updated.additionalDiscount) || 0),
+        ) * 100,
+      ) / 100;
+      updated = {
+        ...updated,
+        docSeries: "non_gst",
+        gstExclude: true,
+        invoiceType: "bill_of_supply",
+        isGstInvoice: false,
+        supplyType: "B2C",
+        customerGstin: undefined,
+        subtotal: cleanTotal,
+        cgst: 0,
+        sgst: 0,
+        total: cleanTotal,
+        amountPaid: Math.min(requestedPaid, cleanTotal),
+      };
     }
     if (originalBill) {
       const entry: BillEditEntry = {
@@ -10973,6 +12116,256 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       body: JSON.stringify(updated),
     });
     return true;
+  }
+
+  function splitMixedBill(
+    billOrId: Bill | number,
+    opts?: { comment?: string; requestedPaid?: number },
+  ): { gstBill: Bill; nonGstBill: Bill } | null {
+    const targetId = typeof billOrId === "number" ? billOrId : billOrId.id;
+    const originalBill = allBills.find((b) => b.id === targetId);
+    if (!originalBill) {
+      notify("Bill not found.");
+      return null;
+    }
+    if (originalBill.status === "cancelled") {
+      notify("A cancelled invoice cannot be split.");
+      return null;
+    }
+    if ((originalBill.returns || []).length > 0) {
+      notify("This invoice has customer returns against it, so it cannot be auto-split.");
+      return null;
+    }
+
+    let draft: Bill = typeof billOrId === "number" ? originalBill : billOrId;
+    if (!cartTaxMix(draft.items || [], products).hasMixed) {
+      notify("This bill does not mix GST and Non-GST items.");
+      return null;
+    }
+
+    const billTrip = resolveEditTrip(draft);
+    const plan = planBillEditStock(draft, billTrip);
+    if (plan.problems.length > 0) {
+      notify(
+        "Cannot split this bill:\n" + plan.problems.map((m) => `• ${m}`).join("\n"),
+      );
+      return null;
+    }
+
+    const batchCostById = new Map(
+      inventoryBatches.map((b) => [
+        b.id,
+        Number(b.effectiveCostPrice) || Number(b.costPrice) || 0,
+      ]),
+    );
+    const itemsWithCosts = plan.items.map((it) => {
+      if (it.costExGst != null && Number(it.costExGst) > 0) return it;
+      const prod = products.find((p) => p.id === it.productId);
+      const fallback = Number(prod?.effectiveCost ?? prod?.cost) || 0;
+      let q = 0;
+      let c = 0;
+      for (const a of it.batchAllocations || []) {
+        const bc = batchCostById.get(a.batchId) || 0;
+        const aq = Number(a.qty) || 0;
+        if (aq > 0 && bc > 0) {
+          q += aq;
+          c += aq * bc;
+        }
+      }
+      const cost = q > 0 ? c / q : fallback;
+      return cost > 0 ? { ...it, costExGst: Math.round(cost * 100) / 100 } : it;
+    });
+
+    let preparedWarehouseId = draft.warehouseId;
+    if (billTrip) {
+      const validWhIds = new Set(warehouses.map((w) => w.id));
+      const tripWhIds = tripWarehouseIds(billTrip, validWhIds);
+      const currentWh = String(preparedWarehouseId || "").trim();
+      if (tripWhIds.length > 0 && (!currentWh || !tripWhIds.includes(currentWh))) {
+        const primaryWh = tripPrimaryWarehouseId(billTrip, validWhIds);
+        if (primaryWh) preparedWarehouseId = primaryWh;
+      }
+    }
+
+    let preparedCustomerId = draft.customerId ?? originalBill.customerId;
+    if (
+      normCustName(draft.retailer) !== normCustName(originalBill.retailer) ||
+      last10Of(draft.phone || "") !== last10Of(originalBill.phone || "")
+    ) {
+      preparedCustomerId = resolveMasterCustomerId(draft.retailer, draft.phone);
+    }
+
+    draft = {
+      ...draft,
+      items: itemsWithCosts,
+      tripId: draft.tripId ?? originalBill.tripId ?? billTrip?.id,
+      warehouseId: preparedWarehouseId,
+      customerId: preparedCustomerId,
+    };
+
+    const effectiveDate = String(draft.date || todayISO()).slice(0, 10);
+    const taxRegime = resolveTaxRegime(orgProfile, effectiveDate);
+    const outputTaxOff = noOutputTax(taxRegime);
+
+    const maxExistingId = allBillsRef.current.length
+      ? Math.max(...allBillsRef.current.map((b) => b.id))
+      : 100;
+    const nextBillId = reserveDocNumber("bill", maxExistingId);
+    const nonGstDocNo = nextNonGstDocNo(allBillsRef.current);
+    const splitGroupId =
+      originalBill.splitGroupId ||
+      `split_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+
+    const splitPlan = planSplitMixedBill({
+      bill: draft,
+      originalBill,
+      products,
+      gstMode,
+      outputTaxOff,
+      nextBillId,
+      nextNonGstDocNo: nonGstDocNo,
+      invoicePrefix: billingSettings?.invoicePrefix || "INV",
+      splitGroupId,
+      editBy: currentUser?.name || "Admin",
+      comment: opts?.comment,
+      requestedPaid: opts?.requestedPaid,
+      stockChanged: plan.stockChanged,
+    });
+    if (!splitPlan) return null;
+
+    const { gstBill, nonGstBill, updatedBill, createdBill, combinedTotal, requestedPaid } =
+      splitPlan;
+
+    for (const it of itemsWithCosts) {
+      if (it.productId && typeof it.rate === "number" && it.rate >= 0) {
+        setCustomProductPrice(it.productId, it.rate, updatedBill.retailer);
+      }
+    }
+
+    // Keep customer info in sync on existing payment rows before reconciling totals
+    const existingJournalForBill = payments
+      .filter((p) => p.billId === updatedBill.id)
+      .reduce((t, p) => t + (Number(p.amount) || 0), 0);
+    setPayments((prev) =>
+      prev.map((p) =>
+        p.billId === updatedBill.id &&
+        (normCustName(p.customerName) !== normCustName(updatedBill.retailer) ||
+          (updatedBill.phone && p.customerPhone !== updatedBill.phone))
+          ? {
+              ...p,
+              customerName: updatedBill.retailer,
+              customerPhone: updatedBill.phone || p.customerPhone,
+            }
+          : p,
+      ),
+    );
+
+    reconcileBillPayments(updatedBill, updatedBill.amountPaid, {
+      date: updatedBill.paymentDate || updatedBill.date || todayISO(),
+      mode: updatedBill.paymentMode || "cash",
+      note: updatedBill.paymentNote,
+      recordedBy: currentUser?.name || "Admin",
+      salesmanId: updatedBill.salesmanId,
+    });
+
+    if (createdBill.amountPaid > 0) {
+      const splitPay: PaymentRecord = {
+        id: `pay_${Date.now()}_sp_${Math.random().toString(36).slice(2, 6)}`,
+        billId: createdBill.id,
+        customerName: createdBill.retailer,
+        customerPhone: createdBill.phone,
+        paymentDate: createdBill.paymentDate || createdBill.date || todayISO(),
+        amount: createdBill.amountPaid,
+        mode: createdBill.paymentMode || "cash",
+        referenceNote:
+          createdBill.paymentNote ||
+          `Payment split from ${updatedBill.docNo || `#${updatedBill.id}`} to ${createdBill.docNo || `#${createdBill.id}`}`,
+        recordedBy: currentUser?.name || "Admin",
+        salesmanId: createdBill.salesmanId,
+        createdAt: new Date().toISOString(),
+      };
+      setPayments((prev) => [splitPay, ...prev]);
+    }
+
+    // If user also lowered quantities during edit+split so combined total dropped below what was already received,
+    // keep the excess as a customer advance instead of losing it.
+    const keepAsAdvance =
+      Math.round((Math.min(requestedPaid, existingJournalForBill) - combinedTotal) * 100) / 100;
+    if (keepAsAdvance > 0.004) {
+      const advRow: PaymentRecord = {
+        id: `pay_${Date.now()}_adv_${Math.random().toString(36).slice(2, 6)}`,
+        customerName: updatedBill.retailer,
+        customerPhone: updatedBill.phone,
+        paymentDate: todayISO(),
+        amount: keepAsAdvance,
+        mode: updatedBill.paymentMode || "cash",
+        referenceNote: `Advance / on account (split invoice #${updatedBill.id} total was reduced)`,
+        recordedBy: currentUser?.name || "Admin",
+        isAdvance: true,
+        createdAt: new Date().toISOString(),
+      };
+      setPayments((prev) => [advRow, ...prev]);
+      logPaymentAudit({
+        action: "invoice_edited",
+        paymentId: advRow.id,
+        billId: updatedBill.id,
+        customerName: updatedBill.retailer,
+        amount: keepAsAdvance,
+        note: `Split invoice #${updatedBill.id} combined total reduced: ₹${keepAsAdvance} kept as advance`,
+        after: advRow,
+      });
+    }
+
+    allBillsRef.current = [
+      createdBill,
+      ...allBillsRef.current.map((b) => (b.id === updatedBill.id ? updatedBill : b)),
+    ];
+    setBills((bs) => {
+      const next = [
+        createdBill,
+        ...bs.map((b) => (b.id === updatedBill.id ? updatedBill : b)),
+      ];
+      try {
+        saveOrders(next as any).catch(() => {});
+        const raw = localStorage.getItem(STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        parsed.bills = next;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+      } catch {}
+      return next;
+    });
+
+    if (billTrip) {
+      setTrips((ts) =>
+        ts.map((t) => {
+          if (t.id !== billTrip.id) return t;
+          if (t.billIds.includes(createdBill.id)) return t;
+          const updatedT = { ...t, billIds: [...t.billIds, createdBill.id] };
+          cloud("pushTripToSupabase", pushTripToSupabase(updatedT));
+          return updatedT;
+        }),
+      );
+    }
+
+    if (editingBillId === targetId) {
+      setEditingBillId(null);
+      setCart(emptyCart());
+    }
+
+    cloud("pushBillToSupabase", pushBillToSupabase(updatedBill));
+    cloud("pushBillToSupabase", pushBillToSupabase(createdBill));
+    cloudFetch("/api/bills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updatedBill),
+    });
+    cloudFetch("/api/bills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(createdBill),
+    });
+
+    return { gstBill, nonGstBill };
   }
 
   // Bills edited before the edit screen kept the invoice discount / issued GST treatment carry totals that
@@ -11254,6 +12647,135 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }
 
+
+  // ── Oversold bill reassignment (owner only; batch links only; with undo + log) ─────────────
+  const REASSIGN_KEY = "mrwater_oversold_reassign_v1";
+  type ReassignSnapshot = {
+    at: string;
+    by: string;
+    productId: number;
+    fromWarehouseId: string;
+    toWarehouseId: string;
+    bills: { billId: number; items: { index: number; productId: number; batchAllocations?: any[] }[] }[];
+  };
+  const readReassignStore = (): { log: any[]; undo: ReassignSnapshot | null } => {
+    try {
+      const v = JSON.parse(localStorage.getItem(REASSIGN_KEY) || "null");
+      return { log: Array.isArray(v?.log) ? v.log : [], undo: v?.undo || null };
+    } catch {
+      return { log: [], undo: null };
+    }
+  };
+  const writeReassignStore = (v: { log: any[]; undo: ReassignSnapshot | null }) => {
+    try {
+      localStorage.setItem(REASSIGN_KEY, JSON.stringify({ log: v.log.slice(-200), undo: v.undo }));
+    } catch {}
+  };
+  const [hasOversoldReassignUndo, setHasOversoldReassignUndo] = useState<boolean>(
+    () => !!readReassignStore().undo,
+  );
+
+  function reassignBillsProductWarehouse(args: {
+    productId: number;
+    fromWarehouseId: string;
+    toWarehouseId: string;
+    billIds: number[];
+    dryRun?: boolean;
+  }): ReassignSummary {
+    const fail = (error: string): ReassignSummary => ({ ok: false, error, movedCases: 0, perBill: [], skipped: [] });
+    if (!args.dryRun && currentRole !== "admin") return fail("Only the owner login can move bills between godowns.");
+    try {
+      const res = reassignBillsPure({
+        bills: allBillsRef.current,
+        billIds: args.billIds,
+        productId: args.productId,
+        fromWarehouseId: args.fromWarehouseId,
+        toWarehouseId: args.toWarehouseId,
+        products,
+        warehouses,
+        inventoryBatches,
+        trips,
+        lockedBillIds: editingBillId ? [editingBillId] : [],
+      });
+      const summary: ReassignSummary = { ok: true, movedCases: res.movedCases, perBill: res.perBill, skipped: res.skipped };
+      if (args.dryRun) return summary;
+      if (res.changedBills.length === 0) return { ...summary, ok: false, error: "Nothing could be moved for the selected bills." };
+
+      const by = (currentUser as any)?.name || (currentUser as any)?.username || "owner";
+      const at = new Date().toISOString();
+      const store = readReassignStore();
+      const snapshot: ReassignSnapshot = {
+        at,
+        by,
+        productId: args.productId,
+        fromWarehouseId: args.fromWarehouseId,
+        toWarehouseId: args.toWarehouseId,
+        bills: res.originalBills.map((ob) => ({
+          billId: ob.id,
+          items: ob.items
+            .map((it, index) => ({ index, productId: it.productId, batchAllocations: it.batchAllocations }))
+            .filter((x) => x.productId === args.productId),
+        })),
+      };
+      writeReassignStore({
+        log: [
+          ...store.log,
+          ...res.perBill.map((p) => ({ at, by, billId: p.billId, productId: args.productId, from: args.fromWarehouseId, to: args.toWarehouseId, movedCases: p.movedCases })),
+        ],
+        undo: snapshot,
+      });
+      setHasOversoldReassignUndo(true);
+
+      allBillsRef.current = res.updatedBills;
+      setBills(res.updatedBills);
+      saveOrders(res.updatedBills).catch(() => {});
+      for (const b of res.changedBills) cloud("pushBillToSupabase", pushBillToSupabase(b));
+      notify(
+        `Moved ${res.movedCases} cases on ${res.changedBills.length} bill(s) to the other godown. Totals, GST, costs & payments unchanged. You can undo this from the inspector.`,
+      );
+      return summary;
+    } catch (e) {
+      if (e instanceof ReassignGuardError) return fail(e.message);
+      return fail("Could not move the bills. Nothing was saved.");
+    }
+  }
+
+  function undoLastOversoldReassign(): { ok: boolean; restoredBills: number; error?: string } {
+    if (currentRole !== "admin") return { ok: false, restoredBills: 0, error: "Only the owner login can undo a godown move." };
+    const store = readReassignStore();
+    const snap = store.undo;
+    if (!snap) return { ok: false, restoredBills: 0, error: "Nothing to undo." };
+    const changed: Bill[] = [];
+    const next = allBillsRef.current.map((b) => {
+      const sb = snap.bills.find((x) => x.billId === b.id);
+      if (!sb) return b;
+      let touched = false;
+      const items = b.items.map((it, index) => {
+        const si = sb.items.find((x) => x.index === index && x.productId === it.productId);
+        if (!si) return it;
+        touched = true;
+        const { batchAllocations: _cur, ...rest } = it as any;
+        return si.batchAllocations ? { ...rest, batchAllocations: si.batchAllocations } : rest;
+      });
+      if (!touched) return b;
+      const nb = { ...b, items } as Bill;
+      changed.push(nb);
+      return nb;
+    });
+    if (changed.length === 0) return { ok: false, restoredBills: 0, error: "Those bills have changed since the move; nothing was restored." };
+    allBillsRef.current = next;
+    setBills(next);
+    saveOrders(next).catch(() => {});
+    for (const b of changed) cloud("pushBillToSupabase", pushBillToSupabase(b));
+    writeReassignStore({
+      log: [...store.log, { at: new Date().toISOString(), by: (currentUser as any)?.name || "owner", undo: true, bills: changed.map((b) => b.id) }],
+      undo: null,
+    });
+    setHasOversoldReassignUndo(false);
+    notify(`Undid the godown move on ${changed.length} bill(s).`);
+    return { ok: true, restoredBills: changed.length };
+  }
+
   // Registers deleted test numbers as Cancelled for GSTR-1 document series continuity
   function recordMissingSeriesAsCancelled(missingIds: number[]): number {
     const newCancelled: Bill[] = missingIds.map((id) => ({
@@ -11356,6 +12878,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     route?: string,
     salesmanId?: string,
     warehouseLoads?: Record<string, Record<number, number>>,
+    driver?: string,
   ): Trip {
     // Highest id ever used: live trips AND deleted ones, so an id on the deletion list is never handed out again.
     const highestUsed = Math.max(
@@ -11378,8 +12901,14 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       matchedSalesmanObj?.name ||
       (currentUser?.role === "salesman" ? currentUser.name : undefined);
 
+    const validWhIds = new Set(warehouses.map((w) => w.id));
+    const explicitWh =
+      warehouseId && (validWhIds.size === 0 || validWhIds.has(warehouseId))
+        ? warehouseId
+        : "";
     const resolvedWarehouseId =
-      warehouseId ||
+      explicitWh ||
+      tripPrimaryWarehouseId({ warehouseId, warehouseLoads }, validWhIds) ||
       defaultWarehouse?.id ||
       (warehouses.length > 0 ? warehouses[0].id : "");
 
@@ -11396,6 +12925,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       salesman: resolvedSalesmanName || undefined,
       salesmanId: resolvedSalesmanId || undefined,
       route: route || undefined,
+      driver: driver?.trim() || undefined,
       date,
       warehouseId: resolvedWarehouseId || "",
       loaded,
@@ -11563,14 +13093,17 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     return addedCount;
   }
 
-  // Records why crates were missing when a trip closed. Crates marked 'broken' are posted as a
-  // damage write-off against the godown they were loaded from, so they leave stock (stock is only
-  // deducted at billing, so a broken crate is otherwise still counted in the godown). Re-closing a
-  // reopened trip updates the same write-off instead of adding a second one.
+  // Records why crates were missing when a trip closed, and takes the crates that really left the godown out of
+  // book stock. Stock is only deducted at billing, so a damaged crate, a crate sold without a bill, or an
+  // unexplained loss would otherwise stay counted in the godown forever. Each one is posted as a write-off against
+  // the godown it was loaded from ('short_loaded' is the exception: those crates never reached the van, so they
+  // are still on the shelf and stock stays as it is). A product can have damaged AND missing crates: the damaged
+  // part is the entry itself, the missing part sits in `missing`, each with its own write-off. Re-closing a
+  // reopened trip updates the same write-offs instead of adding new ones.
   function applyShortageReasons(
     trip: Trip,
     returned: Record<number, number>,
-    input: Record<number, { reason: TripShortageReason; note?: string }>,
+    input: Record<number, TripShortageInput>,
   ): Trip["shortageReasons"] {
     const result: NonNullable<Trip["shortageReasons"]> = {};
     const prior = trip.shortageReasons || {};
@@ -11583,6 +13116,77 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     }
     const failures: string[] = [];
+    const reasonText: Record<string, string> = {
+      broken: "Broken crates found at trip close",
+      sold_not_billed: "Crates sold on the van but not billed (found at trip close)",
+      other: "Crates missing at trip close (reason in notes)",
+    };
+    const noteText: Record<string, string> = {
+      broken: "broken crates",
+      sold_not_billed: "sold but not billed",
+      other: "missing crates",
+    };
+
+    // Post, update or remove ONE write-off. Returns the disposition id to keep on the entry (if any).
+    const syncWriteOff = (
+      pid: number,
+      reason: TripShortageReason | undefined,
+      qty: number,
+      note: string | undefined,
+      beforeId: string | undefined,
+    ): string | undefined => {
+      const exists = !!beforeId && inventoryDispositions.some((d) => d.id === beforeId);
+      if (!reason || qty <= 0 || !TRIP_WRITEOFF_REASONS.includes(reason)) {
+        // No write-off any more (no shortage, or a reason that leaves stock alone): take an earlier one back out.
+        if (beforeId && exists) deleteInventoryDisposition(beforeId);
+        return undefined;
+      }
+      const product = products.find((p) => Number(p.id) === pid);
+      const cost = Number((product as any)?.landedCostPerCrate) || Number(product?.cost) || 0;
+      const notes = note || `Trip #${trip.id} (${trip.vehicle}): ${noteText[reason]}`;
+      if (exists) {
+        updateInventoryDisposition(beforeId!, {
+          quantity: qty,
+          costPerUnit: cost,
+          costValue: cost * qty,
+          reason: reasonText[reason],
+          notes,
+        });
+        return beforeId;
+      }
+      // Take it from the godown that supplied most of this product.
+      let whId = trip.warehouseId || defaultWarehouse?.id || warehouses[0]?.id || "";
+      let best = -1;
+      for (const [wh, m] of Object.entries(trip.warehouseLoads || {})) {
+        const q = Number((m as Record<number, number>)[pid]) || 0;
+        if (q > best) {
+          best = q;
+          whId = wh;
+        }
+      }
+      const res = addInventoryDisposition({
+        dispositionType: "damage_writeoff",
+        productId: pid,
+        productName: product?.name,
+        warehouseId: whId,
+        warehouseName: warehouses.find((w) => w.id === whId)?.name,
+        quantity: qty,
+        unit: "case",
+        costPerUnit: cost,
+        compensationStatus: "not_applicable",
+        reason: reasonText[reason],
+        notes,
+        referenceDocNo: `TRIP-${trip.id}`,
+        salesmanId: trip.salesmanId,
+        salesmanName: trip.salesman,
+        eventDate: todayISO(),
+        createdBy: currentUser?.name || "Admin",
+      } as any);
+      if ("disposition" in res) return res.disposition.id;
+      failures.push(`${product?.name || `Product #${pid}`}: ${(res as { error: string }).error}`);
+      return undefined;
+    };
+
     const pids = new Set<number>([
       ...Object.keys(input).map(Number),
       ...Object.keys(prior).map(Number),
@@ -11592,75 +13196,50 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       const qty = loaded - (sold[pid] || 0) - (Number(returned[pid]) || 0);
       const entry = qty > 0 ? input[pid] : undefined;
       const before = prior[pid];
-      const dispExists =
-        before?.dispositionId &&
-        inventoryDispositions.some((d) => d.id === before.dispositionId);
 
       if (!entry) {
-        // No shortage any more (or no reason given): drop an earlier write-off.
-        if (before?.dispositionId && dispExists) deleteInventoryDisposition(before.dispositionId);
+        // No shortage any more (or no reason given): drop earlier write-offs.
+        syncWriteOff(pid, undefined, 0, undefined, before?.dispositionId);
+        syncWriteOff(pid, undefined, 0, undefined, before?.missing?.dispositionId);
         continue;
       }
 
-      const product = products.find((p) => Number(p.id) === pid);
-      let dispositionId: string | undefined;
-      if (entry.reason === "broken") {
-        const cost =
-          Number((product as any)?.landedCostPerCrate) || Number(product?.cost) || 0;
-        if (dispExists) {
-          updateInventoryDisposition(before!.dispositionId!, {
-            quantity: qty,
-            costPerUnit: cost,
-            costValue: cost * qty,
-            notes: entry.note || `Trip #${trip.id} (${trip.vehicle}): broken crates`,
-          });
-          dispositionId = before!.dispositionId;
+      const damaged = entry.reason === "broken" ? qty : Math.min(qty, Math.max(0, Math.floor(Number(entry.damaged) || 0)));
+      const missingQty = qty - damaged;
+      const note = entry.note?.trim() || undefined;
+
+      if (damaged > 0) {
+        // The entry itself is the damaged part; whatever else is missing goes in `missing`.
+        const dmgNote = entry.reason === "broken" ? note : undefined;
+        const dmgId = syncWriteOff(pid, "broken", damaged, dmgNote, before?.reason === "broken" ? before?.dispositionId : undefined);
+        // An earlier entry of another reason held its own write-off in dispositionId: clear it.
+        if (before && before.reason !== "broken") syncWriteOff(pid, undefined, 0, undefined, before.dispositionId);
+        let missing: NonNullable<Trip["shortageReasons"]>[number]["missing"];
+        if (missingQty > 0 && entry.reason !== "broken") {
+          const mReason = entry.reason as Exclude<TripShortageReason, "broken">;
+          const mId = syncWriteOff(pid, mReason, missingQty, note, before?.missing?.dispositionId);
+          missing = { reason: mReason, qty: missingQty, note, dispositionId: mId };
         } else {
-          // Take it from the godown that supplied most of this product.
-          let whId = trip.warehouseId || defaultWarehouse?.id || warehouses[0]?.id || "";
-          let best = -1;
-          for (const [wh, m] of Object.entries(trip.warehouseLoads || {})) {
-            const q = Number((m as Record<number, number>)[pid]) || 0;
-            if (q > best) {
-              best = q;
-              whId = wh;
-            }
-          }
-          const res = addInventoryDisposition({
-            dispositionType: "damage_writeoff",
-            productId: pid,
-            productName: product?.name,
-            warehouseId: whId,
-            warehouseName: warehouses.find((w) => w.id === whId)?.name,
-            quantity: qty,
-            unit: "case",
-            costPerUnit: cost,
-            compensationStatus: "not_applicable",
-            reason: "Broken crates found at trip close",
-            notes: entry.note || `Trip #${trip.id} (${trip.vehicle}): broken crates`,
-            referenceDocNo: `TRIP-${trip.id}`,
-            salesmanId: trip.salesmanId,
-            salesmanName: trip.salesman,
-            eventDate: todayISO(),
-            createdBy: currentUser?.name || "Admin",
-          } as any);
-          if ("disposition" in res) dispositionId = res.disposition.id;
-          else failures.push(`${product?.name || `Product #${pid}`}: ${(res as { error: string }).error}`);
+          syncWriteOff(pid, undefined, 0, undefined, before?.missing?.dispositionId);
         }
-      } else if (before?.dispositionId && dispExists) {
-        // Reason changed away from "broken": take the write-off back out.
-        deleteInventoryDisposition(before.dispositionId);
+        result[pid] = {
+          reason: "broken",
+          qty: damaged,
+          note: dmgNote,
+          dispositionId: dmgId,
+          ...(missing ? { missing } : {}),
+        };
+      } else {
+        const reason = entry.reason;
+        const id = syncWriteOff(pid, reason, qty, note, before?.reason === reason ? before?.dispositionId : undefined);
+        if (before && before.reason !== reason) syncWriteOff(pid, undefined, 0, undefined, before.dispositionId);
+        syncWriteOff(pid, undefined, 0, undefined, before?.missing?.dispositionId);
+        result[pid] = { reason, qty, note, dispositionId: id };
       }
-      result[pid] = {
-        reason: entry.reason,
-        qty,
-        note: entry.note?.trim() || undefined,
-        dispositionId,
-      };
     }
     if (failures.length > 0) {
       notify(
-        "Broken crates could not be written off in stock, record them under Dispositions:\n" +
+        "These crates could not be written off in stock, record them under Dispositions:\n" +
           failures.map((m) => `• ${m}`).join("\n"),
       );
     }
@@ -11670,7 +13249,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
   function saveReturn(
     tripId: number,
     returned: Record<number, number>,
-    shortageReasons?: Record<number, { reason: TripShortageReason; note?: string }>,
+    shortageReasons?: Record<number, TripShortageInput>,
     cashHandedIn?: number | null,
     cashShortBooked?: number | null,
   ): { ok: true } | { ok: false; error: string } {
@@ -11787,7 +13366,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     commitTripChange({ ...cur, cashShortWrittenOff: true });
   }
 
-  // Takes back the stock write-off made for broken crates when the trip was closed.
+  // Takes back the stock write-offs (damaged / missing crates) made when the trip was closed.
   function withdrawTripWriteOffs(trip: Trip): Trip["shortageReasons"] {
     if (!trip.shortageReasons) return trip.shortageReasons;
     const next: NonNullable<Trip["shortageReasons"]> = {};
@@ -11795,7 +13374,13 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       if (entry.dispositionId && inventoryDispositions.some((d) => d.id === entry.dispositionId)) {
         deleteInventoryDisposition(entry.dispositionId);
       }
-      next[Number(pid)] = { ...entry, dispositionId: undefined };
+      const mId = entry.missing?.dispositionId;
+      if (mId && inventoryDispositions.some((d) => d.id === mId)) deleteInventoryDisposition(mId);
+      next[Number(pid)] = {
+        ...entry,
+        dispositionId: undefined,
+        ...(entry.missing ? { missing: { ...entry.missing, dispositionId: undefined } } : {}),
+      };
     }
     return next;
   }
@@ -11979,6 +13564,65 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     });
   }
 
+  function saveBatchAudit(input: {
+    date?: string;
+    warehouseId: string;
+    referenceNote?: string;
+    lines: {
+      productId: number;
+      batchKey?: string;
+      batchNumber?: string;
+      expiryDate?: string;
+      system: number;
+      counted: number;
+      kind?: AuditEntry["kind"];
+      reason?: string;
+    }[];
+  }): number | null {
+    const targetDate = input.date && input.date.trim() ? input.date.trim() : todayISO();
+    const entries: AuditEntry[] = input.lines
+      .filter((l) => Number.isFinite(l.counted) && Number.isFinite(l.system))
+      .map((l) => {
+        const product = products.find((p) => p.id === l.productId);
+        const entry: AuditEntry = {
+          productId: l.productId,
+          name: product ? product.name : `Product #${l.productId}`,
+          system: l.system,
+          counted: l.counted,
+          // 'oversold_open' is a record only: it never moves stock
+          diff: l.kind === "oversold_open" ? 0 : l.counted - l.system,
+          warehouseId: input.warehouseId || undefined,
+        };
+        if (l.batchKey) entry.batchKey = l.batchKey;
+        if (l.batchNumber) entry.batchNumber = l.batchNumber;
+        if (l.expiryDate) entry.expiryDate = l.expiryDate;
+        if (l.kind) entry.kind = l.kind;
+        else if (l.batchKey) entry.kind = "batch";
+        if (l.reason) entry.reason = l.reason;
+        return entry;
+      });
+    if (entries.length === 0) return null;
+
+    const nextId = reserveDocNumber("audit", audits.length ? Math.max(...audits.map((x) => x.id)) : 0);
+    const nowTime = new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
+    const newAudit: Audit = {
+      id: nextId,
+      date: targetDate,
+      time: nowTime,
+      referenceNote: input.referenceNote?.trim() || undefined,
+      entries,
+      adjusted: true,
+    };
+    setAudits((as) => [newAudit, ...as]);
+    cloud("pushAuditToSupabase", pushAuditToSupabase(newAudit));
+    cloudFetch("/api/audits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newAudit),
+    });
+    return nextId;
+  }
+
   function deleteAudit(id: number) {
     logDeletion("audit", String(id));
     setAudits((as) => as.filter((a) => a.id !== id));
@@ -12014,10 +13658,15 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         addProduct,
         updateProductField,
         updateProductFields,
+        bulkSetProductTaxability,
         deleteProduct,
         applyBulkImport,
         receiveInwardStock,
         productWarehouseStock,
+        oversoldReport,
+        reassignBillsProductWarehouse,
+        undoLastOversoldReassign,
+        hasOversoldReassignUndo,
         productBatchLines,
         productInWarehouse,
         warehouses,
@@ -12079,10 +13728,14 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         editingBillId,
         justFinalizedBillId,
         setJustFinalizedBillId,
+        justFinalizedSplitIds,
+        setJustFinalizedSplitIds,
         startEditBill,
         cancelEditBill,
         finalizeBill,
+        finalizeSplitBills,
         updateBill,
+        splitMixedBill,
         repairBillTotals,
         repairNonGstBillTaxes,
         convertBillsToTaxInvoices,
@@ -12112,6 +13765,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         recordCustomerPayment,
         repairPaymentLinks,
         deletePayment,
+        ghostPayments,
+        removeGhostPayments,
         updatePayment,
         paymentAudit,
         getCustomerCreditSummary,
@@ -12142,6 +13797,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         syncTripsToCloud,
         audits,
         saveAudit,
+        saveBatchAudit,
         deleteAudit,
         gstMode,
         setGstMode,
@@ -12209,6 +13865,15 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       {children}
     </LedgerContext.Provider>
   );
+};
+
+/** Result of a checkout that may have produced a GST invoice, a Non-GST cash memo, or both (linked by splitGroupId). */
+export type SplitBillsResult = {
+  gstBillId: number | null;
+  nonGstBillId: number | null;
+  splitGroupId: string;
+  gstBill: Bill | null;
+  nonGstBill: Bill | null;
 };
 
 export function useLedger(): LedgerContextType {

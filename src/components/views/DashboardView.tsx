@@ -928,7 +928,7 @@ export const DashboardView: React.FC = () => {
       return {
         id: b.id,
         party: b.retailer,
-        billNo: invoiceNo(b.id),
+        billNo: invoiceNo(b),
         beat: beatOfCustomer(cust, beats)?.name || "-",
         amount: `₹${money(total)}`,
         status,

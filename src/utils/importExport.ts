@@ -26,6 +26,13 @@ export function normalizeImportRow(raw: Record<string, unknown>): ImportRow | nu
   const expiry = String(pick('expiry', 'expirydate', 'exp', 'bestbefore') || '').trim();
   const catRaw = String(pick('category', 'cat', 'brand', 'group') || '').toLowerCase();
   const hsn = String(pick('hsn', 'hsncode', 'sac', 'hsnsac') || '').trim();
+  const taxRaw = String(pick('taxability', 'gsttype', 'taxstatus', 'gststatus') || '').trim().toLowerCase();
+  const taxability =
+    taxRaw.includes('non') || taxRaw === 'no' || taxRaw === 'exempt' || taxRaw === 'nil'
+      ? ('non_gst' as const)
+      : ('taxable' as const);
+  const labourCost = Number(pick('labour', 'labourcost', 'hamali', 'loading')) || 0;
+  const freightCost = Number(pick('freight', 'freightcost', 'transport')) || 0;
   const batchNumber = String(pick('batch', 'batchnumber', 'lot', 'lotnumber') || '').trim().toUpperCase();
   const scheme = String(pick('scheme', 'promoscheme', 'purchasescheme', 'offer', 'schemepromooffer') || '').trim();
 
@@ -45,6 +52,8 @@ export function normalizeImportRow(raw: Record<string, unknown>): ImportRow | nu
   let category: CategoryKey = 'energy';
   if (catRaw.includes('vibe') || catRaw.includes('soda') || catRaw.includes('cola')) category = 'vibe';
   else if (catRaw.includes('joos') || catRaw.includes('juice') || catRaw.includes('sosyo')) category = 'joos';
+  else if (catRaw.includes('water')) category = 'water';
+  else if (catRaw.includes('general') || taxability === 'non_gst') category = 'general';
 
   const warnings: string[] = [];
   if (!retail) warnings.push('no retail price — will default to wholesale or cost * 1.25');
@@ -60,7 +69,10 @@ export function normalizeImportRow(raw: Record<string, unknown>): ImportRow | nu
     pack,
     expiry,
     category,
-    hsn: normalizeTo8DigitHsn(hsn, category, name),
+    taxability,
+    labourCost: labourCost > 0 ? labourCost : undefined,
+    freightCost: freightCost > 0 ? freightCost : undefined,
+    hsn: normalizeTo8DigitHsn(hsn, category, name, taxability),
     batchNumber: batchNumber || undefined,
     scheme: scheme || undefined,
     supplierName: supplierName || undefined,
@@ -144,6 +156,9 @@ export function downloadImportTemplate(): void {
     'Retail MRP (₹)',
     'Wholesale Rate (₹)',
     'Scheme / Promo Offer',
+    'Taxability (taxable/non_gst)',
+    'Labour / Case (₹)',
+    'Freight / Case (₹)',
   ];
 
   const escapeCsv = (val: string | number) => {
@@ -178,6 +193,9 @@ export function downloadImportTemplate(): void {
     265,
     245,
     'None',
+    'taxable',
+    0,
+    0,
   ];
 
   const sample2 = [
@@ -204,6 +222,9 @@ export function downloadImportTemplate(): void {
     250,
     230,
     '10+1 Dealer Scheme',
+    'taxable',
+    0,
+    0,
   ];
 
   const sample3 = [
@@ -230,6 +251,9 @@ export function downloadImportTemplate(): void {
     240,
     220,
     '₹15 Off / Case Trade Discount',
+    'taxable',
+    0,
+    0,
   ];
 
   const csv = [

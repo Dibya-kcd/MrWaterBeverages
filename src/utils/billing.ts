@@ -17,6 +17,8 @@ import {
 } from '../types';
 import { CATS } from '../constants/initialData';
 import { todayISO } from "./dateLocal";
+import { formatBillNumber, isBillGstInvoice } from './invoiceCommon';
+import { tripPrimaryWarehouseId } from './tripLoads';
 
 export const money = (n: number): string =>
   (Math.round((n + Number.EPSILON) * 100) / 100).toLocaleString('en-IN', {
@@ -573,17 +575,36 @@ export function resolveItemCrateCost(item: any): number {
 
 /**
  * True when the cost stored for a GRN line (and so the stock batch's cost per case) ALREADY contains the
- * inward freight / transport / labour per case.  That is the case for lines saved with a landed cost that is
- * higher than the scheme-adjusted purchase cost by the freight amount (the invoice-upload inward screen).
- * Reports must then NOT add the freight again on top of the batch cost, or profit is understated.
+ * inward freight / transport / labour per case. That is the case for lines saved with a landed cost that is
+ * higher than the scheme-adjusted purchase cost by the freight amount (both invoice-upload and manual inward
+ * screens). Reports must then NOT add the freight again on top of the batch cost, or profit is understated.
  * Lines where this cannot be proven keep the old behaviour (freight added once on top).
  */
 export function inwardFreightAlreadyInCost(item: any, inwardPerCrate: number): boolean {
   const per = Number(inwardPerCrate) || 0;
   if (per <= 0 || !item) return false;
   const landedEx = Number(item.landedCostPerCrateExGst);
-  const effEx = Number(item.effectiveCostPerCrateExGst);
-  if (!(landedEx > 0) || !(effEx > 0)) return false;
+  if (!(landedEx > 0)) return false;
+  let effEx = Number(item.effectiveCostPerCrateExGst);
+  if (!(effEx > 0)) {
+    const effUnit = Number(item.effectiveCostPerUnit);
+    const unitPrice = Number(item.unitPrice) || 0;
+    const unitsPerCrate = Number(item.unitsPerCrate) || 1;
+    if (Number.isFinite(effUnit) && effUnit > 0) {
+      // Manual inward (InwardConsignmentModal) stores the scheme-adjusted ex-GST crate cost
+      // in effectiveCostPerUnit. Guard against stray per-bottle values using the same rule as
+      // resolveItemCrateCost so bottle rates cannot masquerade as crate costs.
+      effEx =
+        unitPrice > 0 && effUnit < unitPrice * 0.35 && unitsPerCrate > 1
+          ? Math.round(effUnit * unitsPerCrate * 100) / 100
+          : effUnit >= 25 || unitPrice <= 0
+            ? effUnit
+            : unitsPerCrate > 1
+              ? Math.round(effUnit * unitsPerCrate * 100) / 100
+              : effUnit;
+    }
+  }
+  if (!(effEx > 0)) return false;
   return landedEx - effEx >= per - 0.02;
 }
 
@@ -599,11 +620,20 @@ export function resolveItemLandedCrateCost(item: any): number {
   if (Number.isFinite(crateEffIncl) && crateEffIncl > 0) return crateEffIncl;
 
   const crateCostExGst = resolveItemCrateCost(item);
+  const rawInward = Math.max(0, Number(item.inwardCostPerCrate) || 0);
+  const alreadyHasInward = inwardFreightAlreadyInCost(item, rawInward);
+  if (item.taxability === 'non_gst') {
+    const inwardAddon = alreadyHasInward ? 0 : rawInward;
+    return Math.round((crateCostExGst + inwardAddon) * 100) / 100;
+  }
   const hasSplit = item.cgstPercent !== undefined && item.cgstPercent !== null && item.sgstPercent !== undefined && item.sgstPercent !== null;
   // a purchase line saved with 0% + 0% really is 0% GST; only a line with no tax split falls back to 18%
   const gstRate = hasSplit ? ((Number(item.cgstPercent) || 0) + (Number(item.sgstPercent) || 0) + (Number(item.igstPercent) || 0)) / 100 : 0.18;
-  const inwardAddon = Math.max(0, Number(item.inwardCostPerCrate) || 0);
-  return Math.round((crateCostExGst * (1 + gstRate) + inwardAddon) * 100) / 100;
+  if (alreadyHasInward) {
+    const baseEx = Math.max(0, crateCostExGst - rawInward);
+    return Math.round((baseEx * (1 + gstRate) + rawInward) * 100) / 100;
+  }
+  return Math.round((crateCostExGst * (1 + gstRate) + rawInward) * 100) / 100;
 }
 
 export interface GstBreakdown {
@@ -686,7 +716,11 @@ export function normalizeTo8DigitHsn(
   hsn?: string | null,
   category?: string | null,
   name?: string | null,
+  taxability?: string | null,
 ): string {
+  if (taxability === 'non_gst') {
+    return String(hsn ?? '').trim();
+  }
   const digits = String(hsn ?? '').replace(/\D+/g, '');
   if (digits.length === 8) return digits;
   if (digits.length > 8) return digits.slice(0, 8);
@@ -696,13 +730,13 @@ export function normalizeTo8DigitHsn(
 /**
  * THE one place that decides a product's GST rate (fraction 0-1). Every billing, purchase and
  * report screen must use this so they cannot disagree.
- * Order: statutory rate for the product's HSN (so a stale 0% / 18% saved on a beverage cannot
- * leak onto a bill) -> the product's own rate -> category -> 18%.
+ * Order: Non-GST product (always 0) -> statutory rate for the product's HSN -> product's own rate -> category -> 18%.
  */
 export function resolveProductGstRate(
-  p?: { gstRate?: number | null; hsn?: string | null; category?: string | null; name?: string | null } | null,
+  p?: { gstRate?: number | null; hsn?: string | null; category?: string | null; name?: string | null; taxability?: string | null } | null,
   categoryHint?: string | null,
 ): number {
+  if (p?.taxability === 'non_gst') return 0;
   const fromHsn = gstRateFromHsn(p?.hsn);
   if (fromHsn != null) return fromHsn;
   const own = p?.gstRate;
@@ -794,17 +828,18 @@ export function formatProductVolPack(volume?: number | null, pack?: string | nul
   return [volText, packText].filter(Boolean).join(' ');
 }
 
-/** Product with 8-digit HSN, the statutory GST rate for that HSN, and a units-per-case value. */
-export function normalizeProductTax<T extends { hsn?: string | null; category?: any; name?: string; gstRate?: number | null; unitsPerCrate?: number; pack?: string; volume?: number }>(p: T): T {
-  const hsn = normalizeTo8DigitHsn(p.hsn, p.category, p.name);
-  const rate = gstRateFromHsn(hsn);
+/** Product with 8-digit HSN (or optional raw HSN when non_gst), statutory GST rate, and units-per-case value. */
+export function normalizeProductTax<T extends { hsn?: string | null; category?: any; name?: string; gstRate?: number | null; taxability?: string | null; unitsPerCrate?: number; pack?: string; volume?: number }>(p: T): T {
+  const isNonGst = p.taxability === 'non_gst';
+  const hsn = normalizeTo8DigitHsn(p.hsn, p.category, p.name, p.taxability);
+  const rate = isNonGst ? 0 : gstRateFromHsn(hsn);
   const detectedVol = volumeFromName(p.name);
   const vol = Number(p.volume) > 0 ? Number(p.volume) : (detectedVol || 150);
   const pack = p.pack && p.pack.trim() !== '' && p.pack !== 'pcs' ? p.pack : detectPack(p.name);
   return {
     ...p,
     hsn,
-    gstRate: rate != null ? rate : p.gstRate,
+    gstRate: isNonGst ? 0 : (rate != null ? rate : p.gstRate),
     volume: vol,
     pack,
     unitsPerCrate: Number(p.unitsPerCrate) > 0 ? p.unitsPerCrate : inferUnitsPerCase(`${p.name || ''} ${pack}`, vol),
@@ -817,18 +852,20 @@ export function productTaxFields(p: Parameters<typeof normalizeProductTax>[0]) {
   return {
     hsn: n.hsn as string,
     gstRate: n.gstRate as number | undefined,
+    taxability: (p.taxability === 'non_gst' ? 'non_gst' : undefined) as Product['taxability'],
     unitsPerCrate: n.unitsPerCrate as number | undefined,
     volume: n.volume as number | undefined,
     pack: n.pack as string | undefined,
   };
 }
 
-/** HSN to print for a product: always the full 8-digit code. */
+/** HSN to print for a product: 8-digit code for taxable goods, optional raw code for non_gst. */
 export function resolveProductHsn(
-  p?: { hsn?: string | null; category?: string | null; name?: string | null; productName?: string | null } | null,
+  p?: { hsn?: string | null; category?: string | null; name?: string | null; productName?: string | null; taxability?: string | null } | null,
   categoryHint?: string | null,
 ): string {
-  return normalizeTo8DigitHsn(p?.hsn, p?.category || categoryHint, p?.name || p?.productName);
+  if (p?.taxability === 'non_gst') return String(p?.hsn || '').trim();
+  return normalizeTo8DigitHsn(p?.hsn, p?.category || categoryHint, p?.name || p?.productName, p?.taxability);
 }
 
 /** Pieces (bottles / cans) in one crate / case. 30, 24, 12 and 10 are the usual pack sizes. */
@@ -964,12 +1001,15 @@ export function scaledTaxSplit(
  *  exclusive: amount is ex-GST.        Tax = rate x (amount + free-case value); total = amount + tax.
  */
 export function lineTaxDetail(
-  item: Pick<BillItem, 'amount' | 'freeQty' | 'rate' | 'discount'>,
+  item: Pick<BillItem, 'amount' | 'freeQty' | 'rate' | 'discount' | 'taxability'>,
   rate: number,
   mode: 'inclusive' | 'exclusive' = 'inclusive',
   factor = 1,
 ): LineTaxDetail {
   const amt = Math.max(0, Number(item.amount) || 0) * factor;
+  if (item.taxability === 'non_gst') {
+    return { rate: 0, taxable: amt, tax: 0, cgst: 0, sgst: 0, total: amt };
+  }
   const free = freeSchemeValue(item) * factor;
   const g = normalizeGstFraction(rate);
   if (g <= 0) return { rate: 0, taxable: amt, tax: 0, cgst: 0, sgst: 0, total: amt };
@@ -1610,12 +1650,15 @@ export function applyCartSchemes(
         };
 
     const isGst = options?.billType === 'tax_invoice';
-    const rawGst = prod?.gstRate !== undefined
+    const isNonGstItem = prod?.taxability === 'non_gst';
+    const rawGst = isNonGstItem
+      ? 0
+      : prod?.gstRate !== undefined
       ? prod.gstRate
       : (prod?.category && (CATS as any)[prod.category]?.gst !== undefined)
       ? (CATS as any)[prod.category].gst
       : 0.18;
-    const gstRatePercent = isGst ? (rawGst <= 1 ? Math.round(rawGst * 100 * 100) / 100 : rawGst) : 0;
+    const gstRatePercent = isGst && !isNonGstItem ? (rawGst <= 1 ? Math.round(rawGst * 100 * 100) / 100 : rawGst) : 0;
     const halfRate = gstRatePercent / 2;
 
     return {
@@ -1623,8 +1666,9 @@ export function applyCartSchemes(
       productId: item.productId,
       productName: prod ? prod.name : `Product #${item.productId}`,
       category: (prod?.category as CategoryKey) || 'general',
-      hsn: normalizeTo8DigitHsn(prod?.hsn, prod?.category, prod?.name),
-      gst: normalizeGstFraction(gstRatePercent),
+      hsn: normalizeTo8DigitHsn(prod?.hsn, prod?.category, prod?.name, prod?.taxability),
+      gst: isNonGstItem ? 0 : normalizeGstFraction(gstRatePercent),
+      taxability: isNonGstItem ? 'non_gst' : (prod?.taxability || 'taxable'),
       priceType: item.priceType || 'Retail',
       qty,
       rate,
@@ -1764,8 +1808,9 @@ export function applyCartSchemes(
               productId: freeTargetProd.id,
               productName: freeTargetProd.name,
               category: (freeTargetProd.category as CategoryKey) || 'general',
-              hsn: normalizeTo8DigitHsn(freeTargetProd.hsn, freeTargetProd.category, freeTargetProd.name),
+              hsn: normalizeTo8DigitHsn(freeTargetProd.hsn, freeTargetProd.category, freeTargetProd.name, freeTargetProd.taxability),
               gst: resolveProductGstRate(freeTargetProd),
+              taxability: freeTargetProd.taxability || 'taxable',
               priceType: 'Retail',
               qty: remFree,
               rate: 0,
@@ -1828,8 +1873,9 @@ export function applyCartSchemes(
             productId: freeProd.id,
             productName: freeProd.name,
             category: (freeProd.category as CategoryKey) || 'general',
-            hsn: normalizeTo8DigitHsn(freeProd.hsn, freeProd.category, freeProd.name),
+            hsn: normalizeTo8DigitHsn(freeProd.hsn, freeProd.category, freeProd.name, freeProd.taxability),
             gst: resolveProductGstRate(freeProd),
+            taxability: freeProd.taxability || 'taxable',
             priceType: 'Retail',
             qty: earnedFree,
             rate: 0,
@@ -1879,8 +1925,9 @@ export function applyCartSchemes(
                 productId: rewardProd.id,
                 productName: rewardProd.name,
                 category: (rewardProd.category as CategoryKey) || 'general',
-                hsn: normalizeTo8DigitHsn(rewardProd.hsn, rewardProd.category, rewardProd.name),
+                hsn: normalizeTo8DigitHsn(rewardProd.hsn, rewardProd.category, rewardProd.name, rewardProd.taxability),
                 gst: resolveProductGstRate(rewardProd),
+                taxability: rewardProd.taxability || 'taxable',
                 priceType: 'Retail',
                 qty: res.freeCasesAwarded,
                 rate: 0,
@@ -1920,13 +1967,14 @@ export function applyCartSchemes(
   // carved out of the line amount; it is never added on top. Total payable = sum of line amounts.
   lines.forEach((item) => {
     const prod = allProducts.find((p) => p.id === item.productId);
-    const rawGst = resolveProductGstRate(prod, item.category);
-    const gstRate = isGst ? Math.round(rawGst * 100 * 100) / 100 : 0;
+    const isNonGstItem = item.taxability === 'non_gst' || prod?.taxability === 'non_gst';
+    const rawGst = isNonGstItem ? 0 : resolveProductGstRate(prod, item.category);
+    const gstRate = isGst && !isNonGstItem ? Math.round(rawGst * 100 * 100) / 100 : 0;
     const halfRate = gstRate / 2;
 
-    // `amount` is what the customer pays for the line (GST included)
+    // `amount` is what the customer pays for the line (GST included for GST-taxable products; full amount for Non-GST)
     const linePayable = Math.round(Math.max(0, item.amount ?? (item.chargeableQty * item.rate)) * 100) / 100;
-    const d = isGst
+    const d = isGst && !isNonGstItem
       ? lineTaxDetail({ ...item, amount: linePayable }, rawGst, 'inclusive')
       : { taxable: linePayable, cgst: 0, sgst: 0 };
     const lineTaxable = Math.round(d.taxable * 100) / 100;
@@ -1939,8 +1987,11 @@ export function applyCartSchemes(
     item.sgstRate = halfRate;
     item.sgst = lineSgst;
     item.gst = rawGst;
-    item.hsn = normalizeTo8DigitHsn(item.hsn || prod?.hsn, prod?.category || item.category, prod?.name || item.productName);
-    item.gross = linePayable; // GST-inclusive payable value of the line
+    item.taxability = isNonGstItem ? 'non_gst' : (item.taxability || prod?.taxability || 'taxable');
+    item.hsn = isNonGstItem
+      ? String(item.hsn || prod?.hsn || '').trim()
+      : normalizeTo8DigitHsn(item.hsn || prod?.hsn, prod?.category || item.category, prod?.name || item.productName, item.taxability);
+    item.gross = linePayable; // payable value of the line
     item.amount = linePayable;
 
     totalTaxable += lineTaxable;
@@ -1971,9 +2022,10 @@ export function applyCartSchemes(
  * (then new taxed lines follow the app-wide setting).
  */
 export function issuedGstMode(
-  bill: { cgst?: number; sgst?: number; total?: number; items?: { gst?: number }[] },
+  bill: { cgst?: number; sgst?: number; total?: number; items?: { gst?: number }[]; gstExclude?: boolean; docSeries?: string },
   appMode: GstMode = 'inclusive'
 ): GstMode {
+  if (bill.gstExclude || bill.docSeries === 'non_gst') return 'off';
   const cgst = Number(bill.cgst);
   const sgst = Number(bill.sgst);
   const noTaxCharged = Number.isFinite(cgst) && Number.isFinite(sgst) && cgst + sgst < 0.005 && Number(bill.total) > 0;
@@ -2202,18 +2254,11 @@ export function buildBillText(
   settings?: BillingSettings,
   invoiceFormat?: 'gst' | 'non_gst'
 ): string {
-  const isGst =
-    invoiceFormat !== undefined
-      ? invoiceFormat === 'gst'
-      : bill.invoiceType === 'tax_invoice' || bill.isGstInvoice === true
-        ? true
-        : bill.invoiceType === 'retail' || bill.invoiceType === 'bill_of_supply' || bill.isGstInvoice === false
-          ? false
-          : bill.supplyType === 'B2B' && Boolean(bill.customerGstin);
+  const isGst = isBillGstInvoice(bill, invoiceFormat);
 
   const st = statusOf(bill.total, bill.amountPaid);
-  const invoicePrefix = settings?.invoicePrefix || (isGst ? 'INV' : 'RET');
-  const billNo = `${invoicePrefix}-${bill.id}`;
+  const billNo = formatBillNumber(bill, settings, invoiceFormat);
+  const isNonGstSeries = bill.gstExclude === true || bill.docSeries === 'non_gst';
 
   const orgName = (org?.name || 'MrWater').trim();
   const orgTagline = (org?.tagline || 'Authorized Wholesale Beverage Distributor').trim();
@@ -2227,6 +2272,9 @@ export function buildBillText(
   if (isGst) {
     out.push(`*TAX INVOICE — ${orgName.toUpperCase()}*`);
     out.push(`_(${isB2b ? 'GST B2B Tax Invoice' : 'GST Tax Invoice'})_`);
+  } else if (isNonGstSeries) {
+    out.push(`*CASH MEMO / TRADING BILL — ${orgName.toUpperCase()}*`);
+    out.push(`_(Non-GST / 0% Tax)_`);
   } else {
     out.push(`*RETAIL BILL / CASH MEMO — ${orgName.toUpperCase()}*`);
     out.push(`_(Non-GST / Bill of Supply)_`);
@@ -2444,6 +2492,16 @@ export function normalizeTrip(raw: any): Trip {
         qty: Number(e.qty) || 0,
         note: e.note ? String(e.note) : undefined,
         dispositionId: e.dispositionId ? String(e.dispositionId) : undefined,
+        ...(e.missing && okReasons.includes(e.missing.reason) && e.missing.reason !== 'broken'
+          ? {
+              missing: {
+                reason: e.missing.reason,
+                qty: Number(e.missing.qty) || 0,
+                note: e.missing.note ? String(e.missing.note) : undefined,
+                dispositionId: e.missing.dispositionId ? String(e.missing.dispositionId) : undefined,
+              },
+            }
+          : {}),
       };
     }
     if (Object.keys(out).length > 0) shortageReasons = out;
@@ -2461,7 +2519,9 @@ export function normalizeTrip(raw: any): Trip {
     returned,
     billIds,
     status,
-    warehouseId: raw.warehouseId || raw.warehouse_id || '',
+    warehouseId:
+      String(raw.warehouseId || raw.warehouse_id || '').trim() ||
+      tripPrimaryWarehouseId({ warehouseId: '', warehouseLoads }),
     warehouseLoads,
     ...(shortageReasons ? { shortageReasons } : {}),
     ...(raw.updatedAt || raw.updated_at ? { updatedAt: String(raw.updatedAt || raw.updated_at) } : {}),

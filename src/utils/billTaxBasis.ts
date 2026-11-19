@@ -28,6 +28,9 @@ export function billTaxBasis(
   opts: { carveGstFromPrices: boolean; rateFor?: (item: BillItem) => number | undefined },
 ): BillTaxBasis {
   const net = billNetTotal(bill);
+  if (bill.gstExclude === true || bill.docSeries === 'non_gst') {
+    return { taxable: net, gst: 0, carved: false };
+  }
   const returns = bill.returns || [];
   const returnTax = returns.reduce((s, r) => s + (Number(r.cgst) || 0) + (Number(r.sgst) || 0), 0);
   const storedGst = (Number(bill.cgst) || 0) + (Number(bill.sgst) || 0);
@@ -44,6 +47,7 @@ export function billTaxBasis(
   }
 
   const items = (bill.items || []).map((i) => {
+    if (i.taxability === 'non_gst') return { ...i, gst: 0 };
     const r = opts.rateFor ? opts.rateFor(i) : i.gst;
     return { ...i, gst: (r ?? i.gst ?? 0) as number };
   });

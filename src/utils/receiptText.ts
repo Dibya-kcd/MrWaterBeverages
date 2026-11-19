@@ -2,7 +2,7 @@
 // WhatsApp / receipt text do not pull the PDF library into the startup bundle.
 import { Bill, BillingSettings, OrganizationProfile } from '../types';
 import { buildBillText, cgstSgstLabels, freeStockInvoiceDisplay, money, nonGstSummary, statusOf } from './billing';
-import { inrToWords, isBillGstInvoice } from './invoiceCommon';
+import { inrToWords, isBillGstInvoice, formatBillNumber } from './invoiceCommon';
 import { lookupOdiaName } from './odiaNameLookup';
 
 /**
@@ -63,19 +63,23 @@ export function buildReceiptRows(
 ): ReceiptRow[] {
   const isGst = isBillGstInvoice(bill, invoiceFormat);
   const rows: ReceiptRow[] = [];
-  const prefix = settings?.invoicePrefix || (isGst ? 'INV' : 'RET');
-  const billNo = `${prefix}-${bill.id}`;
+  const billNo = formatBillNumber(bill, settings, invoiceFormat);
+  const isNonGstSeries = bill.gstExclude === true || bill.docSeries === 'non_gst';
 
   // ---- Header -------------------------------------------------------------------------------
   rows.push({ k: 'title', text: plain(org?.name || 'MrWater').toUpperCase() });
   const address = [org?.address, org?.city].filter(Boolean).join(', ');
   if (address) rows.push({ k: 'center', text: plain(address), small: true });
   if (org?.phone) rows.push({ k: 'center', text: `Ph: ${plain(org.phone)}`, small: true });
-  if (org?.gstin) rows.push({ k: 'center', text: `GSTIN: ${plain(org.gstin)}`, small: true });
+  if (isGst && org?.gstin) rows.push({ k: 'center', text: `GSTIN: ${plain(org.gstin)}`, small: true });
   if (org?.fssai) rows.push({ k: 'center', text: `FSSAI: ${plain(org.fssai)}`, small: true });
   rows.push({ k: 'rule', style: 'dash' });
-  rows.push({ k: 'center', text: isGst ? 'TAX INVOICE' : 'RETAIL BILL / CASH MEMO', bold: true });
-  rows.push({ k: 'kv', left: isGst ? 'Invoice No' : 'Bill No', right: billNo, bold: true });
+  rows.push({
+    k: 'center',
+    text: isGst ? 'TAX INVOICE' : isNonGstSeries ? 'CASH MEMO (NON-GST)' : 'RETAIL BILL / CASH MEMO',
+    bold: true,
+  });
+  rows.push({ k: 'kv', left: isGst ? 'Invoice No' : 'Memo No', right: billNo, bold: true });
   rows.push({ k: 'kv', left: 'Date', right: String(bill.date || '') });
   rows.push({ k: 'wrap', text: `To: ${plain(bill.retailer || 'Cash Retailer')}`, bold: true });
   if (bill.phone) rows.push({ k: 'kv', left: 'Phone', right: plain(bill.phone) });

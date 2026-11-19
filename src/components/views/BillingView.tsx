@@ -4,7 +4,6 @@ import {
   Clock,
   Download,
   FileText,
-  History,
   MessageCircle,
   Plus,
   Printer,
@@ -27,6 +26,7 @@ import { NewSaleScreen } from './NewSaleScreen';
 import { billBalance } from '../../utils/salesReturns';
 import { sendBillOnWhatsApp, whatsAppResultMessage } from '../../utils/whatsappBill';
 import { notify as toastNotify } from '../../utils/toast';
+import { formatBillNumber, isGstExcludedBill } from '../../utils/invoiceCommon';
 
 export const BillingView: React.FC = () => {
   const {
@@ -34,6 +34,7 @@ export const BillingView: React.FC = () => {
     bills,
     editingBillId,
     updateBill,
+    splitMixedBill,
     previewBillEdit,
     previewBillDelete,
     reopenTrip,
@@ -44,6 +45,8 @@ export const BillingView: React.FC = () => {
     cancelledBills,
     justFinalizedBillId,
     setJustFinalizedBillId,
+    justFinalizedSplitIds,
+    setJustFinalizedSplitIds,
     remainingStock,
     promotions,
     gstMode,
@@ -93,142 +96,271 @@ export const BillingView: React.FC = () => {
   );
 
   const justBill = justFinalizedBillId ? bills.find((b) => b.id === justFinalizedBillId) : null;
-  const hasJustBill = Boolean(justBill);
+  const justSplitBills = useMemo(
+    () =>
+      justFinalizedSplitIds.length > 1
+        ? justFinalizedSplitIds
+            .map((id) => bills.find((b) => b.id === id))
+            .filter((b): b is Bill => Boolean(b))
+        : [],
+    [justFinalizedSplitIds, bills],
+  );
+  const hasJustBill = Boolean(justBill) || justSplitBills.length > 0;
   useEffect(() => { if (hasJustBill) preloadInvoicePdf().catch(() => {}); }, [hasJustBill]);
 
   return (
     <div id="view-billing" className="hh-view mw-workspace space-y-4 min-w-0 max-w-full overflow-x-hidden">
-      {/* Page title for the history tab (New sale has its own title bar) */}
-      {billingSubTab === 'history' && (
-        <div className="hh-pagehead">
-          <h1>Sales history</h1>
-        </div>
-      )}
-
-      {/* Top Two Navigation Buttons — New sale & Sales history */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200/80 pb-3">
-        <div className="flex items-center gap-2">
+      {/* Consistent Page Header (matches Parties & Trips) */}
+      <div className="flex items-center justify-between gap-3 min-h-10 sm:min-h-11">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
+          Sales
+        </h1>
+        {billingSubTab === 'history' && (
           <button
             type="button"
-            id="tab-btn-new-sale"
             onClick={() => setBillingSubTab('create')}
-            className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
-              billingSubTab === 'create'
-                ? 'bg-[var(--primary)] text-white shadow-xs'
-                : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-            }`}
+            className="size-10 sm:size-11 rounded-full bg-[var(--primary)] text-white flex items-center justify-center shadow-md cursor-pointer active:scale-95 transition-transform shrink-0"
+            aria-label="New sale"
+            title="New sale"
           >
-            <Plus className="w-4 h-4" />
-            <span>New sale</span>
+            <Plus className="w-5 h-5" strokeWidth={2.5} />
           </button>
-          <button
-            type="button"
-            id="tab-btn-sales-history"
-            onClick={() => setBillingSubTab('history')}
-            className={`inline-flex items-center gap-2 px-5 py-2.5 rounded-full text-xs sm:text-sm font-semibold transition-all cursor-pointer ${
-              billingSubTab === 'history'
-                ? 'bg-[var(--primary)] text-white shadow-xs'
-                : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            <History className="w-4 h-4" />
-            <span>Sales history</span>
-          </button>
-        </div>
-
+        )}
       </div>
 
-      {/* Success banner for newly finalized bill */}
-      {justBill && (
+      {/* Consistent Two-Tab Segmented Bar — New Sale & Sales History (matches Parties) */}
+      <div
+        className="flex bg-[#ebe8e1] rounded-full p-1"
+        role="tablist"
+        aria-label="Sales sections"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={billingSubTab === 'create'}
+          id="tab-btn-new-sale"
+          onClick={() => setBillingSubTab('create')}
+          className={`flex-1 py-2.5 px-3 text-sm font-semibold rounded-full transition-colors cursor-pointer whitespace-nowrap ${
+            billingSubTab === 'create'
+              ? 'bg-white text-slate-900 shadow-sm'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          New Sale
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={billingSubTab === 'history'}
+          id="tab-btn-sales-history"
+          onClick={() => setBillingSubTab('history')}
+          className={`flex-1 py-2.5 px-3 text-sm font-semibold rounded-full transition-colors cursor-pointer whitespace-nowrap ${
+            billingSubTab === 'history'
+              ? 'bg-white text-slate-900 shadow-sm'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          Sales History
+        </button>
+      </div>
+
+      {/* Success banner for newly finalized bill (single or auto-split pair) */}
+      {(justSplitBills.length > 1 || justBill) && (
         <div
           id="banner-just-finalized"
-          className="border-2 p-3.5 flex items-center justify-between flex-wrap gap-2.5 shadow-sm-2xl"
+          className="border-2 p-3.5 space-y-2.5 shadow-sm-2xl rounded-xl"
           style={{ borderColor: palette.good, backgroundColor: `${palette.good}15` }}
           role="status"
         >
-          <div className="flex items-center gap-2" style={fz(14, { color: palette.good, fontWeight: 700 })}>
-            <Check size={Math.round(18 * scale)} aria-hidden="true" />
-            <span>
-              Bill #{billingSettings?.invoicePrefix ? `${billingSettings.invoicePrefix}-` : ''}{justBill.id} saved for {justBill.retailer} (₹{money(justBill.total)})
-            </span>
-          </div>
+          {justSplitBills.length > 1 ? (
+            <>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2" style={fz(14, { color: palette.good, fontWeight: 700 })}>
+                  <Check size={Math.round(18 * scale)} aria-hidden="true" />
+                  <span>
+                    Split Checkout Saved for {justSplitBills[0].retailer} · Total ₹
+                    {money(justSplitBills.reduce((s, b) => s + (Number(b.total) || 0), 0))}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setBillingSubTab('history')}
+                    className="inline-flex items-center gap-1.5 border-2 px-3 py-1.5 focus-ring cursor-pointer hover:bg-white font-bold text-xs rounded-xl"
+                    style={{
+                      borderColor: palette.navy,
+                      backgroundColor: `${palette.navy}10`,
+                      color: palette.navy,
+                    }}
+                  >
+                    <span>View in History ➔</span>
+                  </button>
+                  <IconButton
+                    onClick={() => {
+                      setJustFinalizedBillId(null);
+                      setJustFinalizedSplitIds([]);
+                    }}
+                    icon={X}
+                    label="Dismiss confirmation"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {justSplitBills.map((sb) => {
+                  const isNg = isGstExcludedBill(sb, products);
+                  const docLabel = formatBillNumber(sb, billingSettings);
+                  return (
+                    <div
+                      key={sb.id}
+                      className="bg-white rounded-xl border border-slate-200 px-3 py-2 flex items-center justify-between gap-2 flex-wrap"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono font-bold text-xs text-slate-900">{docLabel}</span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                              isNg ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-800'
+                            }`}
+                          >
+                            {isNg ? 'Non-GST Memo' : 'GST Invoice'}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-600 tabular-nums">₹{money(sb.total)}</div>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            Promise.resolve(
+                              downloadInvoicePdf(sb, orgProfile, billingSettings, isNg ? 'non_gst' : undefined),
+                            ).catch((err) => console.error('Error downloading invoice PDF:', err));
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold text-white cursor-pointer"
+                          style={{ backgroundColor: palette.navy }}
+                        >
+                          <Download size={12} /> PDF
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInvoiceModalBill(sb);
+                            setInvoiceModalFormat(isNg ? 'non_gst' : undefined);
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-slate-50 text-[11px] font-bold text-slate-800 cursor-pointer"
+                        >
+                          <Printer size={12} /> View
+                        </button>
+                        {sb.phone && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const msg = whatsAppResultMessage(
+                                await sendBillOnWhatsApp(sb, orgProfile, billingSettings, isNg ? 'non_gst' : undefined),
+                              );
+                              if (msg) toastNotify(msg.text, msg.kind);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold text-white cursor-pointer"
+                            style={{ backgroundColor: '#25D366' }}
+                          >
+                            <MessageCircle size={12} /> WA
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : justBill ? (
+            <div className="flex items-center justify-between flex-wrap gap-2.5">
+              <div className="flex items-center gap-2" style={fz(14, { color: palette.good, fontWeight: 700 })}>
+                <Check size={Math.round(18 * scale)} aria-hidden="true" />
+                <span>
+                  {isGstExcludedBill(justBill, products) ? 'Cash Memo' : 'Bill'} #{formatBillNumber(justBill, billingSettings)} saved for {justBill.retailer} (₹{money(justBill.total)})
+                </span>
+              </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* 1-Click Download PDF */}
-            <button
-              type="button"
-              id="btn-download-just-saved-pdf"
-              onClick={() => { Promise.resolve(downloadInvoicePdf(justBill, orgProfile, billingSettings)).catch((err) => console.error('Error downloading invoice PDF:', err)); }}
-              className="inline-flex items-center gap-1.5 border-2 px-3 py-1.5 focus-ring cursor-pointer hover:opacity-95 font-bold shadow-sm text-xs rounded-xl"
-              style={{
-                backgroundColor: palette.navy,
-                borderColor: palette.navy,
-                color: '#FFFFFF',
-              }}
-              title="Download GST Tax Invoice PDF"
-            >
-              <Download size={14} aria-hidden="true" />
-              <span>Download PDF</span>
-            </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* 1-Click Download PDF */}
+                <button
+                  type="button"
+                  id="btn-download-just-saved-pdf"
+                  onClick={() => { Promise.resolve(downloadInvoicePdf(justBill, orgProfile, billingSettings)).catch((err) => console.error('Error downloading invoice PDF:', err)); }}
+                  className="inline-flex items-center gap-1.5 border-2 px-3 py-1.5 focus-ring cursor-pointer hover:opacity-95 font-bold shadow-sm text-xs rounded-xl"
+                  style={{
+                    backgroundColor: palette.navy,
+                    borderColor: palette.navy,
+                    color: '#FFFFFF',
+                  }}
+                  title="Download PDF"
+                >
+                  <Download size={14} aria-hidden="true" />
+                  <span>Download PDF</span>
+                </button>
 
-            {/* View & Print Modal */}
-            <button
-              type="button"
-              id="btn-print-just-saved"
-              onClick={() => setInvoiceModalBill(justBill)}
-              className="inline-flex items-center gap-1.5 border-2 px-3 py-1.5 focus-ring cursor-pointer hover:bg-white font-bold text-xs rounded-xl"
-              style={{
-                borderColor: palette.line,
-                backgroundColor: palette.panel,
-                color: palette.ink,
-              }}
-              title="Open full printable GST invoice"
-            >
-              <Printer size={14} aria-hidden="true" />
-              <span>View & Print</span>
-            </button>
+                {/* View & Print Modal */}
+                <button
+                  type="button"
+                  id="btn-print-just-saved"
+                  onClick={() => setInvoiceModalBill(justBill)}
+                  className="inline-flex items-center gap-1.5 border-2 px-3 py-1.5 focus-ring cursor-pointer hover:bg-white font-bold text-xs rounded-xl"
+                  style={{
+                    borderColor: palette.line,
+                    backgroundColor: palette.panel,
+                    color: palette.ink,
+                  }}
+                  title="Open full printable bill"
+                >
+                  <Printer size={14} aria-hidden="true" />
+                  <span>View &amp; Print</span>
+                </button>
 
-            {/* WhatsApp formatted receipt */}
-            {justBill.phone && (
-              <button
-                type="button"
-                id="whatsapp-just-saved"
-                onClick={async () => {
-                  const msg = whatsAppResultMessage(await sendBillOnWhatsApp(justBill, orgProfile, billingSettings));
-                  if (msg) toastNotify(msg.text, msg.kind);
-                }}
-                className="inline-flex items-center gap-1.5 border-2 px-3 py-1.5 focus-ring cursor-pointer hover:opacity-95 font-bold shadow-sm text-xs rounded-xl"
-                style={{
-                  borderColor: '#1EBE5D',
-                  backgroundColor: '#25D366',
-                  color: '#FFFFFF',
-                }}
-              >
-                <MessageCircle size={14} aria-hidden="true" />
-                <span>WhatsApp 80mm bill</span>
-              </button>
-            )}
+                {/* WhatsApp formatted receipt */}
+                {justBill.phone && (
+                  <button
+                    type="button"
+                    id="whatsapp-just-saved"
+                    onClick={async () => {
+                      const msg = whatsAppResultMessage(await sendBillOnWhatsApp(justBill, orgProfile, billingSettings));
+                      if (msg) toastNotify(msg.text, msg.kind);
+                    }}
+                    className="inline-flex items-center gap-1.5 border-2 px-3 py-1.5 focus-ring cursor-pointer hover:opacity-95 font-bold shadow-sm text-xs rounded-xl"
+                    style={{
+                      borderColor: '#1EBE5D',
+                      backgroundColor: '#25D366',
+                      color: '#FFFFFF',
+                    }}
+                  >
+                    <MessageCircle size={14} aria-hidden="true" />
+                    <span>WhatsApp 80mm bill</span>
+                  </button>
+                )}
 
-            {/* View in History Option */}
-            <button
-              type="button"
-              onClick={() => setBillingSubTab('history')}
-              className="inline-flex items-center gap-1.5 border-2 px-3 py-1.5 focus-ring cursor-pointer hover:bg-white font-bold text-xs rounded-xl"
-              style={{
-                borderColor: palette.navy,
-                backgroundColor: `${palette.navy}10`,
-                color: palette.navy,
-              }}
-            >
-              <span>View in History ➔</span>
-            </button>
+                {/* View in History Option */}
+                <button
+                  type="button"
+                  onClick={() => setBillingSubTab('history')}
+                  className="inline-flex items-center gap-1.5 border-2 px-3 py-1.5 focus-ring cursor-pointer hover:bg-white font-bold text-xs rounded-xl"
+                  style={{
+                    borderColor: palette.navy,
+                    backgroundColor: `${palette.navy}10`,
+                    color: palette.navy,
+                  }}
+                >
+                  <span>View in History ➔</span>
+                </button>
 
-            <IconButton
-              onClick={() => setJustFinalizedBillId(null)}
-              icon={X}
-              label="Dismiss confirmation"
-            />
-          </div>
+                <IconButton
+                  onClick={() => {
+                    setJustFinalizedBillId(null);
+                    setJustFinalizedSplitIds([]);
+                  }}
+                  icon={X}
+                  label="Dismiss confirmation"
+                />
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -240,7 +372,6 @@ export const BillingView: React.FC = () => {
             setInvoiceModalBill(b);
             setInvoiceModalFormat(format);
           }}
-          onOpenHistory={() => setBillingSubTab('history')}
         />
       )}
 
@@ -283,6 +414,7 @@ export const BillingView: React.FC = () => {
           bill={editModalBill}
           onClose={() => setEditModalBill(null)}
           onSave={(updated, o) => updateBill(updated, o)}
+          onSplitMixedBill={(draft, o) => splitMixedBill(draft, o)}
           previewEdit={previewBillEdit}
           onReopenTrip={reopenTrip}
           trips={trips}
@@ -303,10 +435,10 @@ export const BillingView: React.FC = () => {
 
       {/* Cancel invoice with credit note */}
       {billToCancel && (
-        <div className="fixed inset-0 z-[9998] bg-black/50 flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" aria-label="Cancel invoice with credit note" className="fixed inset-0 z-[9998] bg-black/50 flex items-center justify-center p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-4 space-y-3 text-sm">
             <h3 className="font-bold text-slate-900">
-              Cancel Invoice #{billingSettings?.invoicePrefix || ''}{billToCancel.id} with credit note
+              Cancel Invoice #{formatBillNumber(billToCancel, billingSettings)} with credit note
             </h3>
             <p className="text-xs text-slate-600">
               The invoice stays on record (its number is not reused). Stock returns, the customer's due is removed and
@@ -314,6 +446,19 @@ export const BillingView: React.FC = () => {
               {billToCancel.amountPaid > 0 &&
                 ` ₹${billToCancel.amountPaid.toFixed(2)} already collected will be marked as refund due on the credit note.`}
             </p>
+            {(() => {
+              const sib = billToCancel.splitGroupId
+                ? (bills || []).filter(
+                    (b) => b.splitGroupId === billToCancel.splitGroupId && b.id !== billToCancel.id && b.status !== 'cancelled',
+                  )
+                : [];
+              return sib.length > 0 ? (
+                <p className="text-xs rounded-md bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1.5">
+                  This bill is part of a split order. {sib.map((b) => formatBillNumber(b, billingSettings)).join(', ')} stays active
+                  - cancel it separately if the whole sale is being cancelled.
+                </p>
+              ) : null;
+            })()}
             <input
               type="text"
               value={cancelReason}
@@ -353,7 +498,7 @@ export const BillingView: React.FC = () => {
             {cancelledBills.map((b) => (
               <div key={b.id} className="flex flex-wrap items-center gap-x-3 text-[11px] text-slate-700 border-b border-slate-100 py-1">
                 <span className="font-mono font-bold">{b.cancellation?.creditNoteNo}</span>
-                <span>Inv #{billingSettings?.invoicePrefix || ''}{b.id}</span>
+                <span>{formatBillNumber(b, billingSettings)}</span>
                 <span>{b.retailer}</span>
                 <span>₹{b.total.toFixed(2)}</span>
                 <span>{b.cancellation?.date}</span>

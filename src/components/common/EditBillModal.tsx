@@ -22,6 +22,7 @@ import {
   ChevronUp,
   Search,
   RotateCcw,
+  Split,
 } from 'lucide-react';
 import { Bill, BillItem, ExistingCustomer, PaletteTokens, PriceType, Product, Promotion, Trip, Warehouse } from '../../types';
 import type { BillEditPreview } from '../../context/LedgerContext';
@@ -35,12 +36,19 @@ import { ConfirmModal } from '../ui/ConfirmModal';
 import { ToggleSwitch } from '../ui/ToggleSwitch';
 import { isNoOutputTaxBill } from '../../tax/appRegime';
 import { todayISO } from "../../utils/dateLocal";
+import { cartTaxMix, formatBillNumber, isGstExcludedBill, isLineNonGst } from '../../utils/invoiceCommon';
+import { resolveTripGodownDisplay } from '../../utils/tripLoads';
 
 interface EditBillModalProps {
   bill: Bill | null;
   onClose: () => void;
   /** Return true when saved. The modal stays open (nothing is lost) when this returns false. */
   onSave: (updatedBill: Bill, opts: { comment: string; requestedPaid?: number }) => boolean | void;
+  /** Split a mixed GST + Non-GST draft into a linked GST invoice (INV-) and Non-GST memo (NG-). */
+  onSplitMixedBill?: (
+    draftBill: Bill,
+    opts: { comment: string; requestedPaid?: number },
+  ) => { gstBill: Bill; nonGstBill: Bill } | null;
   /** Dry run: what changed, does it touch stock, what would block it. */
   previewEdit?: (bill: Bill, requestedPaid?: number) => BillEditPreview;
   /** Reopen the trip this bill was sold from (stock changes on closed trips need this). */
@@ -61,6 +69,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
   bill,
   onClose,
   onSave,
+  onSplitMixedBill,
   previewEdit,
   onReopenTrip,
   trips,
@@ -91,6 +100,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
   const [saveError, setSaveError] = useState('');
   // The finished edit waiting for the user's "yes, save" (stock and payment effects are shown first).
   const [pendingBill, setPendingBill] = useState<Bill | null>(null);
+  const [pendingAction, setPendingAction] = useState<'save' | 'split'>('save');
 
   // New item draft inside the modal (collapsed link by default to save mobile space)
   const [isAddingProduct, setIsAddingProduct] = useState(false);
@@ -125,7 +135,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       setWarehouseId(bill.warehouseId || '');
       setItems(bill.items ? JSON.parse(JSON.stringify(bill.items)) : []);
       setAmountPaid(bill.amountPaid || 0);
-      const lockedNoTax = isNoOutputTaxBill(bill);
+      const lockedNoTax = isNoOutputTaxBill(bill) || isGstExcludedBill(bill, products);
       const isGst = lockedNoTax
         ? false
         : bill.invoiceType === 'tax_invoice' || bill.isGstInvoice === true
@@ -206,8 +216,11 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
             amount: newQty * newRate,
           };
 
+      const isLineNonGst = product?.taxability === 'non_gst' || item.taxability === 'non_gst';
       next[index] = {
         ...item,
+        taxability: isLineNonGst ? 'non_gst' : (item.taxability || product?.taxability || 'taxable'),
+        gst: isLineNonGst ? 0 : item.gst,
         qty: newQty,
         rate: newRate,
         priceType: newPriceType,
@@ -240,6 +253,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
 
     const promo = activePromoForProduct(product.id);
     const computed = computeLine(product, draftPriceType, qty, promo, rate);
+    const isNonGstProd = product.taxability === 'non_gst';
 
     const newItem: BillItem = {
       key: `${product.id}-${Date.now()}-${Math.random()}`,
@@ -254,11 +268,12 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       chargeableQty: computed.chargeableQty,
       discount: computed.discount,
       amount: computed.amount,
-      gst: resolveProductGstRate(product),
+      taxability: isNonGstProd ? 'non_gst' : 'taxable',
+      gst: isNonGstProd ? 0 : resolveProductGstRate(product),
       promoLabel: promo ? schemeLabel(promo) : null,
       schemeSkipped: false,
       batchNumber: product.batchNumber,
-      hsn: resolveProductHsn(product),
+      hsn: isNonGstProd ? String(product.hsn || '').trim() : resolveProductHsn(product),
       expiryDate: product.expiry,
       warehouseId: product.warehouseId,
     };
@@ -285,6 +300,17 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
   const dueBalance = Math.max(0, totals.total - amountPaid);
   const status = statusOf(totals.total, amountPaid);
 
+  const sourceTrip = useMemo(() => {
+    if (!trips || !bill) return undefined;
+    if (bill.tripId != null) {
+      const byId = trips.find((t) => Number(t.id) === Number(bill.tripId));
+      if (byId) return byId;
+    }
+    return trips.find(
+      (t) => Array.isArray(t.billIds) && t.billIds.some((id) => Number(id) === Number(bill.id)),
+    );
+  }, [trips, bill]);
+
   // Draft of the bill as currently edited (used for the live stock-impact preview and for saving).
   const draftBill: Bill | null = bill
     ? {
@@ -294,7 +320,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
         date,
         // A bill sold from a trip / specific godown keeps it: an empty selection must not silently
         // move the sale to the default godown.
-        warehouseId: warehouseId || bill.warehouseId,
+        warehouseId: sourceTrip || bill.tripId != null ? bill.warehouseId : warehouseId || bill.warehouseId,
         items,
         subtotal: totals.subtotal,
         cgst: totals.cgst,
@@ -309,38 +335,62 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [bill?.id, retailer, phone, date, warehouseId, items, amountPaid, totals.total, trips],
   );
-  const sourceTrip =
-    preview?.source.kind === 'trip' && trips
-      ? trips.find((t) => Number(t.id) === preview.source.tripId)
-      : undefined;
+  const resolvedSourceTrip =
+    sourceTrip ||
+    (preview?.source.kind === 'trip' && trips && preview.source.tripId != null
+      ? trips.find((t) => Number(t.id) === Number(preview.source.tripId))
+      : undefined);
+  const isTripBill = preview?.source.kind === 'trip' || Boolean(resolvedSourceTrip) || bill?.tripId != null;
+  const tripGodown = useMemo(() => {
+    if (!isTripBill) return null;
+    return resolveTripGodownDisplay({
+      trip: resolvedSourceTrip,
+      bill,
+      warehouses,
+      includeLocation: true,
+    });
+  }, [isTripBill, resolvedSourceTrip, bill, warehouses]);
+  const tripGodownLabel =
+    tripGodown?.label ||
+    preview?.source.warehouseLabel ||
+    warehouses.find((w) => w.id === preview?.source.warehouseId)?.name ||
+    '';
+  const validWarehouseSelectValue = warehouses.some((w) => w.id === warehouseId) ? warehouseId : '';
   const blockedByStock = !!preview && preview.problems.length > 0;
-  const formatLocked = isNoOutputTaxBill(bill);
+  const draftTaxMix = useMemo(() => cartTaxMix(items, products), [items, products]);
+  const hasReturns = Array.isArray(bill?.returns) && bill.returns.length > 0;
+  const canSplitMixed = Boolean(onSplitMixedBill) && draftTaxMix.hasMixed && !hasReturns;
+  const formatLocked =
+    isNoOutputTaxBill(bill) ||
+    draftTaxMix.allNonGst ||
+    (!draftTaxMix.hasMixed && isGstExcludedBill(bill, products));
   const effectiveFormat: 'gst' | 'non_gst' = formatLocked ? 'non_gst' : invoiceFormat;
 
   if (!bill) return null;
 
-  const handleSave = () => {
+  const buildUpdatedDraft = (): Bill | null => {
     if (!retailer.trim()) {
       notify('Please enter or select a retailer name.');
-      return;
+      return null;
     }
     if (items.length === 0) {
       notify('The bill must contain at least one product line item.');
-      return;
+      return null;
     }
 
     if (preview && preview.problems.length > 0) {
       setSaveError(preview.problems.join('\n'));
-      return;
+      return null;
     }
 
-    const updatedBill: Bill = {
+    const isPureNonGst = draftTaxMix.allNonGst;
+    return {
       ...bill,
       id: bill.id,
       retailer: retailer.trim(),
       phone: phone.trim(),
       date,
-      warehouseId: warehouseId || bill.warehouseId,
+      warehouseId: isTripBill ? bill.warehouseId : warehouseId || bill.warehouseId,
       items,
       subtotal: totals.subtotal,
       cgst: totals.cgst,
@@ -349,29 +399,64 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
       discount: totals.discount,
       amountPaid: Math.min(totals.total, Math.max(0, amountPaid)),
       supplyType: formatLocked
-        ? bill.supplyType
+        ? isPureNonGst
+          ? 'B2C'
+          : bill.supplyType
         : effectiveFormat === 'gst' && customerGstin.trim()
           ? 'B2B'
           : 'B2C',
       customerGstin: formatLocked
-        ? bill.customerGstin
+        ? isPureNonGst
+          ? undefined
+          : bill.customerGstin
         : effectiveFormat === 'gst' && customerGstin.trim()
           ? customerGstin.trim().toUpperCase()
           : undefined,
       invoiceType: formatLocked
-        ? (bill.invoiceType === 'bill_of_supply' ? 'bill_of_supply' : 'retail')
+        ? isPureNonGst || bill.invoiceType === 'bill_of_supply'
+          ? 'bill_of_supply'
+          : 'retail'
         : effectiveFormat === 'gst'
           ? 'tax_invoice'
           : 'retail',
       isGstInvoice: effectiveFormat === 'gst',
+      docSeries:
+        isPureNonGst || formatLocked || (!draftTaxMix.hasMixed && (bill.docSeries === 'non_gst' || bill.gstExclude))
+          ? 'non_gst'
+          : 'gst',
+      gstExclude: Boolean(
+        isPureNonGst || formatLocked || (!draftTaxMix.hasMixed && (bill.gstExclude || bill.docSeries === 'non_gst')),
+      ),
       ewayBillNo: ewayBillNo.replace(/\D/g, '').slice(0, 12) || undefined,
       irn: irn.trim() || undefined,
       transporterName: transporterName.trim() || undefined,
       transportDistanceKm: Number(transportDistanceKm) > 0 ? Math.round(Number(transportDistanceKm)) : undefined,
     };
+  };
 
-    // Show what this save does to stock and money, and ask for the reason, before saving anything.
+  const handleSave = () => {
+    const updatedBill = buildUpdatedDraft();
+    if (!updatedBill) return;
     setSaveError('');
+    if (canSplitMixed) {
+      if (!editComment.trim()) {
+        setEditComment('Split Non-GST items into separate NG- Cash Memo');
+      }
+      setPendingAction('split');
+    } else {
+      setPendingAction('save');
+    }
+    setPendingBill(updatedBill);
+  };
+
+  const handleRequestSplit = () => {
+    const updatedBill = buildUpdatedDraft();
+    if (!updatedBill) return;
+    setSaveError('');
+    if (!editComment.trim()) {
+      setEditComment('Split Non-GST items into separate NG- Cash Memo');
+    }
+    setPendingAction('split');
     setPendingBill(updatedBill);
   };
 
@@ -381,7 +466,21 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
     if (comment.length < 3) return;
     setEditComment(comment); // kept, so it is still there if the save is refused
     const toSave = pendingBill;
+    const action = pendingAction;
     setPendingBill(null);
+    if (action === 'split' && onSplitMixedBill) {
+      const res = onSplitMixedBill(toSave, { comment, requestedPaid: Math.max(0, amountPaid) });
+      if (!res) {
+        setSaveError('Not split. Read the message shown on screen, fix it and try again. Your changes are still here.');
+        return;
+      }
+      notify(
+        `Split saved: ${formatBillNumber(res.gstBill, invoicePrefix)} (₹${money(res.gstBill.total)}) + ${formatBillNumber(res.nonGstBill, invoicePrefix)} (₹${money(res.nonGstBill.total)}).`,
+        'success',
+      );
+      onClose();
+      return;
+    }
     // `requestedPaid` is what was typed before it was capped at the new total, so money received
     // above a lowered total is kept as an advance instead of being dropped.
     // Close only when the save really happened; otherwise keep the form so no edit is lost.
@@ -439,7 +538,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
 
   return (
     <>
-    <div
+    <div role="dialog" aria-modal="true" aria-label="Edit bill"
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/65 backdrop-blur-xs animate-in fade-in duration-150 overflow-y-auto"
       onClick={onClose}
     >
@@ -460,7 +559,7 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
           <div className="flex items-center gap-2 min-w-0">
             <FileText size={18} className="text-amber-600 shrink-0" />
             <h2 className="font-extrabold text-sm sm:text-base text-stone-900 truncate tracking-tight">
-              Edit Bill #{invoicePrefix || ''}{bill.id}
+              Edit Bill #{formatBillNumber(bill, invoicePrefix)}
             </h2>
             <span
               className="text-[10px] sm:text-xs px-2 py-0.5 rounded-full font-bold uppercase tracking-wider text-white shrink-0"
@@ -573,26 +672,46 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                 <label className="block text-xs font-bold mb-1 opacity-80 flex items-center gap-1">
                   <Building2 size={12} /> Dispatch Godown
                 </label>
-                <select
-                  value={warehouseId}
-                  disabled={preview?.source.kind === 'trip'}
-                  title={preview?.source.kind === 'trip' ? 'This bill was sold from a trip. Godown follows the trip.' : undefined}
-                  onChange={(e) => setWarehouseId(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border-2 rounded-lg focus:outline-none focus:ring-1"
-                  style={{
-                    borderColor: palette.line,
-                    backgroundColor: palette.panel || '#ffffff',
-                    color: palette.ink,
-                  }}
-                  id="edit-modal-warehouse-select"
-                >
-                  <option value="">Default Godown</option>
-                  {warehouses.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name} {w.location ? `(${w.location})` : ''}
-                    </option>
-                  ))}
-                </select>
+                {isTripBill ? (
+                  <div>
+                    <div
+                      id="edit-modal-warehouse-select"
+                      title="This bill was sold from a trip. Dispatch godown follows the trip load."
+                      className="w-full min-h-[40px] px-3 py-2 text-sm border-2 rounded-lg font-medium flex items-center justify-between gap-2 bg-stone-100/80"
+                      style={{
+                        borderColor: palette.line,
+                        color: palette.ink,
+                      }}
+                    >
+                      <span className="truncate">
+                        {tripGodownLabel || 'Trip Godown'}
+                      </span>
+                      <Truck size={14} className="shrink-0 opacity-60" />
+                    </div>
+                    <p className="text-[11px] opacity-70 mt-1 flex items-center gap-1 truncate">
+                      From Trip #{preview?.source.tripId ?? resolvedSourceTrip?.id ?? bill.tripId} load
+                    </p>
+                  </div>
+                ) : (
+                  <select
+                    value={validWarehouseSelectValue}
+                    onChange={(e) => setWarehouseId(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border-2 rounded-lg focus:outline-none focus:ring-1"
+                    style={{
+                      borderColor: palette.line,
+                      backgroundColor: palette.panel || '#ffffff',
+                      color: palette.ink,
+                    }}
+                    id="edit-modal-warehouse-select"
+                  >
+                    <option value="">Default Godown</option>
+                    {warehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name} {w.location ? `(${w.location})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             </div>
 
@@ -832,13 +951,56 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                   ))}
                 </ul>
               )}
-              {sourceTrip && preview.source.tripStatus !== 'closed' && (
+              {resolvedSourceTrip && preview.source.tripStatus !== 'closed' && (
                 <p className="text-[11px] opacity-60">
                   Trip is open: you can also adjust the van load from Trips if you need more crates on this vehicle.
                 </p>
               )}
             </div>
           )}
+
+          {/* Mixed GST + Non-GST notice & one-click split */}
+          {draftTaxMix.hasMixed && (() => {
+            const gstSum = draftTaxMix.taxable.reduce((s, it) => s + (Number(it.amount) || 0), 0);
+            const nonGstSum = draftTaxMix.nonGst.reduce((s, it) => s + (Number(it.amount) || 0), 0);
+            const nonGstNames = Array.from(new Set(draftTaxMix.nonGst.map((it) => it.productName).filter(Boolean))).join(', ');
+            return (
+              <div
+                id="edit-modal-mixed-tax-banner"
+                className="p-3.5 rounded-xl border border-amber-300 bg-amber-50 text-amber-950 space-y-2"
+              >
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="space-y-1 min-w-0 flex-1">
+                    <div className="text-xs font-extrabold flex items-center gap-1.5 text-amber-900">
+                      <Split size={14} className="shrink-0" />
+                      <span>Mixed GST &amp; Non-GST items on this bill</span>
+                    </div>
+                    <p className="text-xs text-amber-900/90 leading-relaxed">
+                      <strong>{draftTaxMix.taxable.length} GST item{draftTaxMix.taxable.length === 1 ? '' : 's'}</strong> (₹{money(gstSum)}) and{' '}
+                      <strong>{draftTaxMix.nonGst.length} Non-GST item{draftTaxMix.nonGst.length === 1 ? '' : 's'}</strong> ({nonGstNames} · ₹{money(nonGstSum)}) are on the same invoice, so the Non-GST amount is counted under GST invoices instead of <strong>Non-GST memos (NG-)</strong>.
+                    </p>
+                  </div>
+                  {canSplitMixed && (
+                    <button
+                      type="button"
+                      onClick={handleRequestSplit}
+                      disabled={blockedByStock}
+                      id="edit-modal-split-btn"
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-700 hover:bg-amber-800 disabled:opacity-40 text-white text-xs font-bold shadow-xs cursor-pointer shrink-0"
+                    >
+                      <Split size={13} />
+                      <span>Split into INV + NG- Memo</span>
+                    </button>
+                  )}
+                </div>
+                {hasReturns && (
+                  <p className="text-[11px] text-amber-800">
+                    This bill already has sales returns against it, so it cannot be auto-split.
+                  </p>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Line Items Table with Inline Quantity & Price Editing */}
           <div className="space-y-2">
@@ -881,6 +1043,11 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                             <div className="text-sm font-bold text-stone-900 leading-snug break-words">
                               {it.productName}{' '}
                               <SizeChip volume={product?.volume} pack={product?.pack} name={it.productName} />
+                              {isLineNonGst(it, products) && (
+                                <span className="ml-1.5 inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-amber-100 text-amber-800 border border-amber-200 align-middle">
+                                  Non-GST
+                                </span>
+                              )}
                             </div>
                             {product && (
                               <div className="text-[11px] text-stone-500 mt-0.5">
@@ -1052,6 +1219,11 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
                               <div>
                                 {it.productName}{' '}
                                 <SizeChip volume={product?.volume} pack={product?.pack} name={it.productName} />
+                                {isLineNonGst(it, products) && (
+                                  <span className="ml-1.5 inline-block px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide bg-amber-100 text-amber-800 border border-amber-200 align-middle">
+                                    Non-GST
+                                  </span>
+                                )}
                               </div>
                               {product && (
                                 <div className="text-[10px] opacity-60">
@@ -1543,11 +1715,11 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
             onClick={handleSave}
             disabled={blockedByStock}
             className="flex-1 py-2.5 px-4 rounded-xl text-xs sm:text-sm font-black text-white shadow-md hover:opacity-90 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-            style={{ backgroundColor: palette.good }}
+            style={{ backgroundColor: canSplitMixed ? '#b45309' : palette.good }}
             id="edit-modal-save-btn"
           >
-            <Save size={16} />
-            <span>Save Changes &amp; Update Bill</span>
+            {canSplitMixed ? <Split size={16} /> : <Save size={16} />}
+            <span>{canSplitMixed ? 'Save & Split into INV + NG- Memo' : 'Save Changes & Update Bill'}</span>
           </button>
         </div>
       </div>
@@ -1571,19 +1743,45 @@ export const EditBillModal: React.FC<EditBillModalProps> = ({
     {pendingBill && (
       <ConfirmModal
         isOpen
-        title={`Save changes to Bill #${invoicePrefix}${bill.id}?`}
-        subtitle="Check the impact, then add a reason. It is saved in the bill's edit history."
-        warningNote={
-          preview?.payment.keptAsAdvance || preview?.payment.removedAsCorrection || preview?.stockChanged
-            ? 'This edit moves stock and/or money.'
-            : undefined
+        title={
+          pendingAction === 'split'
+            ? `Split Bill #${formatBillNumber(bill, invoicePrefix)} into INV + NG- Memo?`
+            : `Save changes to Bill #${formatBillNumber(bill, invoicePrefix)}?`
         }
-        impactItems={confirmImpact}
-        confirmButtonLabel="Save Changes"
-        variant="warning"
-        confirmIcon={<Save className="w-3.5 h-3.5" />}
+        subtitle={
+          pendingAction === 'split'
+            ? 'GST items stay on the GST invoice; Non-GST items move to a linked NG- Cash Memo. Stock, trip, and total payments stay balanced.'
+            : "Check the impact, then add a reason. It is saved in the bill's edit history."
+        }
+        warningNote={
+          pendingAction === 'split'
+            ? 'Non-GST items will appear under Non-GST memos (NG-) in Reports > Sales and stay excluded from GST returns.'
+            : preview?.payment.keptAsAdvance || preview?.payment.removedAsCorrection || preview?.stockChanged
+              ? 'This edit moves stock and/or money.'
+              : undefined
+        }
+        impactItems={
+          pendingAction === 'split'
+            ? [
+                {
+                  label: `GST items (${draftTaxMix.taxable.length}) stay on GST invoice`,
+                  detail: draftTaxMix.taxable.map((it) => it.productName).join(', '),
+                  qtyChange: rupees(draftTaxMix.taxable.reduce((s, it) => s + (Number(it.amount) || 0), 0)),
+                },
+                {
+                  label: `Non-GST items (${draftTaxMix.nonGst.length}) move to linked NG- Cash Memo`,
+                  detail: draftTaxMix.nonGst.map((it) => it.productName).join(', '),
+                  qtyChange: rupees(draftTaxMix.nonGst.reduce((s, it) => s + (Number(it.amount) || 0), 0)),
+                },
+                ...confirmImpact,
+              ]
+            : confirmImpact
+        }
+        confirmButtonLabel={pendingAction === 'split' ? 'Split & Save Bills' : 'Save Changes'}
+        variant={pendingAction === 'split' ? 'primary' : 'warning'}
+        confirmIcon={pendingAction === 'split' ? <Split className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
         rectificationPrompt="Reason / comment for this edit *"
-        rectificationPlaceholder="e.g. Rate corrected as agreed with customer / wrong quantity entered"
+        rectificationPlaceholder="e.g. Split Non-GST item into separate NG- Cash Memo"
         initialComment={editComment}
         commentMinLength={3}
         onConfirm={() => {}}

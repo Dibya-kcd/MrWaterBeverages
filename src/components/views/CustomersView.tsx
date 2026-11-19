@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Building2,
+  Check,
   CreditCard,
   Edit2,
   FileText,
@@ -9,6 +10,7 @@ import {
   Plus,
   Receipt,
   RotateCcw,
+  Route,
   Search,
   Share2,
   Trash2,
@@ -37,6 +39,9 @@ import { RecordRefundModal } from "../common/RecordRefundModal";
 import { EditBillModal } from "../common/EditBillModal";
 import { DeleteConfirmModal } from "../common/DeleteConfirmModal";
 import { normCustName } from "../../context/ledgerHelpers";
+import { realLast10Phone } from "../../utils/customerDedupe";
+import { validatePhone } from "../../utils/validation";
+import { formatBillNumber, isGstExcludedBill } from "../../utils/invoiceCommon";
 
 type PartyTab = "customers" | "suppliers";
 
@@ -249,6 +254,7 @@ export const CustomersView: React.FC = () => {
     deletePayment,
     deleteBill,
     updateBill,
+    splitMixedBill,
     previewBillEdit,
     previewBillDelete,
     reopenTrip,
@@ -307,6 +313,23 @@ export const CustomersView: React.FC = () => {
   const [customerFilter, setCustomerFilter] = useState<"all" | "due" | "advance">("all");
   // Beat filter: "all", a beat id, or "none" (customers not in any beat yet).
   const [beatFilter, setBeatFilter] = useState<string>("all");
+  const [beatMenuOpen, setBeatMenuOpen] = useState(false);
+  const beatMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!beatMenuOpen) return;
+    const onDocDown = (e: MouseEvent | TouchEvent) => {
+      if (beatMenuRef.current && !beatMenuRef.current.contains(e.target as Node)) {
+        setBeatMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("touchstart", onDocDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("touchstart", onDocDown);
+    };
+  }, [beatMenuOpen]);
 
   useEffect(() => {
     const loaded = loadSuppliers();
@@ -325,29 +348,57 @@ export const CustomersView: React.FC = () => {
     return existingCustomers.filter((c) => (c.balanceDue || 0) > 0.004).length;
   }, [existingCustomers]);
 
-  // beat id of each customer by master id ("" = no beat) and how many customers each beat has
-  const beatIdByCustomer = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const c of customers || []) m.set(c.id, customerBeat(c)?.id || "");
-    return m;
+  // beat id of each customer by master id (with unambiguous same-name fallback) and how many customers each beat has
+  const { beatIdByCustomer, beatIdByName } = useMemo(() => {
+    const byId = new Map<string, string>();
+    const phonesByName = new Map<string, Set<string>>();
+    const candidateByName = new Map<string, string>();
+    for (const c of customers || []) {
+      const bid = customerBeat(c)?.id || "";
+      byId.set(c.id, bid);
+      const k = normCustName(c.name);
+      if (!k) continue;
+      const p10 = realLast10Phone(c.phone);
+      if (p10) {
+        let s = phonesByName.get(k);
+        if (!s) {
+          s = new Set<string>();
+          phonesByName.set(k, s);
+        }
+        s.add(p10);
+      }
+      if (bid && !candidateByName.has(k)) candidateByName.set(k, bid);
+    }
+    const byName = new Map<string, string>();
+    for (const [k, bid] of candidateByName) {
+      if ((phonesByName.get(k)?.size || 0) <= 1) byName.set(k, bid);
+    }
+    return { beatIdByCustomer: byId, beatIdByName: byName };
   }, [customers, customerBeat]);
+  const beatIdForExisting = useCallback(
+    (ec: ExistingCustomer): string =>
+      (ec.id && beatIdByCustomer.get(ec.id)) ||
+      beatIdByName.get(normCustName(ec.name)) ||
+      "",
+    [beatIdByCustomer, beatIdByName],
+  );
   const beatCounts = useMemo(() => {
     const counts = new Map<string, number>();
     let none = 0;
     for (const ec of existingCustomers) {
-      const b = (ec.id && beatIdByCustomer.get(ec.id)) || "";
+      const b = beatIdForExisting(ec);
       if (b) counts.set(b, (counts.get(b) || 0) + 1);
       else none++;
     }
     return { counts, none };
-  }, [existingCustomers, beatIdByCustomer]);
+  }, [existingCustomers, beatIdForExisting]);
 
   const filteredCustomers = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
     let list = existingCustomers;
     if (beatFilter !== "all") {
       list = list.filter((c) => {
-        const b = (c.id && beatIdByCustomer.get(c.id)) || "";
+        const b = beatIdForExisting(c);
         return beatFilter === "none" ? !b : b === beatFilter;
       });
     }
@@ -370,7 +421,7 @@ export const CustomersView: React.FC = () => {
       );
     }
     return [...list].sort((a, b) => a.name.localeCompare(b.name));
-  }, [existingCustomers, searchTerm, customerFilter, beatFilter, beatIdByCustomer]);
+  }, [existingCustomers, searchTerm, customerFilter, beatFilter, beatIdForExisting]);
 
   const filteredSuppliers = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
@@ -411,9 +462,13 @@ export const CustomersView: React.FC = () => {
 
   const openEditCustomer = (ec: ExistingCustomer) => {
     const targetNorm = normCustName(ec.name);
+    const exactById = ec.id ? customers.find((c) => c.id === ec.id) : undefined;
+    const sameNameList = customers.filter((c) => normCustName(c.name) === targetNorm);
     const full =
-      (ec.id ? customers.find((c) => c.id === ec.id) : undefined) ||
-      customers.find((c) => normCustName(c.name) === targetNorm);
+      (exactById && customerBeat(exactById) ? exactById : undefined) ||
+      sameNameList.find((c) => Boolean(customerBeat(c))) ||
+      exactById ||
+      sameNameList[0];
     const parsedNotes = parseCustomerNotes(full?.notes);
     setEditingCustomer(full || null);
     setEditingDerivedCustomer(full ? null : ec);
@@ -445,6 +500,13 @@ export const CustomersView: React.FC = () => {
     const name = customerForm.name.trim();
     if (!name) {
       setFormError("Shop / business name is required");
+      return;
+    }
+    const phoneErr = customerForm.phone.trim()
+      ? validatePhone(customerForm.phone, { label: "Phone" })
+      : null;
+    if (phoneErr) {
+      setFormError(phoneErr);
       return;
     }
     const beatMatch =
@@ -510,7 +572,10 @@ export const CustomersView: React.FC = () => {
         setEditingCustomer(null);
         setEditingDerivedCustomer(null);
       };
-      const clash = customerNameClash(editingCustomer.id, name);
+      const clash = customerNameClash(editingCustomer.id, name, {
+        oldName: editingCustomer.name,
+        phone: payload.phone,
+      });
       if (clash) {
         setClashConfirm({ clash, commit });
         return;
@@ -545,7 +610,10 @@ export const CustomersView: React.FC = () => {
         setEditingCustomer(null);
         setEditingDerivedCustomer(null);
       };
-      const clash = customerNameClash(derivedId, name);
+      const clash = customerNameClash(derivedId, name, {
+        oldName: editingDerivedCustomer.name,
+        phone: payload.phone,
+      });
       if (clash) {
         setClashConfirm({ clash, commit });
         return;
@@ -592,6 +660,13 @@ export const CustomersView: React.FC = () => {
     const name = supplierForm.name.trim();
     if (!name) {
       setFormError("Supplier / company name is required");
+      return;
+    }
+    const phoneErr = supplierForm.phone.trim()
+      ? validatePhone(supplierForm.phone, { label: "Supplier phone" })
+      : null;
+    if (phoneErr) {
+      setFormError(phoneErr);
       return;
     }
     const next: SupplierMaster = {
@@ -781,10 +856,10 @@ export const CustomersView: React.FC = () => {
             <ArrowLeft className="w-5 h-5 text-slate-800" />
           </button>
           <div className="min-w-0 flex-1">
-            <h1 className="text-base sm:text-lg font-bold text-slate-900 truncate">
+            <h1 className="text-base sm:text-lg font-bold text-slate-900 min-w-0 break-words lg:truncate">
               {nameFromMap(customerNameMap, c, language)}
             </h1>
-            <p className="text-xs text-slate-500 truncate">
+            <p className="text-xs text-slate-500 min-w-0 break-words lg:truncate">
               {c.phone || "No phone"}
             </p>
           </div>
@@ -1062,7 +1137,7 @@ export const CustomersView: React.FC = () => {
                               {formatEntryDate(entry.date)}
                             </span>
                             <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-blue-50 text-blue-700">
-                              Invoice #{entry.bill.id}
+                              {isGstExcludedBill(entry.bill, products) ? "Memo" : "Invoice"} #{formatBillNumber(entry.bill, billingSettings)}
                             </span>
                             {ret.reason && (
                               <span className="text-[11px] text-slate-400 truncate max-w-[10rem] sm:max-w-xs">
@@ -1080,7 +1155,8 @@ export const CustomersView: React.FC = () => {
 
                   if (entry.kind === "bill") {
                     const b = entry.bill;
-                    const invNo = `${billingSettings?.invoicePrefix || ""}${b.id}`;
+                    const invNo = formatBillNumber(b, billingSettings);
+                    const isNg = isGstExcludedBill(b, products);
                     return (
                       <li
                         key={entry.id}
@@ -1091,8 +1167,13 @@ export const CustomersView: React.FC = () => {
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
-                            <span className="text-sm font-semibold text-slate-800">
-                              Bill {invNo}
+                            <span className="text-sm font-semibold text-slate-800 inline-flex items-center gap-1.5">
+                              <span>{isNg ? "Cash Memo" : "Bill"} {invNo}</span>
+                              {isNg && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-50 text-teal-800 border border-teal-200 uppercase">
+                                  Non-GST
+                                </span>
+                              )}
                             </span>
                             <span className="text-sm font-bold tabular-nums text-rose-600">
                               +₹{money(entry.amount)}
@@ -1217,8 +1298,13 @@ export const CustomersView: React.FC = () => {
             confirmButtonLabel="Delete"
             variant="danger"
             rectificationPrompt="Rectification comment (saved with the delete)"
-            onConfirmWithComment={(comment) => {
-              if (customerToDelete.id) deleteCustomer(customerToDelete.id, comment);
+            optionalCheckboxLabel="Also remove payments linked directly to this customer (recommended for duplicate customers)"
+            onConfirmWithOptions={({ comment, optionalChecked }) => {
+              if (customerToDelete.id) {
+                deleteCustomer(customerToDelete.id, comment || undefined, {
+                  removePayments: optionalChecked,
+                });
+              }
               setCustomerToDelete(null);
               setSelectedCustomer(null);
             }}
@@ -1335,6 +1421,7 @@ export const CustomersView: React.FC = () => {
             bill={billToEdit}
             onClose={() => setBillToEdit(null)}
             onSave={(updated, o) => updateBill(updated, o)}
+            onSplitMixedBill={(draft, o) => splitMixedBill(draft, o)}
             previewEdit={previewBillEdit}
             onReopenTrip={reopenTrip}
             trips={trips}
@@ -1372,8 +1459,8 @@ export const CustomersView: React.FC = () => {
             <ArrowLeft className="w-5 h-5 text-slate-800" />
           </button>
           <div className="min-w-0 flex-1">
-            <h1 className="text-lg font-bold text-slate-900 truncate">{s.name}</h1>
-            <p className="text-xs text-slate-500 truncate">
+            <h1 className="text-lg font-bold text-slate-900 min-w-0 break-words lg:truncate">{s.name}</h1>
+            <p className="text-xs text-slate-500 min-w-0 break-words lg:truncate">
               {s.phone || s.email || "No contact"}
             </p>
           </div>
@@ -1520,7 +1607,9 @@ export const CustomersView: React.FC = () => {
                 <Field label="Phone">
                   <input
                     className="crate-input"
+                    type="tel"
                     inputMode="tel"
+                    placeholder="10-digit mobile / phone"
                     value={supplierForm.phone}
                     onChange={(e) => setSField("phone", e.target.value)}
                   />
@@ -1636,7 +1725,9 @@ export const CustomersView: React.FC = () => {
                 <Field label="Phone">
                   <input
                     className="crate-input"
+                    type="tel"
                     inputMode="tel"
+                    placeholder="10-digit mobile / phone"
                     value={customerForm.phone}
                     onChange={(e) => setCField("phone", e.target.value)}
                   />
@@ -1839,6 +1930,7 @@ export const CustomersView: React.FC = () => {
             onClick={() => {
               setPartyTab("customers");
               setSearchTerm("");
+              setBeatMenuOpen(false);
             }}
             className={`flex-1 py-2.5 text-sm font-semibold rounded-full transition-colors cursor-pointer ${
               partyTab === "customers"
@@ -1853,6 +1945,7 @@ export const CustomersView: React.FC = () => {
             onClick={() => {
               setPartyTab("suppliers");
               setSearchTerm("");
+              setBeatMenuOpen(false);
             }}
             className={`flex-1 py-2.5 text-sm font-semibold rounded-full transition-colors cursor-pointer ${
               partyTab === "suppliers"
@@ -1864,19 +1957,104 @@ export const CustomersView: React.FC = () => {
           </button>
         </div>
 
-        <div className="relative mb-3">
+        <div ref={beatMenuRef} className="relative mb-3">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-          <input enterKeyHint="search"
-            type="search"
+          <input
+            enterKeyHint="search"
+            type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder={
-              partyTab === "suppliers"
-                ? "Search name, phone, GSTIN"
-                : "Search name, phone, GSTIN"
-            }
-            className="w-full pl-10 pr-4 py-2.5 rounded-full bg-white border border-black/8 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25 focus:border-[var(--primary)]/40"
+            placeholder="Search name, phone, GSTIN"
+            className={`w-full pl-10 py-2.5 rounded-full bg-white border border-black/8 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25 focus:border-[var(--primary)]/40 ${
+              partyTab === "customers" && beats.length > 0
+                ? searchTerm
+                  ? "pr-20 md:pr-10"
+                  : "pr-12 md:pr-4"
+                : searchTerm
+                  ? "pr-10"
+                  : "pr-4"
+            }`}
           />
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => setSearchTerm("")}
+              aria-label="Clear search"
+              className={`absolute top-1/2 -translate-y-1/2 p-1.5 rounded-full text-slate-400 hover:text-slate-700 cursor-pointer ${
+                partyTab === "customers" && beats.length > 0 ? "right-11 md:right-2" : "right-2"
+              }`}
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+
+          {/* Mobile Beat Filter Icon on right side of search bar */}
+          {partyTab === "customers" && beats.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setBeatMenuOpen((v) => !v)}
+              aria-label="Filter by beat"
+              aria-expanded={beatMenuOpen}
+              className={`md:hidden absolute right-1.5 top-1/2 -translate-y-1/2 min-h-[36px] min-w-[36px] px-2 rounded-full inline-flex items-center justify-center gap-1 text-xs font-bold transition-colors cursor-pointer ${
+                beatFilter !== "all"
+                  ? "bg-emerald-600 text-white shadow-xs"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+              title="Filter by beat"
+            >
+              <Route className="w-4 h-4 shrink-0" />
+            </button>
+          )}
+
+          {/* Beat Selector Dropdown inside Search (mobile) */}
+          {beatMenuOpen && partyTab === "customers" && beats.length > 0 && (
+            <div
+              role="listbox"
+              aria-label="Choose beat"
+              className="md:hidden absolute left-0 right-0 top-full mt-1.5 z-40 rounded-2xl border border-[#DCE5F2] bg-white shadow-xl p-2 space-y-1 max-h-72 overflow-y-auto"
+            >
+              <div className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                Filter by beat
+              </div>
+              {[
+                { id: "all", label: "All beats", n: existingCustomers.length },
+                ...beats
+                  .filter((b) => b.active !== false)
+                  .map((b) => ({ id: b.id, label: b.name, n: beatCounts.counts.get(b.id) || 0 })),
+                { id: "none", label: "No beat yet", n: beatCounts.none },
+              ].map((opt) => {
+                const selected = beatFilter === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    onClick={() => {
+                      setBeatFilter(opt.id);
+                      setBeatMenuOpen(false);
+                    }}
+                    className={`w-full min-h-[40px] px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between gap-2 cursor-pointer transition-colors ${
+                      selected
+                        ? "bg-emerald-50 text-emerald-900 border border-emerald-200"
+                        : "text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 min-w-0">
+                      <Route className={`w-3.5 h-3.5 shrink-0 ${selected ? "text-emerald-700" : "text-slate-400"}`} />
+                      <span className="truncate">{opt.label}</span>
+                    </span>
+                    <span className="flex items-center gap-1.5 shrink-0">
+                      <span className="px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[11px] font-bold tabular-nums">
+                        {opt.n}
+                      </span>
+                      {selected && <Check className="w-4 h-4 text-emerald-700" />}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {partyTab === "customers" && (
@@ -1922,8 +2100,30 @@ export const CustomersView: React.FC = () => {
           </div>
         )}
 
+        {partyTab === "customers" && beats.length > 0 && beatFilter !== "all" && (
+          <div className="md:hidden flex items-center gap-1.5 mb-3 text-xs">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 font-semibold">
+              <Route className="w-3.5 h-3.5 shrink-0 text-emerald-700" />
+              <span>
+                Beat:{" "}
+                {beatFilter === "none"
+                  ? "No beat yet"
+                  : beats.find((b) => b.id === beatFilter)?.name || beatFilter}
+              </span>
+              <button
+                type="button"
+                onClick={() => setBeatFilter("all")}
+                aria-label="Clear beat filter"
+                className="ml-0.5 text-emerald-600 hover:text-emerald-900 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </span>
+          </div>
+        )}
+
         {partyTab === "customers" && beats.length > 0 && (
-          <div className="flex items-center gap-1.5 mb-3.5 overflow-x-auto pb-1 text-xs" aria-label="Filter by beat">
+          <div className="hidden md:flex items-center gap-1.5 mb-3.5 overflow-x-auto pb-1 text-xs" aria-label="Filter by beat">
             {[
               { id: "all", label: "All beats", n: existingCustomers.length },
               ...beats.filter((b) => b.active !== false).map((b) => ({ id: b.id, label: b.name, n: beatCounts.counts.get(b.id) || 0 })),
@@ -1970,7 +2170,7 @@ export const CustomersView: React.FC = () => {
                         <div className="font-semibold text-slate-900 break-words leading-snug">
                           {s.name}
                         </div>
-                        <div className="text-xs text-slate-500 truncate">
+                        <div className="text-xs text-slate-500 min-w-0 break-words lg:truncate">
                           {s.phone || s.city || s.gstin || "—"}
                         </div>
                       </div>
@@ -2025,7 +2225,7 @@ export const CustomersView: React.FC = () => {
                         </span>
                       )}
                     </div>
-                    <div className="text-xs text-slate-500 truncate">
+                    <div className="text-xs text-slate-500 min-w-0 break-words lg:truncate">
                       {c.phone || c.city || "—"}
                     </div>
                   </div>
@@ -2069,8 +2269,13 @@ export const CustomersView: React.FC = () => {
           confirmButtonLabel="Delete"
           variant="danger"
           rectificationPrompt="Rectification comment (saved with the delete)"
-          onConfirmWithComment={(comment) => {
-            if (customerToDelete.id) deleteCustomer(customerToDelete.id, comment);
+          optionalCheckboxLabel="Also remove payments linked directly to this customer (recommended for duplicate customers)"
+          onConfirmWithOptions={({ comment, optionalChecked }) => {
+            if (customerToDelete.id) {
+              deleteCustomer(customerToDelete.id, comment || undefined, {
+                removePayments: optionalChecked,
+              });
+            }
             setCustomerToDelete(null);
           }}
           onConfirm={() => {

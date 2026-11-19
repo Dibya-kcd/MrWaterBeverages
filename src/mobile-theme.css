@@ -29,26 +29,22 @@ body {
   line-height: 1.5;
 }
 
-h1,
-h2,
-h3,
-h4 {
+:where(h1, h2, h3, h4) {
   letter-spacing: -0.01em;
 }
 /* Page title 24px phone / 28px tablet / 30px desktop, weight 700 (see "Unified page system" in shell.css). */
-h1 {
+:where(h1) {
   font-weight: 700;
   line-height: 1.2;
   font-size: calc(var(--fs-page-title) * var(--app-font-scale, 1));
 }
 /* Card title 16-17px / 800 */
-h2 {
+:where(h2) {
   font-weight: 700;
   line-height: 1.3;
   font-size: calc(var(--fs-card-title) * var(--app-font-scale, 1));
 }
-h3,
-h4 {
+:where(h3, h4) {
   font-weight: 700;
   line-height: 1.3;
   font-size: calc(var(--fs-body) * var(--app-font-scale, 1));
@@ -573,10 +569,8 @@ textarea:focus-visible {
 
 
   /* ------------------------------------- 4. Header and bottom navigation */
-  /* Compact back / close buttons used across screens. */
-  button[aria-label="Back"],
-  button[aria-label="Close"],
-  button[aria-label="Go back"] {
+  /* Compact back / close buttons on light surfaces (only when not explicitly styled or inside dark headers). */
+  :where(button[aria-label="Back"], button[aria-label="Close"], button[aria-label="Go back"]):not([class*="bg-"]):not([class*="hover:bg-"]):not(:is(header, .text-white, [class*="bg-[#0A1F44]"], [class*="bg-slate-900"], [class*="bg-[var(--primary)]"]) *) {
     border-radius: var(--r-control);
     border: 1px solid var(--border);
     background: var(--surface);

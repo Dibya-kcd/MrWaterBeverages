@@ -293,9 +293,11 @@
     display: flex;
     flex-direction: column;
     align-items: stretch;
+    align-self: flex-start;
     gap: 8px;
     width: 96px;
     flex: 0 0 96px;
+    flex-shrink: 0;
     position: sticky;
     top: 0;
     height: 100dvh;
@@ -342,7 +344,8 @@
   cursor: pointer;
 }
 .hh-rail__item span {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 .hh-rail__item:hover {
   background: var(--surface-soft);
@@ -361,8 +364,10 @@
   .hh-sidebar {
     display: flex;
     flex-direction: column;
+    align-self: flex-start;
     width: 260px;
     flex: 0 0 260px;
+    flex-shrink: 0;
     position: sticky;
     top: 0;
     height: 100dvh;
@@ -415,7 +420,8 @@
 }
 .hh-sidebar__item span {
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 .hh-sidebar__item svg {
   flex: 0 0 22px;
@@ -992,8 +998,8 @@ html[data-theme="high-contrast"] .hh-switch__thumb {
   min-width: 0;
 }
 
-/* Page title: one size/weight/colour on every screen (Tailwind text-* classes on h1 are overridden here) */
-.app-content h1 {
+/* Page title default (lower specificity via :where so Tailwind text-* color/size utilities still win) */
+:where(.app-content h1) {
   color: var(--text);
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -1003,8 +1009,7 @@ html[data-theme="high-contrast"] .hh-switch__thumb {
   overflow-wrap: anywhere;
 }
 /* Subtitle straight under a page title */
-.app-content h1 + p,
-.hh-pagehead p {
+:where(.app-content h1 + p, .hh-pagehead p) {
   margin: 4px 0 0;
   font-size: calc(14px * var(--app-font-scale, 1));
   font-weight: 400;
@@ -1017,13 +1022,13 @@ html[data-theme="high-contrast"] .hh-switch__thumb {
   min-width: 0;
 }
 /* Titles inside a sticky bar (detail screens, New sale) are compact so the bar stays slim */
-.app-content .sticky h1 {
+:where(.app-content .sticky h1) {
   font-size: calc(18px * var(--app-font-scale, 1));
   font-weight: 700;
   line-height: 1.25;
 }
 @media (min-width: 768px) {
-  .app-content .sticky h1 { font-size: calc(20px * var(--app-font-scale, 1)); }
+  :where(.app-content .sticky h1) { font-size: calc(20px * var(--app-font-scale, 1)); }
 }
 /* An h1 used as a big money figure (payment details) keeps a number style, not a page-title style */
 .app-content h1[class*="font-mono"] {
@@ -1033,10 +1038,14 @@ html[data-theme="high-contrast"] .hh-switch__thumb {
   font-variant-numeric: tabular-nums;
 }
 /* Card / section titles */
-.app-content h2 {
+:where(.app-content h2) {
   color: var(--text);
   font-weight: 700;
   letter-spacing: -0.01em;
+}
+/* Keep headings readable inside dark / primary / text-white headers and cards */
+.app-content :is(.text-white, [class*="bg-[#0A1F44]"], [class*="bg-slate-900"], [class*="bg-[var(--primary)]"]) :is(h1, h2, h3, h4) {
+  color: inherit;
 }
 
 /* List screens (Parties, Products ...): one column on phones, 2 on tablet / desktop, 3 on wide desktop */
@@ -1087,7 +1096,8 @@ html[data-theme="high-contrast"] .hh-switch__thumb {
 @media (max-width: 1023px) {
   [class*="grid-cols-"] > *,
   .grid > * { min-width: 0; }
-
+}
+@media (max-width: 767px) {
   .grid:is(.grid-cols-3, .grid-cols-4, .grid-cols-5, .grid-cols-6) > * { container-type: inline-size; }
   .grid:is(.grid-cols-3, .grid-cols-4, .grid-cols-5, .grid-cols-6) > * :is(.text-base, .text-lg, .text-xl, .text-2xl, .text-3xl, [class*="text-["]):is(.tabular-nums, .font-black, .font-extrabold, .font-bold) {
     overflow-wrap: anywhere;

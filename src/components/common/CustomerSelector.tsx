@@ -163,7 +163,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
   };
 
   return (
-    <div
+    <div data-esc-close role="dialog" aria-modal="true" aria-label="Select customer"
       className="fixed inset-0 z-[80] flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150"
       onClick={onClose}
     >
@@ -531,7 +531,7 @@ export const CustomerSelector: React.FC<CustomerSelectorProps> = ({
                     <div className="space-y-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span
-                          className={`font-black text-base sm:text-lg leading-tight truncate ${
+                          className={`font-black text-base sm:text-lg leading-tight min-w-0 break-words lg:truncate ${
                             isSelected && highContrastMode ? 'text-black' : ''
                           }`}
                         >

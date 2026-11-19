@@ -106,7 +106,7 @@ export const ProductProfitPricingModal: React.FC<ProductProfitPricingModalProps>
   const profitPerBilledCase = row.profitPerCase;
 
   return (
-    <div
+    <div data-esc-close role="dialog" aria-modal="true" aria-label="Product profit and pricing"
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
       onClick={onClose}
     >

@@ -12,6 +12,7 @@ import {
   sizeTheme,
 } from '../../../utils/sizeColor';
 import { OdiaName } from '../../common/OdiaName';
+import { FlowMetric } from '../../common/FlowKit';
 
 /**
  * Shared phone-first building blocks for every "load a van" screen (owner and salesman, new trip
@@ -19,26 +20,22 @@ import { OdiaName } from '../../common/OdiaName';
  * bottom action bar. Plain words and big buttons, so a first-time user can follow it.
  */
 
-export const fieldLabel = 'block text-[10.5px] font-bold uppercase tracking-wider text-slate-500 mb-1';
+export const fieldLabel = 'block mb-1 text-xs font-bold text-slate-600';
 export const fieldBox =
-  'w-full min-h-[46px] px-3 py-2.5 rounded-xl border border-black/15 bg-white text-[15px] font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30 disabled:bg-slate-100 disabled:text-slate-500 disabled:border-dashed';
+  'w-full min-w-0 min-h-[46px] px-3 py-2.5 rounded-xl border border-black/15 bg-white text-[15px] font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[var(--flow-accent)]/30 disabled:bg-slate-100 disabled:text-slate-500 disabled:border-dashed';
 
 /* ------------------------------------------------------------------ */
 /* Totals strip                                                         */
 /* ------------------------------------------------------------------ */
 export const StatsStrip: React.FC<{ items: { label: string; value: string; tone?: 'green' | 'amber' | 'ink' }[] }> = ({ items }) => (
-  <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
+  <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
     {items.map((s) => (
-      <div key={s.label} className="rounded-xl border border-black/10 bg-white px-1 py-1.5 text-center">
-        <div
-          className={`text-base font-black leading-tight tabular-nums ${
-            s.tone === 'green' ? 'text-[var(--primary)]' : s.tone === 'amber' ? 'text-amber-700' : 'text-slate-900'
-          }`}
-        >
-          {s.value}
-        </div>
-        <div className="text-[9.5px] font-bold uppercase tracking-wide text-slate-500">{s.label}</div>
-      </div>
+      <FlowMetric
+        key={s.label}
+        label={s.label}
+        value={s.value}
+        tone={s.tone === 'green' ? 'good' : s.tone === 'amber' ? 'warn' : 'ink'}
+      />
     ))}
   </div>
 );
@@ -93,7 +90,7 @@ export const LoadLineCard: React.FC<LoadLineCardProps> = ({
             <div className="mt-1 flex items-center gap-1.5 flex-wrap">
               <SizeChip volume={product?.volume} pack={product?.pack} name={name} />
               {product?.unitsPerCrate ? (
-                <span className="text-[10.5px] font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                <span className="text-xs font-bold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
                   {product.unitsPerCrate} pcs/cs
                 </span>
               ) : null}
@@ -114,7 +111,7 @@ export const LoadLineCard: React.FC<LoadLineCardProps> = ({
 
       {godown && (
         <div className="mt-2 flex items-center gap-2">
-          <span className="text-[11px] font-bold text-slate-500 shrink-0">From</span>
+          <span className="text-xs font-bold text-slate-500 shrink-0">From</span>
           <select
             value={godown.value}
             onChange={(e) => godown.onChange(e.target.value)}
@@ -129,12 +126,12 @@ export const LoadLineCard: React.FC<LoadLineCardProps> = ({
               </option>
             ))}
           </select>
-          <span className="text-[11px] font-semibold text-slate-500 shrink-0">{godown.stockText}</span>
+          <span className="text-xs font-semibold text-slate-500 shrink-0">{godown.stockText}</span>
         </div>
       )}
 
       <div className="mt-2 flex items-end justify-between gap-2">
-        <div className="text-[11.5px] text-slate-500 leading-relaxed min-w-0">
+        <div className="text-xs text-slate-500 leading-relaxed min-w-0">
           {(facts || []).map((f) => (
             <div key={f.label}>
               {f.label} <strong className={f.bad ? 'text-rose-700' : 'text-slate-900'}>{f.value}</strong>
@@ -160,14 +157,14 @@ export const LoadLineCard: React.FC<LoadLineCardProps> = ({
             onChange={(e) => onQty(e.target.value)}
             onFocus={(e) => e.target.select()}
             aria-label={`Cases of ${name}`}
-            className="w-16 h-11 text-center rounded-xl border-2 border-[var(--primary)]/40 bg-white text-lg font-black tabular-nums text-slate-900 focus:outline-none focus:border-[var(--primary)]"
+            className="w-16 h-11 text-center rounded-xl border-2 border-[var(--flow-accent)]/40 bg-white text-lg font-black tabular-nums text-slate-900 focus:outline-none focus:border-[var(--flow-accent)]"
           />
           <button
             type="button"
             onClick={onPlus}
             disabled={readOnly}
             aria-label={`More ${name}`}
-            className="size-11 rounded-xl bg-[var(--primary)] text-white flex items-center justify-center active:scale-95 disabled:cursor-not-allowed cursor-pointer"
+            className="size-11 rounded-xl bg-[var(--flow-accent)] text-white flex items-center justify-center active:scale-95 disabled:cursor-not-allowed cursor-pointer"
           >
             <Plus size={18} />
           </button>
@@ -200,25 +197,25 @@ export const StepProgress: React.FC<{
           <React.Fragment key={n}>
             {n > 1 && (
               <div
-                className={`h-0.5 flex-1 rounded-full ${done || active ? 'bg-[var(--primary)]' : 'bg-black/10'}`}
+                className={`h-0.5 flex-1 rounded-full ${done || active ? 'bg-[var(--flow-accent)]' : 'bg-black/10'}`}
                 aria-hidden
               />
             )}
             <div className="flex flex-col items-center gap-0.5 shrink-0">
               <div
-                className={`size-7 rounded-full flex items-center justify-center text-[11px] font-black border-2 ${
+                className={`size-7 rounded-full flex items-center justify-center text-xs font-black border-2 ${
                   done
-                    ? 'bg-[var(--primary)] border-[var(--primary)] text-white'
+                    ? 'bg-[var(--flow-accent)] border-[var(--flow-accent)] text-white'
                     : active
-                      ? 'bg-white border-[var(--primary)] text-[var(--primary)]'
+                      ? 'bg-white border-[var(--flow-accent)] text-[var(--flow-accent)]'
                       : 'bg-white border-black/15 text-slate-400'
                 }`}
               >
                 {done ? <Check size={13} strokeWidth={3} /> : n}
               </div>
               <span
-                className={`text-[9.5px] font-bold uppercase tracking-wide ${
-                  active ? 'text-[var(--primary)]' : done ? 'text-slate-600' : 'text-slate-400'
+                className={`text-xs font-bold ${
+                  active ? 'text-[var(--flow-accent)]' : done ? 'text-slate-600' : 'text-slate-400'
                 }`}
               >
                 {labels[n - 1]}
@@ -249,12 +246,12 @@ export interface BarAction {
 const TONE: Record<BarAction['tone'], string> = {
   cancel: 'border-rose-300 bg-rose-50 text-rose-700 active:bg-rose-100',
   neutral: 'border-black/15 bg-white text-slate-800 active:bg-slate-100',
-  add: 'border-dashed border-[var(--primary)]/60 bg-white text-[var(--primary)] active:bg-emerald-50',
-  primary: 'border-[var(--primary)] bg-[var(--primary)] text-white active:bg-[var(--primary-hover)] shadow-sm',
+  add: 'border-dashed border-[var(--flow-accent)]/60 bg-white text-[var(--flow-accent)] active:bg-emerald-50',
+  primary: 'border-[var(--flow-accent)] bg-[var(--flow-accent)] text-white active:bg-[var(--flow-accent-hover)] shadow-sm',
 };
 
 export const ActionBar: React.FC<{ actions: BarAction[] }> = ({ actions }) => (
-  <div className="shrink-0 border-t border-black/10 bg-[#faf8f5] px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+  <div className="shrink-0 border-t border-black/10 bg-[var(--flow-canvas)] px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
     <div className="mx-auto max-w-xl flex gap-2">
       {actions.map((a) => (
         <button
@@ -285,7 +282,7 @@ export const SheetShell: React.FC<{ title: string; subtitle?: string; onClose: (
   z = 60,
 }) => (
   <div className="fixed inset-0 flex items-end sm:items-center justify-center bg-slate-900/55" style={{ zIndex: z }} role="dialog" aria-modal="true" aria-label={title}>
-    <div className="w-full sm:max-w-2xl bg-[#faf8f5] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col max-h-[92dvh] sm:max-h-[90vh] overflow-hidden">
+    <div className="w-full sm:max-w-2xl bg-[var(--flow-canvas)] rounded-t-3xl sm:rounded-3xl shadow-2xl flex flex-col max-h-[92dvh] sm:max-h-[90vh] overflow-hidden">
       <div className="mx-auto mt-2 h-1.5 w-11 rounded-full bg-slate-300 sm:hidden" />
       <div className="shrink-0 px-4 pt-2 pb-2 flex items-center justify-between gap-3">
         <div className="min-w-0">
@@ -333,7 +330,6 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
   const [query, setQuery] = useState('');
   const [packFilter, setPackFilter] = useState<PackGroupKey | ''>('');
   const [size, setSize] = useState('');
-  const [inStockOnly, setInStockOnly] = useState(true);
   const [picks, setPicks] = useState<Record<number, number>>({});
   const [error, setError] = useState<string | null>(null);
 
@@ -351,20 +347,25 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
     return () => clearTimeout(t);
   }, [entryProduct]);
 
+  const stockProducts = useMemo(
+    () => products.filter((p) => Boolean(added[p.id]) || Boolean(picks[p.id]) || stockOf(p.id, godownId) > 0),
+    [products, added, picks, stockOf, godownId],
+  );
+
   const packGroups = useMemo(() => {
     const map = new Map<PackGroupKey, { info: PackGroupInfo; count: number }>();
-    for (const p of products) {
+    for (const p of stockProducts) {
       const info = productPackGroup(p);
       const existing = map.get(info.key);
       if (existing) existing.count += 1;
       else map.set(info.key, { info, count: 1 });
     }
     return Array.from(map.values()).sort((a, b) => a.info.order - b.info.order);
-  }, [products]);
+  }, [stockProducts]);
 
   const sizes = useMemo(() => {
     const m = new Map<string, number>();
-    for (const p of products) {
+    for (const p of stockProducts) {
       if (packFilter && productPackGroup(p).key !== packFilter) continue;
       const t = sizeTheme(p.volume, p.name);
       if (t.label && !m.has(t.label)) m.set(t.label, productSequenceVolume(p));
@@ -373,11 +374,11 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
       .sort((a, b) => a[1] - b[1])
       .map(([label]) => label)
       .slice(0, 10);
-  }, [products, packFilter]);
+  }, [stockProducts, packFilter]);
 
   const q = query.trim().toLowerCase();
   const visible = useMemo(() => {
-    return products
+    return stockProducts
       .filter((p) => {
         if (packFilter && productPackGroup(p).key !== packFilter) return false;
         if (q) {
@@ -385,11 +386,10 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
           if (!hay.includes(q)) return false;
         }
         if (size && sizeTheme(p.volume, p.name).label !== size) return false;
-        if (inStockOnly && !added[p.id] && !picks[p.id] && stockOf(p.id, godownId) <= 0) return false;
         return true;
       })
       .sort(compareProductsInSequence);
-  }, [products, packFilter, q, size, inStockOnly, added, picks, stockOf, godownId]);
+  }, [stockProducts, packFilter, q, size]);
 
   const groupedSections = useMemo(() => {
     const groups: { key: PackGroupKey; heading: string; items: Product[] }[] = [];
@@ -463,7 +463,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
               <OdiaName name={p.name} nameOr={p.nameOr} />
               <SizeChip volume={p.volume} pack={p.pack} name={p.name} />
             </div>
-            <div className={`text-[11.5px] mt-0.5 ${over ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
+            <div className={`text-xs mt-0.5 ${over ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
               {stockLine(p)}
               {p.unitsPerCrate ? ` · ${p.unitsPerCrate} pcs/cs` : ''}
               {over ? ' — more than in stock' : ''}
@@ -472,7 +472,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
         </button>
 
         {onTrip ? (
-          <span className="shrink-0 inline-flex items-center gap-1 text-[11.5px] font-bold text-emerald-800 bg-emerald-100 px-2.5 py-1.5 rounded-full">
+          <span className="shrink-0 inline-flex items-center gap-1 text-xs font-bold text-emerald-800 bg-emerald-100 px-2.5 py-1.5 rounded-full">
             <Check size={13} /> On trip · {onTrip}
           </span>
         ) : n > 0 ? (
@@ -500,7 +500,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
             type="button"
             aria-label={`Add ${p.name}`}
             onClick={() => openEntryPopup(p)}
-            className="shrink-0 min-h-[40px] px-3.5 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-[13px] font-black flex items-center gap-1 cursor-pointer active:scale-95"
+            className="shrink-0 min-h-[40px] px-3.5 rounded-xl bg-[var(--flow-accent)] hover:bg-[var(--flow-accent-hover)] text-white text-[13px] font-black flex items-center gap-1 cursor-pointer active:scale-95"
           >
             <Plus size={15} /> Add
           </button>
@@ -537,7 +537,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search name, size, PET, Can…"
-            className="w-full min-h-[44px] pl-9 pr-8 rounded-xl border border-black/15 bg-white text-[14.5px] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
+            className="w-full min-h-[44px] pl-9 pr-8 rounded-xl border border-black/15 bg-white text-[14.5px] focus:outline-none focus:ring-2 focus:ring-[var(--flow-accent)]/30"
           />
           {query && (
             <button
@@ -572,7 +572,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
               }}
               className={chip(packFilter === '')}
             >
-              All packs ({products.length})
+              All packs ({stockProducts.length})
             </button>
             {packGroups.map(({ info, count }) => (
               <button
@@ -590,28 +590,19 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
           </div>
         )}
 
-        {/* Stock toggle + ascending size chips */}
-        <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
-          <button
-            type="button"
-            onClick={() => setInStockOnly((v) => !v)}
-            aria-pressed={inStockOnly}
-            className={`shrink-0 min-h-[34px] px-3 rounded-full border text-[12px] font-bold whitespace-nowrap cursor-pointer flex items-center gap-1 ${
-              inStockOnly ? 'bg-emerald-100 text-emerald-900 border-emerald-500' : 'bg-white text-slate-500 border-black/15'
-            }`}
-          >
-            {inStockOnly && <Check size={13} />} In stock only
-          </button>
-          <span className="shrink-0 self-center w-px h-5 bg-black/15" />
-          <button type="button" onClick={() => setSize('')} className={chip(size === '')}>
-            All sizes
-          </button>
-          {sizes.map((s) => (
-            <button key={s} type="button" onClick={() => setSize(size === s ? '' : s)} className={chip(size === s)}>
-              {s}
+        {/* Ascending size chips (in-stock items only) */}
+        {sizes.length > 0 && (
+          <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
+            <button type="button" onClick={() => setSize('')} className={chip(size === '')}>
+              All sizes
             </button>
-          ))}
-        </div>
+            {sizes.map((s) => (
+              <button key={s} type="button" onClick={() => setSize(size === s ? '' : s)} className={chip(size === s)}>
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
 
         {pickCount > 0 && (
           <div className="flex items-center justify-between gap-2 rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-xs font-bold text-emerald-900">
@@ -632,17 +623,14 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
       <div className="flex-1 min-h-[180px] overflow-y-auto overscroll-contain px-4 pb-3 space-y-4 pt-2">
         {groupedSections.length === 0 ? (
           <div className="py-10 text-center text-sm text-slate-500">
-            Nothing to show.{' '}
-            {inStockOnly && (
-              <button type="button" onClick={() => setInStockOnly(false)} className="font-bold text-[var(--primary)] underline cursor-pointer">
-                Show out-of-stock items too
-              </button>
-            )}
+            {stockProducts.length === 0
+              ? 'No products with stock available in this godown.'
+              : 'No in-stock products match your filters.'}
           </div>
         ) : (
           groupedSections.map((sec) => (
             <section key={sec.key} className="space-y-1.5">
-              <div className="sticky top-0 z-10 flex items-center justify-between bg-[#faf8f5]/95 backdrop-blur-xs py-1 px-1 text-[11px] font-black uppercase tracking-wider text-slate-600">
+              <div className="sticky top-0 z-10 flex items-center justify-between bg-[var(--flow-canvas)] py-1 px-1 text-xs font-black uppercase tracking-wider text-slate-600">
                 <span>{sec.heading}</span>
                 <span className="font-mono tabular-nums text-slate-400">{sec.items.length}</span>
               </div>
@@ -679,7 +667,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
 
       {/* Focused Quantity Entry Popup when clicking Add on any product */}
       {entryProduct && (
-        <div
+        <div data-esc-close
           className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center bg-slate-900/60 p-0 sm:p-4"
           role="dialog"
           aria-modal="true"
@@ -698,7 +686,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <SizeChip volume={entryProduct.volume} pack={entryProduct.pack} name={entryProduct.name} />
                     {entryProduct.unitsPerCrate ? (
-                      <span className="text-[11px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                      <span className="text-xs font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
                         {entryProduct.unitsPerCrate} pcs/cs
                       </span>
                     ) : null}
@@ -763,13 +751,13 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
                   value={entryQtyText}
                   onFocus={(e) => e.target.select()}
                   onChange={(e) => setEntryQtyText(e.target.value)}
-                  className="flex-1 min-w-0 h-12 text-center rounded-xl border-2 border-[var(--primary)] bg-white text-2xl font-black tabular-nums text-slate-900 focus:outline-none"
+                  className="flex-1 min-w-0 h-12 text-center rounded-xl border-2 border-[var(--flow-accent)] bg-white text-2xl font-black tabular-nums text-slate-900 focus:outline-none"
                 />
                 <button
                   type="button"
                   aria-label="Increase quantity"
                   onClick={() => setEntryQtyText(String(entryParsedQty + 1))}
-                  className="size-12 shrink-0 rounded-xl bg-[var(--primary)] text-white flex items-center justify-center hover:bg-[var(--primary-hover)] active:scale-95 cursor-pointer"
+                  className="size-12 shrink-0 rounded-xl bg-[var(--flow-accent)] text-white flex items-center justify-center hover:bg-[var(--flow-accent-hover)] active:scale-95 cursor-pointer"
                 >
                   <Plus size={20} />
                 </button>
@@ -815,7 +803,7 @@ export const AddProductsSheet: React.FC<AddProductsSheetProps> = ({
               <button
                 type="submit"
                 id="btn-entry-popup-confirm"
-                className="min-h-[48px] rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-sm font-black cursor-pointer shadow-sm"
+                className="min-h-[48px] rounded-xl bg-[var(--flow-accent)] hover:bg-[var(--flow-accent-hover)] text-white text-sm font-black cursor-pointer shadow-sm"
               >
                 {entryParsedQty > 0 ? `Add ${entryParsedQty} cs` : 'Remove'}
               </button>
@@ -857,7 +845,7 @@ export const ReviewSheet: React.FC<{
       <div className="rounded-2xl border border-black/10 bg-white p-3 grid grid-cols-2 gap-x-3 gap-y-2">
         {facts.map((f) => (
           <div key={f.label} className="min-w-0">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{f.label}</div>
+            <div className="text-xs font-bold uppercase tracking-wider text-slate-500">{f.label}</div>
             <div className="text-[14px] font-bold text-slate-900 truncate">{f.value || '—'}</div>
           </div>
         ))}
@@ -871,7 +859,7 @@ export const ReviewSheet: React.FC<{
               <div className="min-w-0">
                 <div className="text-[13.5px] font-bold text-slate-900 leading-snug break-words"><OdiaName name={r.name} /></div>
                 {r.note && (
-                  <div className={`text-[11.5px] ${r.noteTone === 'bad' ? 'text-rose-700 font-bold' : r.noteTone === 'changed' ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
+                  <div className={`text-xs ${r.noteTone === 'bad' ? 'text-rose-700 font-bold' : r.noteTone === 'changed' ? 'text-amber-700 font-bold' : 'text-slate-500'}`}>
                     {r.note}
                   </div>
                 )}
@@ -882,9 +870,9 @@ export const ReviewSheet: React.FC<{
             </div>
           </div>
         ))}
-        <div className="flex items-center justify-between px-3 py-3 bg-[#ebe8e1] rounded-b-2xl">
+        <div className="flex items-center justify-between px-3 py-3 bg-slate-100 rounded-b-2xl">
           <span className="text-sm font-black text-slate-800">Total · {rows.length} item{rows.length === 1 ? '' : 's'}</span>
-          <span className="text-xl font-black text-[var(--primary)] tabular-nums">{totalCases} cs</span>
+          <span className="text-xl font-black text-[var(--flow-accent)] tabular-nums">{totalCases} cs</span>
         </div>
       </div>
 

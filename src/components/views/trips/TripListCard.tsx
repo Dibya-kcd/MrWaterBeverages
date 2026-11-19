@@ -18,6 +18,10 @@ export interface TripCardRow {
   /** Why the product was short when the trip closed (history only). */
   reason?: 'broken' | 'short_loaded' | 'sold_not_billed' | 'other';
   reasonNote?: string;
+  /** Crates damaged on a product that was also short for another reason (the main reason is then 'broken'). */
+  damagedQty?: number;
+  /** The missing part of such a product. */
+  missing?: { reason: 'short_loaded' | 'sold_not_billed' | 'other'; qty: number; note?: string };
 }
 
 const REASON_LABEL: Record<NonNullable<TripCardRow['reason']>, string> = {
@@ -106,7 +110,7 @@ export const TripListCard: React.FC<TripListCardProps> = ({
               <Truck size={19} />
             </div>
             <div className="min-w-0">
-              <div className="text-base font-bold text-slate-900 leading-tight truncate">{trip.vehicle || 'Vehicle'}</div>
+              <div className="text-base font-bold text-slate-900 leading-tight min-w-0 break-words lg:truncate">{trip.vehicle || 'Vehicle'}</div>
               <div className="text-xs text-slate-500 mt-0.5">
                 Trip #{trip.id} · {fmtDate(trip.date)}
               </div>
@@ -124,7 +128,7 @@ export const TripListCard: React.FC<TripListCardProps> = ({
         <div className="text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
           <span className="inline-flex items-center gap-1 min-w-0">
             <WarehouseIcon size={13} className="shrink-0" />
-            <span className="truncate">From {godownLabel}</span>
+            <span className="min-w-0 break-words lg:truncate">From {godownLabel}</span>
           </span>
           <span>{trip.route ? `Beat: ${trip.route}` : 'No beat assigned'}</span>
           {personLabel && <span>{personLabel}</span>}
@@ -219,11 +223,15 @@ export const TripListCard: React.FC<TripListCardProps> = ({
                     {!isActive && r.discrepancy !== 0 && (
                       <span className={r.discrepancy > 0 ? 'text-rose-600 font-semibold' : 'text-amber-700 font-semibold'}>
                         {r.discrepancy > 0 ? `Short ${r.discrepancy}` : `Extra ${-r.discrepancy}`}
-                        {r.discrepancy > 0 && r.reason ? ` · ${REASON_LABEL[r.reason]}` : ''}
+                        {r.discrepancy > 0 && r.missing
+                          ? ` · ${r.damagedQty ?? 0} broken, ${r.missing.qty} ${REASON_LABEL[r.missing.reason].toLowerCase()}`
+                          : r.discrepancy > 0 && r.reason
+                            ? ` · ${REASON_LABEL[r.reason]}`
+                            : ''}
                       </span>
                     )}
-                    {!isActive && r.discrepancy > 0 && r.reasonNote && (
-                      <span className="text-slate-500 italic">“{r.reasonNote}”</span>
+                    {!isActive && r.discrepancy > 0 && (r.missing?.note || r.reasonNote) && (
+                      <span className="text-slate-500 italic">“{r.missing?.note || r.reasonNote}”</span>
                     )}
                   </div>
                   </div>

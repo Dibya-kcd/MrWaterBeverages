@@ -290,7 +290,7 @@ export const RecordPaymentModal: React.FC<RecordPaymentModalProps> = ({
           <div className="flex items-center gap-2">
             <CreditCard size={20} className="text-amber-300" />
             <div>
-              <h2 id="record-payment-title" className="font-bold text-base sm:text-lg">
+              <h2 id="record-payment-title" className="font-bold text-base sm:text-lg text-white leading-tight">
                 {paymentToEdit ? 'Edit Payment Record' : 'Record Customer Payment'}
               </h2>
               <p className="hidden sm:block text-[11px] text-blue-200">

@@ -38,6 +38,7 @@ import {
 import { hashPin, verifyPin } from "../utils/crypto";
 import { todayISO } from "../utils/dateLocal";
 import { fingerprintOf, shortHash } from "../utils/syncGate";
+import { dedupeSameShopCustomers } from "../utils/customerDedupe";
 import { fetchTableDelta, fetchRowIfChanged, resetTableCaches, resetRowCaches } from "./tableDelta";
 
 export interface SupabaseConfig {
@@ -1656,7 +1657,10 @@ const changeStamp = (x: any) => Date.parse(String(x?.updatedAt || x?.updated_at 
 async function dropDeletedForCollection(key: string, list: any[]): Promise<any[]> {
   try {
     if (key === "payments") return await dropDeletedFromList("payment", list);
-    if (key === "customers") return await dropDeletedFromList("customer", list);
+    if (key === "customers") {
+      const alive = await dropDeletedFromList("customer", list);
+      return dedupeSameShopCustomers(alive).customers;
+    }
     if (key === "inventory_batches") return await dropDeletedFromList("batch", list);
     if (key === "products") {
       const log = await pullDeletionLogFromSupabase();
@@ -1730,6 +1734,9 @@ export async function writeCollectionMerged(
     } catch {
       // could not check: fall back to a plain save, as before
     }
+  }
+  if (key === "customers" && Array.isArray(outgoing)) {
+    outgoing = dedupeSameShopCustomers(outgoing).customers;
   }
   const stamp = new Date().toISOString();
   const res = (await guard(
@@ -1963,7 +1970,7 @@ export async function pushProductToSupabase(p: Product): Promise<void> {
       effective_cost: p.effectiveCost || p.cost,
       retail: p.retail,
       wholesale: p.wholesale,
-      hsn: normalizeTo8DigitHsn(p.hsn, p.category, p.name),
+      hsn: normalizeTo8DigitHsn(p.hsn, p.category, p.name, p.taxability),
       gst_rate: resolveProductGstRate(p),
       scheme: p.scheme || "",
       updated_at: p.updatedAt || new Date().toISOString(),
@@ -2075,6 +2082,29 @@ export async function deleteBillFromSupabase(id: number): Promise<void> {
     await client.from("bills").delete().eq("id", id);
   } catch (e) {
     console.warn("Failed to delete bill from Supabase:", e);
+  }
+  try {
+    const { data, error } = await client
+      .from("app_collections")
+      .select("data")
+      .eq("key", "deleted_bill_ids")
+      .maybeSingle();
+    if (!error) {
+      const existing = Array.isArray(data?.data) ? (data!.data as any[]).map(Number) : [];
+      if (!existing.includes(Number(id))) {
+        await client.from("app_collections").upsert(
+          {
+            key: "deleted_bill_ids",
+            data: [...existing, Number(id)].slice(-5000),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "key" },
+        );
+      }
+      resetCloudReadCaches();
+    }
+  } catch (e) {
+    console.warn("Failed to record deleted_bill_ids in Supabase:", e);
   }
 }
 
@@ -3488,14 +3518,18 @@ export async function pullLedgerFromSupabase(): Promise<{
       result.products = prodRes.data.map((r: any) => {
         const catKey = r.category as CategoryKey;
         const catDef = CATS?.[catKey];
+        const extraTaxability =
+          r.extra && typeof r.extra === "object" ? (r.extra as any).taxability : undefined;
         // Standard beverage GST: 40% for energy & vibe, 5% for joos, 18% for water
-        // A stored rate (including 0%) is the product's real rate. Only a missing rate, or the
-        // old blanket 18% default written by earlier versions, is replaced from the HSN / category.
-        const hsnRate = gstRateFromHsn(r.hsn);
-        let gst = r.gst_rate !== undefined && r.gst_rate !== null
-          ? Number(r.gst_rate)
-          : (hsnRate ?? catDef?.gst ?? 0.18);
-        if (gst === 0.18) {
+        // Non-GST / trading products stay strictly at 0% GST and keep their HSN untouched.
+        const hsnRate = extraTaxability === "non_gst" ? 0 : gstRateFromHsn(r.hsn);
+        let gst =
+          extraTaxability === "non_gst"
+            ? 0
+            : r.gst_rate !== undefined && r.gst_rate !== null
+              ? Number(r.gst_rate)
+              : (hsnRate ?? catDef?.gst ?? 0.18);
+        if (extraTaxability !== "non_gst" && gst === 0.18) {
           if (hsnRate != null && hsnRate !== 0.18) gst = hsnRate;
           else if (hsnRate == null && !r.hsn && catDef && (catKey === 'vibe' || catKey === 'energy')) gst = catDef.gst;
         }
@@ -3535,7 +3569,9 @@ export async function pullLedgerFromSupabase(): Promise<{
           landedCostPerCrate: landedCost,
           retail: Number(r.retail || 0),
           wholesale: Number(r.wholesale || 0),
-          hsn: normalizeTo8DigitHsn(r.hsn || catDef?.hsn, r.category, r.name),
+          hsn: extraTaxability === "non_gst"
+            ? String(r.hsn || "").trim()
+            : normalizeTo8DigitHsn(r.hsn || catDef?.hsn, r.category, r.name, extraTaxability),
           gstRate: gst,
           scheme: r.scheme || "",
         }, r.extra);

@@ -32,6 +32,7 @@ export interface RichCustomerOption {
   totalBills?: number;
   totalBilled?: number;
   lastBillDate?: string;
+  creditLimit?: number;
 }
 
 export interface CustomerPredictiveSearchProps {
@@ -72,6 +73,122 @@ const HighlightMatch: React.FC<{ text: string; query: string }> = ({ text, query
     </span>
   );
 };
+
+/**
+ * Merge master customers + ledger summaries into one list (same matching rules as always:
+ * by name, with same-name/different-phone shops kept separate). Pure, no side effects.
+ */
+export function buildRichCustomerOptions(
+  customers: Customer[],
+  existingCustomers: ExistingCustomer[],
+): RichCustomerOption[] {
+  const map = new Map<string, RichCustomerOption>();
+
+  // 1. Process existing customers with billing metrics
+  (existingCustomers || []).forEach((ec, idx) => {
+    const trimmed = (ec.name || '').trim();
+    if (!trimmed) return;
+    const key = normCustName(trimmed) || trimmed.toLowerCase();
+    const ecId = ec.id || `ec_${idx}_${encodeURIComponent(key)}`;
+    map.set(key, {
+      id: ecId,
+      name: trimmed,
+      phone: ec.phone || '',
+      altPhone: ec.altPhone || '',
+      address: ec.address || '',
+      city: ec.city || '',
+      gstin: ec.gstin || '',
+      balanceDue: ec.balanceDue,
+      creditLimit: ec.creditLimit,
+      totalBills: ec.totalBills,
+      totalBilled: ec.totalBilled,
+      lastBillDate: ec.lastBillDate,
+    });
+  });
+
+  // Shops that share a name but have different phone numbers are different customers: list each one
+  // separately (the by-name summary above cannot tell them apart, so it is dropped for those names).
+  const last10 = (p?: string) => (p || '').replace(/\D/g, '').slice(-10);
+  const phonesByName = new Map<string, Set<string>>();
+  ((customers || []) as Customer[]).forEach((c) => {
+    const k = normCustName(c.name);
+    const d = last10(c.phone);
+    if (!k || d.length < 10) return;
+    if (!phonesByName.has(k)) phonesByName.set(k, new Set());
+    phonesByName.get(k)!.add(d);
+  });
+  const splitNames = new Set<string>();
+  phonesByName.forEach((set, k) => {
+    if (set.size > 1) splitNames.add(k);
+  });
+  splitNames.forEach((k) => map.delete(k));
+
+  // 2. Process master customers
+  ((customers || []) as Array<Customer & { balanceDue?: number }>).forEach((c, idx) => {
+    const trimmed = (c.name || '').trim();
+    if (!trimmed) return;
+    const nameKey = normCustName(trimmed) || trimmed.toLowerCase();
+    const d = last10(c.phone);
+    const key = splitNames.has(nameKey) ? `${nameKey}|${d.length === 10 ? d : c.id}` : nameKey;
+    const existing = map.get(key);
+    const custId = c.id || `cust_${idx}_${encodeURIComponent(key)}`;
+
+    if (existing) {
+      if (!existing.phone && c.phone) existing.phone = c.phone;
+      if (!existing.altPhone && c.altPhone) existing.altPhone = c.altPhone;
+      if (!existing.email && c.email) existing.email = c.email;
+      if (!existing.gstin && c.gstin) existing.gstin = c.gstin;
+      if (!existing.city && c.city) existing.city = c.city;
+      if (!existing.address && c.address) existing.address = c.address;
+      if (!existing.route && c.route) existing.route = c.route;
+      if (existing.creditLimit === undefined && c.creditLimit !== undefined) existing.creditLimit = c.creditLimit;
+      if (existing.balanceDue === undefined && c.balanceDue !== undefined) {
+        existing.balanceDue = c.balanceDue;
+      }
+      if (c.id && !c.id.startsWith('cust_idx')) {
+        existing.id = c.id;
+      }
+    } else {
+      map.set(key, {
+        id: custId,
+        name: trimmed,
+        phone: c.phone || '',
+        altPhone: c.altPhone || '',
+        email: c.email || '',
+        gstin: c.gstin || '',
+        city: c.city || '',
+        address: c.address || '',
+        route: c.route || '',
+        balanceDue: c.balanceDue,
+        creditLimit: c.creditLimit,
+      });
+    }
+  });
+
+  return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Work out what a typed search text is (phone / email / GSTIN / name) so "create customer" can pre-fill it. */
+export function extractCustomerPrefill(text: string): { name?: string; phone?: string; email?: string; gstin?: string } {
+  const trimmed = text.trim();
+  const cleanDigits = trimmed.replace(/\D/g, '');
+  const isDigitsOnly = cleanDigits.length >= 7 && cleanDigits.length === trimmed.length;
+  const isEmailLike = trimmed.includes('@') && trimmed.includes('.');
+  const isGstinLike = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/i.test(trimmed);
+
+  if (isDigitsOnly) {
+    return { phone: trimmed, name: '' };
+  }
+  if (isEmailLike) {
+    const userPart = trimmed.split('@')[0].replace(/[._-]/g, ' ');
+    const formattedName = userPart ? userPart.charAt(0).toUpperCase() + userPart.slice(1) : '';
+    return { email: trimmed, name: formattedName };
+  }
+  if (isGstinLike) {
+    return { gstin: trimmed.toUpperCase(), name: '' };
+  }
+  return { name: trimmed, phone: '' };
+}
 
 export const CustomerPredictiveSearch: React.FC<CustomerPredictiveSearchProps> = ({
   selectedCustomerId,
@@ -123,89 +240,10 @@ export const CustomerPredictiveSearch: React.FC<CustomerPredictiveSearchProps> =
   }, [query, isOpen, isMobileModalOpen]);
 
   // Merge customers and existingCustomers with rich identifying details
-  const allCustomers = useMemo<RichCustomerOption[]>(() => {
-    const map = new Map<string, RichCustomerOption>();
-
-    // 1. Process existing customers with billing metrics
-    (existingCustomers || []).forEach((ec, idx) => {
-      const trimmed = (ec.name || '').trim();
-      if (!trimmed) return;
-      const key = normCustName(trimmed) || trimmed.toLowerCase();
-      const ecId = ec.id || `ec_${idx}_${encodeURIComponent(key)}`;
-      map.set(key, {
-        id: ecId,
-        name: trimmed,
-        phone: ec.phone || '',
-        altPhone: ec.altPhone || '',
-        address: ec.address || '',
-        city: ec.city || '',
-        gstin: ec.gstin || '',
-        balanceDue: ec.balanceDue,
-        totalBills: ec.totalBills,
-        totalBilled: ec.totalBilled,
-        lastBillDate: ec.lastBillDate,
-      });
-    });
-
-    // Shops that share a name but have different phone numbers are different customers: list each one
-    // separately (the by-name summary above cannot tell them apart, so it is dropped for those names).
-    const last10 = (p?: string) => (p || '').replace(/\D/g, '').slice(-10);
-    const phonesByName = new Map<string, Set<string>>();
-    ((customers || []) as Customer[]).forEach((c) => {
-      const k = normCustName(c.name);
-      const d = last10(c.phone);
-      if (!k || d.length < 10) return;
-      if (!phonesByName.has(k)) phonesByName.set(k, new Set());
-      phonesByName.get(k)!.add(d);
-    });
-    const splitNames = new Set<string>();
-    phonesByName.forEach((set, k) => {
-      if (set.size > 1) splitNames.add(k);
-    });
-    splitNames.forEach((k) => map.delete(k));
-
-    // 2. Process master customers
-    ((customers || []) as Array<Customer & { balanceDue?: number }>).forEach((c, idx) => {
-      const trimmed = (c.name || '').trim();
-      if (!trimmed) return;
-      const nameKey = normCustName(trimmed) || trimmed.toLowerCase();
-      const d = last10(c.phone);
-      const key = splitNames.has(nameKey) ? `${nameKey}|${d.length === 10 ? d : c.id}` : nameKey;
-      const existing = map.get(key);
-      const custId = c.id || `cust_${idx}_${encodeURIComponent(key)}`;
-
-      if (existing) {
-        if (!existing.phone && c.phone) existing.phone = c.phone;
-        if (!existing.altPhone && c.altPhone) existing.altPhone = c.altPhone;
-        if (!existing.email && c.email) existing.email = c.email;
-        if (!existing.gstin && c.gstin) existing.gstin = c.gstin;
-        if (!existing.city && c.city) existing.city = c.city;
-        if (!existing.address && c.address) existing.address = c.address;
-        if (!existing.route && c.route) existing.route = c.route;
-        if (existing.balanceDue === undefined && c.balanceDue !== undefined) {
-          existing.balanceDue = c.balanceDue;
-        }
-        if (c.id && !c.id.startsWith('cust_idx')) {
-          existing.id = c.id;
-        }
-      } else {
-        map.set(key, {
-          id: custId,
-          name: trimmed,
-          phone: c.phone || '',
-          altPhone: c.altPhone || '',
-          email: c.email || '',
-          gstin: c.gstin || '',
-          city: c.city || '',
-          address: c.address || '',
-          route: c.route || '',
-          balanceDue: c.balanceDue,
-        });
-      }
-    });
-
-    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [customers, existingCustomers]);
+  const allCustomers = useMemo<RichCustomerOption[]>(
+    () => buildRichCustomerOptions(customers, existingCustomers),
+    [customers, existingCustomers],
+  );
 
   // Predictive search across Name, Mobile, Customer ID, Email, GSTIN, Route/City
   const searchResults = useMemo(() => {
@@ -251,26 +289,7 @@ export const CustomerPredictiveSearch: React.FC<CustomerPredictiveSearchProps> =
   }, [selectedCustomerId, selectedCustomerName]);
 
   // Prefill helper for "Create New Customer"
-  const extractPrefill = useCallback((text: string) => {
-    const trimmed = text.trim();
-    const cleanDigits = trimmed.replace(/\D/g, '');
-    const isDigitsOnly = cleanDigits.length >= 7 && cleanDigits.length === trimmed.length;
-    const isEmailLike = trimmed.includes('@') && trimmed.includes('.');
-    const isGstinLike = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/i.test(trimmed);
-
-    if (isDigitsOnly) {
-      return { phone: trimmed, name: '' };
-    }
-    if (isEmailLike) {
-      const userPart = trimmed.split('@')[0].replace(/[._-]/g, ' ');
-      const formattedName = userPart ? userPart.charAt(0).toUpperCase() + userPart.slice(1) : '';
-      return { email: trimmed, name: formattedName };
-    }
-    if (isGstinLike) {
-      return { gstin: trimmed.toUpperCase(), name: '' };
-    }
-    return { name: trimmed, phone: '' };
-  }, []);
+  const extractPrefill = useCallback((text: string) => extractCustomerPrefill(text), []);
 
   // Open Search Mode
   const handleOpenSearch = () => {
@@ -492,7 +511,7 @@ export const CustomerPredictiveSearch: React.FC<CustomerPredictiveSearchProps> =
 
       {/* Selected Customer Summary Indicator under input (when closed) */}
       {!isOpen && isSelected && !isSpotSaleSelected && (
-        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-emerald-800 font-medium truncate">
+        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-emerald-800 font-medium min-w-0 break-words lg:truncate">
           <span className="font-semibold">{selectedCustomerName}</span>
           {selectedCustomerPhone && <span>· {selectedCustomerPhone}</span>}
         </div>
@@ -564,7 +583,7 @@ export const CustomerPredictiveSearch: React.FC<CustomerPredictiveSearchProps> =
                   >
                     <div className="min-w-0 pr-2">
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-900 truncate">
+                        <span className="font-bold text-slate-900 min-w-0 break-words lg:truncate">
                           <HighlightMatch text={c.name} query={debouncedQuery} />
                         </span>
                         {c.id && (
@@ -754,7 +773,7 @@ export const CustomerPredictiveSearch: React.FC<CustomerPredictiveSearchProps> =
                     >
                       <div className="min-w-0 pr-2">
                         <div className="flex items-center gap-1.5">
-                          <span className="text-sm font-bold text-slate-900 truncate">
+                          <span className="text-sm font-bold text-slate-900 min-w-0 break-words lg:truncate">
                             <HighlightMatch text={c.name} query={debouncedQuery} />
                           </span>
                           {c.id && (

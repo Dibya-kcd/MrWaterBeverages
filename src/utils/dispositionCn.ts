@@ -90,10 +90,42 @@ export function printDispositionClaimVoucher(
     new Date().toLocaleString("en-IN") +
     "</p></body></html>";
 
-  const w = window.open("", "_blank", "noopener,noreferrer,width=900,height=700");
-  if (!w) return;
-  w.document.write(html);
-  w.document.close();
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.style.position = "fixed";
+  iframe.style.right = "0";
+  iframe.style.bottom = "0";
+  iframe.style.width = "0";
+  iframe.style.height = "0";
+  iframe.style.border = "0";
+  document.body.appendChild(iframe);
+  const doc = iframe.contentWindow?.document;
+  if (!doc || !iframe.contentWindow) {
+    iframe.remove();
+    return;
+  }
+  doc.open();
+  doc.write(html);
+  doc.close();
+  const win = iframe.contentWindow;
+  const cleanup = () => {
+    setTimeout(() => {
+      try {
+        iframe.remove();
+      } catch {
+        /* ignore */
+      }
+    }, 500);
+  };
+  win.onafterprint = cleanup;
+  setTimeout(() => {
+    try {
+      win.focus();
+      win.print();
+    } finally {
+      setTimeout(cleanup, 3000);
+    }
+  }, 150);
 }
 
 export function exportGstrCnCsv(rows: InventoryDisposition[], filename = "gstr-supplier-cn.csv") {

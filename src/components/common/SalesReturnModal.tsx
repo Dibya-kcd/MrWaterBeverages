@@ -15,6 +15,7 @@ import {
   returnedQtyByProduct,
 } from '../../utils/salesReturns';
 import { todayISO } from "../../utils/dateLocal";
+import { resolveTripGodownDisplay } from '../../utils/tripLoads';
 
 interface Props {
   bill: Bill | null;
@@ -31,7 +32,7 @@ const toInt = (v: string): number => {
 };
 
 export const SalesReturnModal: React.FC<Props> = ({ bill: billProp, onClose, editReturn }) => {
-  const { createSalesReturn, editSalesReturn, notify, inventoryBatches, products } = useLedger();
+  const { createSalesReturn, editSalesReturn, notify, inventoryBatches, products, warehouses, trips } = useLedger();
   // While correcting a return, work on the invoice as it was BEFORE that return, so its crates are
   // available again and the preview shows the true before/after.
   const bill: Bill | null = useMemo(
@@ -45,11 +46,34 @@ export const SalesReturnModal: React.FC<Props> = ({ bill: billProp, onClose, edi
   const [restock, setRestock] = useState<Record<number, string>>({});
   const [scrap, setScrap] = useState<Record<number, string>>({});
   const [scrapAction, setScrapAction] = useState<Record<number, ScrapAction>>({});
+  const [restockWarehouseId, setRestockWarehouseId] = useState<string>('');
   const [reason, setReason] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!editReturn) return;
+    if (!billProp) return;
+    const validWhIds = new Set(warehouses.map((w) => w.id));
+    const linkedTrip =
+      (billProp.tripId != null
+        ? trips.find((t) => Number(t.id) === Number(billProp.tripId))
+        : undefined) ||
+      trips.find(
+        (t) => Array.isArray(t.billIds) && t.billIds.some((id) => Number(id) === Number(billProp.id)),
+      );
+    const resolvedBillWh =
+      (billProp.warehouseId && validWhIds.has(billProp.warehouseId) ? billProp.warehouseId : '') ||
+      resolveTripGodownDisplay({
+        trip: linkedTrip,
+        bill: billProp,
+        warehouses,
+        inventoryBatches,
+      }).primaryWarehouseId ||
+      warehouses[0]?.id ||
+      '';
+    if (!editReturn) {
+      setRestockWarehouseId(resolvedBillWh);
+      return;
+    }
     const r: Record<number, string> = {};
     const sc: Record<number, string> = {};
     const act: Record<number, ScrapAction> = {};
@@ -63,11 +87,12 @@ export const SalesReturnModal: React.FC<Props> = ({ bill: billProp, onClose, edi
     setRestock(r);
     setScrap(sc);
     setScrapAction(act);
+    setRestockWarehouseId(editReturn.lines.find((l) => l.warehouseId)?.warehouseId || resolvedBillWh);
     setReason(editReturn.reason || '');
     setEditNote('');
     setError('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editReturn?.id]);
+  }, [editReturn?.id, billProp?.id]);
 
   const rows = useMemo(() => {
     if (!bill) return [];
@@ -85,9 +110,18 @@ export const SalesReturnModal: React.FC<Props> = ({ bill: billProp, onClose, edi
   }, [bill]);
 
   const lines = useMemo(
-    () => rows.map((r) => ({ productId: r.productId, restockQty: toInt(restock[r.productId] || ''), scrapQty: toInt(scrap[r.productId] || ''), scrapAction: scrapAction[r.productId] || ('undecided' as ScrapAction), warehouseId: undefined })),
-    [rows, restock, scrap, scrapAction]
+    () =>
+      rows.map((r) => ({
+        productId: r.productId,
+        restockQty: toInt(restock[r.productId] || ''),
+        scrapQty: toInt(scrap[r.productId] || ''),
+        scrapAction: scrapAction[r.productId] || ('undecided' as ScrapAction),
+        warehouseId: toInt(restock[r.productId] || '') > 0 ? restockWarehouseId || undefined : undefined,
+      })),
+    [rows, restock, scrap, scrapAction, restockWarehouseId]
   );
+
+  const anyRestockEntered = lines.some((l) => l.restockQty > 0);
 
   // Batch / expiry of what was sold, so the owner can see how stale the returned crates are.
   const batchInfo = useMemo(() => {
@@ -289,6 +323,23 @@ export const SalesReturnModal: React.FC<Props> = ({ bill: billProp, onClose, edi
             );
           })}
         </div>
+
+        {warehouses.length > 1 && anyRestockEntered && (
+          <label className="block">
+            <span className="text-xs font-bold text-slate-600">Restock good crates into godown</span>
+            <select
+              value={restockWarehouseId}
+              onChange={(e) => setRestockWarehouseId(e.target.value)}
+              className="mt-1 w-full border rounded-xl px-2.5 py-2 text-sm bg-white"
+            >
+              {warehouses.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}{w.code ? ` (${w.code})` : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <label className="block">
           <span className="text-xs font-bold text-slate-600">Reason</span>

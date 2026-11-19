@@ -467,7 +467,7 @@ export const TripCardItem: React.FC<TripCardItemProps> = ({
                         >
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
-                              <span className="font-bold text-slate-900 truncate" title={b.retailer}>
+                              <span className="font-bold text-slate-900 min-w-0 break-words lg:truncate" title={b.retailer}>
                                 {b.retailer}
                               </span>
                               <span className="text-slate-500 shrink-0 font-semibold">#{b.id}</span>

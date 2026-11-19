@@ -286,7 +286,7 @@ export const ProfileAvatarMenu: React.FC<ProfileAvatarMenuProps> = ({ className 
 
       {/* Log Out Confirmation Dialog */}
       {showLogoutConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+        <div role="dialog" aria-modal="true" aria-label="Sign out of account" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
           <div
             className="w-full max-w-sm bg-white rounded-2xl p-5 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in-95"
             onClick={(e) => e.stopPropagation()}

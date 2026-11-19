@@ -18,6 +18,10 @@ export function billExtraFields(b: any): Record<string, unknown> | null {
     if (/^[a-z]+(_[a-z]+)+$/.test(k)) continue; // snake_case duplicates added while talking to the database
     out[k] = v;
   }
+  // Also mirror a non-empty warehouseId so databases that lack or strip `warehouse_id` never lose it.
+  if (typeof b?.warehouseId === 'string' && b.warehouseId.trim()) {
+    out.warehouseId = b.warehouseId.trim();
+  }
   return Object.keys(out).length > 0 ? out : null;
 }
 
@@ -25,9 +29,17 @@ export function billExtraFields(b: any): Record<string, unknown> | null {
 export function applyBillExtra<T extends Record<string, any>>(bill: T, extra: unknown): T {
   if (!extra || typeof extra !== 'object' || Array.isArray(extra)) return bill;
   const merged: Record<string, any> = { ...bill };
-  for (const [k, v] of Object.entries(extra as Record<string, unknown>)) {
+  const extraObj = extra as Record<string, unknown>;
+  for (const [k, v] of Object.entries(extraObj)) {
     if (BILL_COLUMN_FIELDS.has(k)) continue;
     if (merged[k] === undefined) merged[k] = v;
+  }
+  if (
+    typeof extraObj.warehouseId === 'string' &&
+    extraObj.warehouseId.trim() &&
+    !(typeof merged.warehouseId === 'string' && merged.warehouseId.trim())
+  ) {
+    merged.warehouseId = extraObj.warehouseId.trim();
   }
   return merged as T;
 }
@@ -70,6 +82,7 @@ export function applyGrnExtra<T extends Record<string, any>>(grn: T, extra: unkn
  */
 export const PRODUCT_EXTRA_KEYS = [
   'unitsPerCrate', 'brand', 'returnable', 'active', 'ratesIncludeGst', 'barcode', 'depositPerUnit',
+  'taxability', 'labourCost', 'freightCost', 'landedCostPerCrate', 'landedCostPerUnit',
 ] as const;
 
 /** The product-master fields to save in `extra` (null when the product has none set). */

@@ -9,7 +9,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { CATS } from '../../constants/initialData';
-import { CategoryKey, GrnSchemeMode, GrnSchemeType, Product } from '../../types';
+import { CategoryKey, GrnSchemeMode, GrnSchemeType, Product, Taxability } from '../../types';
 import { calculateLandedCostBreakdown, generateBatchNumber } from '../../utils/billing';
 
 export interface EditableInwardRow {
@@ -17,6 +17,7 @@ export interface EditableInwardRow {
   rawName: string;
   productName: string;
   category: CategoryKey;
+  taxability?: Taxability;
   pack: string;
   volume: number;
   packSize?: string;
@@ -100,6 +101,7 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = (props) => {
     if (hasScheme) setSchemeOpen(true);
   }, [hasScheme]);
 
+  const isNonGst = r.taxability === 'non_gst';
   const breakdown = calculateLandedCostBreakdown({
     qty: r.qty,
     unitPrice: r.unitPrice,
@@ -107,8 +109,8 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = (props) => {
     pack: r.pack,
     volume: r.volume,
     packSize: r.packSize,
-    cgstPercent: r.cgstPercent,
-    sgstPercent: r.sgstPercent,
+    cgstPercent: isNonGst ? 0 : r.cgstPercent,
+    sgstPercent: isNonGst ? 0 : r.sgstPercent,
     schemeType: r.schemeType,
     schemeMode,
     schemeBuyQty: r.schemeBuyQty,
@@ -123,6 +125,8 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = (props) => {
 
   const lineAmount = breakdown?.lineTotal ?? r.qty * r.unitPrice;
   const effectiveCost = breakdown?.effectiveCostPerCrateExGst ?? r.unitPrice;
+  const landedPerCase = breakdown?.landedCostPerCrate ?? effectiveCost + inwardCostPerCrate;
+  const landedPerUnit = breakdown?.landedCostPerUnit ?? landedPerCase / Math.max(1, r.unitsPerCrate || 24);
   const fmt = props.money || ((n: number) => n.toLocaleString('en-IN', { maximumFractionDigits: 2 }));
 
   const applyB2g1 = (buy: number, free: number) => {
@@ -145,9 +149,7 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = (props) => {
   return (
     <div
       id={`inward-card-${r.id}`}
-      className={`bg-white rounded-2xl border shadow-sm hover:shadow-md transition-shadow ${
-        r.isNewProduct ? 'border-l-4 border-l-sky-500 border-slate-200' : 'border-l-4 border-l-emerald-500 border-slate-200'
-      }`}
+      className="bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow"
     >
       <div className="px-3.5 pt-3 pb-2 flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1 space-y-1.5">
@@ -167,6 +169,18 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = (props) => {
                 )}
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => onUpdateField('taxability', isNonGst ? 'taxable' : 'non_gst')}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border cursor-pointer transition-colors ${
+                isNonGst
+                  ? 'bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200'
+                  : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
+              }`}
+              title="Toggle between GST taxable item and Non-GST (0% tax) item"
+            >
+              {isNonGst ? 'Non-GST · 0%' : `GST ${r.cgstPercent + r.sgstPercent}%`}
+            </button>
             {hasScheme && (
               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-violet-100 text-violet-800 border border-violet-200">
                 <Gift size={10} />
@@ -238,22 +252,28 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = (props) => {
         <div className="block">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Rate ₹</span>
-            <button
-              type="button"
-              onClick={() => onUpdateField('isGstIncluded', !r.isGstIncluded)}
-              className={`text-[10px] font-bold px-1 py-0.2 rounded border transition-colors cursor-pointer ${
-                r.isGstIncluded
-                  ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
-                  : 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
-              }`}
-              title={
-                r.isGstIncluded
-                  ? 'List price includes GST. Click to toggle Ex-GST.'
-                  : `List price excludes GST (+₹${fmt(r.calculatedGstAmount || 0)} GST calculated). Click to toggle.`
-              }
-            >
-              {r.isGstIncluded ? 'GST Incl' : '+Calc GST'}
-            </button>
+            {isNonGst ? (
+              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded border bg-amber-50 text-amber-800 border-amber-200">
+                No GST
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onUpdateField('isGstIncluded', !r.isGstIncluded)}
+                className={`text-[10px] font-bold px-1 py-0.2 rounded border transition-colors cursor-pointer ${
+                  r.isGstIncluded
+                    ? 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100'
+                    : 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+                }`}
+                title={
+                  r.isGstIncluded
+                    ? 'List price includes GST. Click to toggle Ex-GST.'
+                    : `List price excludes GST (+₹${fmt(r.calculatedGstAmount || 0)} GST calculated). Click to toggle.`
+                }
+              >
+                {r.isGstIncluded ? 'GST Incl' : '+Calc GST'}
+              </button>
+            )}
           </div>
           <input
             type="number" inputMode="decimal"
@@ -271,6 +291,19 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = (props) => {
             {fmt(lineAmount)}
           </div>
         </div>
+      </div>
+
+      {/* Auto-Decided Landed Price Strip */}
+      <div className="mx-3.5 mt-2 px-2.5 py-1.5 rounded-xl bg-emerald-50/70 border border-emerald-200/80 flex items-center justify-between gap-2 text-[11px] flex-wrap">
+        <span className="font-semibold text-emerald-900">Auto Landed</span>
+        <span className="font-mono font-bold text-slate-900 tabular-nums">
+          ₹{fmt(landedPerCase)}/cs · ₹{fmt(landedPerUnit)}/u
+          {inwardCostPerCrate > 0 && (
+            <span className="text-[10px] font-medium text-emerald-700 ml-1">
+              (incl. +₹{fmt(inwardCostPerCrate)}/cs inward)
+            </span>
+          )}
+        </span>
       </div>
 
       <div className="px-3.5 mt-2.5 grid grid-cols-2 gap-2">
@@ -455,7 +488,7 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = (props) => {
           className="w-full flex items-center justify-between text-[11px] font-bold text-slate-500 hover:text-sky-700 py-1 cursor-pointer"
         >
           <span>
-            More · GST {r.cgstPercent + r.sgstPercent}% · HSN {r.hsn || '—'} · eff. ₹{fmt(effectiveCost)}/cs
+            More · {isNonGst ? 'Non-GST (0%)' : `GST ${r.cgstPercent + r.sgstPercent}%`} · HSN {r.hsn || '—'} · eff. ₹{fmt(effectiveCost)}/cs
           </span>
           {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
         </button>
@@ -508,21 +541,27 @@ export const InwardProductCard: React.FC<InwardProductCardProps> = (props) => {
             </label>
             <label className="block">
               <span className="text-[10px] font-bold text-slate-400 uppercase">GST</span>
-              <select
-                value={`${r.cgstPercent},${r.sgstPercent}`}
-                onChange={(e) => {
-                  const [cg, sg] = e.target.value.split(',').map(Number);
-                  onUpdateField('cgstPercent', cg);
-                  onUpdateField('sgstPercent', sg);
-                }}
-                className="mt-0.5 w-full font-mono border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
-              >
-                <option value="20,20">40% carbonated</option>
-                <option value="2.5,2.5">5% juices</option>
-                <option value="9,9">18% water</option>
-                <option value="6,6">12%</option>
-                <option value="0,0">0% exempt</option>
-              </select>
+              {isNonGst ? (
+                <div className="mt-0.5 w-full font-mono border border-amber-200 bg-amber-50 text-amber-800 rounded-lg px-2 py-1.5">
+                  Non-GST (0%)
+                </div>
+              ) : (
+                <select
+                  value={`${r.cgstPercent},${r.sgstPercent}`}
+                  onChange={(e) => {
+                    const [cg, sg] = e.target.value.split(',').map(Number);
+                    onUpdateField('cgstPercent', cg);
+                    onUpdateField('sgstPercent', sg);
+                  }}
+                  className="mt-0.5 w-full font-mono border border-slate-300 rounded-lg px-2 py-1.5 bg-white"
+                >
+                  <option value="20,20">40% carbonated</option>
+                  <option value="2.5,2.5">5% juices</option>
+                  <option value="9,9">18% water</option>
+                  <option value="6,6">12%</option>
+                  <option value="0,0">0% exempt</option>
+                </select>
+              )}
             </label>
             <label className="block">
               <span className="text-[10px] font-bold text-slate-400 uppercase">HSN</span>

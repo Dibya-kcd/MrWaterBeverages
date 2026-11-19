@@ -1,10 +1,12 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Calendar,
+  Check,
   ChevronDown,
   ChevronUp,
   LayoutList,
   Pencil,
+  Route,
   Search,
   Share2,
   Trash2,
@@ -16,6 +18,7 @@ import { Bill } from '../../types';
 import { money } from '../../utils/billing';
 import { useLedger } from '../../context/LedgerContext';
 import { billBalance } from '../../utils/salesReturns';
+import { formatBillNumber, isGstExcludedBill } from '../../utils/invoiceCommon';
 import { useBeats } from '../../hooks/useBeats';
 
 interface BillingHistoryViewProps {
@@ -38,19 +41,49 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
 }) => {
   const {
     bills,
+    products,
     salesmen,
     billingSettings,
     customers,
   } = useLedger();
 
-  const { beats, activeBeats } = useBeats();
+  const { activeBeats, customerBeat } = useBeats();
 
   const [grouping, setGrouping] = useState<HistoryGrouping>('table');
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('all');
   const [salesmanFilter, setSalesmanFilter] = useState<string>('');
   const [beatFilter, setBeatFilter] = useState<string>('all');
+  const [beatMenuOpen, setBeatMenuOpen] = useState(false);
+  const beatMenuRef = useRef<HTMLDivElement | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (!beatMenuOpen) return;
+    const onDocDown = (e: MouseEvent | TouchEvent) => {
+      if (beatMenuRef.current && !beatMenuRef.current.contains(e.target as Node)) {
+        setBeatMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDocDown);
+    document.addEventListener('touchstart', onDocDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocDown);
+      document.removeEventListener('touchstart', onDocDown);
+    };
+  }, [beatMenuOpen]);
+
+  const billMatchesBeat = (b: Bill, beatName: string) => {
+    if (beatName === 'all') return true;
+    const cust = (customers || []).find(
+      (c) => c.id === b.customerId || c.name.toLowerCase() === b.retailer.toLowerCase()
+    );
+    const custBeat = (cust && customerBeat(cust)?.name) || cust?.route || cust?.city || '';
+    return (
+      custBeat.toLowerCase() === beatName.toLowerCase() ||
+      b.retailer.toLowerCase().includes(beatName.toLowerCase())
+    );
+  };
 
   // Filter bills based on search, payment status, salesman, and beat
   const filteredBills = useMemo(() => {
@@ -61,6 +94,8 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
         b.retailer.toLowerCase().includes(q) ||
         (b.phone && b.phone.includes(q)) ||
         String(b.id).includes(q) ||
+        (b.docNo || '').toLowerCase().includes(q) ||
+        formatBillNumber(b, billingSettings).toLowerCase().includes(q) ||
         b.date.includes(q) ||
         b.items.some((i) => i.productName.toLowerCase().includes(q));
 
@@ -77,30 +112,15 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
           salesmen.find((s) => s.id === salesmanFilter)?.name === b.salesman;
       }
 
-      let matchesBeat = true;
-      if (beatFilter !== 'all') {
-        const cust = (customers || []).find(
-          (c) => c.id === b.customerId || c.name.toLowerCase() === b.retailer.toLowerCase()
-        );
-        const custBeat = cust?.route || cust?.city || '';
-        matchesBeat =
-          custBeat.toLowerCase() === beatFilter.toLowerCase() ||
-          b.retailer.toLowerCase().includes(beatFilter.toLowerCase());
-      }
+      const matchesBeat = billMatchesBeat(b, beatFilter);
 
       return matchesSearch && matchesPayment && matchesSalesman && matchesBeat;
     });
-  }, [bills, salesmen, customers, searchQuery, paymentFilter, salesmanFilter, beatFilter]);
+  }, [bills, salesmen, customers, customerBeat, searchQuery, paymentFilter, salesmanFilter, beatFilter]);
 
   // Overall statistics (respecting beat filter if active)
   const stats = useMemo(() => {
-    const relevantBills = beatFilter === 'all' ? bills : bills.filter((b) => {
-      const cust = (customers || []).find(
-        (c) => c.id === b.customerId || c.name.toLowerCase() === b.retailer.toLowerCase()
-      );
-      const custBeat = cust?.route || cust?.city || '';
-      return custBeat.toLowerCase() === beatFilter.toLowerCase() || b.retailer.toLowerCase().includes(beatFilter.toLowerCase());
-    });
+    const relevantBills = beatFilter === 'all' ? bills : bills.filter((b) => billMatchesBeat(b, beatFilter));
 
     const totalCount = relevantBills.length;
     const totalBilled = relevantBills.reduce((sum, b) => sum + b.total, 0);
@@ -109,7 +129,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
     const pendingCount = relevantBills.filter((b) => billBalance(b) > 0).length;
     const paidCount = relevantBills.filter((b) => billBalance(b) <= 0).length;
     return { totalCount, totalBilled, totalPaid, totalDue, pendingCount, paidCount };
-  }, [bills, customers, beatFilter]);
+  }, [bills, customers, customerBeat, beatFilter]);
 
   // Status breakdown counts (respecting search, salesman, and beat filters)
   const statusCounts = useMemo(() => {
@@ -131,16 +151,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
           salesmen.find((s) => s.id === salesmanFilter)?.name === b.salesman;
       }
 
-      let matchesBeat = true;
-      if (beatFilter !== 'all') {
-        const cust = (customers || []).find(
-          (c) => c.id === b.customerId || c.name.toLowerCase() === b.retailer.toLowerCase()
-        );
-        const custBeat = cust?.route || cust?.city || '';
-        matchesBeat =
-          custBeat.toLowerCase() === beatFilter.toLowerCase() ||
-          b.retailer.toLowerCase().includes(beatFilter.toLowerCase());
-      }
+      const matchesBeat = billMatchesBeat(b, beatFilter);
 
       return matchesSearch && matchesSalesman && matchesBeat;
     });
@@ -149,7 +160,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
     const pending = base.filter((b) => billBalance(b) > 0).length;
     const paid = base.filter((b) => billBalance(b) <= 0).length;
     return { all, pending, paid };
-  }, [bills, salesmen, customers, searchQuery, salesmanFilter, beatFilter]);
+  }, [bills, salesmen, customers, customerBeat, searchQuery, salesmanFilter, beatFilter]);
 
   // Group by Date (Latest date on top)
   const dateGroups = useMemo(() => {
@@ -385,8 +396,8 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
             </button>
           </div>
 
-          {/* Full-width Search Bar with guaranteed min-width */}
-          <div className="relative flex-1 min-w-[220px] max-w-xl">
+          {/* Full-width Search Bar with right-side Beat filter icon on mobile */}
+          <div ref={beatMenuRef} className="relative flex-1 min-w-[220px] max-w-xl">
             <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input
               enterKeyHint="search"
@@ -395,24 +406,111 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
               placeholder="Search invoices, customer, item, beat..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-9 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20 focus:border-[var(--primary)] focus:bg-white transition-all shadow-2xs"
+              className={`w-full pl-10 py-2 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-white text-xs sm:text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/20 focus:border-[var(--primary)] focus:bg-white transition-all shadow-2xs ${
+                activeBeats.length > 0
+                  ? searchQuery
+                    ? 'pr-20 md:pr-9'
+                    : 'pr-12 md:pr-3'
+                  : searchQuery
+                    ? 'pr-9'
+                    : 'pr-3'
+              }`}
             />
             {searchQuery && (
               <button
                 type="button"
                 onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+                className={`absolute top-1/2 -translate-y-1/2 p-1 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer ${
+                  activeBeats.length > 0 ? 'right-11 md:right-2.5' : 'right-2.5'
+                }`}
                 aria-label="Clear search"
               >
                 <X size={14} />
               </button>
             )}
+
+            {/* Mobile Beat Filter Icon on right side of search bar */}
+            {activeBeats.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setBeatMenuOpen((v) => !v)}
+                aria-label="Filter by beat"
+                aria-expanded={beatMenuOpen}
+                className={`md:hidden absolute right-1.5 top-1/2 -translate-y-1/2 min-h-[34px] min-w-[34px] px-2 rounded-lg inline-flex items-center justify-center transition-colors cursor-pointer ${
+                  beatFilter !== 'all'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+                title="Filter by beat"
+              >
+                <Route size={15} />
+              </button>
+            )}
+
+            {/* Beat Selector Dropdown inside Search (mobile) */}
+            {beatMenuOpen && activeBeats.length > 0 && (
+              <div
+                role="listbox"
+                aria-label="Choose beat"
+                className="md:hidden absolute left-0 right-0 top-full mt-1.5 z-40 rounded-2xl border border-[#DCE5F2] bg-white shadow-xl p-2 space-y-1 max-h-72 overflow-y-auto"
+              >
+                <div className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                  Filter by beat
+                </div>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={beatFilter === 'all'}
+                  onClick={() => {
+                    setBeatFilter('all');
+                    setBeatMenuOpen(false);
+                  }}
+                  className={`w-full min-h-[40px] px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between gap-2 cursor-pointer transition-colors ${
+                    beatFilter === 'all'
+                      ? 'bg-indigo-50 text-indigo-900 border border-indigo-200'
+                      : 'text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <Route className={`w-3.5 h-3.5 shrink-0 ${beatFilter === 'all' ? 'text-indigo-700' : 'text-slate-400'}`} />
+                    <span>All beats</span>
+                  </span>
+                  {beatFilter === 'all' && <Check className="w-4 h-4 text-indigo-700 shrink-0" />}
+                </button>
+                {activeBeats.map((b) => {
+                  const selected = beatFilter.toLowerCase() === b.name.toLowerCase();
+                  return (
+                    <button
+                      key={b.id}
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      onClick={() => {
+                        setBeatFilter(b.name);
+                        setBeatMenuOpen(false);
+                      }}
+                      className={`w-full min-h-[40px] px-3 py-2 rounded-xl text-left text-xs font-semibold flex items-center justify-between gap-2 cursor-pointer transition-colors ${
+                        selected
+                          ? 'bg-indigo-50 text-indigo-900 border border-indigo-200'
+                          : 'text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2 min-w-0">
+                        <Route className={`w-3.5 h-3.5 shrink-0 ${selected ? 'text-indigo-700' : 'text-slate-400'}`} />
+                        <span className="truncate">{b.name}</span>
+                      </span>
+                      {selected && <Check className="w-4 h-4 text-indigo-700 shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Beat Route Filter Strip */}
+        {/* Beat Route Filter Strip (desktop) */}
         {activeBeats.length > 0 && (
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-2 border-t border-slate-100 text-xs">
+          <div className="hidden md:flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-2 border-t border-slate-100 text-xs">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider shrink-0 flex items-center gap-1 mr-1">
               <Truck size={13} className="text-indigo-600 shrink-0" />
               <span>Beat:</span>
@@ -465,7 +563,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
             {beatFilter !== 'all' && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
                 Beat: {beatFilter}
-                <button
+                <button aria-label="Remove beat filter"
                   type="button"
                   onClick={() => setBeatFilter('all')}
                   className="text-indigo-400 hover:text-indigo-700 cursor-pointer ml-0.5"
@@ -477,7 +575,7 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
             {paymentFilter !== 'all' && (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-slate-100 text-slate-700">
                 Filter: {paymentFilter.toUpperCase()}
-                <button
+                <button aria-label="Remove payment filter"
                   type="button"
                   onClick={() => setPaymentFilter('all')}
                   className="text-slate-400 hover:text-slate-700 cursor-pointer ml-0.5"
@@ -549,8 +647,8 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                 {filteredBills.map((b) => {
                   const due = billBalance(b);
                   const isPaid = due <= 0.01;
-                  const invPrefix = billingSettings?.invoicePrefix || 'INV';
-                  const itemLabel = `${invPrefix}-${b.id}`;
+                  const itemLabel = formatBillNumber(b, billingSettings);
+                  const isNg = isGstExcludedBill(b, products);
                   const totalCases = (b.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
                   const itemCount = (b.items || []).length;
                   const cust = (customers || []).find(
@@ -569,13 +667,21 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                             type="button"
                             onClick={() => onViewInvoice(b)}
                             className="font-mono text-xs font-bold text-[var(--primary)] hover:underline cursor-pointer whitespace-nowrap shrink-0"
-                            title="Click to view invoice"
+                            title={isNg ? 'Click to view Non-GST cash memo' : 'Click to view invoice'}
                           >
                             #{itemLabel}
                           </button>
-                          {b.customerGstin && (
+                          {isNg && (
                             <span
-                              className="text-[9px] font-bold px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider whitespace-nowrap shrink-0"
+                              className="text-[10px] font-bold px-1.5 py-0.5 rounded border border-teal-300 bg-teal-50 text-teal-800 uppercase tracking-wider whitespace-nowrap shrink-0"
+                              title="Non-GST Trading Memo (0% Tax · Excluded from GST Returns)"
+                            >
+                              Non-GST
+                            </span>
+                          )}
+                          {b.customerGstin && !isNg && (
+                            <span
+                              className="text-[10px] font-bold px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider whitespace-nowrap shrink-0"
                               title={`Registered GSTIN: ${b.customerGstin}`}
                             >
                               B2B
@@ -647,8 +753,8 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
             {filteredBills.map((b) => {
               const due = billBalance(b);
               const isPaid = due <= 0.01;
-              const invPrefix = billingSettings?.invoicePrefix || 'INV';
-              const itemLabel = `${invPrefix}-${b.id}`;
+              const itemLabel = formatBillNumber(b, billingSettings);
+              const isNg = isGstExcludedBill(b, products);
               const totalCases = (b.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
               const itemCount = (b.items || []).length;
 
@@ -663,8 +769,13 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                       >
                         #{itemLabel}
                       </button>
-                      {b.customerGstin && (
-                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider">
+                      {isNg && (
+                        <span className="text-[10px] font-bold px-1.5 py-0.2 rounded border border-teal-300 bg-teal-50 text-teal-800 uppercase tracking-wider">
+                          Non-GST
+                        </span>
+                      )}
+                      {b.customerGstin && !isNg && (
+                        <span className="text-[10px] font-bold px-1.5 py-0.2 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider">
                           B2B
                         </span>
                       )}
@@ -782,8 +893,8 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                     {group.bills.map((bill) => {
                       const due = billBalance(bill);
                       const isPaid = due <= 0.01;
-                      const invPrefix = billingSettings?.invoicePrefix || 'INV';
-                      const itemLabel = `${invPrefix}-${bill.id}`;
+                      const itemLabel = formatBillNumber(bill, billingSettings);
+                      const isNg = isGstExcludedBill(bill, products);
                       const totalCases = (bill.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
                       const itemCount = (bill.items || []).length;
 
@@ -802,12 +913,17 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                               >
                                 #{itemLabel}
                               </button>
-                              {bill.customerGstin && (
-                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider">
+                              {isNg && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded border border-teal-300 bg-teal-50 text-teal-800 uppercase tracking-wider">
+                                  Non-GST
+                                </span>
+                              )}
+                              {bill.customerGstin && !isNg && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider">
                                   B2B
                                 </span>
                               )}
-                              <span className="text-xs text-slate-800 font-semibold truncate">
+                              <span className="text-xs text-slate-800 font-semibold min-w-0 break-words lg:truncate">
                                 {bill.retailer || 'Cash customer'}
                               </span>
                             </div>
@@ -937,8 +1053,8 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                     {group.bills.map((bill) => {
                       const due = billBalance(bill);
                       const isPaid = due <= 0.01;
-                      const invPrefix = billingSettings?.invoicePrefix || 'INV';
-                      const itemLabel = `${invPrefix}-${bill.id}`;
+                      const itemLabel = formatBillNumber(bill, billingSettings);
+                      const isNg = isGstExcludedBill(bill, products);
                       const totalCases = (bill.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0);
                       const itemCount = (bill.items || []).length;
 
@@ -957,8 +1073,13 @@ export const BillingHistoryView: React.FC<BillingHistoryViewProps> = ({
                               >
                                 #{itemLabel}
                               </button>
-                              {bill.customerGstin && (
-                                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider">
+                              {isNg && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded border border-teal-300 bg-teal-50 text-teal-800 uppercase tracking-wider">
+                                  Non-GST
+                                </span>
+                              )}
+                              {bill.customerGstin && !isNg && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.2 rounded border border-amber-300 bg-amber-50 text-amber-900 uppercase tracking-wider">
                                   B2B
                                 </span>
                               )}

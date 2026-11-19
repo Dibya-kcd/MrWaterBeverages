@@ -216,10 +216,13 @@ export function useSalesMarginPnl(args: {
       const carve = !noOutputTax(resolveTaxRegime(orgProfile, String(b.date || '').slice(0, 10)));
       return billTaxBasis(b, {
         carveGstFromPrices: carve,
-        rateFor: (item) =>
-          item.gst !== undefined && item.gst !== null
+        rateFor: (item) => {
+          const prod = productMap.get(item.productId);
+          if (item.taxability === 'non_gst' || prod?.taxability === 'non_gst') return 0;
+          return item.gst !== undefined && item.gst !== null
             ? (item.gst as number)
-            : resolveProductGstRate(productMap.get(item.productId), item.category),
+            : resolveProductGstRate(prod, item.category);
+        },
       });
     },
     [orgProfile, productMap]
@@ -581,9 +584,16 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
         const paidCases = netCases - freeNet;
 
         // Taxable & GST calculation for the product item
-        const g = item.gst !== undefined && item.gst !== null
-          ? normalizeGstFraction(item.gst)
-          : resolveProductGstRate(prod, item.category);
+        const isNonGstLine =
+          b.gstExclude === true ||
+          b.docSeries === 'non_gst' ||
+          item.taxability === 'non_gst' ||
+          prod?.taxability === 'non_gst';
+        const g = isNonGstLine
+          ? 0
+          : item.gst !== undefined && item.gst !== null
+            ? normalizeGstFraction(item.gst)
+            : resolveProductGstRate(prod, item.category);
         // GST is charged on the paid value plus the free scheme cases (see lineTaxDetail)
         const split = scaledTaxSplit(item, billedNet, g);
         const taxable = split.taxable;

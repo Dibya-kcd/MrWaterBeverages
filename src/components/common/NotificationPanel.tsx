@@ -80,7 +80,7 @@ export const NotificationPanel: React.FC<NotificationPanelProps> = ({ isOpen, on
   };
 
   return (
-    <div
+    <div data-esc-close role="dialog" aria-modal="true" aria-label="Notifications"
       className="fixed inset-0 z-50 flex items-start justify-end p-2 sm:p-4 bg-slate-900/40 backdrop-blur-xs animate-in fade-in duration-150"
       onClick={onClose}
     >

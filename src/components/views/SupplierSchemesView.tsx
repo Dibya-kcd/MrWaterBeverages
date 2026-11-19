@@ -416,39 +416,51 @@ export const SupplierSchemesView: React.FC = () => {
       </div>
 
       {/* KPI tiles */}
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-3 gap-2 md:gap-4">
         <Card>
-          <CardContent className="relative flex flex-col gap-1 py-3 px-2.5 sm:px-4">
-            <PackagePlus className="w-5 h-5 text-slate-400" aria-hidden="true" />
-            <p className="text-[11px] text-slate-500 leading-tight">Active schemes</p>
-            <p className="text-lg font-semibold text-slate-900 leading-none">{activeSchemesCount}</p>
+          <CardContent className="relative flex flex-col md:flex-row md:items-center gap-1 md:gap-3.5 py-3 px-2.5 md:py-4 md:px-5">
+            <div className="md:w-10 md:h-10 md:rounded-xl md:bg-slate-50 md:flex md:items-center md:justify-center shrink-0">
+              <PackagePlus className="w-5 h-5 text-slate-400 md:text-slate-600" aria-hidden="true" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] md:text-xs text-slate-500 leading-tight">Active schemes</p>
+              <p className="text-lg md:text-2xl font-semibold tabular-nums text-slate-900 leading-tight mt-0.5">{activeSchemesCount}</p>
+            </div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="relative flex flex-col gap-1 py-3 px-2.5 sm:px-4">
-            <FileClock className="w-5 h-5 text-amber-400" aria-hidden="true" />
-            <p className="text-[11px] text-slate-500 leading-tight">Open credit notes</p>
-            <p className="text-lg font-semibold text-slate-900 leading-none">{openNotesCount}</p>
+          <CardContent className="relative flex flex-col md:flex-row md:items-center gap-1 md:gap-3.5 py-3 px-2.5 md:py-4 md:px-5">
+            <div className="md:w-10 md:h-10 md:rounded-xl md:bg-amber-50 md:flex md:items-center md:justify-center shrink-0">
+              <FileClock className="w-5 h-5 text-amber-400 md:text-amber-600" aria-hidden="true" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] md:text-xs text-slate-500 leading-tight">Open credit notes</p>
+              <p className="text-lg md:text-2xl font-semibold tabular-nums text-slate-900 leading-tight mt-0.5">{openNotesCount}</p>
+            </div>
           </CardContent>
         </Card>
         <Card>
-          <CardContent className="relative flex flex-col gap-1 py-3 px-2.5 sm:px-4">
-            <TrendingUp className="w-5 h-5 text-emerald-500" aria-hidden="true" />
-            <p className="text-[11px] text-slate-500 leading-tight">Still to receive</p>
-            <p className="text-lg font-semibold text-slate-900 leading-none truncate">{inr(totalOutstanding)}</p>
+          <CardContent className="relative flex flex-col md:flex-row md:items-center gap-1 md:gap-3.5 py-3 px-2.5 md:py-4 md:px-5">
+            <div className="md:w-10 md:h-10 md:rounded-xl md:bg-emerald-50 md:flex md:items-center md:justify-center shrink-0">
+              <TrendingUp className="w-5 h-5 text-emerald-500 md:text-emerald-600" aria-hidden="true" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[11px] md:text-xs text-slate-500 leading-tight">Still to receive</p>
+              <p className="text-lg md:text-2xl font-semibold tabular-nums text-slate-900 leading-tight mt-0.5 truncate">{inr(totalOutstanding)}</p>
+            </div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Tabs — equal-width segmented control, no sideways scroll */}
-      <div role="tablist" className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-xl">
+      {/* Tabs — equal-width segmented control, balanced on tablet/desktop */}
+      <div role="tablist" className="grid grid-cols-3 gap-1 p-1 bg-slate-100 rounded-xl md:max-w-lg">
         {tabs.map(({ key, label, badge }) => (
           <button
             key={key}
             role="tab"
             aria-selected={tab === key}
             onClick={() => setTab(key)}
-            className={`h-10 px-1.5 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer min-w-0 ${
+            className={`h-10 px-1.5 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer min-w-0 whitespace-nowrap ${
               tab === key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'
             }`}
           >
@@ -502,8 +514,8 @@ export const SupplierSchemesView: React.FC = () => {
           ) : (
             <>
               {/* Desktop table */}
-              <Card noPadding className="hidden md:block">
-                <Table>
+              <Card noPadding className="hidden lg:block overflow-hidden">
+                <Table className="min-w-[820px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead>Scheme</TableHead>
@@ -521,11 +533,11 @@ export const SupplierSchemesView: React.FC = () => {
                       const u = usageByScheme.get(s.id);
                       return (
                         <TableRow key={s.id}>
-                          <TableCell className="font-medium text-slate-900">{s.name}</TableCell>
-                          <TableCell>{s.supplierName}</TableCell>
-                          <TableCell className="text-xs">{typeLabel(s.schemeType)}</TableCell>
-                          <TableCell className="text-xs max-w-[220px]">{productNames(s.productIds)}</TableCell>
-                          <TableCell className="text-xs">
+                          <TableCell className="font-medium text-slate-900 min-w-[150px]">{s.name}</TableCell>
+                          <TableCell className="min-w-[130px]">{s.supplierName}</TableCell>
+                          <TableCell className="text-xs whitespace-nowrap">{typeShort(s.schemeType)}</TableCell>
+                          <TableCell className="text-xs min-w-[180px] max-w-[260px]">{productNames(s.productIds)}</TableCell>
+                          <TableCell className="text-xs tabular-nums min-w-[140px]">
                             {s.schemeType === 'volume_incentive'
                               ? `${(s.targetQuantity || 0).toLocaleString('en-IN')} cs · ${inr(s.incentiveRate || 0)}/cs`
                               : u
@@ -534,10 +546,10 @@ export const SupplierSchemesView: React.FC = () => {
                                 }`
                               : 'Not used yet'}
                           </TableCell>
-                          <TableCell className="text-xs">
+                          <TableCell className="text-xs whitespace-nowrap tabular-nums">
                             {s.startDate} {s.endDate ? `→ ${s.endDate}` : '(open)'}
                           </TableCell>
-                          <TableCell>
+                          <TableCell className="whitespace-nowrap">
                             <button
                               type="button"
                               onClick={() => updateSupplierScheme(s.id, { active: !s.active })}
@@ -547,8 +559,8 @@ export const SupplierSchemesView: React.FC = () => {
                               <Badge variant={s.active ? 'success' : 'neutral'}>{s.active ? 'Active' : 'Inactive'}</Badge>
                             </button>
                           </TableCell>
-                          <TableCell className="text-right">
-                            <div className="flex justify-end gap-1.5">
+                          <TableCell className="text-right whitespace-nowrap">
+                            <div className="inline-flex justify-end gap-1.5">
                               <Button size="sm" variant="ghost" onClick={() => openEdit(s)} aria-label="Edit scheme">
                                 <Pencil className="w-3.5 h-3.5" />
                               </Button>
@@ -569,12 +581,12 @@ export const SupplierSchemesView: React.FC = () => {
                 </Table>
               </Card>
 
-              {/* Mobile cards */}
-              <div className="md:hidden space-y-2.5">
+              {/* Phone (1-col) & Tablet (2-col) cards */}
+              <div className="lg:hidden grid grid-cols-1 md:grid-cols-2 gap-2.5 md:gap-3.5">
                 {supplierSchemes.map((s) => {
                   const u = usageByScheme.get(s.id);
                   return (
-                    <div key={s.id} className="rounded-xl border border-slate-200 bg-white p-3.5">
+                    <div key={s.id} className="rounded-xl border border-slate-200 bg-white p-3.5 md:p-4 flex flex-col justify-between">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <p className="font-semibold text-sm text-slate-900 break-words">{s.name}</p>
@@ -708,8 +720,8 @@ export const SupplierSchemesView: React.FC = () => {
           ) : (
             <>
               {/* Desktop table */}
-              <Card noPadding className="hidden md:block">
-                <Table>
+              <Card noPadding className="hidden lg:block overflow-hidden">
+                <Table className="min-w-[820px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead>Supplier</TableHead>
@@ -726,28 +738,31 @@ export const SupplierSchemesView: React.FC = () => {
                     {visibleNotes.map((n) => {
                       const claim = isClaimLinkedNote(n);
                       const scheme = n.schemeId ? schemeById.get(n.schemeId) : undefined;
+                      const outstanding = Math.max(0, n.expectedAmount - n.actualAmount);
                       return (
                         <TableRow key={n.id}>
-                          <TableCell className="font-medium text-slate-900">{n.supplierName}</TableCell>
-                          <TableCell className="text-xs">
+                          <TableCell className="font-medium text-slate-900 min-w-[150px]">{n.supplierName}</TableCell>
+                          <TableCell className="text-xs text-slate-600 min-w-[140px]">
                             {claim ? 'Expiry / damage claim' : scheme?.name || (n.period ? `Incentive ${n.period}` : n.grnId || '—')}
                             {!claim && n.period && scheme ? ` · ${n.period}` : ''}
                           </TableCell>
-                          <TableCell className="text-xs font-mono">{n.creditNoteNumber || '—'}</TableCell>
-                          <TableCell className="text-right">{inr(n.expectedAmount)}</TableCell>
-                          <TableCell className="text-right">{inr(n.actualAmount)}</TableCell>
-                          <TableCell className="text-right">{inr(Math.max(0, n.expectedAmount - n.actualAmount))}</TableCell>
-                          <TableCell>{statusBadge(n.status)}</TableCell>
-                          <TableCell className="text-right">
-                            <div className="flex justify-end gap-1.5">
+                          <TableCell className="text-xs font-mono whitespace-nowrap text-slate-700">{n.creditNoteNumber || '—'}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap tabular-nums font-medium">{inr(n.expectedAmount)}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap tabular-nums font-medium text-emerald-700">{inr(n.actualAmount)}</TableCell>
+                          <TableCell className={`text-right whitespace-nowrap tabular-nums font-semibold ${outstanding > 0 ? 'text-amber-700' : 'text-slate-700'}`}>
+                            {inr(outstanding)}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap">{statusBadge(n.status)}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap">
+                            <div className="inline-flex justify-end gap-1.5">
                               {claim ? (
-                                <Button size="sm" variant="outline" leftIcon={<ExternalLink className="w-3.5 h-3.5" />} onClick={openClaim}>
+                                <Button size="sm" variant="outline" className="whitespace-nowrap" leftIcon={<ExternalLink className="w-3.5 h-3.5" />} onClick={openClaim}>
                                   Open claim
                                 </Button>
                               ) : (
                                 <>
                                   {n.status !== 'settled' && (
-                                    <Button size="sm" variant="outline" leftIcon={<CheckCircle2 className="w-3.5 h-3.5" />} onClick={() => openReceipt(n)}>
+                                    <Button size="sm" variant="outline" className="whitespace-nowrap" leftIcon={<CheckCircle2 className="w-3.5 h-3.5" />} onClick={() => openReceipt(n)}>
                                       Record receipt
                                     </Button>
                                   )}
@@ -768,8 +783,8 @@ export const SupplierSchemesView: React.FC = () => {
                 </Table>
               </Card>
 
-              {/* Mobile cards */}
-              <div className="md:hidden space-y-2.5">
+              {/* Phone (1-col) & Tablet (2-col) cards */}
+              <div className="lg:hidden grid grid-cols-1 md:grid-cols-2 gap-2.5 md:gap-3.5">
                 {visibleNotes.map((n) => {
                   const claim = isClaimLinkedNote(n);
                   const scheme = n.schemeId ? schemeById.get(n.schemeId) : undefined;
@@ -784,7 +799,7 @@ export const SupplierSchemesView: React.FC = () => {
                     ? `GRN ${n.grnId}`
                     : 'Credit note';
                   return (
-                    <div key={n.id} className="rounded-xl border border-slate-200 bg-white p-3.5">
+                    <div key={n.id} className="rounded-xl border border-slate-200 bg-white p-3.5 md:p-4 flex flex-col justify-between">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <p className="font-semibold text-sm text-slate-900 break-words leading-snug">{n.supplierName}</p>
@@ -881,8 +896,8 @@ export const SupplierSchemesView: React.FC = () => {
           ) : (
             <>
               {/* Desktop table */}
-              <Card noPadding className="hidden md:block overflow-x-auto">
-                <Table>
+              <Card noPadding className="hidden lg:block overflow-hidden">
+                <Table className="min-w-[920px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead>Supplier</TableHead>
@@ -902,25 +917,25 @@ export const SupplierSchemesView: React.FC = () => {
                       const note = noteForRow(r);
                       return (
                         <TableRow key={`${r.schemeId}_${r.period}`}>
-                          <TableCell className="font-medium text-slate-900">{r.supplierName}</TableCell>
-                          <TableCell className="text-xs max-w-[200px]">{r.productName}</TableCell>
-                          <TableCell>{r.period}</TableCell>
-                          <TableCell className="text-right">{r.targetQuantity.toLocaleString('en-IN')}</TableCell>
-                          <TableCell className={`text-right ${r.achieved ? 'text-emerald-600 font-medium' : ''}`}>
+                          <TableCell className="font-medium text-slate-900 min-w-[130px]">{r.supplierName}</TableCell>
+                          <TableCell className="text-xs min-w-[150px] max-w-[220px]">{r.productName}</TableCell>
+                          <TableCell className="whitespace-nowrap font-mono text-xs">{r.period}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap tabular-nums">{r.targetQuantity.toLocaleString('en-IN')}</TableCell>
+                          <TableCell className={`text-right whitespace-nowrap tabular-nums ${r.achieved ? 'text-emerald-600 font-medium' : ''}`}>
                             {r.actualEligibleQty.toLocaleString('en-IN')}
                           </TableCell>
-                          <TableCell className="text-right">{inr(r.incentiveRate)}</TableCell>
-                          <TableCell className="text-right">{inr(r.expectedCredit)}</TableCell>
-                          <TableCell className="text-right">{inr(r.creditReceived)}</TableCell>
-                          <TableCell>{statusBadge(r.status)}</TableCell>
-                          <TableCell className="text-right">
+                          <TableCell className="text-right whitespace-nowrap tabular-nums">{inr(r.incentiveRate)}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap tabular-nums font-medium">{inr(r.expectedCredit)}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap tabular-nums font-medium text-emerald-700">{inr(r.creditReceived)}</TableCell>
+                          <TableCell className="whitespace-nowrap">{statusBadge(r.status)}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap">
                             {r.achieved && !note && (
-                              <Button size="sm" variant="outline" leftIcon={<FilePlus2 className="w-3.5 h-3.5" />} onClick={() => raiseMonthlyNote(r)}>
+                              <Button size="sm" variant="outline" className="whitespace-nowrap" leftIcon={<FilePlus2 className="w-3.5 h-3.5" />} onClick={() => raiseMonthlyNote(r)}>
                                 Raise credit note
                               </Button>
                             )}
                             {note && note.status !== 'settled' && (
-                              <Button size="sm" variant="outline" leftIcon={<CheckCircle2 className="w-3.5 h-3.5" />} onClick={() => openReceipt(note)}>
+                              <Button size="sm" variant="outline" className="whitespace-nowrap" leftIcon={<CheckCircle2 className="w-3.5 h-3.5" />} onClick={() => openReceipt(note)}>
                                 Record receipt
                               </Button>
                             )}
@@ -932,14 +947,14 @@ export const SupplierSchemesView: React.FC = () => {
                 </Table>
               </Card>
 
-              {/* Mobile cards */}
-              <div className="md:hidden space-y-2.5">
+              {/* Phone (1-col) & Tablet (2-col) cards */}
+              <div className="lg:hidden grid grid-cols-1 md:grid-cols-2 gap-2.5 md:gap-3.5">
                 {monthlyReport.map((r) => {
                   const note = noteForRow(r);
                   const drift = note && Math.abs(note.expectedAmount - r.expectedCredit) > 0.5;
                   const pct = r.targetQuantity > 0 ? Math.min(100, Math.round((r.actualEligibleQty / r.targetQuantity) * 100)) : 0;
                   return (
-                    <div key={`${r.schemeId}_${r.period}`} className="rounded-xl border border-slate-200 bg-white p-3.5">
+                    <div key={`${r.schemeId}_${r.period}`} className="rounded-xl border border-slate-200 bg-white p-3.5 md:p-4 flex flex-col justify-between">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <p className="font-semibold text-sm text-slate-900 break-words">{r.productName}</p>

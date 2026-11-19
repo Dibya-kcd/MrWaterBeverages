@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useCallback } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { EmptyState } from '../../common/EmptyState';
 import { useLedger } from '../../../context/LedgerContext';
 import { money } from '../../../utils/billing';
 import { billBalance, billNetTotal, round2 } from '../../../utils/salesReturns';
@@ -715,7 +716,7 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
 
           <Section title="Product profit · top" linkLabel="All products →" to="margin">
             {topProductProfits.length === 0 ? (
-              <div className="py-8 px-4 text-center text-sm text-slate-400">No product sales recorded in this period</div>
+              <EmptyState compact title="No product sales in this period" description="Pick a longer period to see product profit." />
             ) : (
               <ReportList>
                 {topProductProfits.map((item) => (

@@ -15,6 +15,7 @@ import {
 import { HeroCard, LegendDot, MiniStat, PhoneHeader, PhoneSearch, SplitBar } from "./mobile/PhoneKit";
 import { SubPageBack, SubPageMenu, type SubPageCard } from "./mobile/SubPageMenu";
 import { checkEwayInvoices, buildEwayBillJson, buildEinvoiceJson, EWAY_BILL_THRESHOLD } from "../../../utils/ewayBill";
+import { formatBillNumber, isGstExcludedBill } from "../../../utils/invoiceCommon";
 import {
   buildGstLines,
   computeGstr3b,
@@ -49,6 +50,8 @@ interface TaxReportProps {
   orgProfile?: OrganizationProfile | null;
   invoicePrefix?: string;
   periodLabel?: string;
+  excludedBillsCount?: number;
+  excludedBillsTotal?: number;
 }
 
 type GstTab = "gstr3b" | "b2b" | "b2c" | "hsn" | "purchases";
@@ -82,19 +85,32 @@ export const TaxReport: React.FC<TaxReportProps> = ({
   orgProfile = null,
   invoicePrefix = "INV",
   periodLabel = "period",
+  excludedBillsCount = 0,
+  excludedBillsTotal = 0,
 }) => {
   const [tab, setTab] = useState<GstTab>("gstr3b");
   /** Phone only: which GST section is open as its own page (null = the list of section cards). */
   const [phoneOpen, setPhoneOpen] = useState<GstTab | null>(null);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
+  const gstBills = useMemo(
+    () => (filteredBills || []).filter((b) => !isGstExcludedBill(b, products)),
+    [filteredBills, products],
+  );
+  const localExcluded = useMemo(
+    () => (filteredBills || []).filter((b) => b.status !== "cancelled" && !(b as any).cancelled && isGstExcludedBill(b, products)),
+    [filteredBills, products],
+  );
+  const effectiveExcludedCount = excludedBillsCount || localExcluded.length;
+  const effectiveExcludedTotal = excludedBillsTotal || localExcluded.reduce((s, b) => s + (Number(b.total) || 0), 0);
+
   const orgStateCode = orgStateCodeFromProfile(orgProfile);
   const lines = useMemo(
     () =>
-      buildGstLines(filteredBills, products, customers, invoicePrefix, {
+      buildGstLines(gstBills, products, customers, invoicePrefix, {
         orgStateCode,
       }),
-    [filteredBills, products, customers, invoicePrefix, orgStateCode],
+    [gstBills, products, customers, invoicePrefix, orgStateCode],
   );
   const invoices = useMemo(() => summarizeInvoices(lines), [lines]);
   const hsnAll = useMemo(() => hsnSummary(lines), [lines]);
@@ -145,7 +161,7 @@ export const TaxReport: React.FC<TaxReportProps> = ({
   }, [b2cLines]);
 
   const fromLines = useMemo(() => {
-    const cn = creditNoteSummary(filteredBills, lines, invoicePrefix);
+    const cn = creditNoteSummary(gstBills, lines, invoicePrefix);
     // Net ITC (after reversals). 0 is a real answer, so no "|| fallback" to the gross figure.
     const inputCredit = Number.isFinite(Number(gstTaxSummary.inputGstCredit))
       ? Number(gstTaxSummary.inputGstCredit)
@@ -153,7 +169,7 @@ export const TaxReport: React.FC<TaxReportProps> = ({
     return computeGstr3b(lines, cn, inputCredit);
   }, [
     lines,
-    filteredBills,
+    gstBills,
     invoicePrefix,
     gstTaxSummary.inputGstCredit,
     purchaseStats.totalGstPaid,
@@ -166,7 +182,7 @@ export const TaxReport: React.FC<TaxReportProps> = ({
   const [seriesMsg, setSeriesMsg] = useState<string | null>(null);
   const mismatches = useMemo(() => {
     const byId = new Map<number, Bill>();
-    filteredBills.forEach((b) => byId.set(b.id, b));
+    gstBills.forEach((b) => byId.set(b.id, b));
     const out: {
       billId: number;
       invoiceNo: string;
@@ -217,24 +233,31 @@ export const TaxReport: React.FC<TaxReportProps> = ({
       });
     }
     return out;
-  }, [invoices, filteredBills]);
+  }, [invoices, gstBills]);
   const repairable = mismatches.filter((m) => m.repairable);
   const nonGstRepairable = mismatches.filter((m) => m.reason.startsWith("Non-GST invoice:"));
 
   const zeroGstBills = useMemo(() => {
+    const byId = new Map<number, Product>();
+    (products || []).forEach((p) => byId.set(p.id, p));
+    const isAllNonGstProducts = (b: Bill) =>
+      (b.items || []).length > 0 &&
+      (b.items || []).every((it) => it.taxability === 'non_gst' || byId.get(it.productId)?.taxability === 'non_gst');
+
     const zeroBillIds = new Set(
       lines
         .filter((l) => l.gstRatePct === 0 && (l.taxable > 0 || l.qty > 0))
         .map((l) => l.billId)
     );
-    return filteredBills.filter((b) => {
+    return gstBills.filter((b) => {
       if (b.status === "cancelled" || !(b.items || []).length) return false;
+      if (isAllNonGstProducts(b)) return false;
       if (zeroBillIds.has(b.id)) return true;
       const isNonGst = b.invoiceType === "retail" || b.invoiceType === "bill_of_supply" || b.isGstInvoice === false;
       const zeroTaxStored = (Number(b.cgst) || 0) + (Number(b.sgst) || 0) < 0.01;
       return (isNonGst || zeroTaxStored) && (Number(b.total) || 0) > 0;
     });
-  }, [filteredBills, lines]);
+  }, [gstBills, lines, products]);
 
   const zeroUnits = useMemo(() => {
     const fromLines = lines.filter((l) => l.gstRatePct === 0).reduce((s, l) => s + (Number(l.qty) || 0), 0);
@@ -242,9 +265,14 @@ export const TaxReport: React.FC<TaxReportProps> = ({
     return zeroGstBills.reduce((s, b) => s + (b.items || []).reduce((iq, it) => iq + (Number(it.qty) || 0), 0), 0);
   }, [lines, zeroGstBills]);
 
+  const allExcludedBills = useMemo(
+    () => (allActiveBills || []).filter((b) => isGstExcludedBill(b, products)),
+    [allActiveBills, products],
+  );
+
   const series = useMemo(
-    () => invoiceSeriesSummary(filteredBills, cancelledBills || [], allActiveBills || []),
-    [filteredBills, cancelledBills, allActiveBills],
+    () => invoiceSeriesSummary(gstBills, cancelledBills || [], allActiveBills || [], allExcludedBills),
+    [gstBills, cancelledBills, allActiveBills, allExcludedBills],
   );
 
   // E-way bill: invoices above Rs 50,000 need one before the goods move.
@@ -253,12 +281,12 @@ export const TaxReport: React.FC<TaxReportProps> = ({
     if (!orgProfile) return { checks: [] as ReturnType<typeof checkEwayInvoices>, byId: new Map<number, string>() };
     const byId = new Map<number, string>();
     invoices.forEach((i) => byId.set(i.billId, i.invoiceNo));
-    const noOf = (b: Bill) => byId.get(b.id) || `${invoicePrefix}-${b.id}`;
-    return { checks: checkEwayInvoices(filteredBills, orgProfile, customers, noOf, products), byId };
-  }, [filteredBills, orgProfile, customers, products, invoices, invoicePrefix]);
+    const noOf = (b: Bill) => byId.get(b.id) || formatBillNumber(b, invoicePrefix);
+    return { checks: checkEwayInvoices(gstBills, orgProfile, customers, noOf, products), byId };
+  }, [gstBills, orgProfile, customers, products, invoices, invoicePrefix]);
   const ewayPending = eway.checks.filter((c) => c.needed && !c.hasEwayBill);
   const ewayReady = ewayPending.filter((c) => c.problems.length === 0);
-  const b2bNoIrn = filteredBills.filter(
+  const b2bNoIrn = gstBills.filter(
     (b) => b.status !== "cancelled" && /^[0-9A-Z]{15}$/.test(b.customerGstin || "") && !b.irn,
   );
   const downloadEinvoiceJson = () => {
@@ -267,7 +295,7 @@ export const TaxReport: React.FC<TaxReportProps> = ({
       b2bNoIrn,
       orgProfile,
       customers,
-      (b) => eway.byId.get(b.id) || `${invoicePrefix}-${b.id}`,
+      (b) => eway.byId.get(b.id) || formatBillNumber(b, invoicePrefix),
       products,
     );
     const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
@@ -283,10 +311,10 @@ export const TaxReport: React.FC<TaxReportProps> = ({
     if (!orgProfile || ewayReady.length === 0) return;
     const ids = new Set(ewayReady.map((c) => c.billId));
     const json = buildEwayBillJson(
-      filteredBills.filter((b) => ids.has(b.id)),
+      gstBills.filter((b) => ids.has(b.id)),
       orgProfile,
       customers,
-      (b) => eway.byId.get(b.id) || `${invoicePrefix}-${b.id}`,
+      (b) => eway.byId.get(b.id) || formatBillNumber(b, invoicePrefix),
       products,
     );
     const blob = new Blob([JSON.stringify(json, null, 2)], { type: "application/json" });
@@ -301,7 +329,7 @@ export const TaxReport: React.FC<TaxReportProps> = ({
 
   const handleExport = () => {
     exportCaGstPack({
-      bills: filteredBills,
+      bills: gstBills,
       products,
       customers,
       org: orgProfile,
@@ -464,6 +492,12 @@ export const TaxReport: React.FC<TaxReportProps> = ({
           </span>
         </ReportBreakdownLine>
       </div>
+
+      {effectiveExcludedCount > 0 && (
+        <div className="rounded-xl border border-teal-200 bg-teal-50 px-3.5 py-2.5 text-xs text-teal-900">
+          <b>{effectiveExcludedCount} Non-GST / Trading cash memo{effectiveExcludedCount === 1 ? "" : "s"}</b> (NG-… totalling ₹{money(effectiveExcludedTotal)}) {effectiveExcludedCount === 1 ? "is" : "are"} excluded from GST returns, HSN, Table 13 series &amp; CA exports (still included in Sales &amp; P&amp;L).
+        </div>
+      )}
 
       {/* Warnings / helpers: on a phone they belong to the list screen, not inside a section page */}
       <div className={phoneOpen === null ? "contents" : "hidden md:contents"}>

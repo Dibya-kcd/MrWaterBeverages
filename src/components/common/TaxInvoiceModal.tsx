@@ -23,7 +23,7 @@ import {
   whatsappLink,
   nonGstSummary,
 } from '../../utils/billing';
-import { inrToWords } from '../../utils/invoiceCommon';
+import { formatBillNumber, inrToWords, isBillGstInvoice, isGstExcludedBill } from '../../utils/invoiceCommon';
 import { resolveInvoicePaper, type InvoicePaper } from '../../utils/invoicePdfMeta';
 import { downloadInvoicePdf, printInvoicePdf, shareInvoicePdf, preloadInvoicePdf } from '../../utils/invoicePdfLazy';
 import { billNetTotal } from '../../utils/salesReturns';
@@ -40,12 +40,20 @@ interface TaxInvoiceModalProps {
 }
 
 export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
-  bill,
+  bill: propBill,
   onClose,
   defaultFormat,
   onEditBill,
 }) => {
-  const { orgProfile, billingSettings, palette, fz, scale } = useLedger();
+  const { bills, products, orgProfile, billingSettings, palette, fz, scale } = useLedger();
+  const [activeBillId, setActiveBillId] = useState<number>(propBill.id);
+  useEffect(() => {
+    setActiveBillId(propBill.id);
+  }, [propBill.id]);
+  const bill = bills.find((b) => b.id === activeBillId) || propBill;
+  const splitSiblings = bill.splitGroupId
+    ? bills.filter((b) => b.splitGroupId === bill.splitGroupId && b.status !== 'cancelled')
+    : [];
   const [downloading, setDownloading] = useState(false);
   // Fetch the PDF code in the background so Download / Print / Share work instantly (and straight after the tap).
   useEffect(() => { preloadInvoicePdf().catch(() => {}); }, []);
@@ -57,19 +65,14 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
   const [sharing, setSharing] = useState(false);
   const [shareNote, setShareNote] = useState<string | null>(null);
 
-  // Bills issued by a composition / unregistered business cannot be printed as a Tax Invoice.
-  const formatLocked = Boolean(bill.taxStamp && bill.taxStamp.registrationType !== 'regular');
-  const invoiceFormat: 'gst' | 'non_gst' = (() => {
-    if (formatLocked) return 'non_gst';
-    if (bill.invoiceType === 'retail' || bill.invoiceType === 'bill_of_supply' || bill.isGstInvoice === false) {
-      return 'non_gst';
-    }
-    if (bill.invoiceType === 'tax_invoice' || bill.isGstInvoice === true) {
-      return 'gst';
-    }
-    if (defaultFormat) return defaultFormat;
-    return bill.supplyType === 'B2B' && Boolean(bill.customerGstin) ? 'gst' : 'non_gst';
-  })();
+  const isNonGstMemo = isGstExcludedBill(bill, products);
+  // Non-GST trading memos & composition / unregistered bills cannot be printed as GST Tax Invoices.
+  const formatLocked = isNonGstMemo || Boolean(bill.taxStamp && bill.taxStamp.registrationType !== 'regular');
+  const invoiceFormat: 'gst' | 'non_gst' = formatLocked
+    ? 'non_gst'
+    : isBillGstInvoice(bill, defaultFormat)
+      ? 'gst'
+      : 'non_gst';
   const isGst = invoiceFormat === 'gst';
   // Per-line GST and the tax summary by HSN / rate
   const taxBreakdown = isGst ? billTaxBreakdown(bill, []) : null;
@@ -77,8 +80,7 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
   const nonGst = nonGstSummary(bill);
 
   const status = statusOf(billNetTotal(bill), bill.amountPaid);
-  const prefix = billingSettings?.invoicePrefix || (isGst ? 'INV' : 'RET');
-  const invoiceNo = `${prefix}-${bill.id}`;
+  const invoiceNo = formatBillNumber(bill, billingSettings, invoiceFormat);
   const supplyLabel = bill.supplyType === 'B2B' && bill.customerGstin ? 'B2B' : 'B2C';
   const orgName = orgProfile?.name || 'MrWater';
   const orgAddress = orgProfile?.address
@@ -162,7 +164,7 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
   };
 
   return (
-    <div
+    <div data-esc-close
       role="dialog"
       aria-modal="true"
       aria-label={`${isGst ? 'Tax Invoice' : 'Retail Bill'} ${invoiceNo}`}
@@ -200,6 +202,28 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
             >
               {status.label}
             </span>
+            {splitSiblings.length > 1 && (
+              <div className="hidden sm:inline-flex items-center gap-1 ml-1 bg-slate-200/75 p-0.5 rounded-lg">
+                {splitSiblings.map((sib) => {
+                  const sibNg = isGstExcludedBill(sib, products);
+                  const sibDoc = formatBillNumber(sib, billingSettings);
+                  return (
+                    <button
+                      key={sib.id}
+                      type="button"
+                      onClick={() => setActiveBillId(sib.id)}
+                      className={`px-2 py-0.5 rounded-md text-[11px] font-bold font-mono cursor-pointer transition ${
+                        sib.id === bill.id
+                          ? 'bg-white text-slate-900 shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {sibDoc} {sibNg ? '(Non-GST)' : '(GST)'}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
@@ -275,18 +299,24 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
               <div className="text-left sm:text-right flex flex-col sm:items-end shrink-0">
                 <div
                   className={`inline-block font-black text-xs sm:text-sm px-2.5 sm:px-3 py-1 tracking-wider uppercase rounded-xs text-white ${
-                    isGst ? 'bg-amber-600' : 'bg-emerald-700'
+                    isGst ? 'bg-amber-600' : isNonGstMemo ? 'bg-slate-700' : 'bg-emerald-700'
                   }`}
                 >
-                  {isGst ? 'TAX INVOICE' : 'RETAIL BILL / BILL OF SUPPLY'}
+                  {isGst ? 'TAX INVOICE' : isNonGstMemo ? 'CASH MEMO (NON-GST)' : 'RETAIL BILL / BILL OF SUPPLY'}
                 </div>
                 <div className="text-[10.5px] sm:text-xs text-slate-500 font-medium mt-1">
-                  {isGst ? '(Original for Recipient · Rule 46)' : '(Non-GST / B2C Cash Memo)'}
+                  {isGst
+                    ? '(Original for Recipient · Rule 46)'
+                    : isNonGstMemo
+                      ? '(Trading / 0% GST · Excluded from GST Returns)'
+                      : '(Non-GST / B2C Cash Memo)'}
                 </div>
                 <div className="mt-1.5 text-[10.5px] sm:text-xs font-mono font-bold bg-slate-100 border px-2 py-0.5 text-slate-800 rounded">
                   {isGst
                     ? `GSTIN: ${orgGstin || 'Unregistered'} · Supply: ${supplyLabel}`
-                    : `Supply: B2C Retail Cash Memo`}
+                    : isNonGstMemo
+                      ? `Trading Memo · No GST Charged`
+                      : `Supply: B2C Retail Cash Memo`}
                 </div>
                 {orgFssai && (
                   <div className="text-[10.5px] sm:text-xs text-slate-600 font-medium mt-0.5">
@@ -415,7 +445,9 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
                         </td>
                         {isGst && (
                           <td className="p-2 border text-center text-slate-600 font-mono font-semibold whitespace-nowrap">
-                            {normalizeTo8DigitHsn(it.hsn || taxBreakdown?.lines[idx]?.hsn, it.category, it.productName)}
+                            {it.taxability === 'non_gst'
+                              ? (it.hsn || 'Non-GST')
+                              : normalizeTo8DigitHsn(it.hsn || taxBreakdown?.lines[idx]?.hsn, it.category, it.productName, it.taxability)}
                           </td>
                         )}
                         <td className="p-2 border text-center font-bold text-slate-900 font-mono whitespace-nowrap">{it.qty}</td>
@@ -433,12 +465,18 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
                         </td>
                         {isGst && (
                           <td className="p-2 border text-center font-mono text-slate-600 whitespace-nowrap">
-                            {!d.isFreeStock && (taxBreakdown?.lines[idx]?.ratePct || 0) > 0 ? `${taxBreakdown!.lines[idx].ratePct}%` : '—'}
+                            {it.taxability === 'non_gst'
+                              ? 'Non-GST'
+                              : !d.isFreeStock && (taxBreakdown?.lines[idx]?.ratePct || 0) > 0
+                                ? `${taxBreakdown!.lines[idx].ratePct}%`
+                                : '—'}
                           </td>
                         )}
                         {isGst && (
                           <td className="p-2 border text-right font-mono text-slate-700 whitespace-nowrap">
-                            {!d.isFreeStock && (taxBreakdown?.lines[idx]?.tax || 0) > 0 ? `₹${money(taxBreakdown!.lines[idx].tax)}` : '—'}
+                            {it.taxability !== 'non_gst' && !d.isFreeStock && (taxBreakdown?.lines[idx]?.tax || 0) > 0
+                              ? `₹${money(taxBreakdown!.lines[idx].tax)}`
+                              : '—'}
                           </td>
                         )}
                         <td className={`p-2 border text-right font-bold font-mono whitespace-nowrap ${d.isFreeStock ? 'text-emerald-700' : 'text-slate-900'}`}>
@@ -523,11 +561,13 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
                       <span>
                         {it.qty} cs × ₹{money(d.rate)}
                       </span>
-                      {isGst && lineTax && lineTax.ratePct > 0 && (
+                      {it.taxability === 'non_gst' ? (
+                        <span className="text-slate-600 font-semibold">Non-GST · 0%</span>
+                      ) : isGst && lineTax && lineTax.ratePct > 0 ? (
                         <span>
                           GST {lineTax.ratePct}% (₹{money(lineTax.tax)})
                         </span>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                 );
@@ -794,21 +834,25 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
               className={`px-2 h-7 rounded-lg flex items-center justify-center font-black text-[10px] tracking-wide border shrink-0 ${
                 isGst
                   ? 'bg-amber-100 text-amber-800 border-amber-300'
-                  : 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                  : isNonGstMemo
+                    ? 'bg-slate-200 text-slate-800 border-slate-300'
+                    : 'bg-emerald-100 text-emerald-800 border-emerald-300'
               }`}
             >
-              {isGst ? 'GST' : bill.taxStamp ? 'BOS' : 'CASH'}
+              {isGst ? 'GST' : isNonGstMemo ? 'NON-GST' : bill.taxStamp ? 'BOS' : 'CASH'}
             </div>
             <span className="text-xs font-bold text-slate-800 truncate">
               {isGst
                 ? 'GST Tax Invoice'
-                : bill.taxStamp?.registrationType === 'composition'
-                  ? 'Bill of Supply · Composition'
-                  : bill.taxStamp?.registrationType === 'unregistered'
-                    ? 'Bill of Supply · Unregistered'
-                    : bill.invoiceType === 'bill_of_supply'
-                      ? 'Bill of Supply'
-                      : 'Non-GST Retail Bill'}
+                : isNonGstMemo
+                  ? 'Non-GST Cash Memo (Excluded from GST Returns)'
+                  : bill.taxStamp?.registrationType === 'composition'
+                    ? 'Bill of Supply · Composition'
+                    : bill.taxStamp?.registrationType === 'unregistered'
+                      ? 'Bill of Supply · Unregistered'
+                      : bill.invoiceType === 'bill_of_supply'
+                        ? 'Bill of Supply'
+                        : 'Non-GST Retail Bill'}
             </span>
           </div>
 
@@ -829,7 +873,7 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
           SHARE & EXPORT MODAL (WhatsApp, Download PDF, Print, Copy Text)
           ===================================================================== */}
       {showShareModal && (
-        <div
+        <div data-esc-close
           role="dialog"
           aria-modal="true"
           className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs select-none"

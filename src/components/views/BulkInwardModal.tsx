@@ -40,11 +40,12 @@ import {
 } from 'lucide-react';
 import { CATS } from '../../constants/initialData';
 import { useLedger } from '../../context/LedgerContext';
-import { CategoryKey, GrnImportWarning, GrnLineItem, GrnSchemeMode, GrnSchemeType, Product } from '../../types';
+import { CategoryKey, GrnImportWarning, GrnLineItem, GrnSchemeMode, GrnSchemeType, Product, Taxability } from '../../types';
 import {
   calculateLandedCostBreakdown,
   generateAutoSku,
   generateBatchNumber,
+  gstRateFromHsn,
   money,
   normalizeTo8DigitHsn,
   inferUnitsPerCase,
@@ -69,6 +70,7 @@ import { InwardProductCard } from '../inward/InwardProductCard';
 import { UploadStep } from '../inward/UploadStep';
 import { InwardStepIndicator } from '../inward/InwardStepIndicator';
 import { todayISO } from "../../utils/dateLocal";
+import { validatePhone } from "../../utils/validation";
 
 interface BulkInwardModalProps {
   isOpen: boolean;
@@ -81,6 +83,7 @@ interface EditableInwardRow {
   rawName: string;
   productName: string;
   category: CategoryKey;
+  taxability?: Taxability;
   pack: string;
   volume: number;
   packSize?: string;
@@ -137,6 +140,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   const {
     products,
     warehouses,
+    grns,
     remainingStock,
     postGrn,
     palette,
@@ -157,18 +161,13 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   const [supplierAddress, setSupplierAddress] = useState('');
   const [supplierPhone, setSupplierPhone] = useState('');
   const [supplierEmail, setSupplierEmail] = useState('');
-  const [invoiceNo, setInvoiceNo] = useState(`INV-${new Date().getFullYear()}-${Math.floor(100 + Math.random() * 900)}`);
+  const [invoiceNo, setInvoiceNo] = useState('');
   const [inwardDate, setInwardDate] = useState(todayISO());
   const [vehicleNo, setVehicleNo] = useState('');
   const [placeOfSupply, setPlaceOfSupply] = useState('');
   const [billedTo, setBilledTo] = useState('');
   const [shippedTo, setShippedTo] = useState('');
   const [showProviderDetails, setShowProviderDetails] = useState(false);
-  // FIX: no default warehouse. Every inward MUST have the warehouse chosen manually —
-  // an empty string forces the "Select warehouse..." placeholder below and blocks
-  // Confirm & Post until the user actively picks one (see targetWarehouseId checks in
-  // hasCasesMismatch/handleConfirmAndPostGrn and the disabled state on the submit
-  // button further down).
   const [targetWarehouseId, setTargetWarehouseId] = useState('');
   const [overallDiscount, setOverallDiscount] = useState<number>(0);
   const [originalInvoiceTotal, setOriginalInvoiceTotal] = useState<number | null>(null);
@@ -187,7 +186,19 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   const [loadingLabourCost, setLoadingLabourCost] = useState<number>(0);
   const [unloadingLabourCost, setUnloadingLabourCost] = useState<number>(0);
   const [otherInwardCost, setOtherInwardCost] = useState<number>(0);
-  const [showInwardCostDetails, setShowInwardCostDetails] = useState<boolean>(false);
+  const [showInwardCostDetails, setShowInwardCostDetails] = useState<boolean>(true);
+  const [invoiceRoundOff, setInvoiceRoundOff] = useState<number>(0);
+  const [invoiceOtherCharges, setInvoiceOtherCharges] = useState<number>(0);
+  const [showConfirmStep, setShowConfirmStep] = useState<boolean>(false);
+  const [confirmQuery, setConfirmQuery] = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isOpen) {
+      setShowConfirmStep(false);
+      setConfirmDeleteId(null);
+      setConfirmQuery('');
+    }
+  }, [isOpen]);
 
   // Parsing & File State
   const [isDragging, setIsDragging] = useState(false);
@@ -254,16 +265,97 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   // Notes from the AI cross-checks (row arithmetic, totals, GSTIN ...) shown above the table
   const [aiWarnings, setAiWarnings] = useState<string[]>([]);
 
+  const knownSuppliers = React.useMemo(() => {
+    const map = new Map<string, { name: string; phone?: string; gstin?: string; address?: string; email?: string }>();
+    try {
+      const raw = localStorage.getItem('mrwater_cache_suppliers_master');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          for (const s of parsed) {
+            const key = String(s?.name || '').trim().toLowerCase();
+            if (key) {
+              map.set(key, {
+                name: String(s.name).trim(),
+                phone: s.phone || '',
+                gstin: s.gstin || '',
+                address: s.address || '',
+                email: s.email || '',
+              });
+            }
+          }
+        }
+      }
+    } catch { /* ignore storage errors */ }
+    for (const g of grns || []) {
+      const key = String(g.supplierName || '').trim().toLowerCase();
+      if (!key) continue;
+      const existing = map.get(key);
+      map.set(key, {
+        name: existing?.name || g.supplierName.trim(),
+        phone: existing?.phone || g.supplierPhone || '',
+        gstin: existing?.gstin || g.supplierGstin || '',
+        address: existing?.address || g.supplierAddress || '',
+        email: existing?.email || g.supplierEmail || '',
+      });
+    }
+    return Array.from(map.values());
+  }, [grns]);
+
+  const supplierPhoneError = React.useMemo(
+    () => (supplierPhone.trim() ? validatePhone(supplierPhone, { label: 'Supplier phone' }) : null),
+    [supplierPhone]
+  );
+
   if (!isOpen) return null;
+
+  const applySupplierAutofill = (nameVal: string, currentPhone?: string, currentGstin?: string) => {
+    const clean = nameVal.trim().toLowerCase();
+    if (!clean) return;
+    const match = knownSuppliers.find((s) => s.name.toLowerCase() === clean);
+    if (!match) return;
+    if (!(currentPhone ?? supplierPhone).trim() && match.phone) setSupplierPhone(match.phone);
+    if (!(currentGstin ?? supplierGstin).trim() && match.gstin) setSupplierGstin(match.gstin);
+    if (!supplierAddress.trim() && match.address) setSupplierAddress(match.address);
+    if (!supplierEmail.trim() && match.email) setSupplierEmail(match.email);
+  };
+
+  // Quantity & Inward-Cost totals declared early so callbacks never hit TDZ
+  const totalBilledQty = rows.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+  const totalFreeQty = rows.reduce((s, r) => s + (Number(r.freeQty) || 0), 0);
+  const totalInvoicePrintedQty = totalBilledQty;
+  const totalSupplierSchemeBonusQty = rows.reduce(
+    (s, r) => s + (r.supplierSchemeId ? Number(r.supplierSchemeFreeQty) || 0 : 0),
+    0
+  );
+  const totalReceivedQty = totalInvoicePrintedQty + totalSupplierSchemeBonusQty;
+  const totalPaidQty = rows.reduce(
+    (s, r) => s + Math.max(0, (Number(r.qty) || 0) - (Number(r.freeQty) || 0)),
+    0
+  );
+  const hasCasesMismatch =
+    printedTotalCases !== null && printedTotalCases > 0 && totalInvoicePrintedQty !== printedTotalCases;
+  const casesDiff = printedTotalCases !== null ? totalInvoicePrintedQty - printedTotalCases : 0;
+
+  const totalInwardCost =
+    (Number(transportCost) || 0) +
+    (Number(freightCost) || 0) +
+    (Number(loadingLabourCost) || 0) +
+    (Number(unloadingLabourCost) || 0) +
+    (Number(otherInwardCost) || 0);
+  const inwardCostPerCrate = totalReceivedQty > 0 ? totalInwardCost / totalReceivedQty : 0;
 
   // Convert ParsedInvoiceData into editable rows
   const loadInvoiceDataIntoReview = (data: ParsedInvoiceData, sourceName: string) => {
+    const matchedSup = knownSuppliers.find(
+      (s) => s.name.toLowerCase() === (data.supplierName || '').trim().toLowerCase()
+    );
     setSupplierName(data.supplierName || '');
-    setSupplierGstin(data.supplierGstin || '');
-    setSupplierAddress(data.supplierAddress || '');
-    setSupplierPhone(data.supplierPhone || '');
-    setSupplierEmail(data.supplierEmail || '');
-    setInvoiceNo(data.invoiceNo || `INV-${new Date().getFullYear()}-001`);
+    setSupplierGstin(data.supplierGstin || matchedSup?.gstin || '');
+    setSupplierAddress(data.supplierAddress || matchedSup?.address || '');
+    setSupplierPhone(data.supplierPhone || matchedSup?.phone || '');
+    setSupplierEmail(data.supplierEmail || matchedSup?.email || '');
+    setInvoiceNo(data.invoiceNo || '');
     setInwardDate(data.invoiceDate || todayISO());
     setVehicleNo(data.vehicleNo || '');
     setPlaceOfSupply(data.placeOfSupply || '');
@@ -271,6 +363,13 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
     setShippedTo(data.shippedTo || '');
     setOverallDiscount(data.overallDiscount || 0);
     setOriginalInvoiceTotal(data.grandTotal || null);
+    setInvoiceRoundOff(data.roundOff || 0);
+    setInvoiceOtherCharges(data.otherCharges || 0);
+    const parsedFreightSum = data.items.reduce((s, it) => s + (Number(it.freightCost) || 0), 0);
+    const parsedLabourSum = data.items.reduce((s, it) => s + (Number(it.labourCost) || 0), 0);
+    if ((data.otherCharges || 0) > 0) setFreightCost(data.otherCharges || 0);
+    else if (parsedFreightSum > 0) setFreightCost(parsedFreightSum);
+    if (parsedLabourSum > 0) setLoadingLabourCost(parsedLabourSum);
     setPrintedTotalCases(
       data.totalCases && data.totalCases > 0
         ? data.totalCases
@@ -289,13 +388,15 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
       }
       const { isNewProduct, matchedProduct } = matchRes;
 
+      const isNonGst = matchedProduct?.taxability === 'non_gst' || item.taxability === 'non_gst';
       const qty = Math.max(1, item.qty || 1);
-      // never invent a price: 0 is flagged in the review table so the user types the real one
       const unitPrice = Math.max(0, item.unitPrice || 0);
       const volume = matchedProduct?.volume || item.volume || 150;
       const pack = matchedProduct?.pack || item.pack || 'PET';
       const unitsPerCrate = item.unitsPerCrate || inferUnitsPerCase(`${item.rawName || ''} ${item.pack || ''}`, volume);
       const packSize = item.packSize || `${volume}ml ${pack}`;
+      const cgstPercent = isNonGst ? 0 : (item.cgstPercent ?? 20);
+      const sgstPercent = isNonGst ? 0 : (item.sgstPercent ?? 20);
 
       let schemeType: GrnSchemeType = item.schemeType || 'none';
       const schemeMode: GrnSchemeMode = 'inclusive';
@@ -303,7 +404,6 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
       let schemeFreeQty = item.schemeFreeQty ?? (schemeType === 'b2g1' ? 1 : undefined);
       const freeQty = item.freeQty !== undefined ? Math.max(0, item.freeQty) : undefined;
 
-      // Auto compute free quantity if scheme is Buy X Get Y
       if (schemeType === 'b2g1') {
         schemeBuyQty = schemeBuyQty || 2;
         schemeFreeQty = schemeFreeQty || 1;
@@ -320,8 +420,8 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         pack,
         volume,
         packSize,
-        cgstPercent: item.cgstPercent ?? 20,
-        sgstPercent: item.sgstPercent ?? 20,
+        cgstPercent,
+        sgstPercent,
         schemeType,
         schemeMode,
         schemeBuyQty,
@@ -337,11 +437,17 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         rawName: item.rawName,
         productName: (matchedProduct ? matchedProduct.name : item.productName || item.rawName).trim().toUpperCase(),
         category: matchedProduct?.category || item.category || detectCategory(item.rawName),
+        taxability: isNonGst ? 'non_gst' : 'taxable',
         pack,
         volume,
         packSize,
         unitsPerCrate,
-        hsn: normalizeTo8DigitHsn(matchedProduct?.hsn || item.hsn, matchedProduct?.category || item.category, item.rawName),
+        hsn: normalizeTo8DigitHsn(
+          matchedProduct?.hsn || item.hsn,
+          matchedProduct?.category || item.category,
+          item.rawName,
+          isNonGst ? 'non_gst' : 'taxable'
+        ),
         qty,
         freeQty: breakdown.freeQty,
         paidQty: breakdown.paidQty,
@@ -353,17 +459,15 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         discountPercent: item.discountPercent || 0,
         discountFlat: item.discountFlat || 0,
         discountAmount: breakdown.discountAmount,
-        schemeText:
-          item.schemeDescription ||
-          breakdown.schemeLabel,
-        cgstPercent: item.cgstPercent ?? 20,
-        sgstPercent: item.sgstPercent ?? 20,
+        schemeText: item.schemeDescription || breakdown.schemeLabel,
+        cgstPercent,
+        sgstPercent,
         wholesaleRate: matchedProduct?.wholesale || Math.round(breakdown.effectiveCostPerCrateInclGst * 1.15) || Math.round(unitPrice * 1.15),
         retailRate: matchedProduct?.retail || Math.round(breakdown.effectiveCostPerCrateInclGst * 1.25) || Math.round(unitPrice * 1.25),
         listPrice: item.listPrice !== undefined ? item.listPrice : item.unitPrice,
-        isGstIncluded: item.isGstIncluded ?? false,
-        calculatedGstAmount: item.calculatedGstAmount !== undefined ? item.calculatedGstAmount : (item.unitPrice * ((item.cgstPercent ?? 20) + (item.sgstPercent ?? 20)) / 100),
-        priceInclGst: item.priceInclGst !== undefined ? item.priceInclGst : (item.unitPrice * (1 + ((item.cgstPercent ?? 20) + (item.sgstPercent ?? 20)) / 100)),
+        isGstIncluded: isNonGst ? false : (item.isGstIncluded ?? true),
+        calculatedGstAmount: isNonGst ? 0 : (item.calculatedGstAmount !== undefined ? item.calculatedGstAmount : (item.unitPrice * (cgstPercent + sgstPercent) / 100)),
+        priceInclGst: isNonGst ? unitPrice : (item.priceInclGst !== undefined ? item.priceInclGst : (item.unitPrice * (1 + (cgstPercent + sgstPercent) / 100))),
         batchNumber: (() => {
           const existingBatches = products.map((p) => p.batchNumber).filter(Boolean) as string[];
           const isOldBatch = item.batchNumber ? existingBatches.includes(item.batchNumber) : false;
@@ -439,15 +543,36 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         if (r.id !== id) return r;
         const updated = { ...r, [field]: val };
 
+        if (field === 'taxability') {
+          if (val === 'non_gst') {
+            updated.cgstPercent = 0;
+            updated.sgstPercent = 0;
+            updated.isGstIncluded = false;
+          } else {
+            const inferred = updated.hsn?.length === 8 ? gstRateFromHsn(updated.hsn) : null;
+            const catFrac = inferred ?? CATS[updated.category]?.gst ?? 0.18;
+            const half = Math.round((catFrac * 100) / 2 * 10) / 10;
+            if ((updated.cgstPercent || 0) === 0 && (updated.sgstPercent || 0) === 0) {
+              updated.cgstPercent = half;
+              updated.sgstPercent = half;
+            }
+          }
+        }
+
+        const isNonGst = updated.taxability === 'non_gst';
+
         // Auto-recalculate line financial values
         const qty = Math.max(1, Number(field === 'qty' ? val : updated.qty) || 1);
         let unitPrice = Math.max(0, Number(field === 'unitPrice' ? val : updated.unitPrice) || 0);
         let listPrice = updated.listPrice !== undefined ? Number(updated.listPrice) : Number(updated.unitPrice) || 0;
-        let isGstIncluded = updated.isGstIncluded !== undefined ? Boolean(updated.isGstIncluded) : false;
-        const cgstPercent = Number(field === 'cgstPercent' ? val : updated.cgstPercent) || 0;
-        const sgstPercent = Number(field === 'sgstPercent' ? val : updated.sgstPercent) || 0;
+        let isGstIncluded = isNonGst
+          ? false
+          : updated.isGstIncluded !== undefined
+          ? Boolean(updated.isGstIncluded)
+          : false;
+        const cgstPercent = isNonGst ? 0 : (Number(field === 'cgstPercent' ? val : updated.cgstPercent) || 0);
+        const sgstPercent = isNonGst ? 0 : (Number(field === 'sgstPercent' ? val : updated.sgstPercent) || 0);
         const schemeType = (field === 'schemeType' ? val : updated.schemeType) as GrnSchemeType;
-        // Hard-locked to inclusive: Supplier invoice quantity includes free crates
         const schemeMode: GrnSchemeMode = 'inclusive';
 
         let schemeBuyQty = Number(field === 'schemeBuyQty' ? val : updated.schemeBuyQty) || 2;
@@ -496,7 +621,13 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
             updated.volume = mp.volume || updated.volume;
             updated.pack = mp.pack || updated.pack;
             updated.category = mp.category || updated.category;
-            updated.hsn = mp.hsn || updated.hsn;
+            updated.taxability = mp.taxability === 'non_gst' ? 'non_gst' : updated.taxability;
+            updated.hsn = mp.taxability === 'non_gst' ? (mp.hsn || '') : (mp.hsn || updated.hsn);
+            if (mp.taxability === 'non_gst') {
+              updated.cgstPercent = 0;
+              updated.sgstPercent = 0;
+              isGstIncluded = false;
+            }
             updated.unitsPerCrate = mp.unitsPerCrate || inferUnitsPerCase(mp.name, mp.volume);
             updated.packSize = mp.packSize || `${mp.volume}ml ${mp.pack}`;
             updated.existingStock = remainingStock(mp.id);
@@ -517,26 +648,26 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
           listPrice = Math.max(0, Number(val) || 0);
           updated.listPrice = listPrice;
         } else if (field === 'isGstIncluded') {
-          isGstIncluded = Boolean(val);
+          isGstIncluded = isNonGst ? false : Boolean(val);
           updated.isGstIncluded = isGstIncluded;
         }
 
-        const totalTaxRate = (cgstPercent + sgstPercent) / 100;
+        const totalTaxRate = isNonGst ? 0 : (cgstPercent + sgstPercent) / 100;
         let calculatedGst = 0;
         let priceInclGst = listPrice;
 
-        if (!isGstIncluded) {
-          // List price excludes GST -> calculate GST and add
+        if (isNonGst || !isGstIncluded) {
           calculatedGst = listPrice * totalTaxRate;
           priceInclGst = listPrice + calculatedGst;
           unitPrice = listPrice;
         } else {
-          // List price includes GST -> extract base taxable rate
           unitPrice = totalTaxRate > 0 ? listPrice / (1 + totalTaxRate) : listPrice;
           calculatedGst = listPrice - unitPrice;
           priceInclGst = listPrice;
         }
 
+        updated.cgstPercent = cgstPercent;
+        updated.sgstPercent = sgstPercent;
         updated.listPrice = listPrice;
         updated.isGstIncluded = isGstIncluded;
         updated.calculatedGstAmount = calculatedGst;
@@ -561,6 +692,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
           discountPercent: Number(field === 'discountPercent' ? val : updated.discountPercent) || 0,
           discountFlat: Number(field === 'discountFlat' ? val : updated.discountFlat) || 0,
           discountAmount: field === 'discountAmount' ? Number(val) : undefined,
+          inwardCostPerCrate,
         });
 
         updated.qty = qty;
@@ -571,13 +703,13 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         updated.discountAmount = b.discountAmount;
         updated.schemeText = b.schemeLabel;
 
-        const landedCost = b.effectiveCostPerCrateInclGst;
+        const landedCost = b.landedCostPerCrate;
 
-        // Auto suggest selling rates if not manually overridden
         if (
           field === 'unitPrice' ||
           field === 'listPrice' ||
           field === 'isGstIncluded' ||
+          field === 'taxability' ||
           field === 'qty' ||
           field === 'freeQty' ||
           field === 'discountPercent' ||
@@ -618,6 +750,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         const prodId = parseInt(targetValue, 10);
         const matched = products.find((p) => p.id === prodId);
         if (matched) {
+          const isNonGst = matched.taxability === 'non_gst';
           return {
             ...r,
             productName: matched.name.toUpperCase(),
@@ -626,11 +759,15 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
             matchedProductName: matched.name.toUpperCase(),
             existingStock: remainingStock(matched.id),
             category: matched.category,
+            taxability: isNonGst ? 'non_gst' : 'taxable',
+            cgstPercent: isNonGst ? 0 : r.cgstPercent,
+            sgstPercent: isNonGst ? 0 : r.sgstPercent,
+            isGstIncluded: isNonGst ? false : r.isGstIncluded,
             pack: matched.pack,
             volume: matched.volume,
             packSize: matched.packSize || `${matched.volume}ml ${matched.pack}`,
             unitsPerCrate: matched.unitsPerCrate || inferUnitsPerCase(matched.name, matched.volume),
-            hsn: normalizeTo8DigitHsn(matched.hsn || r.hsn, matched.category, matched.name),
+            hsn: normalizeTo8DigitHsn(matched.hsn || r.hsn, matched.category, matched.name, matched.taxability),
             wholesaleRate: matched.wholesale || r.wholesaleRate,
             retailRate: matched.retail || r.retailRate,
           };
@@ -671,9 +808,10 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
     setDetectedSource('manual');
     const existingBatches = products.map((p) => p.batchNumber).filter(Boolean) as string[];
     const firstProd = products[0];
-    const unitPrice = 158.57;
-    const cgstPercent = 20;
-    const sgstPercent = 20;
+    const isNonGst = firstProd?.taxability === 'non_gst';
+    const unitPrice = firstProd?.cost || 158.57;
+    const cgstPercent = isNonGst ? 0 : 20;
+    const sgstPercent = isNonGst ? 0 : 20;
     const totalTaxRate = (cgstPercent + sgstPercent) / 100;
     const calculatedGst = unitPrice * totalTaxRate;
 
@@ -681,16 +819,18 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
       {
         id: `manual_row_${Date.now()}`,
         rawName: firstProd ? firstProd.name : 'CAMPA POWER UP 150ML PET',
-        productName: firstProd ? firstProd.name : 'Campa Power Up 150ml PET',
+        productName: firstProd ? firstProd.name : 'CAMPA POWER UP 150ML PET',
         category: firstProd?.category || 'energy',
+        taxability: isNonGst ? 'non_gst' : 'taxable',
         pack: firstProd?.pack || 'PET',
         volume: firstProd?.volume || 150,
-        hsn: normalizeTo8DigitHsn(firstProd?.hsn, firstProd?.category, firstProd?.name),
+        unitsPerCrate: firstProd?.unitsPerCrate || 24,
+        hsn: normalizeTo8DigitHsn(firstProd?.hsn, firstProd?.category, firstProd?.name, firstProd?.taxability),
         qty: 50,
         freeQty: 0,
         unitPrice,
         listPrice: unitPrice,
-        isGstIncluded: false,
+        isGstIncluded: !isNonGst,
         calculatedGstAmount: calculatedGst,
         priceInclGst: unitPrice + calculatedGst,
         schemeType: 'none',
@@ -732,14 +872,16 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
       rawName: 'NEW BEVERAGE 150ML PET',
       productName: 'New Beverage 150ml PET',
       category: 'energy',
+      taxability: 'taxable',
       pack: 'PET',
       volume: 150,
+      unitsPerCrate: 24,
       hsn: '22021090',
       qty: 50,
       freeQty: 0,
       unitPrice,
       listPrice: unitPrice,
-      isGstIncluded: false,
+      isGstIncluded: true,
       calculatedGstAmount: calculatedGst,
       priceInclGst: unitPrice + calculatedGst,
       schemeType: 'none',
@@ -778,17 +920,19 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
     );
   };
 
-  // Bulk toggle list price GST inclusion and recalculate
+  // Bulk toggle list price GST inclusion and recalculate (Non-GST rows stay 0%)
   const handleBulkSetListPriceGst = (isIncluded: boolean) => {
     setRows((prev) =>
       prev.map((r) => {
+        const isNonGst = r.taxability === 'non_gst';
+        const effectiveIncluded = isNonGst ? false : isIncluded;
         const listP = r.listPrice !== undefined ? r.listPrice : r.unitPrice;
-        const totalGstRate = (r.cgstPercent + r.sgstPercent) / 100;
+        const totalGstRate = isNonGst ? 0 : (r.cgstPercent + r.sgstPercent) / 100;
         let unitPrice = listP;
         let calculatedGst = 0;
         let priceInclGst = listP;
 
-        if (!isIncluded) {
+        if (!effectiveIncluded) {
           calculatedGst = listP * totalGstRate;
           priceInclGst = listP + calculatedGst;
           unitPrice = listP;
@@ -805,8 +949,8 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
           pack: r.pack,
           volume: r.volume,
           packSize: r.packSize,
-          cgstPercent: r.cgstPercent,
-          sgstPercent: r.sgstPercent,
+          cgstPercent: isNonGst ? 0 : r.cgstPercent,
+          sgstPercent: isNonGst ? 0 : r.sgstPercent,
           schemeType: r.schemeType,
           schemeMode: r.schemeMode || 'inclusive',
           schemeBuyQty: r.schemeBuyQty,
@@ -822,7 +966,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         return {
           ...r,
           listPrice: listP,
-          isGstIncluded: isIncluded,
+          isGstIncluded: effectiveIncluded,
           calculatedGstAmount: calculatedGst,
           priceInclGst,
           unitPrice,
@@ -848,7 +992,6 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         } else if (bulkSchemeType === 'discount_flat') {
           discountFlat = bulkSchemeValue;
         } else if (bulkSchemeType === 'free_cases') {
-          // e.g. 1 free for every 10 cases
           freeQty = Math.floor(r.qty / 10) * Math.max(1, bulkSchemeValue);
         }
 
@@ -881,63 +1024,19 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
     setRows((prev) => prev.map((r) => ({ ...r, expiry: bulkExpiryDate })));
   };
 
-  // Live Summary Calculations
-  const totalBilledQty = rows.reduce((s, r) => s + (Number(r.qty) || 0), 0);
-  const totalFreeQty = rows.reduce((s, r) => s + (Number(r.freeQty) || 0), 0);
-  // Hard-locked: In FMCG beverage distribution, the invoiced crate count (r.qty) is
-  // strictly the total physical crates received for that line (inclusive of free
-  // scheme crates already printed on the invoice) — schemeMode is locked to
-  // 'inclusive' throughout this modal, so r.qty is never added to r.freeQty.
-  //
-  // FIX: this previously summed ONLY r.qty, silently dropping any named "Supplier
-  // Scheme" bonus crates (r.supplierSchemeFreeQty — a genuinely separate, off-invoice
-  // bonus, unlike r.freeQty which is already inside r.qty). That under-count then fed
-  // straight into the posted GRN's header totalReceivedQty AND the inward-cost-per-
-  // crate allocation, so both silently diverged from the real quantity actually added
-  // to inventory (see item.totalReceivedQty + supplierSchemeFreeQty in postGrn). Kept
-  // as two figures: the invoice-equivalent total (what should match the printed
-  // invoice, for the mismatch check) and the true received total (what's actually
-  // posted to stock, cost-allocated, and shown as the working total below).
-  const totalInvoicePrintedQty = totalBilledQty;
-  const totalSupplierSchemeBonusQty = rows.reduce(
-    (s, r) => s + (r.supplierSchemeId ? Number(r.supplierSchemeFreeQty) || 0 : 0),
-    0
-  );
-  const totalReceivedQty = totalInvoicePrintedQty + totalSupplierSchemeBonusQty;
-  const totalPaidQty = rows.reduce(
-    (s, r) => s + Math.max(0, (Number(r.qty) || 0) - (Number(r.freeQty) || 0)),
-    0
-  );
-
-  // Total Cases Mismatch Detection: Working table (as printed on the invoice, i.e.
-  // EXCLUDING any off-invoice Supplier Scheme bonus) vs Invoice printed cases. A
-  // Supplier Scheme bonus is expected to sit outside the printed count, so it must
-  // never be included on this side of the comparison or every bonus-scheme GRN would
-  // wrongly show a "mismatch".
-  const hasCasesMismatch =
-    printedTotalCases !== null && printedTotalCases > 0 && totalInvoicePrintedQty !== printedTotalCases;
-  const casesDiff = printedTotalCases !== null ? totalInvoicePrintedQty - printedTotalCases : 0;
-
-  // Inward Direct Costs Calculation
-  const totalInwardCost =
-    (Number(transportCost) || 0) +
-    (Number(freightCost) || 0) +
-    (Number(loadingLabourCost) || 0) +
-    (Number(unloadingLabourCost) || 0) +
-    (Number(otherInwardCost) || 0);
-  const inwardCostPerCrate = totalReceivedQty > 0 ? totalInwardCost / totalReceivedQty : 0;
-
   const totalGross = rows.reduce((s, r) => s + r.qty * r.unitPrice, 0);
   const totalItemDiscounts = rows.reduce((s, r) => s + r.discountAmount, 0);
   const totalTaxable = Math.max(0, totalGross - totalItemDiscounts);
 
   const totalCgst = rows.reduce((s, r) => {
+    if (r.taxability === 'non_gst') return s;
     const gross = r.qty * r.unitPrice;
     const taxb = Math.max(0, gross - r.discountAmount);
     return s + (taxb * r.cgstPercent) / 100;
   }, 0);
 
   const totalSgst = rows.reduce((s, r) => {
+    if (r.taxability === 'non_gst') return s;
     const gross = r.qty * r.unitPrice;
     const taxb = Math.max(0, gross - r.discountAmount);
     return s + (taxb * r.sgstPercent) / 100;
@@ -945,24 +1044,20 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
 
   const totalTax = totalCgst + totalSgst;
   const calculatedGrandTotal = Math.max(0, totalTaxable + totalTax - overallDiscount);
-  // Total Landed Inventory Valuation = Total Invoice + Total Inward-to-Godown Direct Costs
   const totalLandedInventoryValue = calculatedGrandTotal + totalInwardCost;
 
   const newProductsCount = rows.filter((r) => r.isNewProduct).length;
   const existingProductsCount = rows.filter((r) => !r.isNewProduct).length;
 
-  // Confirm and commit inward consignment
-  // Step 1: button click. Warnings never block the import; they ask for an acknowledgement
-  // (with an optional note) and are then stored on the GRN for future tracking.
   const handleConfirmAndPostGrn = () => {
     if (rows.length === 0) {
-      setParseError('Please ensure there is at least 1 product line to inward.');
+      setParseError('Please ensure there is there at least 1 product line to inward.');
       return;
     }
-    // FIX: warehouse selection is mandatory and manual, no default. This is the
-    // primary guard; postGrn() itself also hard-validates this (and batch/expiry per
-    // line) as a second line of defense so an invalid inward can never slip through
-    // even from a future caller.
+    if (supplierPhone.trim() && supplierPhoneError) {
+      setParseError(supplierPhoneError);
+      return;
+    }
     if (!targetWarehouseId) {
       setParseError('Select the warehouse this invoice is being received into before confirming — there is no default.');
       return;
@@ -974,7 +1069,6 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
     postConsignment([]);
   };
 
-  // Step 2: user chose "Import with warning"
   const handleImportWithWarning = () => {
     const warnings: GrnImportWarning[] = [];
     if (hasCasesMismatch) {
@@ -997,9 +1091,21 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   };
 
   const postConsignment = (importWarnings: GrnImportWarning[]) => {
+    const perCaseFreight =
+      totalReceivedQty > 0
+        ? Math.round((((Number(freightCost) || 0) + (Number(transportCost) || 0)) / totalReceivedQty) * 100) / 100
+        : 0;
+    const perCaseLabour =
+      totalReceivedQty > 0
+        ? Math.round((((Number(loadingLabourCost) || 0) + (Number(unloadingLabourCost) || 0)) / totalReceivedQty) * 100) / 100
+        : 0;
+
     // Convert rows to GrnLineItem format using the unified landed cost engine
     const items: GrnLineItem[] = rows.map((r, idx) => {
+      const isNonGst = r.taxability === 'non_gst';
       const unitsPerCrate = r.unitsPerCrate || inferUnitsPerCase(`${r.productName || ''} ${r.rawName || ''} ${r.pack || ''}`, r.volume);
+      const cg = isNonGst ? 0 : r.cgstPercent;
+      const sg = isNonGst ? 0 : r.sgstPercent;
       const breakdown = calculateLandedCostBreakdown({
         qty: r.qty,
         unitPrice: r.unitPrice,
@@ -1007,8 +1113,8 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         pack: r.pack,
         volume: r.volume,
         packSize: r.packSize,
-        cgstPercent: r.cgstPercent,
-        sgstPercent: r.sgstPercent,
+        cgstPercent: cg,
+        sgstPercent: sg,
         schemeType: r.schemeType,
         schemeMode: r.schemeMode || 'inclusive',
         schemeBuyQty: r.schemeBuyQty,
@@ -1027,8 +1133,9 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         productId: r.isNewProduct ? undefined : r.matchedProductId,
         productName: r.productName.trim().toUpperCase(),
         category: r.category,
+        taxability: isNonGst ? 'non_gst' : 'taxable',
         sku: generateAutoSku(r.productName, r.category, idx + 100),
-        hsn: normalizeTo8DigitHsn(r.hsn, r.category, r.productName),
+        hsn: normalizeTo8DigitHsn(r.hsn, r.category, r.productName, isNonGst ? 'non_gst' : 'taxable'),
         pack: r.pack,
         volume: r.volume,
         packSize: r.packSize || `${r.volume}ml ${r.pack}`,
@@ -1052,8 +1159,8 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
             ? `+${r.freeQty} Free Crates`
             : ''),
         taxableAmount: breakdown.taxableAmount,
-        cgstPercent: r.cgstPercent,
-        sgstPercent: r.sgstPercent,
+        cgstPercent: cg,
+        sgstPercent: sg,
         cgstAmount: breakdown.cgstAmount,
         sgstAmount: breakdown.sgstAmount,
         taxAmount: breakdown.taxAmount,
@@ -1072,6 +1179,8 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         landedCostPerUnit: breakdown.landedCostPerUnit,
         effectiveCostPerUnit: breakdown.effectiveCostPerCrateExGst,
         inwardCostPerCrate: breakdown.inwardCostPerCrate,
+        freightCost: perCaseFreight,
+        labourCost: perCaseLabour,
         finalLandedCostPerUnit: breakdown.landedCostPerUnit,
         expiry: r.expiry,
         mfgDate: r.mfgDate,
@@ -1207,7 +1316,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   const missingExpiryCount = rows.filter((r) => !r.expiry).length;
   const missingBatchCount = rows.filter((r) => !(r.batchNumber || '').trim()).length;
   // Informational only — never blocks posting (the cases mismatch is the only warning flow)
-  const amountDiff = originalInvoiceTotal !== null ? calculatedGrandTotal - originalInvoiceTotal : 0;
+  const amountDiff = originalInvoiceTotal !== null ? calculatedGrandTotal + invoiceRoundOff + invoiceOtherCharges - originalInvoiceTotal : 0;
   const hasAmountMismatch = originalInvoiceTotal !== null && Math.abs(amountDiff) >= 1;
   // Fill ONLY the empty expiry cells with the chosen date (never overwrites typed values)
   const handleFillEmptyExpiry = () => {
@@ -1244,7 +1353,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   };
 
   return (
-    <div
+    <div role="dialog" aria-modal="true" aria-label="Bulk inward"
       id="modal-bulk-inward"
       className={
         isMaximized
@@ -1570,11 +1679,11 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                       ? 'bg-amber-400 border-amber-200 text-slate-900'
                       : 'bg-slate-800 border-slate-600 text-amber-200 hover:bg-slate-700'
                   }`}
-                  title="Transport, freight & labour costs allocated to landed cost"
+                  title="Freight, labour & transport costs allocated to landed cost"
                 >
                   <Truck size={12} />
                   <span className="font-mono">
-                    {totalInwardCost > 0 ? `₹${money(totalInwardCost)}` : 'Inward costs'}
+                    {totalInwardCost > 0 ? `₹${money(totalInwardCost)}` : 'Freight & Labour'}
                   </span>
                   {showInwardCostDetails ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
                 </button>
@@ -1587,6 +1696,46 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Quick Landing Costs Bar (Always accessible Freight & Labour inputs) */}
+            {showInwardCostDetails && (
+              <div className="bg-amber-50/90 border-b border-amber-200 px-3 sm:px-4 py-1.5 flex flex-wrap items-center gap-2 text-xs shrink-0">
+                <span className="font-bold text-amber-950 flex items-center gap-1">
+                  <Truck size={13} /> Freight &amp; Labour (Auto-updates Landed/cr):
+                </span>
+                {(
+                  [
+                    ['Freight', freightCost, setFreightCost, 50],
+                    ['Labour', loadingLabourCost, setLoadingLabourCost, 25],
+                    ['Unloading', unloadingLabourCost, setUnloadingLabourCost, 25],
+                    ['Transport', transportCost, setTransportCost, 50],
+                    ['Other', otherInwardCost, setOtherInwardCost, 25],
+                  ] as [string, number, (n: number) => void, number][]
+                ).map(([label, val, setter, step]) => (
+                  <label
+                    key={label}
+                    className="flex items-center gap-1 bg-white border border-amber-300 rounded px-1.5 py-0.5"
+                  >
+                    <span className="text-[11px] text-slate-600 font-medium">{label}</span>
+                    <span className="font-mono text-slate-500">₹</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      step={step}
+                      value={val || ''}
+                      onChange={(e) => setter(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="w-16 font-mono text-xs font-bold text-slate-900 text-right bg-transparent focus:outline-hidden tabular-nums"
+                      placeholder="0"
+                    />
+                  </label>
+                ))}
+                <span className="ml-auto text-[11px] text-amber-900 font-semibold font-mono tabular-nums">
+                  Total ₹{money(totalInwardCost)}
+                  {totalReceivedQty > 0 ? ` (+₹${money(inwardCostPerCrate)}/cs over ${totalReceivedQty} cs)` : ''}
+                </span>
+              </div>
+            )}
 
             {/* AI cross-check notes (row arithmetic, totals, GSTIN ...) */}
             {aiWarnings.length > 0 && (
@@ -1688,44 +1837,6 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
               </div>
             )}
 
-            {/* Inward costs — single compact row, only when opened */}
-            {showInwardCostDetails && (
-              <div className="bg-amber-50 border-b border-amber-200 px-3 sm:px-4 py-1.5 flex flex-wrap items-center gap-2 text-xs shrink-0">
-                <span className="font-bold text-amber-950 flex items-center gap-1">
-                  <Truck size={13} /> Inward costs
-                </span>
-                {(
-                  [
-                    ['Transport', transportCost, setTransportCost, 50],
-                    ['Freight', freightCost, setFreightCost, 50],
-                    ['Loading', loadingLabourCost, setLoadingLabourCost, 25],
-                    ['Unloading', unloadingLabourCost, setUnloadingLabourCost, 25],
-                    ['Other', otherInwardCost, setOtherInwardCost, 25],
-                  ] as [string, number, (n: number) => void, number][]
-                ).map(([label, val, setter, step]) => (
-                  <label
-                    key={label}
-                    className="flex items-center gap-1 bg-white border border-amber-300 rounded px-1.5 py-0.5"
-                  >
-                    <span className="text-[11px] text-slate-500">{label}</span>
-                    <span className="font-mono text-slate-700">₹</span>
-                    <input
-                      type="number" inputMode="decimal"
-                      min="0"
-                      step={step}
-                      value={val}
-                      onChange={(e) => setter(Math.max(0, parseFloat(e.target.value) || 0))}
-                      className="w-14 font-mono text-xs font-bold text-slate-900 text-right bg-transparent focus:outline-hidden"
-                      placeholder="0"
-                    />
-                  </label>
-                ))}
-                <span className="ml-auto text-[11px] text-amber-900 font-semibold font-mono">
-                  Total ₹{money(totalInwardCost)} • +₹{money(inwardCostPerCrate)}/crate over {totalReceivedQty} crates
-                </span>
-              </div>
-            )}
-
             {/* 2. EXPANDED VIEW (FULL INVOICE & TAX CONTROLS WITH QUICK COLLAPSE) */}
             {isUpperDetailsExpanded && (
               <div className="bg-slate-50 border-b shrink-0 transition-all shadow-inner max-h-[45vh] overflow-y-auto" style={{ borderColor: palette.line }}>
@@ -1753,15 +1864,44 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                 </div>
 
                 {/* Editable Invoice Fields - Grid */}
-                <div className="px-3 sm:px-6 py-2.5 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-2.5 text-xs">
+                <div className="px-3 sm:px-6 py-2.5 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-8 gap-2.5 text-xs">
                   <div>
                     <label className="text-[10px] text-slate-500 font-semibold block mb-0.5">Supplier Name</label>
                     <input
+                      list="bulk-inward-known-suppliers"
                       type="text"
                       value={supplierName}
-                      onChange={(e) => setSupplierName(e.target.value)}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setSupplierName(v);
+                        applySupplierAutofill(v);
+                      }}
+                      onBlur={(e) => applySupplierAutofill(e.target.value)}
                       className="w-full font-bold text-slate-900 bg-white border border-slate-300 rounded px-2 py-1 text-xs focus:border-indigo-500"
                     />
+                    <datalist id="bulk-inward-known-suppliers">
+                      {knownSuppliers.map((s) => (
+                        <option key={s.name} value={s.name} />
+                      ))}
+                    </datalist>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] text-slate-500 font-semibold block mb-0.5">Supplier Phone</label>
+                    <input
+                      type="tel"
+                      inputMode="tel"
+                      autoComplete="tel"
+                      value={supplierPhone}
+                      onChange={(e) => setSupplierPhone(e.target.value)}
+                      placeholder="+91 98765 43210"
+                      className={`w-full font-mono bg-white border rounded px-2 py-1 text-xs focus:border-indigo-500 ${
+                        supplierPhoneError ? 'border-rose-400 text-rose-800' : 'border-slate-300 text-slate-800'
+                      }`}
+                    />
+                    {supplierPhoneError && (
+                      <p className="text-[10px] text-rose-600 font-medium mt-0.5">{supplierPhoneError}</p>
+                    )}
                   </div>
 
                   <div>
@@ -1791,16 +1931,6 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                       value={inwardDate}
                       onChange={(e) => setInwardDate(e.target.value)}
                       className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-[10px] text-slate-500 font-semibold block mb-0.5">Vehicle #</label>
-                    <input
-                      type="text"
-                      value={vehicleNo}
-                      onChange={(e) => setVehicleNo(e.target.value)}
-                      className="w-full font-mono text-slate-800 bg-white border border-slate-300 rounded px-2 py-1 text-xs focus:border-indigo-500"
                     />
                   </div>
 
@@ -1891,7 +2021,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                 {showProviderDetails && (
                   <div className="bg-indigo-50/80 border-t border-indigo-100 px-3 sm:px-6 py-2.5 transition-all">
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
-                      <div className="lg:col-span-2">
+                      <div className="lg:col-span-3">
                         <label className="text-[10px] font-semibold text-slate-700 block mb-0.5">
                           Supplier Registered Address
                         </label>
@@ -1904,20 +2034,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                         />
                       </div>
 
-                      <div>
-                        <label className="text-[10px] font-semibold text-slate-700 block mb-0.5">
-                          Supplier Phone / Mobile
-                        </label>
-                        <input inputMode="tel" autoComplete="tel"
-                          type="text"
-                          value={supplierPhone}
-                          onChange={(e) => setSupplierPhone(e.target.value)}
-                          placeholder="e.g. +91 94370 84801"
-                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-sm"
-                        />
-                      </div>
-
-                      <div>
+                      <div className="lg:col-span-3">
                         <label className="text-[10px] font-semibold text-slate-700 block mb-0.5">
                           Supplier Email
                         </label>
@@ -1929,144 +2046,10 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                           className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-sm"
                         />
                       </div>
-
-                      <div>
-                        <label className="text-[10px] font-semibold text-slate-700 block mb-0.5">
-                          Place of Supply (POS)
-                        </label>
-                        <input
-                          type="text"
-                          value={placeOfSupply}
-                          onChange={(e) => setPlaceOfSupply(e.target.value)}
-                          placeholder="e.g. Odisha (21)"
-                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-sm"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="text-[10px] font-semibold text-slate-700 block mb-0.5">
-                          Billed To (Consignee)
-                        </label>
-                        <input
-                          type="text"
-                          value={billedTo}
-                          onChange={(e) => setBilledTo(e.target.value)}
-                          placeholder="e.g. Store Name"
-                          className="w-full bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:border-indigo-500 shadow-sm"
-                        />
-                      </div>
                     </div>
                   </div>
                 )}
 
-                {/* LIVE KPI SUMMARY BAR */}
-                <div className="bg-indigo-900 text-white px-3 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-3 text-xs">
-                  <div className="flex items-center gap-4 sm:gap-6 flex-wrap">
-                    <div>
-                      <span className="text-indigo-200 block text-[10px] uppercase font-semibold">Line Items</span>
-                      <span className="font-bold text-white text-xs sm:text-sm">
-                        {rows.length} items
-                        <span className="text-indigo-300 font-normal text-[11px] ml-1">
-                          ({newProductsCount} new, {existingProductsCount} existing)
-                        </span>
-                      </span>
-                    </div>
-
-                    <div className="hidden sm:block h-6 w-px bg-indigo-700" />
-
-                    <div>
-                      <span className="text-indigo-200 block text-[10px] uppercase font-semibold">Billed Cases</span>
-                      <span className="font-bold text-white text-xs sm:text-sm">
-                        {totalBilledQty.toLocaleString()} cs
-                        {totalPaidQty < totalBilledQty && (
-                          <span className="text-indigo-300 font-normal text-[11px] ml-1">
-                            ({totalPaidQty} paid)
-                          </span>
-                        )}
-                      </span>
-                    </div>
-
-                    <div>
-                      <span className="text-indigo-200 block text-[10px] uppercase font-semibold">Free Scheme Cases</span>
-                      <span className="font-bold text-emerald-300 text-xs sm:text-sm">
-                        {totalFreeQty.toLocaleString()} cs
-                      </span>
-                    </div>
-
-                    {printedTotalCases !== null && (
-                      <div className="hidden sm:block">
-                        <span className="text-indigo-200 block text-[10px] uppercase font-semibold">Printed Invoice Cases</span>
-                        <span className="font-bold text-indigo-100 text-xs sm:text-sm">
-                          {printedTotalCases.toLocaleString()} cs
-                        </span>
-                      </div>
-                    )}
-
-                    <div className={hasCasesMismatch ? 'bg-red-700/80 px-2 py-0.5 rounded border border-red-400' : ''}>
-                      <span className="text-indigo-200 block text-[10px] uppercase font-semibold">Total Crates Received</span>
-                      <span className={`font-bold text-xs sm:text-sm flex items-center gap-1 ${hasCasesMismatch ? 'text-red-100 font-extrabold' : 'text-white'}`}>
-                        {hasCasesMismatch && <AlertTriangle size={13} className="text-amber-300 shrink-0" />}
-                        {totalReceivedQty.toLocaleString()} crates
-                        {hasCasesMismatch && (
-                          <span className="text-[10px] bg-red-950 text-red-200 px-1 rounded font-mono font-bold">
-                            {casesDiff > 0 ? `+${casesDiff}` : casesDiff} MISMATCH
-                          </span>
-                        )}
-                      </span>
-                    </div>
-
-                    <div className="hidden md:block h-6 w-px bg-indigo-700" />
-
-                    <div className="hidden md:block">
-                      <span className="text-indigo-200 block text-[10px] uppercase font-semibold">Taxable Amount</span>
-                      <span className="font-mono font-bold text-indigo-100 text-xs sm:text-sm">₹{money(totalTaxable)}</span>
-                    </div>
-
-                    <div className="hidden md:block">
-                      <span className="text-indigo-200 block text-[10px] uppercase font-semibold">Total GST</span>
-                      <span className="font-mono font-bold text-indigo-100 text-xs sm:text-sm">₹{money(totalTax)}</span>
-                    </div>
-
-                    {totalInwardCost > 0 && (
-                      <div className="hidden lg:block bg-amber-500/20 border border-amber-400/40 px-2 py-0.5 rounded">
-                        <span className="text-amber-200 block text-[10px] uppercase font-semibold">Direct Inward Costs</span>
-                        <span className="font-mono font-bold text-amber-100 text-xs sm:text-sm">
-                          ₹{money(totalInwardCost)}{' '}
-                          <span className="text-[10px] text-amber-200 font-normal">
-                            (+₹{money(inwardCostPerCrate)}/cr)
-                          </span>
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    {originalInvoiceTotal !== null && (
-                      <div className="text-right hidden sm:block">
-                        <span className="text-indigo-300 block text-[10px]">Party Total</span>
-                        <span className="font-mono text-xs font-semibold text-indigo-200">
-                          ₹{money(originalInvoiceTotal)}
-                        </span>
-                      </div>
-                    )}
-
-                    <div className="bg-indigo-950/80 px-3 py-1 rounded-lg border border-indigo-700 text-right">
-                      <span className="text-indigo-300 block text-[10px] font-semibold uppercase">Invoice Grand Total</span>
-                      <span className="font-mono font-extrabold text-amber-300 text-sm sm:text-base">
-                        ₹{money(calculatedGrandTotal)}
-                      </span>
-                    </div>
-
-                    {totalInwardCost > 0 && (
-                      <div className="bg-emerald-950/80 px-3 py-1 rounded-lg border border-emerald-700 text-right hidden xl:block">
-                        <span className="text-emerald-300 block text-[10px] font-semibold uppercase">Total Landed Valuation</span>
-                        <span className="font-mono font-extrabold text-emerald-300 text-sm sm:text-base">
-                          ₹{money(totalLandedInventoryValue)}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
               </div>
             )}
 
@@ -2085,7 +2068,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                   className="w-full pl-8 pr-7 py-1 border border-slate-300 rounded text-xs focus:border-indigo-500 focus:outline-hidden"
                 />
                 {searchQuery && (
-                  <button
+                  <button aria-label="Clear search"
                     onClick={() => setSearchQuery('')}
                     className="absolute right-2 top-1.5 text-slate-400 hover:text-slate-600 cursor-pointer"
                   >
@@ -2402,6 +2385,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                         </tr>
                       ) : (
                         filteredRows.map((r, idx) => {
+                          const isNonGst = r.taxability === 'non_gst';
                           const unitsPerCrate = r.unitsPerCrate || inferUnitsPerCase(`${r.productName || ''} ${r.rawName || ''} ${r.pack || ''}`, r.volume);
                           const packSize = r.packSize || `${r.volume}ml ${r.pack}`;
                           const breakdown = calculateLandedCostBreakdown({
@@ -2411,8 +2395,8 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                             pack: r.pack,
                             volume: r.volume,
                             packSize: r.packSize,
-                            cgstPercent: r.cgstPercent,
-                            sgstPercent: r.sgstPercent,
+                            cgstPercent: isNonGst ? 0 : r.cgstPercent,
+                            sgstPercent: isNonGst ? 0 : r.sgstPercent,
                             schemeType: r.schemeType,
                             schemeMode: r.schemeMode || 'inclusive',
                             schemeBuyQty: r.schemeBuyQty,
@@ -2481,7 +2465,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                                     <div className="absolute left-2 top-full mt-1 z-50 bg-white border border-slate-300 rounded-lg shadow-xl p-2 w-80 max-h-72 flex flex-col text-xs">
                                       <div className="flex items-center justify-between pb-1.5 border-b border-slate-200 mb-1.5">
                                         <span className="font-bold text-slate-800 text-[11px]">Select Catalog Beverage</span>
-                                        <button
+                                        <button aria-label="Close catalog picker"
                                           type="button"
                                           onClick={() => setCatalogPickerRowId(null)}
                                           className="text-slate-400 hover:text-slate-600 font-bold px-1"
@@ -2541,7 +2525,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                                               }`}
                                             >
                                               <div className="min-w-0 pr-1">
-                                                <div className="font-bold text-slate-900 truncate">{p.name}</div>
+                                                <div className="font-bold text-slate-900 min-w-0 break-words lg:truncate">{p.name}</div>
                                                 <div className="text-[10px] text-slate-500">
                                                   {p.volume ? `${p.volume}ml` : ''} {p.pack} • {p.unitsPerCrate || 24}/cr • Stock: {p.opening ?? 0} cs
                                                 </div>
@@ -2654,42 +2638,64 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                                       }`}
                                       title={`List Price: ₹${money(r.listPrice !== undefined ? r.listPrice : r.unitPrice)}`}
                                     />
-                                    <button
-                                      type="button"
-                                      onClick={() => updateRowField(r.id, 'isGstIncluded', !r.isGstIncluded)}
-                                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
-                                        r.isGstIncluded
-                                          ? 'bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100'
-                                          : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
-                                      }`}
-                                      title={
-                                        r.isGstIncluded
-                                          ? 'List price INCLUDES GST (Base: ₹' + money(r.unitPrice) + '). Click to switch to Ex-GST.'
-                                          : 'List price EXCLUDES GST. +₹' + money(r.calculatedGstAmount || 0) + ' GST calculated. Click to switch.'
-                                      }
-                                    >
-                                      {r.isGstIncluded ? 'GST Incl' : '+Calc GST'}
-                                    </button>
+                                    {isNonGst ? (
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                                        Non-GST
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => updateRowField(r.id, 'isGstIncluded', !r.isGstIncluded)}
+                                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
+                                          r.isGstIncluded
+                                            ? 'bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100'
+                                            : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+                                        }`}
+                                        title={
+                                          r.isGstIncluded
+                                            ? 'List price INCLUDES GST (Base: ₹' + money(r.unitPrice) + '). Click to switch to Ex-GST.'
+                                            : 'List price EXCLUDES GST. +₹' + money(r.calculatedGstAmount || 0) + ' GST calculated. Click to switch.'
+                                        }
+                                      >
+                                        {r.isGstIncluded ? 'GST Incl' : '+Calc GST'}
+                                      </button>
+                                    )}
                                   </div>
                                 </td>
 
-                                {/* GST */}
+                                {/* GST / Non-GST toggle */}
                                 <td className={`border-b border-slate-200 px-2 ${cellPad} ${rowBg} group-hover:bg-indigo-50`}>
-                                  <select
-                                    value={`${r.cgstPercent},${r.sgstPercent}`}
-                                    onChange={(e) => {
-                                      const [cg, sg] = e.target.value.split(',').map(Number);
-                                      updateRowField(r.id, 'cgstPercent', cg);
-                                      updateRowField(r.id, 'sgstPercent', sg);
-                                    }}
-                                    className="font-mono text-[11px] bg-white border border-slate-300 rounded px-1 py-1 text-slate-800 w-full"
-                                  >
-                                    <option value="20,20">40%</option>
-                                    <option value="2.5,2.5">5%</option>
-                                    <option value="9,9">18%</option>
-                                    <option value="6,6">12%</option>
-                                    <option value="0,0">0%</option>
-                                  </select>
+                                  <div className="flex flex-col gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => updateRowField(r.id, 'taxability', isNonGst ? 'taxable' : 'non_gst')}
+                                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold border text-center cursor-pointer transition-colors ${
+                                        isNonGst
+                                          ? 'bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200'
+                                          : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
+                                      }`}
+                                      title="Click to switch between GST taxable and Non-GST (0%)"
+                                    >
+                                      {isNonGst ? 'Non-GST' : 'GST'}
+                                    </button>
+                                    {!isNonGst && (
+                                      <select
+                                        value={`${r.cgstPercent},${r.sgstPercent}`}
+                                        onChange={(e) => {
+                                          const [cg, sg] = e.target.value.split(',').map(Number);
+                                          updateRowField(r.id, 'cgstPercent', cg);
+                                          updateRowField(r.id, 'sgstPercent', sg);
+                                        }}
+                                        className="font-mono text-[11px] bg-white border border-slate-300 rounded px-1 py-0.5 text-slate-800 w-full"
+                                      >
+                                        <option value="20,20">40%</option>
+                                        <option value="2.5,2.5">5%</option>
+                                        <option value="9,9">18%</option>
+                                        <option value="6,6">12%</option>
+                                        <option value="0,0">0%</option>
+                                      </select>
+                                    )}
+                                  </div>
                                 </td>
 
                                 {/* Batch / Tag */}
@@ -3161,7 +3167,7 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                 <button
                   type="button"
                   id="btn-confirm-bulk-inward"
-                  onClick={handleConfirmAndPostGrn}
+                  onClick={() => setShowConfirmStep(true)}
                   disabled={!targetWarehouseId}
                   title={!targetWarehouseId ? 'Select a warehouse first — there is no default' : undefined}
                   className={`flex-1 sm:flex-initial px-5 py-2.5 rounded-full text-sm font-semibold shadow-sm flex items-center justify-center gap-1.5 transition-all active:scale-[0.99] ${
@@ -3177,8 +3183,8 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
                     {!targetWarehouseId
                       ? 'Select godown'
                       : hasCasesMismatch
-                      ? 'Save with warning'
-                      : 'Save purchase'}{' '}
+                      ? 'Review (cases mismatch)'
+                      : 'Review & confirm'}{' '}
                     · {rows.length} items · {totalReceivedQty.toLocaleString()} cs
                   </span>
                 </button>
@@ -3187,9 +3193,177 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
           </div>
         )}
 
+        {/* CONFIRM STEP: last check, line by line, before anything is saved */}
+        {showConfirmStep && (() => {
+          const q = confirmQuery.trim().toLowerCase();
+          const list = rows.filter((r) => !q || `${r.productName || ''} ${r.rawName || ''} ${r.batchNumber || ''}`.toLowerCase().includes(q));
+          const bdOf = (r: (typeof rows)[number]) => {
+            const isNonGst = r.taxability === 'non_gst';
+            return calculateLandedCostBreakdown({
+              qty: r.qty,
+              unitPrice: r.unitPrice,
+              unitsPerCrate: r.unitsPerCrate || inferUnitsPerCase(`${r.productName || ''} ${r.rawName || ''} ${r.pack || ''}`, r.volume),
+              pack: r.pack,
+              volume: r.volume,
+              packSize: r.packSize,
+              cgstPercent: isNonGst ? 0 : r.cgstPercent,
+              sgstPercent: isNonGst ? 0 : r.sgstPercent,
+              schemeType: r.schemeType,
+              schemeMode: r.schemeMode || 'inclusive',
+              schemeBuyQty: r.schemeBuyQty,
+              schemeFreeQty: r.schemeFreeQty,
+              freeQty: r.freeQty,
+              paidQty: r.paidQty,
+              discountPercent: r.discountPercent,
+              discountFlat: r.discountFlat,
+              discountAmount: r.discountAmount,
+              inwardCostPerCrate,
+            });
+          };
+          const discountText = (r: (typeof rows)[number]) =>
+            r.schemeType === 'discount_percent' ? `${r.discountPercent}%`
+            : r.schemeType === 'discount_flat' ? `₹${r.discountFlat}/cs`
+            : r.schemeType === 'b2g1' ? `B${r.schemeBuyQty ?? 2}G${r.schemeFreeQty ?? 1}`
+            : r.freeQty > 0 ? `${r.freeQty} free` : 'None';
+          const missing = (r: (typeof rows)[number]) => !r.batchNumber?.trim() || !r.expiry;
+          const missingCount = rows.filter(missing).length;
+          const expectedCredit = rows.reduce((sum, r) => sum + (r.pendingCreditSchemeId ? Number(r.pendingCreditExpectedAmount) || 0 : 0), 0);
+          const whName = warehouses.find((w) => w.id === targetWarehouseId)?.name || '';
+          const blockers = [
+            !invoiceNo.trim() ? 'enter the invoice no.' : '',
+            !targetWarehouseId ? 'pick a warehouse' : '',
+            missingCount > 0 ? `add batch or expiry on ${missingCount} line${missingCount > 1 ? 's' : ''}` : '',
+          ].filter(Boolean);
+          const summary: [string, string][] = [
+            ['Supplier', supplierName || '—'],
+            ['Phone', supplierPhone || '—'],
+            ['Invoice no.', invoiceNo || '—'],
+            ['Date', inwardDate || '—'],
+            ['Warehouse', whName || '—'],
+            ['Cases', totalReceivedQty.toLocaleString()],
+            ['Invoice total', `₹${money(calculatedGrandTotal)}`],
+            ['Freight & Labour', `₹${money(totalInwardCost)}`],
+            ['Landed total', `₹${money(totalLandedInventoryValue)}`],
+          ];
+          const rowActions = (r: (typeof rows)[number]) =>
+            confirmDeleteId === r.id ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-rose-700">Delete this line?</span>
+                <button type="button" className="min-h-[40px] px-3 rounded-xl bg-rose-600 text-white text-sm font-bold cursor-pointer"
+                  onClick={() => { handleDeleteRow(r.id); setConfirmDeleteId(null); if (rows.length <= 1) setShowConfirmStep(false); }}>Yes</button>
+                <button type="button" className="min-h-[40px] px-3 rounded-xl border border-slate-300 bg-white text-slate-700 text-sm font-bold cursor-pointer"
+                  onClick={() => setConfirmDeleteId(null)}>No</button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button type="button" className="min-h-[44px] px-4 rounded-xl border border-slate-300 bg-white text-[#0A1F44] text-sm font-bold cursor-pointer"
+                  onClick={() => { setShowConfirmStep(false); setExpandedRowId(r.id); setExpandedCardId(r.id); }}>Edit</button>
+                <button type="button" className="min-h-[44px] px-4 rounded-xl border border-rose-300 bg-white text-rose-700 text-sm font-bold cursor-pointer"
+                  onClick={() => setConfirmDeleteId(r.id)}>Delete</button>
+              </div>
+            );
+          const chipsOf = (r: (typeof rows)[number]) => (
+            <div className="flex flex-wrap gap-1.5">
+              {r.taxability === 'non_gst' && <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-800 text-[11px] font-bold">Non-GST · 0%</span>}
+              {r.isNewProduct && <span className="px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 text-[11px] font-bold">New product, will be created</span>}
+              {r.pendingCreditSchemeId && Number(r.pendingCreditExpectedAmount) > 0 && <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 text-[11px] font-bold">Credit note ₹{money(Number(r.pendingCreditExpectedAmount))} expected</span>}
+              {missing(r) && <span className="px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 text-[11px] font-bold">Batch or expiry missing</span>}
+            </div>
+          );
+          return (
+            <div role="dialog" aria-modal="true" aria-label="Confirm purchase" className="fixed inset-0 z-50 bg-slate-50 flex flex-col">
+              <div className="bg-[#0A1F44] text-white px-4 py-3 flex items-center justify-between shrink-0">
+                <div>
+                  <div className="text-base font-bold">Confirm purchase</div>
+                  <div className="text-xs opacity-75">Check every line before saving</div>
+                </div>
+                <button type="button" onClick={() => setShowConfirmStep(false)} className="min-h-[40px] px-4 rounded-full bg-white text-[#0A1F44] text-sm font-bold cursor-pointer">Back to edit</button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
+                <div className="bg-white border border-slate-200 rounded-xl p-3.5 grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
+                  {summary.map(([k, v]) => (
+                    <div key={k} className="min-w-0">
+                      <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">{k}</div>
+                      <div className={`text-sm font-bold truncate ${k === 'Landed total' ? 'text-[#1B8A5A]' : 'text-[#0A1F44]'}`}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <input type="search" value={confirmQuery} onChange={(e) => setConfirmQuery(e.target.value)} placeholder="Search product or batch"
+                    className="min-h-[44px] flex-1 min-w-[180px] px-3.5 rounded-xl border border-slate-300 bg-white text-sm" />
+                  <span className="px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 text-xs font-bold">All lines ({rows.length})</span>
+                  <span className={`px-3 py-1.5 rounded-full text-xs font-bold ${missingCount ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>Needs attention ({missingCount})</span>
+                </div>
+                {/* Phone + tablet: one card per line */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 lg:hidden">
+                  {list.map((r, i) => {
+                    const bd = bdOf(r);
+                    return (
+                      <div key={r.id} className="bg-white border border-slate-200 rounded-xl p-3 space-y-2">
+                        <div className="flex justify-between gap-2 text-[15px] font-bold text-[#0A1F44]">
+                          <span>{rows.indexOf(r) + 1}. {r.productName || r.rawName}</span>
+                          <span className="font-mono shrink-0">₹{money(bd.lineTotal)}</span>
+                        </div>
+                        {chipsOf(r)}
+                        <div className="text-[13px] font-semibold text-slate-700">{r.qty} cs × ₹{money(r.priceInclGst ?? r.unitPrice)} incl. GST · Discount {discountText(r)}</div>
+                        <div className="text-[13px] font-semibold text-slate-700">Batch {r.batchNumber || '—'} · Expiry {r.expiry || '—'} · <span className="text-[#1B8A5A] font-extrabold">Landed ₹{money(bd.landedCostPerCrate)}/cs</span></div>
+                        {rowActions(r)}
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Desktop: table */}
+                <div className="hidden lg:block bg-white border border-slate-200 rounded-xl overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-500">
+                      <tr>
+                        <th className="text-left px-3 py-2.5">#</th><th className="text-left px-3 py-2.5">Product</th><th className="text-left px-3 py-2.5">Qty (cs)</th>
+                        <th className="text-left px-3 py-2.5">Rate incl. GST</th><th className="text-left px-3 py-2.5">Discount</th><th className="text-left px-3 py-2.5">Batch</th>
+                        <th className="text-left px-3 py-2.5">Expiry</th><th className="text-right px-3 py-2.5">Landed ₹/cs</th><th className="text-right px-3 py-2.5">Total</th><th className="px-3 py-2.5"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {list.map((r) => {
+                        const bd = bdOf(r);
+                        return (
+                          <tr key={r.id} className="border-t border-slate-200 align-top">
+                            <td className="px-3 py-2.5 font-semibold">{rows.indexOf(r) + 1}</td>
+                            <td className="px-3 py-2.5"><div className="font-bold text-[#0A1F44] mb-1">{r.productName || r.rawName}</div>{chipsOf(r)}</td>
+                            <td className="px-3 py-2.5 font-semibold">{r.qty}</td>
+                            <td className="px-3 py-2.5 font-mono font-semibold">₹{money(r.priceInclGst ?? r.unitPrice)}</td>
+                            <td className="px-3 py-2.5 font-semibold">{discountText(r)}</td>
+                            <td className={`px-3 py-2.5 font-semibold ${r.batchNumber ? '' : 'text-rose-700'}`}>{r.batchNumber || 'Missing'}</td>
+                            <td className={`px-3 py-2.5 font-semibold ${r.expiry ? '' : 'text-rose-700'}`}>{r.expiry || 'Missing'}</td>
+                            <td className="px-3 py-2.5 text-right font-mono font-extrabold text-[#1B8A5A]">₹{money(bd.landedCostPerCrate)}</td>
+                            <td className="px-3 py-2.5 text-right font-mono font-bold text-[#0A1F44]">₹{money(bd.lineTotal)}</td>
+                            <td className="px-3 py-2.5">{rowActions(r)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {list.length === 0 && <div className="text-center text-sm text-slate-500 py-6">No lines match your search.</div>}
+              </div>
+              <div className="bg-white border-t border-slate-200 px-3 sm:px-4 py-3 flex flex-col gap-2 shrink-0">
+                {expectedCredit > 0 && <div className="text-xs font-semibold text-amber-700">Expected credit note ₹{money(expectedCredit)} (not deducted from cost).</div>}
+                <div className="text-xs text-slate-600">Saving adds {totalReceivedQty.toLocaleString()} cases to {whName || 'the selected warehouse'}{expectedCredit > 0 ? ' and creates the pending credit note' : ''}.</div>
+                {blockers.length > 0 && <div className="text-xs font-semibold text-rose-700">To save: {blockers.join(', ')}.</div>}
+                <div className="flex gap-2 justify-end">
+                  <button type="button" onClick={() => setShowConfirmStep(false)} className="min-h-[48px] px-5 rounded-xl border border-slate-300 bg-white text-[#0A1F44] text-sm font-bold cursor-pointer">Back to edit</button>
+                  <button type="button" disabled={blockers.length > 0} onClick={handleConfirmAndPostGrn}
+                    className={`min-h-[48px] px-6 rounded-xl text-sm font-bold ${blockers.length > 0 ? 'bg-slate-300 text-slate-600 cursor-not-allowed' : 'bg-[#1B8A5A] text-white cursor-pointer'}`}>
+                    Confirm &amp; save purchase
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* IMPORT-WITH-WARNING DIALOG */}
         {showWarningDialog && hasCasesMismatch && (
-          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+          <div role="dialog" aria-modal="true" aria-label="Import with warning" className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
             <div className="bg-white rounded-lg p-5 max-w-md w-full border-2 border-amber-500 shadow-xl flex flex-col gap-3">
               <h3 className="font-bold text-amber-900 text-sm flex items-center gap-2">
                 <AlertTriangle size={18} className="text-amber-600" />
@@ -3235,14 +3409,14 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
         {/* BULK SCHEME / DISCOUNT SUB-MODAL                          */}
         {/* ======================================================== */}
         {showBulkSchemeModal && (
-          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
+          <div role="dialog" aria-modal="true" aria-label="Apply scheme or discount to all items" className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
             <div className="bg-white rounded-lg p-5 max-w-md w-full border shadow-xl flex flex-col gap-4">
               <div className="flex items-center justify-between border-b pb-2">
                 <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
                   <Tag size={16} className="text-purple-600" />
                   Apply Scheme / Discount to All Items
                 </h3>
-                <button
+                <button aria-label="Close"
                   onClick={() => setShowBulkSchemeModal(false)}
                   className="text-slate-400 hover:text-slate-700"
                 >

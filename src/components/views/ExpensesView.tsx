@@ -539,7 +539,7 @@ export const ExpensesView: React.FC = () => {
                             <Icon className="w-5 h-5" />
                           </span>
                           <span className="min-w-0 flex-1">
-                            <span className="block text-[15px] font-bold text-slate-900 truncate">
+                            <span className="block text-[15px] font-bold text-slate-900 min-w-0 break-words lg:truncate">
                               {e.paidTo || catLabel(e.category)}
                             </span>
                             <span className="block text-[12.5px] text-slate-500 truncate">{sub}</span>

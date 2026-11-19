@@ -502,7 +502,7 @@ export const PhoneFilterBottomSheet: React.FC<{
 }) => {
   if (!isOpen) return null;
   return (
-    <div
+    <div data-esc-close
       className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200"
       onClick={onClose}
       role="dialog"

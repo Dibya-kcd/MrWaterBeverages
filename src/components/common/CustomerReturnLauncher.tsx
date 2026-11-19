@@ -100,10 +100,10 @@ export const CustomerReturnLauncher: React.FC<Props> = ({
                       className="w-full text-left rounded-xl border border-slate-200 bg-white px-3 py-2.5 flex items-center justify-between gap-3 hover:bg-amber-50/60 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                     >
                       <span className="min-w-0">
-                        <span className="block text-sm font-bold text-slate-900 truncate">
+                        <span className="block text-sm font-bold text-slate-900 min-w-0 break-words lg:truncate">
                           {prefix}-{b.id} · {b.retailer || 'Cash customer'}
                         </span>
-                        <span className="block text-[11px] text-slate-500 truncate">
+                        <span className="block text-[11px] text-slate-500 min-w-0 break-words lg:truncate">
                           {b.date} · ₹{money(b.total)} · {b.items.map((i) => i.productName).join(', ')}
                         </span>
                       </span>

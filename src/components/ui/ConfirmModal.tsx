@@ -13,6 +13,9 @@ export interface ConfirmModalProps {
   onClose: () => void;
   onConfirm: () => void | Promise<void>;
   onConfirmWithComment?: (comment: string) => void | Promise<void>;
+  onConfirmWithOptions?: (opts: { comment: string; optionalChecked: boolean }) => void | Promise<void>;
+  optionalCheckboxLabel?: string;
+  optionalCheckboxDefault?: boolean;
   title: string;
   subtitle?: string;
   message?: string;
@@ -55,8 +58,12 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
   confirmIcon,
   initialComment = '',
   commentMinLength = 0,
+  onConfirmWithOptions,
+  optionalCheckboxLabel,
+  optionalCheckboxDefault = false,
 }) => {
   const [isChecked, setIsChecked] = useState(false);
+  const [optionalChecked, setOptionalChecked] = useState(optionalCheckboxDefault);
   const [comment, setComment] = useState(initialComment);
 
   if (!isOpen) return null;
@@ -66,7 +73,9 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
 
   const handleConfirm = async () => {
     if (isConfirmDisabled) return;
-    if (onConfirmWithComment) {
+    if (onConfirmWithOptions) {
+      await onConfirmWithOptions({ comment: comment.trim(), optionalChecked });
+    } else if (onConfirmWithComment) {
       await onConfirmWithComment(comment.trim());
     } else {
       await onConfirm();
@@ -74,7 +83,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
   };
 
   return (
-    <div
+    <div data-esc-close
       role="dialog"
       aria-modal="true"
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150"
@@ -175,6 +184,21 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
                 <p className="text-[11px] text-slate-500">Write a short reason (at least {commentMinLength} characters) to save.</p>
               )}
             </div>
+          )}
+
+          {/* Optional non-blocking action checkbox */}
+          {optionalCheckboxLabel && (
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/60 border border-amber-200/80 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={optionalChecked}
+                onChange={(e) => setOptionalChecked(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded accent-rose-600 cursor-pointer"
+              />
+              <span className="text-xs font-medium text-slate-700 leading-snug">
+                {optionalCheckboxLabel}
+              </span>
+            </label>
           )}
 
           {/* Double Confirmation Checkbox (optional) */}

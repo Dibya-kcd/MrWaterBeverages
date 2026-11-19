@@ -260,7 +260,7 @@ export const ReportExplainModal: React.FC<{
   onClose: () => void;
   children: React.ReactNode;
 }> = ({ title = 'How this is calculated', ariaLabel, onClose, children }) => (
-  <div
+  <div data-esc-close
     className="fixed inset-0 z-50 bg-slate-950/60 flex items-end sm:items-center justify-center p-0 sm:p-4"
     onClick={onClose}
     role="dialog"

@@ -42,6 +42,9 @@ import { PackIcon } from '../common/PackIcon';
 import { sizeStripe } from '../../utils/sizeColor';
 import { LoadingSkeleton } from '../common/LoadingSkeleton';
 import { AuditView } from './AuditView';
+import { OversoldInspectorModal } from './OversoldInspectorModal';
+import { buildOversoldClearAudits, type OversoldItem } from '../../utils/oversoldDiagnostic';
+import { StockAuditScreen } from './StockAuditScreen';
 import { BulkInwardModal } from './BulkInwardModal';
 import { InwardConsignmentModal } from './InwardConsignmentModal';
 import { WarehousesView } from './WarehousesView';
@@ -80,12 +83,29 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
     addStockTransfer,
     warehouseStock,
     productBatchLines,
-    saveAudit,
-    bookStock,
     inventoryDispositions,
     bills,
     restoreCrossWarehouseAllocations,
+    oversoldReport,
+    saveBatchAudit,
+    currentRole,
+    reassignBillsProductWarehouse,
+    undoLastOversoldReassign,
+    hasOversoldReassignUndo,
   } = useLedger();
+
+  const clearOversoldDeficits = (items: OversoldItem[], reason: string) => {
+    if (currentRole !== 'admin') return;
+    for (const a of buildOversoldClearAudits(items, reason)) {
+      saveBatchAudit({
+        warehouseId: a.warehouseId,
+        referenceNote: 'Oversold deficit cleared from the oversold inspector',
+        lines: a.lines,
+      });
+    }
+  };
+
+  const [oversoldInspect, setOversoldInspect] = useState<{ open: boolean; productId?: number; warehouseId?: string }>({ open: false });
 
   const crossWhPlan = useMemo(
     () =>
@@ -189,12 +209,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
   const [xferNote, setXferNote] = useState('');
   const [xferBusy, setXferBusy] = useState(false);
 
-  // ── Stock audit (batch-level, matches Inventory control UI) ──
-  const [auditWhId, setAuditWhId] = useState('');
-  const [auditCounts, setAuditCounts] = useState<Record<string, string>>({});
-  const [auditNote, setAuditNote] = useState('');
-  const [auditSearch, setAuditSearch] = useState('');
-
   useEffect(() => {
     if (initialSubTab) {
       setActiveTab(resolveTab(initialSubTab));
@@ -206,8 +220,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
     if (!xferToId && (warehouses[1]?.id || warehouses[0]?.id)) {
       setXferToId(warehouses[1]?.id || warehouses[0].id);
     }
-    if (!auditWhId && warehouses[0]?.id) setAuditWhId(warehouses[0].id);
-  }, [warehouses, xferFromId, xferToId, auditWhId]);
+  }, [warehouses, xferFromId, xferToId]);
 
   React.useEffect(() => {
     try {
@@ -352,7 +365,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
   ).length;
 
   return (
-    <div id="view-inventory" className="mw-workspace flex flex-col gap-4 sm:gap-5 w-full min-w-0 max-w-full">
+    <div id="view-inventory" className="hh-view mw-workspace flex flex-col gap-4 w-full min-w-0 max-w-full pb-24">
       {/* Toast Notification */}
       {notification && (
         <div className="flex items-center gap-2 p-3 bg-[var(--primary)] text-white rounded-2xl shadow-md animate-fade-in text-sm font-semibold">
@@ -361,31 +374,52 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         </div>
       )}
 
-      {/* Workspace header — Inventory & Inward */}
-      <div className="flex flex-col gap-3 w-full min-w-0">
-        <div className="hidden sm:block text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">
-          Workspace <span className="text-slate-300 mx-1">/</span> Inventory
-        </div>
-        <div className="flex flex-row items-center justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="text-xl sm:text-3xl font-bold tracking-tight text-slate-900">
-              Inventory
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-500 mt-0.5 sm:mt-1">
-              {totalStockCases.toLocaleString()} units on hand
-              <span className="hidden sm:inline"> · {grns.length} inward record{grns.length === 1 ? '' : 's'}</span>
-            </p>
-          </div>
-        </div>
+      {/* Consistent Page Header (matches Parties & Sale) */}
+      <div className="flex items-center justify-between gap-3 min-h-10 sm:min-h-11">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
+          Inventory
+        </h1>
+        {activeTab === 'consignments' && (
+          <button
+            type="button"
+            id="btn-add-inward"
+            onClick={() => {
+              setSelectedGrnToEdit(null);
+              setIsInwardModalOpen(true);
+            }}
+            className="size-10 sm:size-11 rounded-full bg-[var(--primary)] text-white flex items-center justify-center shadow-md cursor-pointer active:scale-95 transition-transform shrink-0"
+            aria-label="New inward purchase"
+            title="New inward purchase"
+          >
+            <Plus className="w-5 h-5" strokeWidth={2.5} />
+          </button>
+        )}
       </div>
 
       {crossWhPlan.affectedBillCount > 0 && (
         <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-start gap-2 min-w-0 flex-1">
             <AlertTriangle size={16} className="shrink-0 mt-0.5 text-amber-600" />
-            <div>
-              <b>Stock shifted across godowns on {crossWhPlan.affectedBillCount} bill(s) ({crossWhPlan.totalShiftedCases} cases):</b>{' '}
-              Bills without a godown tag were linked to batches in another godown, which can make available units look higher. Restore them to their original godown while keeping saved costs frozen.
+            <div className="space-y-1">
+              <div>
+                <b>Stock shifted across godowns on {crossWhPlan.affectedBillCount} bill(s) ({crossWhPlan.totalShiftedCases} cases):</b>{' '}
+                Bills without a godown tag were linked to batches in another godown, which can make available units look higher. Restore them to their original godown while keeping saved costs frozen.
+              </div>
+              <div className="flex flex-col gap-0.5 text-[11px] text-amber-950/90">
+                {crossWhPlan.lines.slice(0, 5).map((l) => {
+                  const matchedBill = (bills || []).find((b) => b.id === l.billId);
+                  const billLabel = matchedBill?.docNo || `#${l.billId}`;
+                  return (
+                    <div key={`${l.billId}-${l.itemIndex}`}>
+                      • <b>{l.productName}</b> ({l.qty} cs) on Bill {billLabel} ({l.retailer} · {l.billDate}) — batch in{' '}
+                      <b>{l.allocatedWarehouseNames.join(', ')}</b> instead of <b>{l.expectedWarehouseName}</b>
+                    </div>
+                  );
+                })}
+                {crossWhPlan.lines.length > 5 && (
+                  <div className="text-amber-800 font-semibold">+{crossWhPlan.lines.length - 5} more item(s)</div>
+                )}
+              </div>
             </div>
           </div>
           <button
@@ -399,51 +433,63 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         </div>
       )}
 
-      {/* Sub-tabs — pill segmented control (Customers screen pattern), scrollable on mobile */}
-      <div className="w-full">
-        <div className="grid grid-cols-5 w-full bg-[#ebe8e1] rounded-2xl sm:rounded-full p-1 gap-0.5">
-          {(
-            [
-              { id: 'realtime' as const, label: 'Stock', count: products.length, icon: Boxes },
-              { id: 'consignments' as const, label: 'Inward', count: grns.length, icon: ArrowDownToLine },
-              { id: 'audit' as const, label: 'Audit', count: undefined as number | undefined, icon: ClipboardCheck },
-              { id: 'dispositions' as const, label: 'Returns', count: pendingExpiryReturns || undefined, icon: AlertTriangle },
-              { id: 'transfers' as const, label: 'Transfer', count: undefined as number | undefined, icon: ArrowRightLeft },
-            ] as const
-          ).map((t) => {
-            const Icon = t.icon;
-            const active = activeTab === t.id;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                id={`tab-${t.id}`}
-                onClick={() => setActiveTab(t.id)}
-                className={`relative min-w-0 flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1.5 px-0.5 sm:px-3 py-1.5 sm:py-2.5 rounded-xl sm:rounded-full text-[10px] leading-tight sm:text-sm font-semibold transition-all cursor-pointer ${
-                  active
-                    ? 'bg-white text-slate-900 shadow-sm'
-                    : 'text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <Icon size={15} className={`shrink-0 ${active ? 'text-[var(--primary)]' : 'text-slate-400'}`} />
-                <span className="truncate max-w-full">{t.label}</span>
-                {t.count !== undefined && (
-                  <span
-                    className={`${
-                      t.id === 'dispositions'
-                        ? 'absolute top-0.5 right-1 sm:static bg-amber-500 text-white sm:bg-black/5 sm:text-slate-500'
-                        : 'hidden sm:inline-block'
-                    } text-[10px] sm:text-[10px] font-bold px-1 sm:px-1.5 py-px sm:py-0.5 rounded-full tabular-nums ${
-                      active ? 'sm:!bg-[#ebe8e1] sm:!text-[var(--primary)]' : ''
-                    } ${t.id === 'dispositions' ? '' : active ? 'bg-[#ebe8e1] text-[var(--primary)]' : 'bg-black/5 text-slate-500'}`}
-                  >
-                    {t.count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
+      {oversoldReport.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-2xl border border-rose-200 bg-rose-50/90 px-3.5 py-3">
+          <div className="flex items-start sm:items-center gap-2 text-xs font-semibold text-rose-900 min-w-0">
+            <AlertTriangle size={15} className="shrink-0 text-rose-600 mt-0.5 sm:mt-0" />
+            <span>
+              {oversoldReport.length} product godown{oversoldReport.length === 1 ? ' is' : 's are'} oversold (negative book balance).
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setOversoldInspect({ open: true })}
+            className="self-start sm:self-auto shrink-0 h-8 px-3.5 rounded-full bg-rose-700 text-xs font-semibold text-white hover:bg-rose-800 cursor-pointer whitespace-nowrap transition-colors"
+          >
+            Inspect &amp; clear ({oversoldReport.length})
+          </button>
         </div>
+      )}
+
+      {/* Consistent Segmented Tabs (matches Parties & Sale) */}
+      <div
+        className="grid grid-cols-5 w-full bg-[#ebe8e1] rounded-full p-1"
+        role="tablist"
+        aria-label="Inventory sections"
+      >
+        {(
+          [
+            { id: 'realtime' as const, label: 'Stock', alertCount: 0 },
+            { id: 'consignments' as const, label: 'Inward', alertCount: 0 },
+            { id: 'audit' as const, label: 'Audit', alertCount: 0 },
+            { id: 'dispositions' as const, label: 'Returns', alertCount: pendingExpiryReturns || 0 },
+            { id: 'transfers' as const, label: 'Transfer', alertCount: 0 },
+          ] as const
+        ).map((t) => {
+          const active = activeTab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              id={`tab-${t.id}`}
+              onClick={() => setActiveTab(t.id)}
+              className={`min-w-0 py-2.5 px-1 sm:px-3 rounded-full text-[11.5px] sm:text-sm font-semibold transition-colors cursor-pointer whitespace-nowrap truncate ${
+                active
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              {t.label}
+              {t.alertCount > 0 && (
+                <span className="ml-1 text-[10.5px] font-bold text-amber-700 tabular-nums">
+                  {t.alertCount}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* TAB 1: REAL-TIME CRATE COUNTS */}
@@ -556,6 +602,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                 </p>
               </div>
             ) : (
+              <div className="flex flex-col gap-2.5">
+                <div className="px-1 text-xs font-semibold text-slate-500 tabular-nums">
+                  {totalStockCases.toLocaleString()} units on hand · {stockProducts.length} product{stockProducts.length === 1 ? '' : 's'}
+                </div>
               <ul className="space-y-2">
                 {stockProducts.map(({ p, batches, headerQty }) => {
                   const expanded = !!expandedBatchProductIds[p.id];
@@ -603,7 +653,14 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                             .filter((r) => r.crates < 0 && (selectedWarehouse === 'all' || r.warehouseId === selectedWarehouse))
                             .map((r) => (
                               <div key={`neg_${r.warehouseId}`} className="px-3 sm:px-4 py-2 text-[11px] font-semibold text-rose-700 bg-rose-50 border-b border-rose-100">
-                                Oversold in {r.warehouseName}: book balance {r.crates} cs. Check the godown on those bills or run a stock audit.
+                                Oversold in {r.warehouseName}: book balance {r.crates} cs. Check the godown on those bills or run a stock audit.{' '}
+                                <button
+                                  type="button"
+                                  onClick={() => setOversoldInspect({ open: true, productId: p.id, warehouseId: r.warehouseId })}
+                                  className="ml-1 rounded-md bg-rose-700 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-rose-800 cursor-pointer"
+                                >
+                                  Inspect Bills
+                                </button>
                               </div>
                             ))}
                           {hasDetail ? (
@@ -668,6 +725,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                   );
                 })}
               </ul>
+              </div>
             )}
 
           </div>
@@ -734,17 +792,6 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                     >
                       <Download size={13} className="text-emerald-700" />
                       <span>CSV<span className="hidden sm:inline"> · all GRNs</span></span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedGrnToEdit(null);
-                        setIsInwardModalOpen(true);
-                      }}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--primary)] text-xs font-semibold text-white hover:bg-[var(--primary-hover)] cursor-pointer shadow-xs"
-                    >
-                      <Plus size={13} />
-                      <span>New purchase</span>
                     </button>
                   </div>
                 </div>
@@ -915,281 +962,20 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         <DispositionsView />
       )}
 
-      {activeTab === 'audit' && (() => {
-        const whId = auditWhId || warehouses[0]?.id || '';
-        // System qty = LIVE remaining per batch at this godown (received minus sales, returns,
-        // disposals and earlier audit adjustments), not the original inward quantity.
-        const rows = products
-          .flatMap((prod) =>
-            productBatchLines(prod.id)
-              .filter((l) => !whId || l.warehouseId === whId)
-              .map((l) => ({
-                key: l.key,
-                batch: { productId: prod.id, batchNumber: l.batchNumber, expiryDate: l.expiryDate },
-                name: prod.name,
-                systemQty: l.availableQty,
-              })),
-          )
-          .sort((a, b) => a.name.localeCompare(b.name) || (a.batch.batchNumber || '').localeCompare(b.batch.batchNumber || ''));
-
-        // Also include products with live stock but no batch rows at this warehouse
-        const productIdsWithBatches = new Set(rows.map((r) => r.batch.productId));
-        const orphanProducts = products
-          .filter((p) => !productIdsWithBatches.has(p.id))
-          .map((p) => {
-            const sys = whId ? warehouseStock(whId, p.id) : bookStock(p.id);
-            return { key: `prod_${p.id}`, productId: p.id, name: p.name, systemQty: sys };
-          })
-          .filter((r) => r.systemQty !== 0);
-
-        const handleSaveAudit = () => {
-          // Product-level count for THIS godown. A batch left blank "matches", so it counts as its
-          // system quantity; otherwise a partly filled product would look short by the blank batches.
-          const counts: Record<number, string> = {};
-          const entered = new Set<number>();
-          const totals: Record<number, number> = {};
-          for (const r of rows) {
-            const raw = auditCounts[r.key];
-            const has = raw !== undefined && raw !== '' && !isNaN(Number(raw));
-            if (has) entered.add(r.batch.productId);
-            totals[r.batch.productId] =
-              (totals[r.batch.productId] || 0) + (has ? Number(raw) : r.systemQty);
-          }
-          for (const o of orphanProducts) {
-            const raw = auditCounts[o.key];
-            if (raw === undefined || raw === '' || isNaN(Number(raw))) continue;
-            entered.add(o.productId);
-            totals[o.productId] = (totals[o.productId] || 0) + Number(raw);
-          }
-          for (const pid of entered) counts[pid] = String(totals[pid]);
-          if (Object.keys(counts).length === 0) {
-            showToast('Enter at least one counted quantity.');
-            return;
-          }
-          saveAudit(counts, true, todayISO(), auditNote || undefined, whId || undefined);
-          setAuditCounts({});
-          setAuditNote('');
-          showToast('Stock audit saved. Differences posted to live stock.');
-        };
-
-        // Quick filter so a long list can be searched by name or batch.
-        const q = auditSearch.trim().toLowerCase();
-        const matches = (name: string, batch?: string) =>
-          !q || name.toLowerCase().includes(q) || (batch || '').toLowerCase().includes(q);
-        const visibleRows = rows.filter((r) => matches(r.name, r.batch.batchNumber));
-        const visibleOrphans = orphanProducts.filter((o) => matches(o.name));
-
-        const allKeys = [
-          ...rows.map((r) => ({ key: r.key, sys: r.systemQty })),
-          ...orphanProducts.map((o) => ({ key: o.key, sys: o.systemQty })),
-        ];
-        let countedLines = 0;
-        let diffLines = 0;
-        for (const k of allKeys) {
-          const raw = auditCounts[k.key];
-          if (raw === undefined || raw === '' || isNaN(Number(raw))) continue;
-          countedLines++;
-          if (Number(raw) !== k.sys) diffLines++;
-        }
-
-        // One shared row renderer: stacked card on phones (full product name on its own line,
-        // then System / Counted / Diff), classic 4-column grid from `sm` upwards.
-        const renderAuditRow = (opts: {
-          key: string;
-          productId?: number;
-          name: string;
-          meta: string;
-          systemQty: number;
-        }) => {
-          const auditProd = products.find((p) => p.id === opts.productId);
-          const countedStr = auditCounts[opts.key] ?? '';
-          const hasCount = countedStr !== '';
-          const counted = hasCount ? Number(countedStr) : NaN;
-          const diff = hasCount && !isNaN(counted) ? counted - opts.systemQty : null;
-          return (
-            <li
-              key={opts.key}
-              className={`grid grid-cols-[1fr_1.4fr_1fr] sm:grid-cols-[1fr_5rem_5.5rem_4rem] gap-x-3 gap-y-1.5 sm:gap-y-0 px-3 sm:px-4 py-2.5 sm:py-3 items-start sm:items-center ${
-                diff !== null && diff !== 0 ? 'bg-amber-50/50' : ''
-              }`}
-              style={sizeStripe(auditProd?.volume, opts.name)}
-            >
-              <div className="col-span-3 sm:col-span-1 min-w-0 flex items-start gap-2.5">
-                <PackIcon size="sm" pack={auditProd?.pack} name={opts.name} className="mt-0.5" />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13px] sm:text-sm font-semibold text-slate-900 leading-snug break-words">
-                    {opts.name}{' '}
-                    <SizeChip volume={auditProd?.volume} pack={auditProd?.pack} name={opts.name} />
-                  </div>
-                  <div className="text-[11px] text-slate-500 leading-tight mt-0.5">{opts.meta}</div>
-                </div>
-              </div>
-              <div className="sm:text-right">
-                <div className="sm:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400">System</div>
-                <div
-                  className={`h-[38px] sm:h-auto flex items-center sm:justify-end text-sm font-bold tabular-nums ${
-                    opts.systemQty < 0 ? 'text-rose-600' : 'text-slate-800'
-                  }`}
-                >
-                  {opts.systemQty}
-                </div>
-              </div>
-              <div>
-                <div className="sm:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-0.5">Counted</div>
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  min={0}
-                  value={countedStr}
-                  placeholder="—"
-                  aria-label={`Counted quantity for ${opts.name}`}
-                  onFocus={(e) => e.currentTarget.select()}
-                  onChange={(e) =>
-                    setAuditCounts((prev) => ({
-                      ...prev,
-                      [opts.key]: e.target.value,
-                    }))
-                  }
-                  className="w-full sm:max-w-[5rem] sm:ml-auto block px-2 py-1.5 rounded-lg border border-black/10 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
-                />
-              </div>
-              <div className="sm:text-right">
-                <div className="sm:hidden text-[10px] font-bold uppercase tracking-wide text-slate-400 text-right">Diff</div>
-                <div
-                  className={`h-[38px] sm:h-auto flex items-center justify-end text-sm font-semibold tabular-nums ${
-                    diff === null
-                      ? 'text-slate-300'
-                      : diff === 0
-                        ? 'text-emerald-600'
-                        : diff > 0
-                          ? 'text-sky-700'
-                          : 'text-rose-600'
-                  }`}
-                >
-                  {diff === null ? '—' : diff > 0 ? `+${diff}` : diff}
-                </div>
-              </div>
-            </li>
-          );
-        };
-
-        const fmtExp = (d?: string) =>
-          d
-            ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })
-            : '—';
-
-        return (
-          <div className="flex flex-col gap-3 max-w-none mx-auto w-full">
-            {/* Toolbar: godown + search + how-it-works */}
-            <div className="flex flex-col sm:flex-row gap-2">
-              <div className="flex items-center gap-1.5 sm:w-56">
-                <select
-                  value={whId}
-                  aria-label="Godown to audit"
-                  onChange={(e) => {
-                    setAuditWhId(e.target.value);
-                    setAuditCounts({});
-                  }}
-                  className="flex-1 min-w-0 px-3 py-2 sm:py-2.5 rounded-full border border-black/10 bg-white text-sm font-medium text-slate-800 cursor-pointer focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25"
-                >
-                  {warehouses.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name}
-                    </option>
-                  ))}
-                </select>
-                <InfoTip title="How the stock audit works">
-                  <p>Count what is physically on the shelf and type it under <strong>Counted</strong>. Leave a line blank if it matches the system.</p>
-                  <p>Differences are posted as audit adjustments to live stock and kept in the ledger.</p>
-                </InfoTip>
-              </div>
-              <div className="relative flex-1">
-                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                <input
-                  type="search"
-                  value={auditSearch}
-                  onChange={(e) => setAuditSearch(e.target.value)}
-                  placeholder="Search product or batch"
-                  className="w-full pl-9 pr-3 py-2 sm:py-2.5 rounded-full border border-black/10 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25"
-                />
-              </div>
+      {activeTab === 'audit' && (
+        <div className="flex flex-col gap-3 max-w-none mx-auto w-full">
+          {/* Phone-first batch-level count. No fixed/floating bars: the keyboard never covers a row. */}
+          <StockAuditScreen onGoInventoryTab={(t) => setActiveTab(t)} />
+          <details className="text-xs text-slate-500 my-2">
+            <summary className="cursor-pointer font-semibold text-slate-600 py-1 hover:text-slate-900">
+              Audit history &amp; reconciliation
+            </summary>
+            <div className="mt-3">
+              <AuditView embedded />
             </div>
-
-            <div className="rounded-2xl border border-black/8 bg-white shadow-sm overflow-hidden">
-              <div className="hidden sm:grid grid-cols-[1fr_5rem_5.5rem_4rem] gap-3 px-4 py-2.5 border-b border-black/5 text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                <div>Product / batch</div>
-                <div className="text-right">System</div>
-                <div className="text-right">Counted</div>
-                <div className="text-right">Diff</div>
-              </div>
-              <div className="sm:hidden flex items-center justify-between px-3 py-2 border-b border-black/5 text-[11px] font-semibold text-slate-500">
-                <span>{visibleRows.length + visibleOrphans.length} lines</span>
-                <span>
-                  {countedLines} counted
-                  {diffLines > 0 && <span className="text-amber-700"> · {diffLines} differ</span>}
-                </span>
-              </div>
-              <ul className="divide-y divide-black/5 sm:max-h-[60vh] sm:overflow-y-auto">
-                {visibleRows.length === 0 && visibleOrphans.length === 0 && (
-                  <li className="px-4 py-8 text-center text-sm text-slate-500">
-                    {q ? 'No lines match your search.' : 'No stock lines for this godown.'}
-                  </li>
-                )}
-                {visibleRows.map((r) =>
-                  renderAuditRow({
-                    key: r.key,
-                    productId: r.batch.productId,
-                    name: r.name,
-                    meta: `Batch ${r.batch.batchNumber || '—'} · Exp ${fmtExp(r.batch.expiryDate)}`,
-                    systemQty: r.systemQty,
-                  }),
-                )}
-                {visibleOrphans.map((o) =>
-                  renderAuditRow({
-                    key: o.key,
-                    productId: o.productId,
-                    name: o.name,
-                    meta: 'No batch · book stock',
-                    systemQty: o.systemQty,
-                  }),
-                )}
-              </ul>
-            </div>
-
-            <details className="text-xs text-slate-500 my-2">
-              <summary className="cursor-pointer font-semibold text-slate-600 py-1 hover:text-slate-900">
-                Audit history &amp; reconciliation
-              </summary>
-              <div className="mt-3">
-                <AuditView embedded />
-              </div>
-            </details>
-
-            {/* Save bar — fixed above the bottom nav on phone/tablet so it is always reachable and unobstructed.
-                (position: sticky does not engage here because ancestors use overflow:auto.) */}
-            <div className="lg:hidden h-32" aria-hidden="true" />
-            <div className="fixed inset-x-0 z-40 bottom-[calc(5.75rem+env(safe-area-inset-bottom,0px))] lg:static lg:z-auto px-3 sm:px-6 lg:px-0 py-2.5 bg-white/95 backdrop-blur-md border-t border-slate-200/80 shadow-[0_-4px_16px_rgba(0,0,0,0.08)] lg:border-0 lg:bg-transparent lg:backdrop-blur-none lg:shadow-none lg:py-0">
-              <div className="max-w-none mx-auto flex flex-row gap-2 items-center">
-                <input
-                  type="text"
-                  value={auditNote}
-                  onChange={(e) => setAuditNote(e.target.value)}
-                  placeholder="Note (optional)"
-                  className="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
-                />
-                <button
-                  type="button"
-                  onClick={handleSaveAudit}
-                  disabled={countedLines === 0}
-                  className="shrink-0 px-4 sm:px-5 py-2.5 rounded-xl bg-[var(--primary)] text-white font-semibold text-sm cursor-pointer hover:bg-[var(--primary-hover)] disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-                >
-                  Save{countedLines > 0 ? ` (${countedLines})` : ''}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+          </details>
+        </div>
+      )}
 
       {/* TAB 4: GODOWN TRANSFERS — multi-line form matching Inventory control UI */}
       {activeTab === 'transfers' && (() => {
@@ -1548,6 +1334,19 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                   .join(', ') + (grnToDelete.items.length > 4 ? ` + ${grnToDelete.items.length - 4} more` : ''),
             },
           ]}
+        />
+      )}
+      {oversoldInspect.open && (
+        <OversoldInspectorModal
+          items={oversoldReport}
+          initialProductId={oversoldInspect.productId}
+          initialWarehouseId={oversoldInspect.warehouseId}
+          onClose={() => setOversoldInspect({ open: false })}
+          isAdmin={currentRole === 'admin'}
+          onClearDeficits={clearOversoldDeficits}
+          onReassign={reassignBillsProductWarehouse}
+          onUndoReassign={undoLastOversoldReassign}
+          hasUndo={hasOversoldReassignUndo}
         />
       )}
     </div>

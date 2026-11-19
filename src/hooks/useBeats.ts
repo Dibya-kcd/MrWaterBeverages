@@ -9,6 +9,7 @@ import {
   findBeatNameClash,
   newBeatId,
 } from '../utils/beats';
+import { normCustomerName, realLast10Phone } from '../utils/customerDedupe';
 
 /**
  * Beats / delivery areas. The owner's list lives in orgProfile.beats (synced with the profile) and is edited in
@@ -63,7 +64,21 @@ export function useBeats() {
       if (beatId && !beat) return 0;
       let n = 0;
       const want = new Set(customerIds);
-      for (const c of customers || []) {
+      const list = customers || [];
+      // Also include any legacy same-shop duplicate record (same normalized name, compatible phone)
+      // so bulk beat assignment never leaves a duplicate copy unmapped.
+      const selected = list.filter((c) => want.has(c.id));
+      for (const s of selected) {
+        const sk = normCustomerName(s.name);
+        if (!sk) continue;
+        const sp = realLast10Phone(s.phone);
+        for (const other of list) {
+          if (want.has(other.id) || normCustomerName(other.name) !== sk) continue;
+          const op = realLast10Phone(other.phone);
+          if (!sp || !op || sp === op) want.add(other.id);
+        }
+      }
+      for (const c of list) {
         if (!want.has(c.id)) continue;
         if ((beat ? c.beatId === beat.id && c.route === beat.name : !c.beatId && !c.route)) continue;
         updateCustomer(stamp(c, beat), false);

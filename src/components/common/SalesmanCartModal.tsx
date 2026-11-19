@@ -196,20 +196,26 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
     }
   }, [isOpen, amountPaidDraft, setAmountPaidDraft]);
 
-  // Beverage categories available in product list
+  // Beverage categories available among in-stock products
   const beverageCategories = useMemo(() => {
     const cats = new Set<string>();
     for (const p of products) {
-      if (p.category) cats.add(p.category);
+      const avail = getVehicleStock(activeTrip, p.id).available;
+      const inCart = cart.items.some((it) => it.productId === p.id);
+      if ((avail > 0 || inCart) && p.category) cats.add(p.category);
     }
     return ['ALL', ...Array.from(cats)];
-  }, [products]);
+  }, [products, activeTrip, getVehicleStock, cart.items]);
 
-  // Beverages filtered for the browsing list
+  // Beverages filtered for the browsing list (only show products with available van stock or already in cart)
   const filteredBeverages = useMemo(() => {
     const q = beverageSearchQuery.trim().toLowerCase();
     return products
       .filter((p) => {
+        const avail = getVehicleStock(activeTrip, p.id).available;
+        const inCart = cart.items.some((it) => it.productId === p.id);
+        if (avail <= 0 && !inCart) return false;
+
         if (selectedBeverageCategory !== 'ALL' && p.category !== selectedBeverageCategory) {
           return false;
         }
@@ -235,15 +241,8 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
         }
         return true;
       })
-      .sort((a, b) => {
-        const stockA = getVehicleStock(activeTrip, a.id).available;
-        const stockB = getVehicleStock(activeTrip, b.id).available;
-        // Prioritize items with stock on vehicle
-        if (stockA > 0 && stockB <= 0) return -1;
-        if (stockA <= 0 && stockB > 0) return 1;
-        return a.name.localeCompare(b.name);
-      });
-  }, [products, beverageSearchQuery, selectedBeverageCategory, selectedBeveragePack, activeTrip, getVehicleStock]);
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [products, beverageSearchQuery, selectedBeverageCategory, selectedBeveragePack, activeTrip, getVehicleStock, cart.items]);
 
   // Handle adding/subtracting beverage from the in-cart beverage list
   const handleAddBeverageDelta = (prod: Product, delta: number) => {
@@ -325,7 +324,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
               <ArrowLeft size={22} />
             </button>
             <div className="min-w-0">
-              <h2 className="text-[17px] font-extrabold leading-tight truncate">
+              <h2 className={`text-[17px] font-extrabold leading-tight truncate ${lv ? 'text-black' : 'text-white'}`}>
                 {isBrowsingBeverages
                   ? isOdia ? 'ପାନୀୟ ଯୋଡନ୍ତୁ (Add beverages)' : 'Add beverages'
                   : isOdia ? 'କାର୍ଟ (Cart)' : 'Cart'}
@@ -694,6 +693,28 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                 );
               })}
             </div>
+            {filteredBeverages.length === 0 && (
+              <div className="p-8 text-center rounded-2xl border-2 border-dashed border-slate-300 bg-white space-y-2">
+                <p className="text-sm font-black text-slate-800">
+                  {beverageSearchQuery.trim() || selectedBeverageCategory !== 'ALL' || selectedBeveragePack !== 'ALL'
+                    ? 'No in-stock beverages match your filters.'
+                    : 'No beverages with available stock on this vehicle.'}
+                </p>
+                {(beverageSearchQuery.trim() || selectedBeverageCategory !== 'ALL' || selectedBeveragePack !== 'ALL') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBeverageSearchQuery('');
+                      setSelectedBeverageCategory('ALL');
+                      setSelectedBeveragePack('ALL');
+                    }}
+                    className="px-4 py-2 rounded-xl bg-sky-600 text-white text-xs font-black cursor-pointer"
+                  >
+                    Reset Filters
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           /* Scrollable Content Body */
@@ -729,19 +750,19 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-sm font-extrabold leading-tight flex items-center gap-1.5">
-                <span className="truncate">{selectedRetailer || 'Spot Cash / Walk-in Customer'}</span>
+                <span className="min-w-0 break-words lg:truncate">{selectedRetailer || 'Spot Cash / Walk-in Customer'}</span>
                 {selectedRetailer && selectedRetailer !== 'Spot Cash / Walk-in Customer' && (
                   <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
                 )}
               </div>
               {isOdia && (
-                <div className="text-xs font-bold text-sky-800 font-odia truncate mt-0.5">
+                <div className="text-xs font-bold text-sky-800 font-odia min-w-0 break-words lg:truncate mt-0.5">
                   {selectedRetailer === 'Spot Cash / Walk-in Customer' || !selectedRetailer
                     ? 'ସ୍ପଟ୍ କ୍ୟାଶ୍ / ୱାକ୍-ଇନ୍ ଗ୍ରାହକ'
                     : getCustomerOdiaName(selectedRetailer, customers)}
                 </div>
               )}
-              <div className={`text-[11.5px] font-semibold truncate ${lv ? 'opacity-80' : 'text-slate-500'}`}>
+              <div className={`text-[11.5px] font-semibold min-w-0 break-words lg:truncate ${lv ? 'opacity-80' : 'text-slate-500'}`}>
                 {retailerPhone ? `${retailerPhone}${autoSendWhatsApp ? ' · bill sent on WhatsApp' : ''}` : (isOdia ? 'ଫୋନ୍ ନମ୍ବର ନାହିଁ' : 'No phone number')}
               </div>
             </div>

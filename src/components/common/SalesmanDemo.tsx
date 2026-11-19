@@ -181,7 +181,7 @@ const Still: React.FC<{ className?: string; style?: React.CSSProperties; childre
 
 const NAV: { id: TabKey; label: string; Icon: React.ComponentType<any> }[] = [
   { id: 'home', label: 'Home', Icon: LayoutGrid },
-  { id: 'sell', label: 'Sale', Icon: ShoppingCart },
+  { id: 'sell', label: 'Sales', Icon: ShoppingCart },
   { id: 'customerDue', label: 'Payment', Icon: IndianRupee },
   { id: 'trips', label: 'Trips', Icon: Truck },
   { id: 'vanStock', label: 'Stock', Icon: Package },
@@ -306,6 +306,7 @@ export const SalesmanDemo: React.FC<{ onClose: () => void }> = ({ onClose }) => 
                 <button
                   key={k}
                   type="button"
+                  aria-label={k === '⌫' ? 'Delete last digit' : undefined}
                   onClick={() =>
                     setPin((p) => (k === 'C' ? '' : k === '⌫' ? p.slice(0, -1) : p.length < 6 ? p + k : p))
                   }
@@ -810,7 +811,7 @@ export const SalesmanDemo: React.FC<{ onClose: () => void }> = ({ onClose }) => 
                     const inner = (
                       <>
                         <Icon size={16} />
-                        <span className="text-[9px] font-semibold leading-none mt-0.5">{label}</span>
+                        <span className="text-[10px] font-semibold leading-none mt-0.5">{label}</span>
                       </>
                     );
                     return tapTrips ? (

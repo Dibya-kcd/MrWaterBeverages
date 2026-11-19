@@ -67,7 +67,7 @@ const NON_BLOCKING = new Set(['INVALID_HSN']);
  */
 export function checkSaleForRegime(
   org: OrganizationProfile | undefined,
-  args: { date: string; customerGstin?: string; items: Pick<BillItem, 'productId' | 'hsn' | 'amount' | 'gst'>[] },
+  args: { date: string; customerGstin?: string; items: Pick<BillItem, 'productId' | 'hsn' | 'amount' | 'gst' | 'taxability'>[] },
   rb: RuleBook = seedRuleBook(),
 ): SaleCheck {
   const regime = resolveTaxRegime(org, args.date);
@@ -76,15 +76,16 @@ export function checkSaleForRegime(
   const hsnWarnings: Issue[] = [];
   const lines: TaxLineInput[] = args.items.map((i, n) => {
     const id = `l${n}-${i.productId}`;
+    const isNonGst = i.taxability === 'non_gst';
     const ok = validateHsn(i.hsn);
-    // A bad product HSN is reported but must not stop a counter sale; the engine gets a neutral placeholder.
-    if (!ok) hsnWarnings.push({ code: 'INVALID_HSN', message: `Product ${i.productId} has an invalid HSN "${i.hsn ?? ''}"`, lineId: id });
+    // A bad product HSN is reported (for taxable items) but must not stop a counter sale; the engine gets a neutral placeholder.
+    if (!ok && !isNonGst) hsnWarnings.push({ code: 'INVALID_HSN', message: `Product ${i.productId} has an invalid HSN "${i.hsn ?? ''}"`, lineId: id });
     return {
     id,
     hsn: ok ? String(i.hsn).trim() : '00000000',
     qty: 1,
     unitPrice: Math.max(0, Number(i.amount) || 0),
-    taxability: 'taxable',
+    taxability: isNonGst ? 'non_gst' : 'taxable',
     gstRatePct: 0, // product rate is irrelevant to a composition / unregistered sale
     };
   });

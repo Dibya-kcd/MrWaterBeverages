@@ -18,14 +18,15 @@ import type { Bill, Customer, ExistingCustomer, PaymentRecord } from '../types';
 import { beatOfCustomer, type BeatLike } from './beats';
 import { billBalance, billNetTotal, round2 } from './salesReturns';
 import { isAdvanceAdjustmentRow, isAdvanceRow } from './paymentAllocation';
+import { formatBillNumber } from './invoiceCommon';
+import { normCustomerName, realLast10Phone } from './customerDedupe';
 
 export const NO_BEAT = 'none';
 export const NO_BEAT_LABEL = 'No beat yet';
 export const OVERDUE_AFTER_DAYS = 15;
 
-const norm = (n?: string | null): string =>
-  String(n || '').trim().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').toLowerCase();
-const last10 = (p?: string | null): string => String(p || '').replace(/\D/g, '').slice(-10);
+const norm = (n?: string | null): string => normCustomerName(n);
+const last10 = (p?: string | null): string => realLast10Phone(p);
 const day10 = (d?: string | null): string => String(d || '').slice(0, 10);
 
 const isLive = (b: Bill): boolean => b.status !== 'cancelled' && !b.cancelled && !b.cancellation;
@@ -43,7 +44,14 @@ export function formatPaymentId(id: string, index = 0): string {
   return `PAY-${String(842 - index).padStart(4, '0')}`;
 }
 
-export const invoiceNo = (id: number | string): string => `INV-${String(id).padStart(4, '0')}`;
+export const invoiceNo = (idOrBill: number | string | Bill): string => {
+  if (typeof idOrBill === 'object' && idOrBill !== null) {
+    if (idOrBill.docNo && idOrBill.docNo.trim()) return idOrBill.docNo.trim();
+    if (idOrBill.docSeries === 'non_gst' || idOrBill.gstExclude === true) return `NG-${idOrBill.id}`;
+    return formatBillNumber(idOrBill, 'INV');
+  }
+  return `INV-${String(idOrBill).padStart(4, '0')}`;
+};
 
 /* ------------------------------------------------------------------ */
 /* Who belongs to which beat                                           */
@@ -98,12 +106,25 @@ export function makeBeatResolver(customers: Customer[], beats: BeatLike[]): Beat
 
   const beatIdFor: BeatResolver['beatIdFor'] = (name, phone, id) => {
     const c = customerFor(name, phone, id);
-    if (c) return beatIdOf(c);
-    // Several customers share this name and the phone cannot tell them apart: if they all sit in the same beat, that is the answer.
-    const list = byName.get(norm(name)) || [];
-    if (list.length > 1) {
-      const ids = new Set(list.map(beatIdOf));
-      if (ids.size === 1) return Array.from(ids)[0];
+    if (c) {
+      const b = beatIdOf(c);
+      if (b !== NO_BEAT) return b;
+    }
+    // If the matched copy has no beat (e.g. a legacy bill-derived duplicate) or several copies share this name,
+    // check compatible same-name records (not conflicting on a real 10-digit phone) for an unambiguous assigned beat.
+    const list = byName.get(norm(name || c?.name)) || [];
+    if (list.length > 0) {
+      const ph = last10(phone || c?.phone);
+      const compatible =
+        ph.length === 10
+          ? list.filter((x) => {
+              const xp = last10(x.phone);
+              const xa = last10(x.altPhone);
+              return (!xp && !xa) || xp === ph || xa === ph;
+            })
+          : list;
+      const assigned = new Set(compatible.map(beatIdOf).filter((b) => b !== NO_BEAT));
+      if (assigned.size === 1) return Array.from(assigned)[0];
     }
     return NO_BEAT;
   };
@@ -213,7 +234,7 @@ export function collectReceipts(args: {
       amount: round2(paid),
       mode,
       billId: b.id,
-      receiptNo: invoiceNo(b.id),
+      receiptNo: invoiceNo(b),
       kind: 'invoice',
       note: 'Paid at billing',
     });
@@ -308,7 +329,7 @@ export function buildReceiptRegister(args: {
     return {
       ...e,
       beatName: beatName(e.beatId),
-      invoiceLabel: e.billId ? invoiceNo(e.billId) : '',
+      invoiceLabel: bill ? invoiceNo(bill) : e.billId ? invoiceNo(e.billId) : '',
       invoiceDue: bill && isLive(bill) ? round2(balances.get(bill.id) || 0) : 0,
       customerDue: d?.due || 0,
       customerAdvance: d?.advance || 0,
@@ -754,7 +775,7 @@ export function buildDueInvoices(args: {
     if (balance <= 0.004) continue;
     const beatId = resolver.beatIdFor(b.retailer, b.phone, b.customerId);
     if (beatFilter !== 'all' && beatId !== beatFilter) continue;
-    const inv = invoiceNo(b.id);
+    const inv = invoiceNo(b);
     if (q && !(b.retailer || '').toLowerCase().includes(q) && !inv.toLowerCase().includes(q) && !String(b.phone || '').includes(q)) continue;
     const total = round2(billNetTotal(b));
     const d = day10(b.date);

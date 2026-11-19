@@ -4,7 +4,7 @@ import { Bill, OrganizationProfile, BillingSettings } from '../types';
 import { money, normalizeTo8DigitHsn, statusOf, cgstSgstLabels, freeStockInvoiceDisplay, nonGstSummary } from './billing';
 import { billTaxBreakdown } from './gstReports';
 import { todayISO } from "./dateLocal";
-import { inrToWords, isBillGstInvoice } from './invoiceCommon';
+import { inrToWords, isBillGstInvoice, formatBillNumber } from './invoiceCommon';
 import { generateReceiptPdf80, sharePdfFile } from './receipt80';
 import { resolveInvoicePaper, invoicePdfFilename, type InvoicePaper, type InvoicePdfOptions } from './invoicePdfMeta';
 
@@ -42,11 +42,8 @@ export function generateInvoicePdf(
   const margin = 12;
   const contentWidth = pageWidth - margin * 2;
 
-  const invoiceNo = settings?.invoicePrefix
-    ? `${settings.invoicePrefix}-${bill.id}`
-    : isGst
-    ? `INV-${bill.id}`
-    : `RET-${bill.id}`;
+  const invoiceNo = formatBillNumber(bill, settings, invoiceFormat);
+  const isNonGstSeries = bill.gstExclude === true || bill.docSeries === 'non_gst';
   const orgName = org?.name || 'MrWater';
   const orgTagline = org?.tagline || 'Authorized Wholesale Beverage Distributor';
   const orgAddress = org?.address ? `${org.address}, ${org.city || ''}` : '';
@@ -89,10 +86,10 @@ export function generateInvoicePdf(
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(9);
-  doc.text(isGst ? 'TAX INVOICE' : 'RETAIL BILL', badgeX + badgeWidth / 2, margin + 10, { align: 'center' });
+  doc.text(isGst ? 'TAX INVOICE' : isNonGstSeries ? 'CASH MEMO' : 'RETAIL BILL', badgeX + badgeWidth / 2, margin + 10, { align: 'center' });
   doc.setFontSize(7);
   doc.setFont('helvetica', 'normal');
-  doc.text(isGst ? '(Original for Recipient)' : '(Non-GST / B2C Cash Memo)', badgeX + badgeWidth / 2, margin + 14.5, { align: 'center' });
+  doc.text(isGst ? '(Original for Recipient)' : isNonGstSeries ? '(Non-GST / Trading)' : '(Non-GST / B2C Cash Memo)', badgeX + badgeWidth / 2, margin + 14.5, { align: 'center' });
 
   // 2. Invoice Meta & Customer Details Grid (Two columns)
   let y = margin + 27;
@@ -247,7 +244,12 @@ export function generateInvoicePdf(
             textColor: d.isFreeStock ? ([5, 150, 105] as [number, number, number]) : ([30, 41, 59] as [number, number, number]),
           },
         },
-        { content: normalizeTo8DigitHsn(it.hsn || lineTax?.hsn, it.category, it.productName), styles: { halign: 'center' as const } },
+        {
+          content: it.taxability === 'non_gst'
+            ? (it.hsn || 'Non-GST')
+            : normalizeTo8DigitHsn(it.hsn || lineTax?.hsn, it.category, it.productName, it.taxability),
+          styles: { halign: 'center' as const },
+        },
         { content: d.qtyLabel, styles: { halign: 'center' as const, fontStyle: 'bold' as const } },
         {
           content: d.isFreeStock ? d.freeLabel : d.freeLabel === '—' ? '-' : d.freeLabel,
@@ -260,11 +262,11 @@ export function generateInvoicePdf(
           styles: { halign: 'right' as const, textColor: [180, 100, 0] as [number, number, number] },
         },
         {
-          content: lineTax && lineTax.ratePct > 0 && !d.isFreeStock ? `${lineTax.ratePct}%` : '-',
+          content: it.taxability === 'non_gst' ? 'Non-GST' : lineTax && lineTax.ratePct > 0 && !d.isFreeStock ? `${lineTax.ratePct}%` : '-',
           styles: { halign: 'center' as const },
         },
         {
-          content: lineTax && lineTax.tax > 0 && !d.isFreeStock ? money(lineTax.tax) : '-',
+          content: it.taxability !== 'non_gst' && lineTax && lineTax.tax > 0 && !d.isFreeStock ? money(lineTax.tax) : '-',
           styles: { halign: 'right' as const },
         },
         {
@@ -633,11 +635,11 @@ export async function shareInvoicePdf(
   const isGst = isBillGstInvoice(bill, invoiceFormat);
   const doc = buildInvoicePdf(bill, org, settings, invoiceFormat, options);
   const filename = invoicePdfFilename(bill, settings, invoiceFormat, options);
-  const prefix = settings?.invoicePrefix || (isGst ? 'INV' : 'RET');
+  const billNo = formatBillNumber(bill, settings, invoiceFormat);
   const result = await sharePdfFile(
     doc,
     filename,
-    `${isGst ? 'Tax Invoice' : 'Bill'} ${prefix}-${bill.id} - ${bill.retailer || 'Cash'}`
+    `${isGst ? 'Tax Invoice' : 'Bill'} ${billNo} - ${bill.retailer || 'Cash'}`
   );
   if (result === 'unsupported') {
     doc.save(filename);

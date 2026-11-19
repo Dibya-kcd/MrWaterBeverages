@@ -1,3 +1,5 @@
+import { promptDialog } from '../../../utils/dialogs';
+import { EmptyState } from '../../common/EmptyState';
 import React, { useMemo, useState } from 'react';
 import { Bill, Product } from '../../../types';
 import type { BusinessExpenseRecord } from '../../../utils/storage';
@@ -427,7 +429,7 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
 
         <div className="md:hidden space-y-3" id="expense-cards">
           {periodExpenses.length === 0 ? (
-            <div className="py-3 text-center text-sm text-slate-500">No expenses recorded for this period yet.</div>
+            <EmptyState compact title="No expenses in this period" description="Expenses you record for this period will show here." />
           ) : (
             [...periodExpenses]
               .sort((a: BusinessExpenseRecord, b: BusinessExpenseRecord) => b.date.localeCompare(a.date))
@@ -451,10 +453,14 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
                   actions={
                     <button
                       type="button"
-                      onClick={() => {
-                        const reason = window.prompt(
-                          `Delete this ₹${money(e.amount)} ${EXPENSE_LABELS[e.category] || e.category} entry?\nWrite the reason (kept in the audit log):`,
-                        );
+                      onClick={async () => {
+                        const reason = await promptDialog({
+                          title: `Delete this ₹${money(e.amount)} ${EXPENSE_LABELS[e.category] || e.category} entry?`,
+                          message: 'Write the reason (kept in the audit log):',
+                          confirmLabel: 'Delete',
+                          tone: 'danger',
+                          multiline: true,
+                        });
                         if (reason === null) return;
                         deleteExpense(e.id, reason.trim() || undefined);
                       }}
@@ -492,10 +498,14 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
                     <td className="py-1 text-right">
                       <button
                         type="button"
-                        onClick={() => {
-                          const reason = window.prompt(
-                            `Delete this ₹${money(e.amount)} ${EXPENSE_LABELS[e.category] || e.category} entry?\nWrite the reason (kept in the audit log):`,
-                          );
+                        onClick={async () => {
+                          const reason = await promptDialog({
+                            title: `Delete this ₹${money(e.amount)} ${EXPENSE_LABELS[e.category] || e.category} entry?`,
+                            message: 'Write the reason (kept in the audit log):',
+                            confirmLabel: 'Delete',
+                            tone: 'danger',
+                            multiline: true,
+                          });
                           if (reason === null) return;
                           deleteExpense(e.id, reason.trim() || undefined);
                         }}

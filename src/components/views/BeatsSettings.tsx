@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { Check, Pencil, Trash2 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { useBeats } from '../../hooks/useBeats';
 import { SUGGESTED_BEAT_NAMES, beatOfCustomer, placesWithoutBeat, suggestBeat } from '../../utils/beats';
@@ -37,19 +38,21 @@ export const BeatsSettings: React.FC = () => {
 
   if (currentUser?.role !== 'admin') {
     return (
-      <div className="bg-white rounded-2xl border border-neutral-200/90 p-4 text-sm text-neutral-600">
+      <div className="bg-white rounded-2xl border border-slate-200/90 p-4 text-sm text-slate-600">
         Only the owner can change beats.
       </div>
     );
   }
 
   const say = (tone: 'ok' | 'err', text: string) => setMsg({ tone, text });
-  const card = 'bg-white rounded-2xl border border-neutral-200/90 p-3.5 sm:p-5 shadow-xs';
+  const card = 'bg-white rounded-2xl border border-slate-200/90 p-4 sm:p-5 shadow-xs';
   const chip = (on: boolean) =>
-    `px-2.5 py-1 rounded-full text-xs font-semibold border cursor-pointer transition-colors ${
-      on ? 'bg-emerald-700 text-white border-emerald-700' : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50'
+    `h-8 px-3 rounded-full text-xs font-semibold border inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors ${
+      on
+        ? 'bg-[var(--primary)] text-white border-[var(--primary)] shadow-2xs'
+        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
     }`;
-  const btn = 'px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition-colors';
+  const btn = 'h-8 px-3 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1 whitespace-nowrap cursor-pointer transition-colors';
 
   const createInitial = () => {
     const names = [...picked, ...extra.split(',').map((s) => s.trim()).filter(Boolean)];
@@ -62,28 +65,29 @@ export const BeatsSettings: React.FC = () => {
   const deletingMembers = deleting_ ? customersIn(deleting_.id) : [];
 
   return (
-    <div className="space-y-4">
-      <div className={card}>
-        <h2 className="text-lg font-bold text-neutral-900">Beats</h2>
-        <p className="text-xs text-neutral-500 mt-1">
-          Delivery areas such as Kuchinda Town or Laida. Customers are put in a beat, salesmen are given the beats they
-          work, and billing screens filter customers by beat. Only the owner can change this.
-        </p>
-        {msg && (
-          <div className={`mt-3 px-3 py-2 rounded-xl text-xs font-semibold ${msg.tone === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'}`}>
-            {msg.text}
-          </div>
-        )}
-      </div>
+    <div className="space-y-3.5">
+      {msg && (
+        <div
+          role="status"
+          className={`px-3.5 py-2.5 rounded-xl text-xs font-semibold border ${
+            msg.tone === 'ok'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-rose-50 border-rose-200 text-rose-800'
+          }`}
+        >
+          {msg.text}
+        </div>
+      )}
 
       {!configured && (
         <div className={card}>
-          <h3 className="text-sm font-bold text-neutral-900">Set up your beats</h3>
-          <p className="text-xs text-neutral-500 mt-1">Tap to choose, then add any others (separate with commas). You can change all of this later.</p>
+          <h3 className="text-sm font-bold text-slate-900">Set up your beats</h3>
+          <p className="text-xs text-slate-500 mt-1">Tap to choose, then add any others (separate with commas). You can change all of this later.</p>
           <div className="flex flex-wrap gap-1.5 mt-3">
             {SUGGESTED_BEAT_NAMES.map((n) => (
               <button key={n} type="button" className={chip(picked.includes(n))} onClick={() => setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n]))}>
-                {n}
+                {picked.includes(n) && <Check size={12} className="shrink-0" />}
+                <span>{n}</span>
               </button>
             ))}
           </div>
@@ -93,7 +97,11 @@ export const BeatsSettings: React.FC = () => {
             value={extra}
             onChange={(e) => setExtra(e.target.value)}
           />
-          <button type="button" className={`${btn} bg-emerald-700 text-white hover:bg-emerald-800 mt-3`} onClick={createInitial}>
+          <button
+            type="button"
+            className="mt-3 px-4 py-2 rounded-xl bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] text-xs font-semibold cursor-pointer"
+            onClick={createInitial}
+          >
             Create beats
           </button>
         </div>
@@ -101,9 +109,9 @@ export const BeatsSettings: React.FC = () => {
 
       {configured && (
         <div className={card}>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             <input
-              className="crate-input flex-1"
+              className="crate-input flex-1 min-w-0"
               placeholder="New beat name"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
@@ -111,7 +119,7 @@ export const BeatsSettings: React.FC = () => {
             />
             <button
               type="button"
-              className={`${btn} bg-emerald-700 text-white hover:bg-emerald-800`}
+              className="px-4 py-2.5 rounded-xl bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] text-xs sm:text-sm font-semibold whitespace-nowrap shrink-0 cursor-pointer transition-colors"
               onClick={() => {
                 const r = addBeat(newName);
                 if (r.ok) { setNewName(''); say('ok', `Beat "${r.beat?.name}" added.`); } else say('err', r.error || 'Could not add.');
@@ -121,12 +129,13 @@ export const BeatsSettings: React.FC = () => {
             </button>
           </div>
           {places.length > 0 && (
-            <div className="mt-3">
-              <p className="text-[11px] text-neutral-500 mb-1.5">Places already typed on your customers — tap to create a beat:</p>
+            <div className="mt-3 pt-3 border-t border-slate-100">
+              <p className="text-xs text-slate-500 mb-2">Suggested from customer addresses:</p>
               <div className="flex flex-wrap gap-1.5">
                 {places.map((p) => (
                   <button key={p.name} type="button" className={chip(false)} onClick={() => { const r = addBeat(p.name); say(r.ok ? 'ok' : 'err', r.ok ? `Beat "${p.name}" added.` : r.error || ''); }}>
-                    {p.name} · {p.count}
+                    <span>{p.name}</span>
+                    <span className="text-slate-400 tabular-nums">{p.count}</span>
                   </button>
                 ))}
               </div>
@@ -135,86 +144,160 @@ export const BeatsSettings: React.FC = () => {
         </div>
       )}
 
-      {configured && beats.length === 0 && <div className={card}><p className="text-sm text-neutral-500">No beats yet. Add one above.</p></div>}
+      {configured && beats.length === 0 && <div className={card}><p className="text-sm text-slate-500">No beats yet. Add one above.</p></div>}
 
-      {beats.map((b) => {
-        const members = customersIn(b.id).length;
-        const isEditing = editing?.id === b.id;
-        return (
-          <div key={b.id} className={`${card} ${b.active === false ? 'opacity-70' : ''}`}>
-            <div className="flex items-center justify-between gap-2">
+      <div className="space-y-3">
+        {beats.map((b) => {
+          const members = customersIn(b.id).length;
+          const isEditing = editing?.id === b.id;
+          return (
+            <div key={b.id} className={`${card} ${b.active === false ? 'opacity-70' : ''}`}>
               {isEditing ? (
-                <div className="flex gap-2 flex-1">
-                  <input className="crate-input flex-1" value={editing.name} onChange={(e) => setEditing({ id: b.id, name: e.target.value })} autoFocus />
-                  <button type="button" className={`${btn} bg-emerald-700 text-white`} onClick={() => { const r = renameBeat(b.id, editing.name); if (r.ok) { setEditing(null); say('ok', 'Beat renamed. Its customers moved with it.'); } else say('err', r.error || ''); }}>Save</button>
-                  <button type="button" className={`${btn} border border-neutral-300`} onClick={() => setEditing(null)}>Cancel</button>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    className="crate-input flex-1 min-w-0"
+                    value={editing.name}
+                    onChange={(e) => setEditing({ id: b.id, name: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const r = renameBeat(b.id, editing.name);
+                        if (r.ok) { setEditing(null); say('ok', 'Beat renamed. Its customers moved with it.'); }
+                        else say('err', r.error || '');
+                      }
+                    }}
+                    autoFocus
+                  />
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      className={`${btn} bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)]`}
+                      onClick={() => {
+                        const r = renameBeat(b.id, editing.name);
+                        if (r.ok) { setEditing(null); say('ok', 'Beat renamed. Its customers moved with it.'); }
+                        else say('err', r.error || '');
+                      }}
+                    >
+                      Save
+                    </button>
+                    <button type="button" className={`${btn} border border-slate-200 bg-white text-slate-700 hover:bg-slate-50`} onClick={() => setEditing(null)}>
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               ) : (
-                <div className="min-w-0">
-                  <div className="font-bold text-neutral-900 truncate">{b.name}{b.active === false && <span className="ml-2 text-[10px] font-semibold text-neutral-500">(off)</span>}</div>
-                  <div className="text-xs text-neutral-500">{members} customer{members === 1 ? '' : 's'}</div>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-[15px] font-bold text-slate-900 leading-snug break-words">
+                        {b.name}
+                      </h3>
+                      {b.active === false && (
+                        <span className="text-xs font-semibold text-slate-400">· Off</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-0.5 tabular-nums">
+                      {members} customer{members === 1 ? '' : 's'}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      className={`${btn} border border-slate-200 bg-white text-slate-700 hover:bg-slate-50`}
+                      onClick={() => setEditing({ id: b.id, name: b.name })}
+                    >
+                      <Pencil size={12} className="text-slate-500 shrink-0" />
+                      <span>Rename</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`${btn} border border-slate-200 bg-white text-slate-700 hover:bg-slate-50`}
+                      onClick={() => updateBeat(b.id, { active: b.active === false })}
+                    >
+                      {b.active === false ? 'Switch on' : 'Switch off'}
+                    </button>
+                    <button
+                      type="button"
+                      className="ml-auto sm:ml-0 size-8 rounded-lg border border-transparent text-slate-400 hover:text-rose-600 hover:bg-rose-50 inline-flex items-center justify-center cursor-pointer transition-colors shrink-0"
+                      onClick={() => { setDeleting(b.id); setMoveTo(''); }}
+                      aria-label={`Delete ${b.name}`}
+                      title={`Delete ${b.name}`}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
                 </div>
               )}
-              {!isEditing && (
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <button type="button" className={`${btn} border border-neutral-300`} onClick={() => setEditing({ id: b.id, name: b.name })}>Rename</button>
-                  <button type="button" className={`${btn} border border-neutral-300`} onClick={() => updateBeat(b.id, { active: b.active === false })}>
-                    {b.active === false ? 'Switch on' : 'Switch off'}
-                  </button>
-                  <button type="button" className={`${btn} border border-rose-300 text-rose-700`} onClick={() => { setDeleting(b.id); setMoveTo(''); }}>Delete</button>
-                </div>
-              )}
+
+              <div className="mt-3 pt-3 border-t border-slate-100">
+                <p className="text-xs font-medium text-slate-500 mb-2">Assigned salesmen</p>
+                {staff.length === 0 ? (
+                  <p className="text-xs text-slate-400">Add salesmen under Staff &amp; Roles first.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {staff.map((s) => {
+                      const on = (b.salesmanIds || []).includes(s.id);
+                      return (
+                        <button
+                          key={s.id}
+                          type="button"
+                          aria-pressed={on}
+                          className={chip(on)}
+                          onClick={() =>
+                            updateBeat(b.id, {
+                              salesmanIds: on
+                                ? (b.salesmanIds || []).filter((x) => x !== s.id)
+                                : [...(b.salesmanIds || []), s.id],
+                            })
+                          }
+                        >
+                          {on && <Check size={12} className="shrink-0" />}
+                          <span>{s.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="mt-3">
-              <p className="text-[11px] text-neutral-500 mb-1.5">Salesmen who work this beat:</p>
-              {staff.length === 0 ? (
-                <p className="text-xs text-neutral-400">Add salesmen under Staff & Roles first.</p>
-              ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {staff.map((s) => {
-                    const on = (b.salesmanIds || []).includes(s.id);
-                    return (
-                      <button key={s.id} type="button" className={chip(on)} onClick={() => updateBeat(b.id, { salesmanIds: on ? (b.salesmanIds || []).filter((x) => x !== s.id) : [...(b.salesmanIds || []), s.id] })}>
-                        {s.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
 
       {configured && beats.length > 0 && (
         <div className={card}>
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-bold text-neutral-900">Customers without a beat</h3>
-              <p className="text-xs text-neutral-500">{unassigned.length} customer{unassigned.length === 1 ? '' : 's'} not in any beat yet. You can also set a customer's beat when you edit them.</p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="min-w-0">
+              <h3 className="text-sm font-bold text-slate-900">Customers without a beat</h3>
+              <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
+                {unassigned.length} customer{unassigned.length === 1 ? '' : 's'} not assigned to a beat yet.
+              </p>
             </div>
             {matches.length > 0 && (
-              <button type="button" className={`${btn} bg-neutral-900 text-white`} onClick={() => { setMatchOpen((v) => !v); setMatchOff(new Set()); }}>
-                {matchOpen ? 'Hide' : `Auto-match ${matches.length}`}
+              <button
+                type="button"
+                className={`${btn} self-start sm:self-auto bg-slate-900 text-white hover:bg-slate-800`}
+                onClick={() => { setMatchOpen((v) => !v); setMatchOff(new Set()); }}
+              >
+                {matchOpen ? 'Hide matches' : `Auto-match ${matches.length}`}
               </button>
             )}
           </div>
           {matchOpen && (
-            <div className="mt-3 border-t border-neutral-100 pt-3">
-              <p className="text-[11px] text-neutral-500 mb-2">Matched from the city / address typed on each customer. Untick any that are wrong, then apply.</p>
-              <div className="max-h-72 overflow-y-auto divide-y divide-neutral-100">
+            <div className="mt-3 border-t border-slate-100 pt-3">
+              <p className="text-xs text-slate-500 mb-2">Matched from each customer&apos;s address. Uncheck any that do not fit, then apply.</p>
+              <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
                 {matches.map(({ c, beat }) => (
-                  <label key={c.id} className="flex items-center gap-2 py-1.5 text-xs cursor-pointer">
+                  <label key={c.id} className="flex items-center gap-2 py-2 text-xs cursor-pointer">
                     <input type="checkbox" checked={!matchOff.has(c.id)} onChange={() => setMatchOff((s) => { const n = new Set(s); if (n.has(c.id)) n.delete(c.id); else n.add(c.id); return n; })} />
-                    <span className="flex-1 truncate font-semibold text-neutral-800">{c.name}</span>
-                    <span className="text-neutral-400 truncate max-w-[30%]">{c.city || c.address || ''}</span>
-                    <span className="font-bold text-emerald-700">→ {beat.name}</span>
+                    <span className="flex-1 min-w-0 break-words font-semibold text-slate-800">{c.name}</span>
+                    <span className="font-semibold text-[var(--primary)] whitespace-nowrap shrink-0">→ {beat.name}</span>
                   </label>
                 ))}
               </div>
               <button
                 type="button"
-                className={`${btn} bg-emerald-700 text-white mt-3`}
+                className={`${btn} bg-[var(--primary)] text-white hover:bg-[var(--primary-hover)] mt-3`}
                 onClick={() => {
                   const byBeat = new Map<string, string[]>();
                   for (const { c, beat } of matches) if (!matchOff.has(c.id)) byBeat.set(beat.id, [...(byBeat.get(beat.id) || []), c.id]);
@@ -224,7 +307,7 @@ export const BeatsSettings: React.FC = () => {
                   say('ok', `${n} customer${n === 1 ? '' : 's'} added to their beats.`);
                 }}
               >
-                Apply
+                Apply matches
               </button>
             </div>
           )}

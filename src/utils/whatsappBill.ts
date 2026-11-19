@@ -12,7 +12,7 @@
 import type { Bill, BillingSettings, OrganizationProfile } from '../types';
 import { money, whatsappLink } from './billing';
 import { invoicePdfFilename } from './invoicePdfMeta';
-import { isBillGstInvoice } from './invoiceCommon';
+import { formatBillNumber, isBillGstInvoice } from './invoiceCommon';
 import { preloadInvoicePdf } from './invoicePdfLazy';
 
 export type WhatsAppBillResult = 'shared' | 'cancelled' | 'downloaded' | 'failed';
@@ -25,8 +25,7 @@ export function buildWhatsAppCaption(bill: Bill, org?: OrganizationProfile, sett
   const paid = Number(bill.amountPaid) || 0;
   const due = Math.max(0, Math.round((total - paid) * 100) / 100);
   const name = org?.name || 'Hydrate Hub';
-  const prefix = settings?.invoicePrefix || '';
-  const no = prefix ? `${prefix}-${bill.id}` : `#${bill.id}`;
+  const no = formatBillNumber(bill, settings);
   const lines = [`${name}`, `Bill ${no}${bill.date ? ` · ${bill.date}` : ''}`];
   lines.push(`Total ₹${money(total)} · Paid ₹${money(paid)}${due > 0 ? ` · Due ₹${money(due)}` : ''}`);
   lines.push('Thank you!');
@@ -46,7 +45,8 @@ export async function sendBillOnWhatsApp(
     const filename = invoicePdfFilename(bill, settings, invoiceFormat, PAPER);
     const isGst = isBillGstInvoice(bill, invoiceFormat);
     const caption = buildWhatsAppCaption(bill, org, settings);
-    const title = `${isGst ? 'Tax Invoice' : 'Bill'} ${settings?.invoicePrefix ? settings.invoicePrefix + '-' : '#'}${bill.id} - ${bill.retailer || 'Cash'}`;
+    const billNo = formatBillNumber(bill, settings, invoiceFormat);
+    const title = `${isGst ? 'Tax Invoice' : 'Bill'} ${billNo} - ${bill.retailer || 'Cash'}`;
 
     const result = await sharePdfFile(doc, filename, title, caption);
     if (result !== 'unsupported') return result;

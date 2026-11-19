@@ -27,11 +27,13 @@ export function stockCrateCost(
     cgstPercent?: number | null;
     sgstPercent?: number | null;
     igstPercent?: number | null;
+    taxability?: string | null;
     [k: string]: any;
   },
   basis: CostBasis,
 ): number {
   const ex = resolveItemCrateCost(item);
+  if (item.taxability === 'non_gst') return ex;
   if (basis !== 'incl_gst') return ex;
   const hasSplit = item.cgstPercent != null && item.sgstPercent != null;
   const taxPct = (Number(item.cgstPercent) || 0) + (Number(item.sgstPercent) || 0) + (Number(item.igstPercent) || 0);

@@ -705,9 +705,9 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {a.entries.map((e) => (
+                                  {a.entries.map((e, idx) => (
                                     <tr
-                                      key={e.productId}
+                                      key={e.batchKey ? `${e.batchKey}-${idx}` : `${e.productId}-${idx}`}
                                       className="border-t hover:bg-slate-50/60"
                                       style={{ borderColor: palette.line }}
                                     >
@@ -721,6 +721,17 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                                           pack={products.find((p) => p.id === e.productId)?.pack}
                                           name={e.name}
                                         />
+                                        {e.batchNumber && (
+                                          <div className="text-[11px] text-slate-500 font-normal">
+                                            Batch {e.batchNumber}
+                                            {e.expiryDate ? ` · Exp ${e.expiryDate}` : ''}
+                                          </div>
+                                        )}
+                                        {e.kind === 'oversold_adjust' && (
+                                          <div className="text-[11px] text-rose-700 font-normal">
+                                            Oversold adjustment{e.reason ? ` · ${e.reason}` : ''}
+                                          </div>
+                                        )}
                                       </td>
                                       <td className="px-3 py-1.5 text-right text-slate-600">{e.system} cs</td>
                                       <td className="px-3 py-1.5 text-right font-bold text-slate-800">{e.counted} cs</td>
@@ -735,7 +746,9 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                                               : palette.bad,
                                         }}
                                       >
-                                        {e.diff === 0
+                                        {e.kind === 'oversold_open'
+                                          ? 'Oversold · under investigation'
+                                          : e.diff === 0
                                           ? '0 (Exact)'
                                           : `${e.diff > 0 ? `+${e.diff}` : e.diff} cs ${e.diff > 0 ? '(Excess)' : '(Shortage)'}`}
                                       </td>

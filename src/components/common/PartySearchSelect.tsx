@@ -234,7 +234,7 @@ export const PartySearchSelect: React.FC<PartySearchSelectProps> = ({
                   }`}
                 >
                   <div className="min-w-0">
-                    <div className="text-sm font-semibold text-slate-900 truncate">{o.name}</div>
+                    <div className="text-sm font-semibold text-slate-900 min-w-0 break-words lg:truncate">{o.name}</div>
                     {o.phone ? <div className="text-[11px] text-slate-500">{o.phone}</div> : null}
                   </div>
                   {o.due > 0.004 ? (

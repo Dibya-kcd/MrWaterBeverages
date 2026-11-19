@@ -19,7 +19,7 @@ type TranslationMap = Record<string, string>;
 const en: TranslationMap = {
   // ─── Navigation ───────────────────────────────────────────────
   'nav.home': 'Home',
-  'nav.sell': 'Sell',
+  'nav.sell': 'Sales',
   'nav.parties': 'Parties',
   'nav.products': 'Products',
   'nav.inventory': 'Inventory',
@@ -37,7 +37,7 @@ const en: TranslationMap = {
 
   // ─── Salesman tabs ────────────────────────────────────────────
   'salesman.tab.home': 'Home',
-  'salesman.tab.sell': 'Sell',
+  'salesman.tab.sell': 'Sales',
   'salesman.tab.vanStock': 'Van Stock',
   'salesman.tab.bills': 'Bills',
   'salesman.tab.customerDue': 'Customer Due',

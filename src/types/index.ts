@@ -1,5 +1,7 @@
 export type CategoryKey = 'energy' | 'vibe' | 'joos' | 'water' | 'general';
 
+export type Taxability = 'taxable' | 'exempt' | 'nil_rated' | 'non_gst';
+
 export interface CategoryInfo {
   name: string;
   hsn: string;
@@ -27,6 +29,12 @@ export interface Product {
   wholesale: number;
   hsn?: string;
   gstRate?: number;
+  /** Tax classification: 'non_gst' keeps 0% GST, optional HSN, and excludes the item from all GST calculations. */
+  taxability?: Taxability;
+  /** Manual per-case labour charge included in landed cost. */
+  labourCost?: number;
+  /** Manual per-case freight charge included in landed cost. */
+  freightCost?: number;
   scheme?: string;
   unitsPerCrate?: number;
   packSize?: string;
@@ -219,6 +227,8 @@ export interface BillItem {
   costExGst?: number;
   /** Ex-GST value of the line, written by applyCartSchemes (GST is inclusive in list rates). */
   taxable?: number;
+  /** Tax classification of this line ('non_gst' forces 0% GST and skips tax extraction). */
+  taxability?: Taxability;
   /** Half of the line GST rate, in percent (e.g. 9 for an 18% line). 0 on non-GST invoices. */
   cgstRate?: number;
   cgst?: number;
@@ -274,6 +284,8 @@ export interface Bill extends BillTotals {
   amountPaid: number;
   warehouseId?: string;
   tripId?: number;
+  /** Where the stock for this sale came from (set by the New Sale screen). */
+  saleSource?: 'trip' | 'warehouse';
   vehicle?: string;
   /** E-way bill number (12 digits) generated on the GST portal for this invoice, when goods worth more than Rs 50,000 move. */
   ewayBillNo?: string;
@@ -329,6 +341,14 @@ export interface Bill extends BillTotals {
   totalCgst?: number;
   totalSgst?: number;
   totalTax?: number;
+  /** Formatted document number (e.g. 'NG-1' for Non-GST memos, or 'INV-105' for GST invoices). */
+  docNo?: string;
+  /** Document numbering series: 'gst' for Tax Invoices, 'non_gst' for separate Trading/Non-GST memos. */
+  docSeries?: 'gst' | 'non_gst';
+  /** When true, completely excluded from all GST filings (GSTR-1, GSTR-3B, HSN, e-Way, CA packs). */
+  gstExclude?: boolean;
+  /** Shared ID linking the GST and Non-GST bills created by an auto-split checkout. */
+  splitGroupId?: string;
 }
 
 /** One product line of a customer sales return. Restocked crates go back into the godown; scrapped crates stay written off. */
@@ -539,9 +559,33 @@ export interface TripShortageEntry {
   /** Crates short for this product when the reason was recorded. */
   qty: number;
   note?: string;
-  /** Damage write-off posted to stock for 'broken' crates, so a re-close updates it, not duplicates it. */
+  /** Stock write-off posted for crates that physically left the godown (see TRIP_WRITEOFF_REASONS), so a re-close updates it, not duplicates it. */
   dispositionId?: string;
+  /**
+   * Only when the product had BOTH damaged crates (this entry, reason 'broken') and crates that were simply
+   * missing: the missing part, with its own reason, count and stock write-off.
+   */
+  missing?: {
+    reason: Exclude<TripShortageReason, 'broken'>;
+    qty: number;
+    note?: string;
+    dispositionId?: string;
+  };
 }
+
+/** What the close-trip screen hands to saveReturn for one product. */
+export interface TripShortageInput {
+  reason: TripShortageReason;
+  note?: string;
+  /** Crates counted damaged. When the product is also short, `reason`/`note` describe the missing part only. */
+  damaged?: number;
+}
+
+/**
+ * Reasons whose crates really left the godown, so book stock must drop (posted as a write-off when the trip closes).
+ * 'short_loaded' is not here on purpose: those crates never reached the van, so they are still on the shelf.
+ */
+export const TRIP_WRITEOFF_REASONS: readonly TripShortageReason[] = ['broken', 'sold_not_billed', 'other'];
 
 export interface Salesman {
   id: string; // uuid
@@ -655,6 +699,21 @@ export interface AuditEntry {
   diff: number;
   /** Godown the count/adjustment applies to. Set on audits that adjusted live stock. */
   warehouseId?: string;
+  /**
+   * Batch-level audits (Inventory > Audit) record one entry per batch. `batchKey` is the stable
+   * warehouse|batch|expiry line key, so the difference is applied to THAT batch instead of being
+   * spread First-Expiry-First-Out. Older product-level entries have none of these fields.
+   */
+  batchKey?: string;
+  batchNumber?: string;
+  expiryDate?: string;
+  /**
+   * 'oversold_adjust' = owner posted an adjustment to clear a negative book balance;
+   * 'oversold_open' = oversold line recorded as under investigation (no stock change).
+   */
+  kind?: 'batch' | 'oversold_adjust' | 'oversold_open';
+  /** Reason chosen for an oversold adjustment / note for the line. */
+  reason?: string;
 }
 
 export interface Audit {
@@ -974,6 +1033,9 @@ export interface ImportRow {
   category: CategoryKey;
   batchNumber?: string;
   hsn?: string;
+  taxability?: Taxability;
+  labourCost?: number;
+  freightCost?: number;
   scheme?: string;
   supplierName?: string;
   supplierGstin?: string;
@@ -1010,6 +1072,9 @@ export interface GrnLineItem {
   category: CategoryKey;
   sku: string; // Auto-generated or existing SKU
   hsn: string; // HSN/SAC
+  taxability?: Taxability;
+  labourCost?: number;
+  freightCost?: number;
   qty: number; // Billed quantity
   unitPrice: number; // Rate/Price per unit before scheme & tax (ex-GST)
 

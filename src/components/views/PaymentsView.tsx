@@ -37,9 +37,11 @@ import { ConfirmModal, Badge } from "../ui";
 import { billBalance, billNetTotal } from "../../utils/salesReturns";
 import { todayISO, toLocalISODate } from "../../utils/dateLocal";
 import { PaymentAuditModal } from "../common/PaymentAuditModal";
+import { GhostPaymentsModal } from "../common/GhostPaymentsModal";
 import { PartySearchSelect, type PartyOption } from "../common/PartySearchSelect";
 import { PaymentReportsPanel } from "./payments/PaymentReportsPanel";
 import { formatPaymentId } from "../../utils/beatReports";
+import { formatBillNumber, isGstExcludedBill } from "../../utils/invoiceCommon";
 
 /** Formats a date string into "14 May" or "02 Oct" format */
 function formatItemDate(dateStr: string): string {
@@ -97,6 +99,8 @@ export const PaymentsView: React.FC = () => {
     paymentAudit,
     updatePayment,
     deletePayment,
+    ghostPayments,
+    removeGhostPayments,
     existingCustomers,
     getCustomerLedger,
     bills,
@@ -104,6 +108,8 @@ export const PaymentsView: React.FC = () => {
     expenses,
     palette,
     orgProfile,
+    billingSettings,
+    products,
     currentUser,
   } = useLedger();
 
@@ -144,6 +150,7 @@ export const PaymentsView: React.FC = () => {
   const [receiptPayment, setReceiptPayment] = useState<PaymentRecord | null>(null);
   const [paymentToEdit, setPaymentToEdit] = useState<PaymentRecord | null>(null);
   const [showAuditLog, setShowAuditLog] = useState(false);
+  const [showGhostPaymentsModal, setShowGhostPaymentsModal] = useState(false);
   const [paymentToDelete, setPaymentToDelete] = useState<PaymentRecord | null>(null);
   const [taxInvoiceModalBill, setTaxInvoiceModalBill] = useState<Bill | null>(null);
   const [whatsAppPromptPayment, setWhatsAppPromptPayment] = useState<PaymentRecord | null>(null);
@@ -468,8 +475,8 @@ export const PaymentsView: React.FC = () => {
               className="px-4 py-3 flex items-start justify-between gap-3 hover:bg-slate-50 active:bg-slate-100 cursor-pointer transition-colors"
             >
               <div className="min-w-0 flex-1">
-                <div className="font-bold text-slate-800 text-sm truncate">{p.customerName}</div>
-                <div className="text-slate-500 text-xs mt-0.5 truncate">
+                <div className="font-bold text-slate-800 text-sm min-w-0 break-words lg:truncate">{p.customerName}</div>
+                <div className="text-slate-500 text-xs mt-0.5 min-w-0 break-words lg:truncate">
                   {formatPaymentId(p.id, idx)} · {formatItemDate(p.paymentDate || p.createdAt)} · {String(p.mode || "").toUpperCase()}
                 </div>
               </div>
@@ -776,16 +783,38 @@ export const PaymentsView: React.FC = () => {
               </h1>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowAuditLog(true)}
-              className="self-start sm:self-auto px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer shadow-2xs"
-            >
-              Audit log
-            </button>
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+              <button
+                type="button"
+                onClick={() => setShowGhostPaymentsModal(true)}
+                className={`px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer shadow-2xs transition-colors ${
+                  ghostPayments.length > 0
+                    ? "border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
+                    : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                }`}
+              >
+                {ghostPayments.length > 0
+                  ? `Ghost payments (${ghostPayments.length})`
+                  : "Ghost payments"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowAuditLog(true)}
+                className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer shadow-2xs"
+              >
+                Audit log
+              </button>
+            </div>
           </div>
           {showAuditLog && (
             <PaymentAuditModal entries={paymentAudit} onClose={() => setShowAuditLog(false)} />
+          )}
+          {showGhostPaymentsModal && (
+            <GhostPaymentsModal
+              candidates={ghostPayments}
+              onRemoveSelected={(ids, reason) => removeGhostPayments(ids, reason)}
+              onClose={() => setShowGhostPaymentsModal(false)}
+            />
           )}
 
           {/* Realtime Cash in Box & Financial Summary Cards (Synchronized Layout & Typography) */}
@@ -938,7 +967,7 @@ export const PaymentsView: React.FC = () => {
                   <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
                     <div>
                       <span className="text-[11px] text-slate-500 font-medium block">Selected Account</span>
-                      <p className="text-sm font-bold text-slate-900 truncate">{selectedParty}</p>
+                      <p className="text-sm font-bold text-slate-900 min-w-0 break-words lg:truncate">{selectedParty}</p>
                     </div>
                     <div className="text-right">
                       <p className="text-xl font-bold font-mono tabular-nums text-rose-600">
@@ -1252,7 +1281,12 @@ export const PaymentsView: React.FC = () => {
                             title="Click to populate Record Receipt form above"
                           >
                             <td className="py-3.5 px-4 font-bold text-slate-800 text-sm whitespace-nowrap">
-                              INV-{String(b.id).padStart(4, "0")}
+                              <span>{formatBillNumber(b, billingSettings)}</span>
+                              {isGstExcludedBill(b, products) && (
+                                <span className="ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-50 text-teal-800 border border-teal-200 uppercase">
+                                  Non-GST
+                                </span>
+                              )}
                             </td>
                             <td className="py-3.5 px-4 text-slate-500 text-sm">
                               {b.retailer || "Cash Sale"} · {formatItemDate(b.date || "")}
@@ -1305,10 +1339,15 @@ export const PaymentsView: React.FC = () => {
                           title="Click to populate Record Receipt form"
                         >
                           <div className="min-w-0 flex-1">
-                            <div className="font-bold text-slate-800 text-sm">
-                              INV-{String(b.id).padStart(4, "0")}
+                            <div className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                              <span>{formatBillNumber(b, billingSettings)}</span>
+                              {isGstExcludedBill(b, products) && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-50 text-teal-800 border border-teal-200 uppercase">
+                                  Non-GST
+                                </span>
+                              )}
                             </div>
-                            <div className="text-slate-500 text-xs mt-0.5 truncate">
+                            <div className="text-slate-500 text-xs mt-0.5 min-w-0 break-words lg:truncate">
                               {b.retailer || "Cash Sale"} · {formatItemDate(b.date || "")} · ₹{money(due)}
                             </div>
                           </div>

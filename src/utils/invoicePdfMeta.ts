@@ -1,5 +1,5 @@
 import type { Bill, BillingSettings } from '../types';
-import { isBillGstInvoice } from './invoiceCommon';
+import { formatBillNumber, isBillGstInvoice } from './invoiceCommon';
 
 // Pure helpers (no jsPDF) shared by the PDF code and by screens that only need the paper / file name.
 
@@ -18,10 +18,12 @@ export function invoicePdfFilename(
   options?: InvoicePdfOptions
 ): string {
   const isGst = isBillGstInvoice(bill, invoiceFormat);
-  const prefix = settings?.invoicePrefix || (isGst ? 'INV' : 'RET');
+  const docNo = formatBillNumber(bill, settings, invoiceFormat);
   const cleanRetailer = (bill.retailer || 'Cash').replace(/[^a-zA-Z0-9_-]/g, '_');
   const paper = resolveInvoicePaper(settings, options) === '80mm' ? '_80mm' : '';
   return isGst
-    ? `Tax_Invoice_${prefix}-${bill.id}_${cleanRetailer}${paper}.pdf`
-    : `Retail_Bill_${prefix}-${bill.id}_${cleanRetailer}${paper}.pdf`;
+    ? `Tax_Invoice_${docNo}_${cleanRetailer}${paper}.pdf`
+    : bill.docSeries === 'non_gst' || bill.gstExclude
+      ? `Cash_Memo_${docNo}_${cleanRetailer}${paper}.pdf`
+      : `Retail_Bill_${docNo}_${cleanRetailer}${paper}.pdf`;
 }

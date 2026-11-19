@@ -71,7 +71,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
         </button>
 
         {showIOSGuide && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+          <div role="dialog" aria-modal="true" aria-label="Install the app" className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
             <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl border-2 border-slate-300 text-slate-900 space-y-4">
               <div className="flex items-center justify-between border-b pb-3">
                 <h3 className="font-black text-base text-slate-900 flex items-center gap-2">

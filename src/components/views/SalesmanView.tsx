@@ -58,12 +58,14 @@ import { OdiaName } from '../common/OdiaName';
 import { normCustName, splitSameNameShops } from '../../context/ledgerHelpers';
 import { Bill, BillItem, ExistingCustomer, PriceType, Product, Trip } from '../../types';
 import { billTotals, computeLine, normalizeGstFraction, money, schemeLabel, whatsappLink, resolveProductGstRate, resolveProductHsn, formatProductVolPack, volumeFromName } from '../../utils/billing';
+import { resolveTripGodownDisplay, tripPrimaryWarehouseId } from '../../utils/tripLoads';
 import { getProductOdiaName, getCustomerOdiaName } from '../../utils/displayName';
 import { isSpeechRecognitionSupported, speakAssistiveText, startSpeechRecognition } from '../../utils/speechRecognition';
 import { CustomerSelector } from '../common/CustomerSelector';
 import { AddCustomerModal } from '../common/AddCustomerModal';
 import { TaxInvoiceModal } from '../common/TaxInvoiceModal';
 import { SalesmanCartModal } from '../common/SalesmanCartModal';
+import { cartTaxMix } from '../../utils/invoiceCommon';
 import { SalesmanSaleWorkflow } from './SalesmanSaleWorkflow';
 import { SalesmanCustomerDueLookup } from './SalesmanCustomerDueLookup';
 import { billBalance } from '../../utils/salesReturns';
@@ -85,6 +87,7 @@ export const SalesmanView: React.FC = () => {
     addTrip,
     remainingStock,
     finalizeBill,
+    finalizeSplitBills,
     getVehicleStock,
     cart,
     setCart,
@@ -1111,6 +1114,7 @@ export const SalesmanView: React.FC = () => {
     // Default is credit (0 paid) unless entered
     const paid = amountPaidDraft !== '' ? Math.max(0, Number(amountPaidDraft) || 0) : 0;
     const activeDate = saleDate || todayISO();
+    const activeTripWarehouseId = tripPrimaryWarehouseId(activeTrip);
 
     // Update cart party info before finalizing
     setCart((prev) => ({
@@ -1118,12 +1122,57 @@ export const SalesmanView: React.FC = () => {
       retailer: selectedRetailer.trim(),
       phone: retailerPhone.trim(),
       date: activeDate,
-      warehouseId: activeTrip.warehouseId || '',
+      warehouseId: activeTripWarehouseId,
       tripId: activeTrip.id,
       vehicle: activeTrip.vehicle,
       salesman: activeTrip.salesman,
       additionalDiscount: appliedDiscount,
     }));
+
+    const partyForBill = {
+      // pass the chosen shop explicitly: the setCart() above has not been applied yet
+      retailer: selectedRetailer.trim(),
+      phone: retailerPhone.trim(),
+      salesman: activeTrip.salesman,
+      vehicle: activeTrip.vehicle,
+      warehouseId: activeTripWarehouseId,
+      customerId: retailerCustomerId || undefined,
+    };
+
+    // Mixed cart (GST + Non-GST items): same rule as the owner screen -> two linked bills.
+    // GST Tax Invoice (INV-) for taxable items, Non-GST Cash Memo (NG-) for trading items.
+    if (cartTaxMix(cart.items, products).hasMixed) {
+      const split = finalizeSplitBills({
+        amountPaid: paid,
+        tripId: activeTrip.id,
+        overallDiscount: appliedDiscount,
+        billDate: activeDate,
+        extras: { party: partyForBill },
+      });
+      if (!split || !split.gstBill || !split.nonGstBill) return;
+      const phoneForSplit = retailerPhone.trim();
+      triggerFeedback(
+        `✓ Split sale saved: ${split.gstBill.docNo || 'Invoice'} + ${split.nonGstBill.docNo || 'Cash Memo'}. Van stock updated.`,
+        'success',
+      );
+      if (isLowVision) speakAssistiveText('Sale finalized as a tax invoice and a cash memo. Vehicle stock updated.');
+      if (phoneForSplit) {
+        const text = buildBillMessage(split.gstBill, orgProfile, billingSettings);
+        const url = whatsappLink(phoneForSplit, text);
+        if (autoSendWhatsApp) setLastFinalizedWhatsApp({ id: split.gstBill.id, phone: phoneForSplit, url, bill: split.gstBill });
+        else setLastFinalizedWhatsApp(null);
+      }
+      setConfirmedBill(split.gstBill);
+      setSelectedRetailer('');
+      setRetailerPhone('');
+      setRetailerCustomerId('');
+      setAmountPaidDraft('0');
+      setInvoiceDiscountDraft('');
+      setSettledTotalDraft('');
+      setQuantity(1);
+      setIsCartOpen(false);
+      return;
+    }
 
     const billId = finalizeBill(paid, activeTrip.id, appliedDiscount, undefined, undefined, undefined, activeDate, {
       // pass the chosen shop explicitly: the setCart() above has not been applied yet
@@ -1132,7 +1181,7 @@ export const SalesmanView: React.FC = () => {
         phone: retailerPhone.trim(),
         salesman: activeTrip.salesman,
         vehicle: activeTrip.vehicle,
-        warehouseId: activeTrip.warehouseId || '',
+        warehouseId: activeTripWarehouseId,
         // the picked customer record (checked against name/phone inside finalizeBill); empty = match by name + phone
         customerId: retailerCustomerId || undefined,
       },
@@ -1153,7 +1202,7 @@ export const SalesmanView: React.FC = () => {
           date: activeDate,
           items: cart.items,
           amountPaid: paid,
-          warehouseId: activeTrip.warehouseId || '',
+          warehouseId: activeTripWarehouseId,
           tripId: activeTrip.id,
           vehicle: activeTrip.vehicle,
           salesman: activeTrip.salesman,
@@ -1176,7 +1225,7 @@ export const SalesmanView: React.FC = () => {
         date: activeDate,
         items: [...cart.items],
         amountPaid: paid,
-        warehouseId: activeTrip.warehouseId || '',
+        warehouseId: activeTripWarehouseId,
         tripId: activeTrip.id,
         vehicle: activeTrip.vehicle,
         salesman: activeTrip.salesman,
@@ -1233,12 +1282,12 @@ export const SalesmanView: React.FC = () => {
                   <div className="text-[11px] font-black uppercase tracking-wider text-amber-500">
                     {t('salesman.routeDashboard')}
                   </div>
-                  <h1 className="text-xl sm:text-2xl font-black text-slate-900 truncate leading-tight">
+                  <h1 className="text-xl sm:text-2xl font-black text-slate-900 min-w-0 break-words lg:truncate leading-tight">
                     {currentUser?.name || userSalesmanName || activeSalesman?.name || 'Sales Staff'}
                   </h1>
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 mt-0.5 truncate">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 mt-0.5 min-w-0 break-words lg:truncate">
                     <Truck size={14} className="text-slate-400 shrink-0" />
-                    <span className="truncate">
+                    <span className="min-w-0 break-words lg:truncate">
                       {activeTrip?.vehicle
                         ? `${activeTrip.vehicle}${activeTrip.route ? ' • ' + activeTrip.route : ''}`
                         : t('salesman.noActiveVehicle')}
@@ -1804,7 +1853,7 @@ export const SalesmanView: React.FC = () => {
                     </h2>
                     <p className="text-xs font-semibold text-slate-500 mt-0.5">
                       {activeTrip
-                        ? `${activeTrip.route || 'Route'} · ${warehouses.find((w) => w.id === activeTrip.warehouseId)?.name || 'Main Godown'}`
+                        ? `${activeTrip.route || 'Route'} · ${resolveTripGodownDisplay({ trip: activeTrip, warehouses }).label || 'Main Godown'}`
                         : 'No vehicle currently assigned.'}
                     </p>
                   </div>
@@ -1853,7 +1902,7 @@ export const SalesmanView: React.FC = () => {
                     style={{ borderColor: palette.line }}
                   />
                   {vanStockSearch && (
-                    <button aria-label="Close"
+                    <button aria-label="Clear search"
                       type="button"
                       onClick={() => setVanStockSearch('')}
                       className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
@@ -2097,7 +2146,7 @@ export const SalesmanView: React.FC = () => {
                     {myBillsSearch
                       ? `No bills matching "${myBillsSearch}".`
                       : myBillsScope === 'currentTrip'
-                      ? 'No sales recorded on the current active trip yet. Switch to "Sell" to create bills.'
+                      ? 'No sales recorded on the current active trip yet. Switch to "Sales" to create bills.'
                       : 'No past bills found for your account.'}
                   </div>
                   {myBillsScope === 'currentTrip' && myBills.length > 0 && (
@@ -2316,7 +2365,7 @@ export const SalesmanView: React.FC = () => {
                       </span>
                     </div>
                     <span className="text-[11px] font-bold text-sky-700 bg-white/80 px-2 py-0.5 rounded border border-sky-200">
-                      {warehouses.find((w) => w.id === activeTrip.warehouseId)?.name || 'Main Godown'}
+                      {resolveTripGodownDisplay({ trip: activeTrip, warehouses }).label || 'Main Godown'}
                     </span>
                   </div>
 
@@ -2438,7 +2487,7 @@ export const SalesmanView: React.FC = () => {
                               {trip.date}
                             </span>
                             <span className="text-[11px] font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-200">
-                              {warehouses.find((w) => w.id === trip.warehouseId)?.name || 'Main Godown'}
+                              {resolveTripGodownDisplay({ trip, warehouses }).label || 'Main Godown'}
                             </span>
                           </div>
 
@@ -2543,7 +2592,7 @@ export const SalesmanView: React.FC = () => {
                                     {trip.date}
                                   </span>
                                   <span className="text-[11px] font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded border border-sky-200">
-                                    {warehouses.find((w) => w.id === trip.warehouseId)?.name || 'Main Godown'}
+                                    {resolveTripGodownDisplay({ trip, warehouses }).label || 'Main Godown'}
                                   </span>
                                 </div>
 
@@ -2794,7 +2843,7 @@ export const SalesmanView: React.FC = () => {
         <div className="w-full grid grid-cols-6 items-stretch px-0.5">
         {[
           { id: 'home', label: 'Home', icon: LayoutGrid },
-          { id: 'sell', label: 'Sale', icon: ShoppingCart },
+          { id: 'sell', label: 'Sales', icon: ShoppingCart },
           { id: 'customerDue', label: 'Payment', icon: IndianRupee },
           { id: 'trips', label: 'Trips', icon: Truck },
           { id: 'vanStock', label: 'Stock', icon: Package },

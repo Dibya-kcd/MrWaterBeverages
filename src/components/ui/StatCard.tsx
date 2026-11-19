@@ -54,7 +54,7 @@ export const StatCard: React.FC<StatCardProps> = ({
     >
       <div className="flex items-start justify-between gap-2 sm:gap-3">
         <div className="space-y-0.5 sm:space-y-1 min-w-0 flex-1">
-          <span className="mt-metric__label text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-[var(--muted-fg)] line-clamp-2 leading-tight">
+          <span className="mt-metric__label text-[10px] sm:text-[10px] font-bold uppercase tracking-wider text-[var(--muted-fg)] line-clamp-2 leading-tight">
             {title}
           </span>
           <div

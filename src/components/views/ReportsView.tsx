@@ -42,6 +42,7 @@ import {
   itcReversalFromDispositions,
 } from "../../utils/gstReports";
 import { money, resolveProductGstRate } from "../../utils/billing";
+import { isGstExcludedBill } from "../../utils/invoiceCommon";
 
 // High-fidelity components matching user mock images
 import { ReportsOverview } from "./reports/ReportsOverview";
@@ -194,6 +195,20 @@ export const ReportsView: React.FC = () => {
       return reportInPeriod(bDate);
     });
   }, [bills, period, selectedDate, startDate, endDate, todayStr, yesterdayStr, sevenDaysAgoStr, currentYearMonth, lastYearMonth]);
+
+  // GST-eligible period bills (excludes Non-GST / Trading NG- cash memos)
+  const gstPeriodBills = useMemo(
+    () => periodBills.filter((b) => !isGstExcludedBill(b, products)),
+    [periodBills, products]
+  );
+
+  const nonGstPeriodStats = useMemo(() => {
+    const ng = periodBills.filter(
+      (b) => b.status !== "cancelled" && !(b as any).cancelled && isGstExcludedBill(b, products)
+    );
+    const total = ng.reduce((s, b) => s + billNetTotal(b), 0);
+    return { count: ng.length, total: Math.round(total * 100) / 100 };
+  }, [periodBills, products]);
 
   // Filtered GRNs
   const filteredGrns = useMemo(() => {
@@ -371,10 +386,10 @@ export const ReportsView: React.FC = () => {
     return Object.values(partyMap).sort((a, b) => b.balance - a.balance);
   }, [bills]);
 
-  // GST Summary
+  // GST Summary (excludes Non-GST / Trading cash memos)
   const gstTaxSummary = useMemo(() => {
     const computed = safeGstSummaryFromBills(
-      periodBills,
+      gstPeriodBills,
       products || [],
       customers || [],
       billingSettings?.invoicePrefix || "INV",
@@ -413,7 +428,7 @@ export const ReportsView: React.FC = () => {
       netGstPayable: g3.netPayable,
       carryForwardItc: g3.carryForwardItc,
     };
-  }, [periodBills, products, customers, billingSettings, orgProfile, inventoryDispositions, purchaseStats]);
+  }, [gstPeriodBills, products, customers, billingSettings, orgProfile, inventoryDispositions, purchaseStats]);
 
   const existingCustomersList = useMemo(() => {
     return existingCustomers || [];
@@ -637,7 +652,7 @@ export const ReportsView: React.FC = () => {
     ) {
       return (
         <CompositionReport
-          bills={bills}
+          bills={(bills || []).filter((b) => !isGstExcludedBill(b, products))}
           grns={grns}
           orgProfile={orgProfile}
           onShowRegularGst={() => setShowRegularGst(true)}
@@ -660,23 +675,27 @@ export const ReportsView: React.FC = () => {
         <SimpleGstReport
           gstTaxSummary={gstTaxSummary}
           purchaseStats={purchaseStats}
-          filteredBills={periodBills}
+          filteredBills={gstPeriodBills}
           products={products}
           customers={customers || []}
           orgProfile={orgProfile}
           invoicePrefix={billingSettings?.invoicePrefix || "INV"}
           periodLabel={periodLabel}
+          excludedBillsCount={nonGstPeriodStats.count}
+          excludedBillsTotal={nonGstPeriodStats.total}
           detail={
             <TaxReport
               gstTaxSummary={gstTaxSummary}
               purchaseStats={purchaseStats}
-              filteredBills={periodBills}
+              filteredBills={gstPeriodBills}
               filteredGrns={filteredGrns}
               products={products}
               customers={customers || []}
               orgProfile={orgProfile}
               invoicePrefix={billingSettings?.invoicePrefix || "INV"}
               periodLabel={periodLabel}
+              excludedBillsCount={nonGstPeriodStats.count}
+              excludedBillsTotal={nonGstPeriodStats.total}
             />
           }
         />
@@ -744,7 +763,7 @@ export const ReportsView: React.FC = () => {
 
             {/* Modern Period Filter Bottom Sheet Modal (matching Daily Collection) */}
             {mobilePeriodOpen && (
-              <div
+              <div data-esc-close
                 className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200"
                 onClick={() => setMobilePeriodOpen(false)}
                 role="dialog"

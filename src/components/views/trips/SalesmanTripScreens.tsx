@@ -4,6 +4,8 @@ import { Trip } from '../../../types';
 import { TripEditScreen } from '../TripEditScreen';
 import { TripRecordReturnScreen } from '../TripRecordReturnScreen';
 import { notify } from '../../../utils/toast';
+import { useCloseTrip } from './useCloseTrip';
+import { useLoadValidator } from './useLoadValidator';
 
 export type SalesmanTripScreenMode = 'edit' | 'settle';
 
@@ -18,6 +20,8 @@ export const SalesmanTripScreens: React.FC<{
   onSwitchMode: (mode: SalesmanTripScreenMode) => void;
   onClose: () => void;
 }> = ({ mode, trip, onSwitchMode, onClose }) => {
+  const { closeTrip: closeTripAndPost } = useCloseTrip();
+  const validateLoad = useLoadValidator();
   const {
     trips,
     bills,
@@ -25,9 +29,6 @@ export const SalesmanTripScreens: React.FC<{
     salesmen,
     warehouses,
     warehouseStock,
-    remainingStock,
-    getVehicleStock,
-    saveReturn,
     saveReturnDraft,
     updateTrip,
     payments,
@@ -46,24 +47,7 @@ export const SalesmanTripScreens: React.FC<{
         warehouses={warehouses}
         warehouseStock={warehouseStock}
         allTrips={trips}
-        validateLoad={(t, newLoaded, billed) => {
-          // Only products whose load goes up are checked, so older trips can still be edited.
-          for (const [pidStr, qty] of Object.entries(newLoaded)) {
-            const pid = Number(pidStr);
-            const before = Number(t.loaded?.[pid]) || 0;
-            if (qty <= before) continue;
-            const unsoldOnThisVan = Math.max(0, qty - (billed[pid] || 0));
-            const onOtherVans = trips
-              .filter((x) => x.status === 'out' && Number(x.id) !== Number(t.id))
-              .reduce((sum, x) => sum + getVehicleStock(x, pid).available, 0);
-            const free = remainingStock(pid) - onOtherVans;
-            if (unsoldOnThisVan > free) {
-              const name = products.find((x) => x.id === pid)?.name || `Product #${pid}`;
-              return `${name}: only ${Math.max(0, free)} free to load (${onOtherVans} already on other vans), but this van would carry ${unsoldOnThisVan} unsold.`;
-            }
-          }
-          return null;
-        }}
+        validateLoad={validateLoad}
         onBack={onClose}
         readOnly
         onSave={() => onClose()}
@@ -80,11 +64,11 @@ export const SalesmanTripScreens: React.FC<{
       warehouses={warehouses}
       payments={payments}
       onBack={onClose}
-      onSaveReturn={(tripId, finalReturn, closeTrip, shortageReasons, cashHandedIn, cashShortBooked) => {
+      onSaveReturn={(tripId, finalReturn, closeTrip, shortageReasons, cashHandedIn, cashShortBooked, tripExpense) => {
         // A draft is kept apart from the recorded returns and never closes the trip.
         if (closeTrip) {
-          const saved = saveReturn(tripId, finalReturn, shortageReasons, cashHandedIn, cashShortBooked);
-          if (saved.ok === false) return saved.error; // stay on the screen and show why
+          const refused = closeTripAndPost({ tripId, returned: finalReturn, shortageReasons, cashHandedIn, cashShortBooked, tripExpense });
+          if (refused) return refused; // stay on the screen and show why
         } else saveReturnDraft(tripId, finalReturn, cashHandedIn);
         notify(
           closeTrip ? `Trip #${tripId} settled and closed.` : `Trip #${tripId} settlement draft saved.`,

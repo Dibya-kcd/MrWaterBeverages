@@ -15,6 +15,7 @@ import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownl
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
 import { ReportTitleBar, reportCard } from './ReportKit';
 import { useLedger } from '../../../context/LedgerContext';
+import { isGstExcludedBill } from '../../../utils/invoiceCommon';
 
 /**
  * GST in one screen:
@@ -48,6 +49,8 @@ export interface SimpleGstReportProps {
   orgProfile?: OrganizationProfile | null;
   invoicePrefix?: string;
   periodLabel: string;
+  excludedBillsCount?: number;
+  excludedBillsTotal?: number;
   /** The full registers (B2B, B2C, HSN, purchases), shown only when asked for. */
   detail?: React.ReactNode;
 }
@@ -96,32 +99,52 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
   orgProfile = null,
   invoicePrefix = 'INV',
   periodLabel,
+  excludedBillsCount = 0,
+  excludedBillsTotal = 0,
   detail,
 }) => {
   const [showDetail, setShowDetail] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const { convertBillsToTaxInvoices } = useLedger();
 
+  const gstBills = useMemo(
+    () => (filteredBills || []).filter((b) => !isGstExcludedBill(b, products)),
+    [filteredBills, products],
+  );
+  const localExcluded = useMemo(
+    () => (filteredBills || []).filter((b) => b.status !== 'cancelled' && !(b as any).cancelled && isGstExcludedBill(b, products)),
+    [filteredBills, products],
+  );
+  const effectiveExcludedCount = excludedBillsCount || localExcluded.length;
+  const effectiveExcludedTotal = excludedBillsTotal || localExcluded.reduce((s, b) => s + (Number(b.total) || 0), 0);
+
   const orgStateCode = orgStateCodeFromProfile(orgProfile);
   const lines = useMemo(
-    () => buildGstLines(filteredBills, products, customers, invoicePrefix, { orgStateCode }),
-    [filteredBills, products, customers, invoicePrefix, orgStateCode],
+    () => buildGstLines(gstBills, products, customers, invoicePrefix, { orgStateCode }),
+    [gstBills, products, customers, invoicePrefix, orgStateCode],
   );
 
   const zeroGstBills = useMemo(() => {
+    const byId = new Map<number, Product>();
+    (products || []).forEach((p) => byId.set(p.id, p));
+    const isAllNonGstProducts = (b: Bill) =>
+      (b.items || []).length > 0 &&
+      (b.items || []).every((it) => it.taxability === 'non_gst' || byId.get(it.productId)?.taxability === 'non_gst');
+
     const zeroBillIds = new Set(
       lines
         .filter((l) => l.gstRatePct === 0 && (l.taxable > 0 || l.qty > 0))
         .map((l) => l.billId)
     );
-    return filteredBills.filter((b) => {
+    return gstBills.filter((b) => {
       if (b.status === 'cancelled' || !(b.items || []).length) return false;
+      if (isAllNonGstProducts(b)) return false;
       if (zeroBillIds.has(b.id)) return true;
       const isNonGst = b.invoiceType === 'retail' || b.invoiceType === 'bill_of_supply' || b.isGstInvoice === false;
       const zeroTaxStored = (Number(b.cgst) || 0) + (Number(b.sgst) || 0) < 0.01;
       return (isNonGst || zeroTaxStored) && (Number(b.total) || 0) > 0;
     });
-  }, [filteredBills, lines]);
+  }, [gstBills, lines, products]);
 
   // GST sitting inside the prices of the bills above. The P&L treats it as owed to the government (not profit), but
   // it is not in the GST figures on this page until those bills become tax invoices, so show it here to reconcile.
@@ -134,10 +157,13 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
       const carve = orgProfile ? !noOutputTax(resolveTaxRegime(orgProfile, date)) : true;
       const r = billTaxBasis(b, {
         carveGstFromPrices: carve,
-        rateFor: (item) =>
-          item.gst !== undefined && item.gst !== null
+        rateFor: (item) => {
+          const prod = byId.get(item.productId);
+          if (item.taxability === 'non_gst' || prod?.taxability === 'non_gst') return 0;
+          return item.gst !== undefined && item.gst !== null
             ? (item.gst as number)
-            : resolveProductGstRate(byId.get(item.productId), item.category),
+            : resolveProductGstRate(prod, item.category);
+        },
       });
       if (r.carved) total += r.gst;
     }
@@ -169,7 +195,7 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
   // Invoices whose saved total differs from the invoice lines (the GST report and the sales report would disagree).
   const mismatches = useMemo(() => {
     const byId = new Map<number, Bill>();
-    filteredBills.forEach((b) => byId.set(b.id, b));
+    gstBills.forEach((b) => byId.set(b.id, b));
     const out: { invoiceNo: string; customer: string }[] = [];
     for (const inv of summarizeInvoices(lines)) {
       const b = byId.get(inv.billId);
@@ -179,7 +205,7 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
       if (totalDiff > 1 || taxDiff > 1) out.push({ invoiceNo: inv.invoiceNo, customer: inv.customerName });
     }
     return out;
-  }, [lines, filteredBills]);
+  }, [lines, gstBills]);
 
   // Figures
   const outputIgst = g.outputIgst || 0;
@@ -241,7 +267,7 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
 
   const downloadForCa = () => {
     exportCaGstPack({
-      bills: filteredBills,
+      bills: gstBills,
       products,
       customers,
       org: orgProfile,
@@ -301,6 +327,12 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
               : 'GST on sales and input credit are equal.'}
         </div>
       </div>
+
+      {effectiveExcludedCount > 0 && (
+        <div className="rounded-xl border border-teal-200 bg-teal-50 px-3.5 py-2.5 text-xs text-teal-900">
+          <b>{effectiveExcludedCount} Non-GST / Trading cash memo{effectiveExcludedCount === 1 ? '' : 's'}</b> (NG-… totalling ₹{money(effectiveExcludedTotal)}) {effectiveExcludedCount === 1 ? 'is' : 'are'} excluded from GST filings &amp; CA pack (still counted in Sales &amp; P&amp;L).
+        </div>
+      )}
 
       {mismatches.length > 0 && (
         <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 flex gap-2">

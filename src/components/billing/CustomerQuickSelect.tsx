@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { ExistingCustomer } from '../../types';
 import { startSpeechRecognition, isSpeechRecognitionSupported, ActiveSpeechSession } from '../../utils/speechRecognition';
+import { validatePhone } from '../../utils/validation';
 
 interface CustomerQuickSelectProps {
   customerName: string;
@@ -129,7 +130,7 @@ export const CustomerQuickSelect: React.FC<CustomerQuickSelectProps> = ({
     onCustomerNameChange(c.name);
     setQuery(c.name);
     setDebouncedQuery(c.name);
-    if (c.phone) onCustomerPhoneChange(c.phone);
+    onCustomerPhoneChange(c.phone || '');
     setShowDropdown(false);
     setHighlightedIndex(-1);
     if (speakAssistiveText) speakAssistiveText(`Selected ${c.name}`);
@@ -276,6 +277,11 @@ export const CustomerQuickSelect: React.FC<CustomerQuickSelectProps> = ({
   };
 
   const isQueryEntered = query.trim().length > 0;
+  const phoneError = useMemo(() => {
+    const trimmed = customerPhone.trim();
+    if (!trimmed) return null;
+    return validatePhone(trimmed, { required: false, label: 'Phone' });
+  }, [customerPhone]);
 
   return (
     <div ref={containerRef} className="space-y-2">
@@ -419,7 +425,7 @@ export const CustomerQuickSelect: React.FC<CustomerQuickSelectProps> = ({
                         }`}
                       >
                         <div className="min-w-0 pr-2">
-                          <div className="font-bold text-slate-900 group-hover:text-emerald-800 flex items-center gap-1.5 truncate">
+                          <div className="font-bold text-slate-900 group-hover:text-emerald-800 flex items-center gap-1.5 min-w-0 break-words lg:truncate">
                             <span>{c.name}</span>
                             {c.id && (
                               <span className="text-[10px] font-mono text-slate-400 bg-slate-100 px-1 rounded shrink-0">
@@ -491,15 +497,27 @@ export const CustomerQuickSelect: React.FC<CustomerQuickSelectProps> = ({
         </div>
 
         {/* Customer Phone Input */}
-        <div className="relative flex items-center">
-          <Phone size={15} className="absolute left-3 text-slate-400 pointer-events-none" />
-          <input
-            type="tel"
-            value={customerPhone}
-            onChange={(e) => onCustomerPhoneChange(e.target.value)}
-            placeholder="WhatsApp / Phone (optional)"
-            className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-200 rounded-xl font-semibold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700/20 focus:border-emerald-700 transition-all"
-          />
+        <div className="space-y-1">
+          <div className="relative flex items-center">
+            <Phone size={15} className={`absolute left-3 pointer-events-none ${phoneError ? 'text-rose-500' : 'text-slate-400'}`} />
+            <input
+              type="tel"
+              value={customerPhone}
+              onChange={(e) => onCustomerPhoneChange(e.target.value)}
+              placeholder="WhatsApp / Phone (optional)"
+              aria-invalid={Boolean(phoneError)}
+              className={`w-full pl-9 pr-3 py-2 text-sm bg-white border rounded-xl font-semibold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 transition-all ${
+                phoneError
+                  ? 'border-rose-400 focus:ring-rose-500/20 focus:border-rose-600'
+                  : 'border-slate-200 focus:ring-emerald-700/20 focus:border-emerald-700'
+              }`}
+            />
+          </div>
+          {phoneError && (
+            <p className="text-[11px] font-semibold text-rose-600 px-1">
+              {phoneError}
+            </p>
+          )}
         </div>
       </div>
     </div>

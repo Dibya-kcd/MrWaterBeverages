@@ -37,6 +37,7 @@ import { AVATAR_IDS, writeAvatar } from '../../utils/avatar';
 import { FontSize, GstMode, PriceType, StickyTotalPosition, Salesman } from '../../types';
 import { validateOrgProfile, summarizeErrors, normalizeGstin } from '../../utils/validation';
 import { ToggleSwitch } from '../ui/ToggleSwitch';
+import { confirmDialog } from '../../utils/dialogs';
 
 const INDIAN_STATES = [
   '27 Maharashtra',
@@ -77,6 +78,13 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
     toggleSalesmanActive,
     currentUser,
     trips,
+    bills,
+    payments,
+    customers,
+    products,
+    grns,
+    audits,
+    stockTransfers,
     fontSize,
     setFontSize,
     highContrast,
@@ -1278,15 +1286,21 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
                       {warehouses.length > 1 && !wh.isDefault && (
                         <button
                           type="button"
-                          onClick={() => {
-                            if (window.confirm(`Delete ${wh.name} from database?`)) {
-                              deleteWarehouse(wh.id);
-                              setToastMessage(`Removed ${wh.name}`);
-                              setTimeout(() => setToastMessage(null), 3000);
-                            }
+                          onClick={async () => {
+                            const ok = await confirmDialog({
+                              title: `Delete ${wh.name}?`,
+                              message: 'This removes it from the database. Bills and stock already recorded are not deleted.',
+                              confirmLabel: 'Delete',
+                              tone: 'danger',
+                            });
+                            if (!ok) return;
+                            deleteWarehouse(wh.id);
+                            setToastMessage(`Removed ${wh.name}`);
+                            setTimeout(() => setToastMessage(null), 3000);
                           }}
-                          className="opacity-0 group-hover:opacity-100 text-neutral-400 hover:text-rose-600 transition-opacity p-1 cursor-pointer"
+                          className="opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 text-neutral-400 hover:text-rose-600 transition-opacity p-2 -m-1 cursor-pointer"
                           title="Remove from database"
+                          aria-label={`Delete ${wh.name}`}
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
@@ -1357,94 +1371,115 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
         {activeSection === 'beats' && <BeatsSettings />}
 
         {activeSection === 'staff' && (
-          <div className="bg-white rounded-2xl border border-neutral-200/90 p-3.5 sm:p-6 shadow-xs">
-            <h2 className="text-lg font-bold text-neutral-900 mb-1">Staff & roles</h2>
-            <p className="hidden sm:block text-xs text-neutral-500 mb-4">
-              Staff sign up first, then give them a role here by email.
-            </p>
+          <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
+            <div className="px-4 sm:px-6 pt-4 sm:pt-5 pb-3 border-b border-slate-100">
+              <h2 className="text-base sm:text-lg font-bold text-slate-900">Staff &amp; roles</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Manage owner access, salesman login numbers, and PINs.
+              </p>
+            </div>
 
             {/* Verified Database Staff List */}
-            <div className="divide-y divide-neutral-100 mb-5">
+            <div className="divide-y divide-slate-100">
               {/* Authenticated Owner / Admin */}
-              <div className="py-2.5 flex items-center justify-between">
-                <div>
-                  <span className="text-sm font-semibold text-neutral-900 block">
-                    {currentUser?.username || profileForm.ownerName || 'dibyaprakashkcd5'}
-                  </span>
-                  <span className="text-xs text-neutral-400 block">
+              <div className="px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-bold text-slate-900 truncate">
+                      {currentUser?.username || profileForm.ownerName || 'dibyaprakashkcd5'}
+                    </span>
+                    <span className="text-xs font-semibold text-emerald-700 shrink-0">
+                      · Owner
+                    </span>
+                  </div>
+                  <span className="text-xs text-slate-500 block mt-0.5 truncate">
                     {currentUser && 'email' in currentUser ? currentUser.email : profileForm.email || 'dibyaprakashkcd5@gmail.com'}
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <span className="bg-[#DCFCE7] text-[#166534] text-xs font-semibold px-2.5 py-1 rounded-md flex items-center gap-1">
-                    <span>owner</span>
-                  </span>
+                <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
-                    onClick={() => {
-                      if (window.confirm('Are you sure you want to log out?')) {
-                        if (typeof logout === 'function') logout();
-                      }
+                    onClick={async () => {
+                      const ok = await confirmDialog({ title: 'Log out?', message: 'You will need to sign in again.', confirmLabel: 'Log out', tone: 'warning' });
+                      if (ok && typeof logout === 'function') logout();
                     }}
-                    className="text-xs font-medium px-2.5 py-1 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 transition-colors flex items-center gap-1 cursor-pointer"
+                    className="h-8 px-3 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer transition-colors"
                     title="Sign out of account"
                   >
-                    <LogOut className="w-3.5 h-3.5 text-rose-600" />
-                    <span>Sign Out</span>
+                    <LogOut className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                    <span>Sign out</span>
                   </button>
                 </div>
               </div>
 
               {/* Database Salesmen & Staff */}
               {salesmen.map((salesman) => (
-                <div key={salesman.id} className="py-2.5 flex items-center justify-between group">
-                  <div>
-                    <span className="text-sm font-semibold text-neutral-900 block">{salesman.name}</span>
-                    <span className="text-xs text-neutral-400 font-mono block">
-                      Phone / Login: {salesman.phone} {salesman.defaultVehicle ? `· ${salesman.defaultVehicle}` : ''}
-                    </span>
+                <div
+                  key={salesman.id}
+                  className="px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-sm font-bold text-slate-900 truncate">
+                        {salesman.name}
+                      </span>
+                      <span
+                        className={`text-xs font-semibold shrink-0 ${
+                          salesman.active ? 'text-emerald-700' : 'text-rose-600'
+                        }`}
+                      >
+                        · {salesman.active ? 'Active' : 'Inactive'}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-0.5 tabular-nums truncate">
+                      {salesman.phone}
+                      {salesman.defaultVehicle ? ` · ${salesman.defaultVehicle}` : ''}
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
                       onClick={() => toggleSalesmanActive(salesman.id)}
-                      className={`text-xs font-medium px-2 py-1 rounded-lg cursor-pointer transition-colors ${
-                        salesman.active ? 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
+                      className={`h-8 px-2.5 rounded-lg border text-xs font-semibold whitespace-nowrap cursor-pointer transition-colors ${
+                        salesman.active
+                          ? 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                          : 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100'
                       }`}
                       title="Toggle active status"
                     >
-                      {salesman.active ? 'active' : 'inactive'}
+                      {salesman.active ? 'Switch off' : 'Switch on'}
                     </button>
 
                     <button
                       type="button"
                       onClick={() => handleOpenEditStaff(salesman)}
-                      className="text-xs font-medium px-2.5 py-1 rounded-lg cursor-pointer bg-neutral-100 hover:bg-neutral-200 text-neutral-800 transition-colors flex items-center gap-1"
+                      className="h-8 px-2.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold inline-flex items-center gap-1 whitespace-nowrap cursor-pointer transition-colors"
                       title="Edit staff details"
                     >
-                      <Pencil className="w-3 h-3 text-neutral-600" />
+                      <Pencil className="w-3 h-3 text-slate-500 shrink-0" />
                       <span>Edit</span>
                     </button>
 
                     <button
                       type="button"
                       onClick={() => handleOpenSetPin(salesman)}
-                      className="text-xs font-medium px-2.5 py-1 rounded-lg cursor-pointer bg-emerald-50 text-emerald-800 hover:bg-emerald-100 transition-colors flex items-center gap-1"
+                      className="h-8 px-2.5 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold inline-flex items-center gap-1 whitespace-nowrap cursor-pointer transition-colors"
                       title="Set or reset this person's login PIN"
                     >
-                      <Key className="w-3 h-3 text-emerald-600" />
+                      <Key className="w-3 h-3 text-emerald-600 shrink-0" />
                       <span>Set PIN</span>
                     </button>
 
                     <button
                       type="button"
                       onClick={() => setDeletingStaff(salesman)}
-                      className="text-neutral-400 hover:text-rose-600 p-1.5 cursor-pointer rounded-lg hover:bg-rose-50 transition-colors"
+                      className="ml-auto sm:ml-0 size-8 rounded-lg border border-transparent text-slate-400 hover:text-rose-600 hover:bg-rose-50 inline-flex items-center justify-center cursor-pointer transition-colors shrink-0"
                       title="Remove staff member"
+                      aria-label={`Remove ${salesman.name}`}
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -1452,49 +1487,54 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
             </div>
 
             {/* Add Staff Member Form */}
-            <form onSubmit={handleAddStaffMember} className="pt-2 border-t border-neutral-100 flex flex-col sm:flex-row gap-3">
-              <input
-                type="text"
-                placeholder="staff@email.com or phone"
-                value={newStaffIdentifier}
-                onChange={(e) => setNewStaffIdentifier(e.target.value)}
-                className="flex-1 bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs"
-              />
+            <div className="px-4 sm:px-6 py-4 border-t border-slate-100 bg-slate-50/60">
+              <div className="text-xs font-semibold text-slate-600 mb-2.5">Add staff member</div>
+              <form onSubmit={handleAddStaffMember} className="flex flex-col sm:flex-row gap-2.5">
+                <input
+                  type="text"
+                  placeholder="Email or mobile number"
+                  value={newStaffIdentifier}
+                  onChange={(e) => setNewStaffIdentifier(e.target.value)}
+                  className="flex-1 bg-white border border-slate-300 rounded-xl px-3.5 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25 shadow-2xs"
+                />
 
-              <input
-                type="password"
-                inputMode="numeric"
-                autoComplete="new-password"
-                maxLength={6}
-                placeholder="PIN (4-6 digits)"
-                value={newStaffPin}
-                onChange={(e) => setNewStaffPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                className="w-full sm:w-36 bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs"
-              />
+                <div className="grid grid-cols-2 sm:flex gap-2.5">
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    autoComplete="new-password"
+                    maxLength={6}
+                    placeholder="PIN (4-6 digits)"
+                    value={newStaffPin}
+                    onChange={(e) => setNewStaffPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    className="w-full sm:w-32 bg-white border border-slate-300 rounded-xl px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25 shadow-2xs"
+                  />
 
-              <div className="relative w-full sm:w-36">
-                <select
-                  value={newStaffRole}
-                  onChange={(e) => setNewStaffRole(e.target.value as any)}
-                  className="w-full bg-white border border-neutral-300 rounded-xl px-3 sm:px-3.5 py-2 sm:py-2.5 text-sm text-neutral-800 appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] shadow-xs cursor-pointer capitalize"
+                  <div className="relative w-full sm:w-32">
+                    <select
+                      value={newStaffRole}
+                      onChange={(e) => setNewStaffRole(e.target.value as any)}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-sm text-slate-800 appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25 shadow-2xs cursor-pointer capitalize"
+                    >
+                      <option value="driver">driver</option>
+                      <option value="salesman">salesman</option>
+                      <option value="manager">manager</option>
+                      <option value="accountant">accountant</option>
+                      <option value="admin">admin</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={!newStaffIdentifier.trim() || newStaffPin.length < 4}
+                  className="bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white px-5 py-2 rounded-xl font-semibold text-sm transition-colors cursor-pointer shadow-xs disabled:opacity-40 whitespace-nowrap shrink-0"
                 >
-                  <option value="driver">driver</option>
-                  <option value="salesman">salesman</option>
-                  <option value="manager">manager</option>
-                  <option value="accountant">accountant</option>
-                  <option value="admin">admin</option>
-                </select>
-                <ChevronDown className="w-4 h-4 text-neutral-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-              </div>
-
-              <button
-                type="submit"
-                disabled={!newStaffIdentifier.trim() || newStaffPin.length < 4}
-                className="bg-[var(--primary)] hover:bg-[var(--primary)] text-white px-6 py-2.5 rounded-xl font-semibold text-sm transition-colors cursor-pointer shadow-xs disabled:opacity-40"
-              >
-                Give
-              </button>
-            </form>
+                  Add staff
+                </button>
+              </form>
+            </div>
           </div>
         )}
 
@@ -1654,13 +1694,14 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
               <button
                 type="button"
                 onClick={async () => {
-                  if (
-                    !window.confirm(
-                      'Re-send EVERYTHING to Supabase? This rewrites every record and uses a lot of database activity. Only needed after restoring or changing the database. "Push Changes to Cloud" sends just what changed.',
-                    )
-                  ) {
-                    return;
-                  }
+                  const ok = await confirmDialog({
+                    title: 'Re-send everything to the cloud?',
+                    message:
+                      'This rewrites every record and uses a lot of database activity. Only needed after restoring or changing the database. "Push Changes to Cloud" sends just what changed.',
+                    confirmLabel: 'Re-send everything',
+                    tone: 'warning',
+                  });
+                  if (!ok) return;
                   setToastMessage('Re-sending everything to cloud...');
                   const res = await syncToCloud({ full: true });
                   setToastMessage(res.message);
@@ -1722,39 +1763,79 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
               </label>
             </div>
 
-            {/* Danger Operations */}
-            <div className="pt-4 border-t border-neutral-100">
-              <h3 className="text-xs font-bold text-rose-700 uppercase tracking-wider mb-2">Danger Operations</h3>
-              <div className="flex flex-wrap gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (window.confirm('Clear all bills and vehicle trips? Products catalog and company settings will be kept safely.')) {
+            {/* Danger Operations (owner only; each one shows exactly what goes, offers a backup and asks for a typed word) */}
+            {currentUser?.role === 'admin' ? (
+              <div className="pt-4 border-t border-neutral-100">
+                <h3 className="text-xs font-bold text-rose-700 uppercase tracking-wider mb-1">Danger Operations</h3>
+                <p className="text-xs text-neutral-500 mb-2.5">
+                  These cannot be undone. Each one asks you to download a backup and type a word first.
+                </p>
+                <div className="flex flex-wrap gap-2.5">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const ok = await confirmDialog({
+                        title: 'Clear all bills, payments and trips?',
+                        message:
+                          'This deletes every transaction record on this device and in the cloud. Your products, customers, GRNs, stock batches and company settings are kept.',
+                        details: [
+                          `${bills.length} bills`,
+                          `${payments.length} payments / receipts`,
+                          `${trips.length} vehicle trips`,
+                          `${audits.length} stock audits`,
+                          `${stockTransfers.length} stock transfers`,
+                        ],
+                        confirmLabel: 'Clear records',
+                        tone: 'danger',
+                        typeToConfirm: 'CLEAR',
+                        extraAction: { label: 'Download a backup file first', onClick: () => exportBackup() },
+                      });
+                      if (!ok) return;
                       clearTransactions();
-                      setToastMessage('Transaction records cleared.');
+                      setToastMessage('Bills, payments and trips cleared.');
                       setTimeout(() => setToastMessage(null), 3000);
-                    }
-                  }}
-                  className="px-3.5 py-2 border border-amber-300 rounded-xl text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 transition-colors cursor-pointer"
-                >
-                  Clear Bills & Trips
-                </button>
+                    }}
+                    className="px-3.5 py-2.5 min-h-[44px] border border-amber-300 rounded-xl text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 transition-colors cursor-pointer"
+                  >
+                    Clear Bills, Payments & Trips
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (window.confirm('Reset all ledger data back to factory defaults?')) {
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const ok = await confirmDialog({
+                        title: 'Factory reset: erase everything?',
+                        message:
+                          'This deletes all business data and puts the company profile and billing / GST settings back to defaults.',
+                        details: [
+                          `${bills.length} bills and ${payments.length} payments`,
+                          `${customers.length} customers`,
+                          `${products.length} products`,
+                          `${grns.length} GRNs (purchases)`,
+                          `${warehouses.length} warehouses / vehicles (reset to the default one)`,
+                          'Company profile and billing / GST settings',
+                        ],
+                        confirmLabel: 'Erase everything',
+                        tone: 'danger',
+                        typeToConfirm: 'RESET',
+                        extraAction: { label: 'Download a backup file first', onClick: () => exportBackup() },
+                      });
+                      if (!ok) return;
                       resetToDefault();
                       setToastMessage('Ledger reset to defaults.');
                       setTimeout(() => setToastMessage(null), 3000);
-                    }
-                  }}
-                  className="px-3.5 py-2 border border-rose-300 rounded-xl text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 transition-colors cursor-pointer"
-                >
-                  Factory Reset
-                </button>
+                    }}
+                    className="px-3.5 py-2.5 min-h-[44px] border border-rose-300 rounded-xl text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 transition-colors cursor-pointer"
+                  >
+                    Factory Reset
+                  </button>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="pt-4 border-t border-neutral-100">
+                <p className="text-xs text-neutral-500">Clearing or resetting data can only be done by the owner.</p>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1763,7 +1844,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
       {/* IN-APP MODAL: EDIT STAFF DETAILS                                          */}
       {/* ========================================================================= */}
       {editingStaff && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+        <div role="dialog" aria-modal="true" aria-label="Edit staff details" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
             className="w-full max-w-md bg-white rounded-2xl border border-neutral-200 p-6 shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}
@@ -1890,7 +1971,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
       {/* IN-APP MODAL: DEDICATED SET PIN MODAL                                     */}
       {/* ========================================================================= */}
       {pinModalStaff && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+        <div role="dialog" aria-modal="true" aria-label="Set security PIN" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
             className="w-full max-w-sm bg-white rounded-2xl border border-neutral-200 p-6 shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}
@@ -1966,7 +2047,7 @@ export const SettingsView: React.FC<{ initialSection?: SettingsSection | 'wareho
       {/* IN-APP MODAL: CONFIRM DELETE STAFF                                        */}
       {/* ========================================================================= */}
       {deletingStaff && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+        <div role="dialog" aria-modal="true" aria-label="Remove staff member" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
             className="w-full max-w-sm bg-white rounded-2xl border border-neutral-200 p-6 shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}

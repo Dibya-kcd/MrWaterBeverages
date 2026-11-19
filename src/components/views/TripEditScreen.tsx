@@ -21,7 +21,9 @@ import {
   fieldBox,
   fieldLabel,
 } from './trips/LoadSheetParts';
+import { FlowBadge, FlowHeader } from '../common/FlowKit';
 import { Bill, Product, Trip, TripStatus, Warehouse, Salesman } from '../../types';
+import { rebalanceWarehouseLoads, tripPrimaryWarehouseId } from '../../utils/tripLoads';
 import { money, billBelongsToTrip, attachableBillsForTrip } from '../../utils/billing';
 import { todayISO, toLocalISODate } from "../../utils/dateLocal";
 import { compareProductsInSequence } from '../../utils/sizeColor';
@@ -36,7 +38,13 @@ interface TripEditScreenProps {
   /** All trips, so auto-attach can skip bills that already belong to another trip. */
   allTrips?: Trip[];
   /** Extra check on the edited load (e.g. free stock). Return an error message to block the save. */
-  validateLoad?: (trip: Trip, newLoaded: Record<number, number>, billedAfterSave: Record<number, number>) => string | null;
+  validateLoad?: (
+    trip: Trip,
+    newLoaded: Record<number, number>,
+    billedAfterSave: Record<number, number>,
+    /** The per-godown split the trip will have after saving, so each godown is checked on its own. */
+    newSplit?: Record<string, Record<number, number>>,
+  ) => string | null;
   onBack: () => void;
   onSave: (updated: Trip) => void;
   onRecordReturn?: (trip: Trip) => void;
@@ -80,39 +88,6 @@ function toStandardIsoDate(input?: string): string {
   return todayISO();
 }
 
-function rebalanceWarehouseLoads(
-  existing: Record<string, Record<number, number>> | undefined,
-  newLoaded: Record<number, number>,
-  primaryWarehouseId?: string
-): Record<string, Record<number, number>> | undefined {
-  if (!existing || Object.keys(existing).length === 0) {
-    return primaryWarehouseId ? { [primaryWarehouseId]: { ...newLoaded } } : undefined;
-  }
-  const whIds = Object.keys(existing);
-  const primary = primaryWarehouseId && existing[primaryWarehouseId] ? primaryWarehouseId : whIds[0];
-  const next: Record<string, Record<number, number>> = {};
-  for (const wh of whIds) next[wh] = {};
-  for (const [pidStr, total] of Object.entries(newLoaded)) {
-    const pid = Number(pidStr);
-    const split = whIds.map((wh) => ({ wh, q: Number(existing[wh]?.[pid]) || 0 }));
-    let sum = split.reduce((a, x) => a + x.q, 0);
-    if (sum < total) {
-      const row = split.find((x) => x.wh === primary)!;
-      row.q += total - sum;
-    } else if (sum > total) {
-      let excess = sum - total;
-      for (let i = split.length - 1; i >= 0 && excess > 0; i--) {
-        const cut = Math.min(split[i].q, excess);
-        split[i].q -= cut;
-        excess -= cut;
-      }
-    }
-    for (const x of split) if (x.q > 0) next[x.wh][pid] = x.q;
-  }
-  for (const wh of whIds) if (Object.keys(next[wh]).length === 0) delete next[wh];
-  return Object.keys(next).length > 0 ? next : undefined;
-}
-
 export const TripEditScreen: React.FC<TripEditScreenProps> = ({
   trip,
   products,
@@ -131,7 +106,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
   readOnly = false,
 }) => {
   const [vehicle, setVehicle] = useState(trip.vehicle || '');
-  const [warehouseId, setWarehouseId] = useState(trip.warehouseId || (warehouses[0]?.id ?? ''));
+  const [warehouseId, setWarehouseId] = useState(tripPrimaryWarehouseId(trip) || (warehouses[0]?.id ?? ''));
   const [date, setDate] = useState(() => toStandardIsoDate(trip.date));
   const [autoAttachBills, setAutoAttachBills] = useState(true);
   const [salesmanId, setSalesmanId] = useState(trip.salesmanId || '');
@@ -158,7 +133,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
   useEffect(() => {
     if (initializedTripId.current === trip.id) return;
     initializedTripId.current = trip.id;
-    const wh = trip.warehouseId || (warehouses[0]?.id ?? '');
+    const wh = tripPrimaryWarehouseId(trip) || (warehouses[0]?.id ?? '');
     const dt = toStandardIsoDate(trip.date);
     setVehicle(trip.vehicle || '');
     setWarehouseId(wh);
@@ -253,13 +228,21 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
       if (n > 0) next[Number(k)] = n;
     }
     next[pid] = newQty;
-    if (validateLoad) return validateLoad(trip, next, billedAfterSave);
+    if (validateLoad) return validateLoad(trip, next, billedAfterSave, rebalanceWarehouseLoads(trip.warehouseLoads, next, warehouseId, billedAfterSave));
     const avail = stockAll(pid);
     return newQty - before > avail ? `${nameOf(pid)}: only ${avail} in stock.` : null;
   };
 
   const handleUpdateQty = (pid: number, delta: number) => {
     if (readOnly) return;
+    if (delta < 0) {
+      const billed = billedAfterSave[pid] || 0;
+      if ((Number(loaded[pid]) || 0) + delta < billed) {
+        setError(`${nameOf(pid)}: ${billed} already billed on this trip, so the load cannot go below ${billed}.`);
+        return;
+      }
+      setError(null);
+    }
     if (delta > 0) {
       const problem = checkLoadChange(pid, (Number(loaded[pid]) || 0) + delta);
       if (problem) {
@@ -282,7 +265,9 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
 
   const handleSetQtyDirect = (pid: number, val: string) => {
     if (readOnly) return;
-    setLoaded((prev) => ({ ...prev, [pid]: val }));
+    // Whole cases only: no minus sign, decimal point or letters (the New trip screen enforces the same).
+    const digits = val.replace(/[^0-9]/g, '').replace(/^0+(?=\d)/, '');
+    setLoaded((prev) => ({ ...prev, [pid]: digits }));
   };
 
   const handleRemoveProduct = (pid: number) => {
@@ -333,9 +318,35 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
 
   const shortValue = (n: number) => (n >= 100000 ? `₹${(n / 100000).toFixed(1)}L` : n >= 1000 ? `₹${(n / 1000).toFixed(1)}k` : `₹${Math.round(n)}`);
 
+  // Changing the source godown moves the van's unsold crates to it (billed crates stay where they were drawn from),
+  // so the same per-godown stock check as on Save runs right away instead of only when the sheet is saved.
+  const handleGodownChange = (id: string) => {
+    setWarehouseId(id);
+    if (readOnly || !validateLoad) return;
+    const current: Record<number, number> = {};
+    for (const [k, v] of Object.entries(loaded)) {
+      const n = Number(v);
+      if (n > 0) current[Number(k)] = n;
+    }
+    const problem = validateLoad(trip, current, billedAfterSave, rebalanceWarehouseLoads(trip.warehouseLoads, current, id, billedAfterSave));
+    setError(problem);
+  };
+
+  const godownMoveHint = (() => {
+    const ids = Object.keys(trip.warehouseLoads || {});
+    if (readOnly || ids.length !== 1 || !warehouseId || warehouseId === ids[0]) return null;
+    const nm = (id: string) => warehouses.find((w) => w.id === id)?.name || 'Main Godown';
+    return `Unsold crates on this van will come from ${nm(warehouseId)} instead of ${nm(ids[0])}. Crates already billed stay with ${nm(ids[0])}.`;
+  })();
+
   /** Runs every save check. Returns an error message, or the trip ready to save. */
   const buildUpdatedTrip = (): { error: string } | { trip: Trip } => {
     if (!vehicle.trim()) return { error: 'Please enter a vehicle name or registration number.' };
+    // Closing here would skip the stock return and cash check that Close Trip does, leaving the cash and
+    // any missing crates unrecorded. An open trip is closed from Return & Settle only.
+    if (trip.status !== 'closed' && status === 'closed') {
+      return { error: 'To complete this trip use “Day-end settlement” on the Trips list. It records the returned crates and the cash handed over.' };
+    }
     if (!date) return { error: 'Please select a valid trip date.' };
 
     const cleanLoaded: Record<number, number> = {};
@@ -356,7 +367,8 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
       }
     }
 
-    const stockError = validateLoad ? validateLoad(trip, cleanLoaded, billedAfterSave) : null;
+    const newSplit = rebalanceWarehouseLoads(trip.warehouseLoads, cleanLoaded, warehouseId, billedAfterSave);
+    const stockError = validateLoad ? validateLoad(trip, cleanLoaded, billedAfterSave, newSplit) : null;
     if (stockError) return { error: stockError };
 
     // Clean returned map, preserving existing counts
@@ -390,7 +402,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
         salesmanId: salesmanId || undefined,
         salesman: matchedSalesman ? matchedSalesman.name : trip.salesman,
         warehouseId: warehouseId || undefined,
-        warehouseLoads: rebalanceWarehouseLoads(trip.warehouseLoads, cleanLoaded, warehouseId),
+        warehouseLoads: newSplit,
         loaded: cleanLoaded,
         returned: cleanReturned,
         billIds: finalBillIds,
@@ -466,37 +478,18 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
         )
     : [];
 
-  const statusPill =
-    status === 'closed'
-      ? 'bg-slate-100 text-slate-700 border-slate-200'
-      : 'bg-emerald-50 text-emerald-800 border-emerald-200';
-
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#faf8f5] animate-in fade-in duration-150" id="trip-edit-screen">
-      {/* Header */}
-      <div className="shrink-0 border-b border-black/10 bg-[#faf8f5] pt-[env(safe-area-inset-top,0px)]">
-        <div className="mx-auto max-w-xl px-3 py-2 flex items-center gap-2.5">
-          <button
-            type="button"
-            onClick={readOnly ? onBack : handleCancel}
-            className="size-11 shrink-0 rounded-xl border border-black/15 bg-white flex items-center justify-center text-slate-700 cursor-pointer"
-            aria-label="Back"
-          >
-            <ArrowLeft size={20} />
-          </button>
-          <div className="min-w-0 flex-1">
-            <h1 className="text-[17px] font-black text-slate-900 leading-tight truncate">{readOnly ? 'Load sheet' : 'Edit load sheet'}</h1>
-            <p className="text-xs text-slate-500 truncate">
-              Trip #{trip.id} · {vehicle || trip.vehicle}
-            </p>
-          </div>
-          <span className={`text-[10.5px] font-black px-2.5 py-1 rounded-full border ${statusPill}`}>{status === 'closed' ? 'Completed' : 'Active'}</span>
-        </div>
-      </div>
+    <div className="fixed inset-0 z-50 flex flex-col bg-[var(--flow-canvas)] animate-in fade-in duration-150" id="trip-edit-screen">
+      <FlowHeader
+        title={readOnly ? 'Load sheet' : 'Edit load sheet'}
+        subtitle={`Trip #${trip.id} · ${vehicle || trip.vehicle}`}
+        onBack={readOnly ? onBack : handleCancel}
+        right={<FlowBadge>{status === 'closed' ? 'Completed' : 'Active'}</FlowBadge>}
+      />
 
       {/* Scrolling body */}
-      <div id="trip-edit-scroll" className="flex-1 overflow-y-auto overscroll-contain">
-        <div className="mx-auto max-w-xl px-3 pt-3 pb-6 space-y-3">
+      <div id="trip-edit-scroll" className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain">
+        <div className="mx-auto w-full max-w-xl px-3 pt-3 pb-6 space-y-3">
           {(reopensOnSave || status === 'closed' || trip.status === 'closed') && !readOnly && (
             <div className="rounded-2xl border border-amber-300 bg-amber-50 p-3.5 flex items-center justify-between flex-wrap gap-2 text-[13px] text-amber-950 shadow-xs">
               <div className="min-w-0 flex-1">
@@ -517,7 +510,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                     onReopenTripNow(Number(trip.id));
                     setStatus('out');
                   }}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white font-bold text-xs cursor-pointer shadow-sm active:scale-95 transition-all"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[var(--flow-accent)] hover:bg-[var(--flow-accent-hover)] text-white font-bold text-xs cursor-pointer shadow-sm active:scale-95 transition-all"
                 >
                   <RotateCcw size={14} /> Reopen Trip Now
                 </button>
@@ -572,7 +565,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
               </div>
               <div>
                 <label htmlFor="edit-warehouse" className={fieldLabel}>Source godown *</label>
-                <select id="edit-warehouse" value={warehouseId} disabled={readOnly} onChange={(e) => setWarehouseId(e.target.value)} className={fieldBox}>
+                <select id="edit-warehouse" value={warehouseId} disabled={readOnly} onChange={(e) => handleGodownChange(e.target.value)} className={fieldBox}>
                   {warehouses.length === 0 && <option value="">Main Godown</option>}
                   {warehouses.map((w) => (
                     <option key={w.id} value={w.id}>
@@ -580,13 +573,14 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                     </option>
                   ))}
                 </select>
+                {godownMoveHint && <p className="mt-1 text-xs text-slate-600">{godownMoveHint}</p>}
               </div>
             </div>
 
             {!readOnly && (
               <div className="mt-3 pt-3 border-t border-black/5 flex items-center justify-between flex-wrap gap-2.5">
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mr-1">Date:</span>
+                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider mr-1">Date:</span>
                   <button type="button" onClick={() => setDate(todayISO())} className={chip(date === todayISO())}>Today</button>
                   <button type="button" onClick={() => setDate(toLocalISODate(new Date(Date.now() - 86400000)))} className={chip(date === toLocalISODate(new Date(Date.now() - 86400000)))}>
                     Yesterday
@@ -594,27 +588,28 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                 </div>
 
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Status:</span>
-                  <div className="inline-flex rounded-full p-0.5 bg-slate-100 border border-slate-200 text-xs font-bold">
+                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Status:</span>
+                  <div className="inline-flex max-w-full rounded-full p-0.5 bg-slate-100 border border-slate-200 text-xs font-bold">
                     <button
                       type="button"
                       id="btn-edit-status-out"
                       onClick={() => setStatus('out')}
                       className={`px-3 py-1.5 rounded-full cursor-pointer transition-all ${
-                        status === 'out' ? 'bg-[var(--primary)] text-white shadow-xs font-black' : 'text-slate-600 hover:text-slate-900'
+                        status === 'out' ? 'bg-[var(--flow-accent)] text-white shadow-xs font-black' : 'text-slate-600 hover:text-slate-900'
                       }`}
                       title="Set trip to Active / Out on road"
                     >
-                      Out on road (Active)
+                      Active
                     </button>
                     <button
                       type="button"
                       id="btn-edit-status-closed"
                       onClick={() => setStatus('closed')}
-                      className={`px-3 py-1.5 rounded-full cursor-pointer transition-all ${
+                      disabled={trip.status !== 'closed'}
+                      className={`px-3 py-1.5 rounded-full transition-all ${
                         status === 'closed' ? 'bg-slate-800 text-white shadow-xs font-black' : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                      title="Set trip to Completed / Closed"
+                      } ${trip.status !== 'closed' ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                      title={trip.status !== 'closed' ? 'Close a trip with Day-end settlement' : 'Set trip to Completed / Closed'}
                     >
                       Completed
                     </button>
@@ -629,11 +624,11 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                 checked={autoAttachBills}
                 disabled={readOnly}
                 onChange={(e) => setAutoAttachBills(e.target.checked)}
-                className="size-5 rounded accent-[var(--primary)]"
+                className="size-5 rounded accent-[var(--flow-accent)]"
               />
               <span>Attach bills of this date</span>
               {pendingBills.length > 0 && (
-                <span className="text-[11px] font-black text-[var(--primary)] bg-[#ebe8e1] px-2 py-0.5 rounded-full">{pendingBills.length} ready</span>
+                <span className="text-xs font-black text-[var(--flow-accent)] bg-[var(--flow-accent-soft)] px-2 py-0.5 rounded-full">{pendingBills.length} ready</span>
               )}
             </label>
           </section>
@@ -658,7 +653,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   placeholder="Search loaded items…"
-                  className="w-full min-h-[46px] pl-9 pr-9 rounded-xl border border-black/15 bg-white text-[15px] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
+                  className="w-full min-h-[46px] pl-9 pr-9 rounded-xl border border-black/15 bg-white text-[15px] focus:outline-none focus:ring-2 focus:ring-[var(--flow-accent)]/30"
                 />
                 {searchTerm && (
                   <button type="button" onClick={() => setSearchTerm('')} aria-label="Clear search" className="absolute right-1.5 top-1/2 -translate-y-1/2 size-9 flex items-center justify-center text-slate-400 cursor-pointer">
@@ -687,7 +682,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowAdd(true)}
-                  className="inline-flex items-center gap-1 rounded-xl border border-[var(--primary)]/40 bg-white px-3 py-1.5 text-xs font-black text-[var(--primary)] hover:bg-emerald-50 cursor-pointer"
+                  className="inline-flex items-center gap-1 rounded-xl border border-[var(--flow-accent)]/40 bg-white px-3 py-1.5 text-xs font-black text-[var(--flow-accent)] hover:bg-emerald-50 cursor-pointer"
                 >
                   <Plus size={14} /> Add product
                 </button>
@@ -698,7 +693,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                 type="button"
                 disabled={readOnly}
                 onClick={() => !readOnly && setShowAdd(true)}
-                className="w-full rounded-2xl border-2 border-dashed border-black/20 bg-white px-4 py-8 text-center text-sm text-slate-500 cursor-pointer disabled:cursor-default hover:border-[var(--primary)]/50"
+                className="w-full rounded-2xl border-2 border-dashed border-black/20 bg-white px-4 py-8 text-center text-sm text-slate-500 cursor-pointer disabled:cursor-default hover:border-[var(--flow-accent)]/50"
               >
                 Nothing loaded yet. {readOnly ? '' : 'Tap here or “Add products” below.'}
               </button>
@@ -740,11 +735,11 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
           <section className="rounded-2xl border border-black/10 bg-white p-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-[13px] font-black text-slate-900">
-                <Receipt size={16} className="text-[var(--primary)]" />
+                <Receipt size={16} className="text-[var(--flow-accent)]" />
                 Bills on this trip ({trip.billIds?.length || 0})
               </div>
               {onManageBills && !readOnly && (
-                <button type="button" onClick={() => onManageBills(trip)} className="min-h-[40px] px-2 text-xs font-black text-[var(--primary)] underline cursor-pointer">
+                <button type="button" onClick={() => onManageBills(trip)} className="min-h-[40px] px-2 text-xs font-black text-[var(--flow-accent)] underline cursor-pointer">
                   Manage →
                 </button>
               )}
@@ -755,7 +750,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                   const bill = bills.find((b) => b.id === bid);
                   return (
                     <span key={bid} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-800 font-semibold text-xs">
-                      <FileCheck size={13} className="text-[var(--primary)]" />
+                      <FileCheck size={13} className="text-[var(--flow-accent)]" />
                       #{bid} {bill ? `· ${bill.retailer}` : ''} ({bill?.items?.reduce((s, i) => s + i.qty, 0) || 0} cs)
                     </span>
                   );

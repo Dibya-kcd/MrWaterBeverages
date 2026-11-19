@@ -142,7 +142,7 @@ export const SchemeSelectorModal: React.FC<SchemeSelectorModalProps> = ({
               <Gift size={18} className="text-emerald-600 shrink-0" />
               <span>Select Trade Scheme</span>
             </div>
-            <div className="text-xs text-slate-500 mt-0.5 truncate">
+            <div className="text-xs text-slate-500 mt-0.5 min-w-0 break-words lg:truncate">
               {product.name} · Rate Rs {money(currentRate)}/case
             </div>
           </div>

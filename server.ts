@@ -5,6 +5,8 @@ import { billExtraFields, applyBillExtra, grnExtraFields, applyGrnExtra, product
 import { volumeFromName, detectPack } from "./src/utils/billing";
 import { hashPin } from "./src/utils/crypto";
 import { findOverReturns, describeOverReturn } from "./src/utils/tripReturns";
+import { collectCancelledRestores, incomingBillWins, mergeBillLists } from "./src/utils/billMerge";
+import { dedupeSameShopCustomers } from "./src/utils/customerDedupe";
 import {
   signToken,
   verifyToken,
@@ -223,24 +225,37 @@ function loadDiskCollections(): Record<string, any> {
 }
 
 let diskSaveTimer: NodeJS.Timeout | null = null;
+function writeDiskCollectionsSync() {
+  if (IS_TEST_RUN) return;
+  try {
+    const dir = path.dirname(COLLECTIONS_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(
+      COLLECTIONS_FILE,
+      JSON.stringify(inMemoryCollections, null, 2),
+      "utf-8",
+    );
+  } catch (err) {
+    console.warn("[Storage] Error persisting disk collections:", err);
+  }
+}
 function persistDiskCollections() {
   if (IS_TEST_RUN) return;
   if (diskSaveTimer) clearTimeout(diskSaveTimer);
   diskSaveTimer = setTimeout(() => {
-    try {
-      const dir = path.dirname(COLLECTIONS_FILE);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-      fs.writeFileSync(
-        COLLECTIONS_FILE,
-        JSON.stringify(inMemoryCollections, null, 2),
-        "utf-8",
-      );
-    } catch (err) {
-      console.warn("[Storage] Error persisting disk collections:", err);
-    }
+    diskSaveTimer = null;
+    writeDiskCollectionsSync();
   }, 200);
+}
+function flushDiskCollectionsNow() {
+  if (IS_TEST_RUN) return;
+  if (diskSaveTimer) {
+    clearTimeout(diskSaveTimer);
+    diskSaveTimer = null;
+  }
+  writeDiskCollectionsSync();
 }
 
 // In-memory collections fallback cache, pre-seeded from disk
@@ -507,7 +522,17 @@ async function startServer() {
   }
   const app = express();
   const httpServer = http.createServer(app);
-  const PORT = parseInt(process.env.PORT || "3000", 10);
+  const argValue = (flag: string): string | undefined => {
+    const idx = process.argv.indexOf(flag);
+    if (idx !== -1 && idx + 1 < process.argv.length) return process.argv[idx + 1];
+    const eq = process.argv.find((a) => a.startsWith(`${flag}=`));
+    return eq ? eq.slice(flag.length + 1) : undefined;
+  };
+  const envPort =
+    process.env.PORT && process.env.PORT !== process.env.NGINX_PORT
+      ? process.env.PORT
+      : process.env.DEFAULT_APP_PORT;
+  const PORT = parseInt(argValue("--port") || envPort || "3000", 10);
 
   // ---- Basic hardening: security headers + request rate limit -------------------------------------------------
   // Behind Google Cloud Run / Render / Railway / Nginx set trust proxy so the limiter sees each visitor's real address.
@@ -1365,7 +1390,7 @@ async function startServer() {
             });
           }
 
-          const mapped = bills.map((b: any) => {
+          const mappedAll = bills.map((b: any) => {
             const rawPaid = Number(
               b.amount_paid !== undefined ? b.amount_paid : b.amountPaid || 0,
             );
@@ -1407,6 +1432,9 @@ async function startServer() {
               items: Array.isArray(b.items) ? b.items : [],
             }, b.extra);
           });
+          const mapped = mappedAll.filter(
+            (o: any) => o?.status === "cancelled" || Boolean(o?.cancellation) || !deadBillIds.has(Number(o?.id)),
+          );
 
           await setCollectionData("orders", mapped);
           return res.json({ success: true, data: mapped });
@@ -1688,39 +1716,6 @@ async function startServer() {
    *  - for the same bill, the copy with more recorded edits wins (a stale device cannot undo an edit),
    *  - bills deleted on purpose (tombstones) are dropped.
    */
-  /** True when the incoming copy of a bill may replace the stored one. The stored copy is kept when it has more
-   * recorded edits, or (same edit count) a later updatedAt stamp. */
-  const incomingBillWins = (cur: any, b: any) => {
-    if (!cur) return true;
-    const curEdits = Array.isArray(cur?.editHistory) ? cur.editHistory.length : 0;
-    const newEdits = Array.isArray(b?.editHistory) ? b.editHistory.length : 0;
-    if (curEdits > newEdits) return false;
-    const stamp = (x: any) => Date.parse(x?.updatedAt || x?.extra?.updatedAt || "") || 0;
-    if (curEdits === newEdits && stamp(cur) > stamp(b)) return false;
-    return true;
-  };
-  const mergeBillLists = (
-    stored: any[],
-    incoming: any[],
-    deletedIds: Set<number>,
-    accepted?: Set<any>,
-  ) => {
-    const byId = new Map<number, any>();
-    for (const b of stored) {
-      const id = Number(b?.id);
-      if (Number.isFinite(id) && (b?.status === "cancelled" || !deletedIds.has(id))) byId.set(id, b);
-    }
-    for (const b of incoming) {
-      const id = Number(b?.id);
-      if (!Number.isFinite(id) || (b?.status !== "cancelled" && deletedIds.has(id))) continue;
-      const cur = byId.get(id);
-      if (cur && !incomingBillWins(cur, b)) continue; // stored copy is the newer one
-      byId.set(id, b);
-      accepted?.add(b);
-    }
-    return Array.from(byId.values()).sort((x, y) => Number(y.id) - Number(x.id));
-  };
-
   app.put(["/api/bills", "/api/orders"], async (req, res) => {
     try {
       const rawBills = Array.isArray(req.body?.bills)
@@ -1737,20 +1732,14 @@ async function startServer() {
 
       // 1. Immediately persist to local orders collection and disk (merged, never a blind replace)
       const storedOrders = await getCollectionData("orders");
-      const deletedRaw = await getCollectionData("deleted_bill_ids");
       const deletedIds = new Set<number>(
-        (Array.isArray(deletedRaw) ? deletedRaw : []).map((n: any) => Number(n)),
+        Array.from(await readTombstones("deleted_bill_ids")).map(Number),
       );
-      // If any incoming bill is explicitly provided (e.g. registered cancelled test bills for series continuity), un-tombstone it
-      const restoredIds: number[] = [];
-      for (const b of rawBills) {
-        const id = Number(b?.id);
-        if (Number.isFinite(id) && deletedIds.has(id)) {
-          deletedIds.delete(id);
-          restoredIds.push(id);
-        }
-      }
+      // ONLY explicitly cancelled bills (kept for GST series continuity) may un-tombstone themselves.
+      // Active/non-cancelled bills in deleted_bill_ids MUST stay deleted so stale caches/tabs cannot resurrect them.
+      const restoredIds = collectCancelledRestores(rawBills, deletedIds);
       if (restoredIds.length > 0) {
+        const deletedRaw = await getCollectionData("deleted_bill_ids");
         const curDeleted = Array.isArray(deletedRaw) ? deletedRaw : [];
         const restoredSet = new Set(restoredIds);
         await setCollectionData("deleted_bill_ids", curDeleted.filter((n: any) => !restoredSet.has(Number(n))));
@@ -1885,9 +1874,10 @@ async function startServer() {
       // Remember the deletion so a device that still has this bill cannot bring it back.
       {
         const dr = await getCollectionData("deleted_bill_ids");
-        const list = Array.isArray(dr) ? dr : [];
+        const list = Array.isArray(dr) ? dr.map(Number) : [];
         if (!list.includes(id)) await setCollectionData("deleted_bill_ids", [...list, id].slice(-5000));
       }
+      flushDiskCollectionsNow();
 
       if (isSupabaseAvailable()) {
         withSupabaseTimeout(
@@ -3119,7 +3109,13 @@ async function startServer() {
   app.get("/api/customers", async (_req, res) => {
     try {
       const data = await getCollectionData("customers");
-      return res.json({ success: true, data: Array.isArray(data) ? data : [] });
+      const dead = await readDeletedRecordIds("customer");
+      const list = Array.isArray(data)
+        ? dedupeSameShopCustomers(
+            data.filter((c: any) => c?.id === undefined || !dead.has(String(c.id))),
+          ).customers
+        : [];
+      return res.json({ success: true, data: list });
     } catch (err: any) {
       console.error("Error in GET /api/customers:", err);
       return res
@@ -3192,7 +3188,7 @@ async function startServer() {
               : c,
           );
         }
-        const merged = Array.from(byId.values());
+        const merged = dedupeSameShopCustomers(Array.from(byId.values())).customers;
         await setCollectionData("customers", merged);
         return res.json({ success: true, count: merged.length });
       }
@@ -3225,10 +3221,38 @@ async function startServer() {
     try {
       const { id } = req.params;
       const existing = await getCollectionData("customers");
+      const target = Array.isArray(existing) ? existing.find((c: any) => c.id === id) : undefined;
       if (Array.isArray(existing)) {
         const filtered = existing.filter((c: any) => c.id !== id);
         await setCollectionData("customers", filtered);
       }
+      // Record tombstone immediately so PUT /api/customers merge or dev server restart cannot bring this customer back
+      const delEntry = {
+        kind: "customer",
+        id: String(id),
+        name: req.body?.name || target?.name || undefined,
+        deletedAt: new Date().toISOString(),
+        by: req.body?.by || "Admin",
+        reason: req.body?.reason || undefined,
+      };
+      const log = await readListFresh("deleted_records");
+      if (!log.some((r: any) => r?.kind === "customer" && String(r.id) === String(id))) {
+        await setCollectionData("deleted_records", [...log, delEntry].slice(-5000));
+      }
+      if (isSupabaseAvailable()) {
+        withSupabaseTimeout(
+          supabase.from("app_collections").upsert(
+            {
+              key: `deleted:customer:${id}`,
+              data: delEntry,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "key" },
+          ),
+          2500,
+        ).catch(() => {});
+      }
+      flushDiskCollectionsNow();
       return res.json({ success: true, id });
     } catch (err: any) {
       console.error("Error in DELETE /api/customers:", err);
@@ -3242,7 +3266,17 @@ async function startServer() {
   app.get("/api/payments", async (_req, res) => {
     try {
       const data = await getCollectionData("payments");
-      return res.json({ success: true, data: Array.isArray(data) ? data : [] });
+      const deadPay = await readDeletedRecordIds("payment");
+      const deadBills = await readTombstones("deleted_bill_ids");
+      const list = Array.isArray(data)
+        ? data.filter(
+            (p: any) =>
+              p?.id !== undefined &&
+              !deadPay.has(String(p.id)) &&
+              !(p.billId !== undefined && p.billId !== null && deadBills.has(String(p.billId))),
+          )
+        : [];
+      return res.json({ success: true, data: list });
     } catch (err: any) {
       console.error("Error in GET /api/payments:", err);
       return res
@@ -3349,13 +3383,25 @@ async function startServer() {
       // remember it, so a device that still has this payment cannot bring it back
       {
         const log = await readListFresh("deleted_records");
+        const delEntry = { kind: "payment", id: String(id), deletedAt: new Date().toISOString() };
         if (!log.some((r: any) => r?.kind === "payment" && String(r.id) === String(id))) {
-          await setCollectionData("deleted_records", [
-            ...log,
-            { kind: "payment", id: String(id), deletedAt: new Date().toISOString() },
-          ].slice(-5000));
+          await setCollectionData("deleted_records", [...log, delEntry].slice(-5000));
+        }
+        if (isSupabaseAvailable()) {
+          withSupabaseTimeout(
+            supabase.from("app_collections").upsert(
+              {
+                key: `deleted:payment:${id}`,
+                data: delEntry,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "key" },
+            ),
+            2500,
+          ).catch(() => {});
         }
       }
+      flushDiskCollectionsNow();
       return res.json({ success: true, id });
     } catch (err: any) {
       console.error("Error in DELETE /api/payments:", err);
@@ -4407,14 +4453,30 @@ async function startServer() {
 
   // Vite middleware for development vs static build in production
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
+    const vitePromise = createViteServer({
       server: {
         middlewareMode: true,
         hmr: false,
+        ws: false,
+        watch: process.env.DISABLE_HMR === "true" ? null : {},
       },
       appType: "spa",
     });
-    app.use(vite.middlewares);
+    vitePromise.catch((err) => {
+      console.error("Failed to initialize Vite middleware:", err);
+    });
+
+    app.use(async (req, res, next) => {
+      if (req.originalUrl.startsWith("/api")) {
+        return next();
+      }
+      try {
+        const vite = await vitePromise;
+        return vite.middlewares(req, res, next);
+      } catch (e) {
+        return next(e);
+      }
+    });
 
     // Fallback for SPA routing to ensure transformIndexHtml is always applied
     app.use("*", async (req, res, next) => {
@@ -4423,6 +4485,7 @@ async function startServer() {
         return next();
       }
       try {
+        const vite = await vitePromise;
         const indexPath = path.resolve(_appDirname, "index.html");
         let template = fs.readFileSync(indexPath, "utf-8");
         template = await vite.transformIndexHtml(req.originalUrl, template);
@@ -4445,7 +4508,10 @@ async function startServer() {
     !authCfg.production &&
     !IS_TEST_RUN &&
     (!(process.env.ADMIN_PASSWORD || process.env.VITE_LOCAL_ADMIN_PASSWORD) || !process.env.APP_SESSION_SECRET);
-  const HOST = usingDevDefaults && process.env.ALLOW_INSECURE_DEV_HOST !== "true" ? "127.0.0.1" : "0.0.0.0";
+  const explicitHost = argValue("--host") || process.env.HOST;
+  const HOST =
+    explicitHost ||
+    (usingDevDefaults && process.env.ALLOW_INSECURE_DEV_HOST !== "true" ? "127.0.0.1" : "0.0.0.0");
   if (HOST === "127.0.0.1") {
     console.warn("[SECURITY] Built-in dev credentials in use: listening on 127.0.0.1 only. Set ADMIN_PASSWORD and APP_SESSION_SECRET to open it up.");
   }

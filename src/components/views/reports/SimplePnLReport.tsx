@@ -226,9 +226,26 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
         <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-start gap-2 flex-1 min-w-[200px]">
             <AlertTriangle size={16} className="shrink-0 mt-0.5 text-amber-600" />
-            <span>
-              <b>Godown stock shift detected:</b> {crossWhPlan.affectedBillCount} bill(s) ({crossWhPlan.totalShiftedCases} cases) without a warehouse tag are linked to a batch in a different godown, which can increase displayed stock.
-            </span>
+            <div className="space-y-1">
+              <div>
+                <b>Godown stock shift detected:</b> {crossWhPlan.affectedBillCount} bill(s) ({crossWhPlan.totalShiftedCases} cases) without a warehouse tag are linked to a batch in a different godown, which can increase displayed stock.
+              </div>
+              <div className="flex flex-col gap-0.5 text-[11px] text-amber-950/90">
+                {crossWhPlan.lines.slice(0, 5).map((l) => {
+                  const matchedBill = (allActiveBills || filteredBills).find((b) => b.id === l.billId);
+                  const billLabel = matchedBill?.docNo || `#${l.billId}`;
+                  return (
+                    <div key={`${l.billId}-${l.itemIndex}`}>
+                      • <b>{l.productName}</b> ({l.qty} cs) on Bill {billLabel} ({l.retailer} · {l.billDate}) — batch in{' '}
+                      <b>{l.allocatedWarehouseNames.join(', ')}</b> instead of <b>{l.expectedWarehouseName}</b>
+                    </div>
+                  );
+                })}
+                {crossWhPlan.lines.length > 5 && (
+                  <div className="text-amber-800 font-semibold">+{crossWhPlan.lines.length - 5} more item(s)</div>
+                )}
+              </div>
+            </div>
           </div>
           <button
             type="button"

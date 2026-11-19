@@ -102,6 +102,14 @@ function cmpExpiry(a: BatchLine, b: BatchLine): number {
   return a.batchNumber.localeCompare(b.batchNumber);
 }
 
+/** Stable line key used by buildProductBatchLines: warehouse | BATCH NO | expiry. */
+export function batchLineKey(warehouseId: string | undefined, batchNumber?: string, expiryDate?: string): string {
+  const whId = warehouseId || UNASSIGNED_ID;
+  const batchNo = (batchNumber || '').trim() || '(no batch)';
+  const exp = (expiryDate || '').trim();
+  return `${whId}|${batchNo.toUpperCase()}|${exp}`;
+}
+
 /**
  * Aggregates raw InventoryBatch rows for one product into one line per
  * (warehouse, batch number, expiry). Two GRNs that bring the SAME batch into the SAME
@@ -121,7 +129,9 @@ export function buildProductBatchLines(
   availableByWarehouse?: Record<string, number>,
   today: Date = new Date(),
   /** crates actually sold from each InventoryBatch id (from bill batchAllocations) */
-  soldByBatchId?: Record<string, number>
+  soldByBatchId?: Record<string, number>,
+  /** Batch-level stock-audit differences (+/-) keyed by line key. Applied to that exact batch, not FEFO. */
+  auditAdjByKey?: Record<string, number>
 ): BatchLine[] {
   const map = new Map<string, BatchLine>();
 
@@ -130,7 +140,7 @@ export function buildProductBatchLines(
     const whId = b.warehouseId || UNASSIGNED_ID;
     const batchNo = (b.batchNumber || '').trim() || '(no batch)';
     const exp = (b.expiryDate || '').trim();
-    const key = `${whId}|${batchNo.toUpperCase()}|${exp}`;
+    const key = batchLineKey(b.warehouseId, b.batchNumber, b.expiryDate);
     const qty = Number(b.quantity) || 0;
     const schemeFree = Number(b.supplierSchemeFreeQty) || 0;
 
@@ -191,27 +201,53 @@ export function buildProductBatchLines(
       availableByWarehouse && availableByWarehouse[whId] !== undefined
         ? Math.max(0, availableByWarehouse[whId])
         : received;
-    // 1) Take off what bills really drew from each batch (batchAllocations)...
+    // 1) Take off what bills really drew from each batch (batchAllocations).
     let allocatedLeft = 0;
+    let sumAdj = 0;
     for (const l of whLines) {
       const sold = soldByBatchId
         ? l.sourceBatchIds.reduce((s, id) => s + (soldByBatchId[id] || 0), 0)
         : 0;
       l.availableQty = Math.max(0, l.receivedQty - sold);
       allocatedLeft += l.availableQty;
+      sumAdj += auditAdjByKey ? auditAdjByKey[l.key] || 0 : 0;
     }
-    // 2) ...then reconcile with the godown's real book balance (unallocated/legacy sales, audit
-    // adjustments, disposals, returns) earliest-expiry first, so the totals always agree.
-    let toConsume = Math.max(0, allocatedLeft - available);
-    for (const l of whLines) {
-      const take = Math.min(l.availableQty, toConsume);
-      l.availableQty -= take;
-      toConsume -= take;
+    // 2) Reconcile ONLY the unattributed godown difference (legacy/unallocated sales, disposals,
+    // returns, product-level adjustments) FEFO. The godown balance already contains every
+    // batch-level audit difference, so those are excluded here and applied to their own batch below.
+    const target = available - sumAdj;
+    if (allocatedLeft > target) {
+      let toConsume = allocatedLeft - target;
+      for (const l of whLines) {
+        const take = Math.min(l.availableQty, toConsume);
+        l.availableQty -= take;
+        toConsume -= take;
+      }
+    } else if (allocatedLeft < target && whLines.length > 0) {
+      // Unattributed surplus: park on the latest-expiry line.
+      whLines[whLines.length - 1].availableQty += target - allocatedLeft;
     }
-    const received_ = allocatedLeft; // available stock implied by batch trails
-    // Extra positive adjustments (available > received): park on the latest-expiry line.
-    if (available > received_ && whLines.length > 0) {
-      whLines[whLines.length - 1].availableQty += available - received_;
+    // 3) Apply each batch's audit difference to that exact batch (never spills onto others).
+    if (auditAdjByKey) {
+      for (const l of whLines) {
+        const adj = auditAdjByKey[l.key] || 0;
+        if (adj !== 0) l.availableQty = Math.max(0, l.availableQty + adj);
+      }
+    }
+    // 4) Only if clamping at 0 broke the total, balance the remainder across positive lines.
+    let sumNow = whLines.reduce((s, l) => s + l.availableQty, 0);
+    if (sumNow > available) {
+      let over = sumNow - available;
+      for (const l of whLines) {
+        const take = Math.min(l.availableQty, over);
+        l.availableQty -= take;
+        over -= take;
+      }
+    } else if (sumNow < available && sumNow > 0) {
+      const pos = whLines.filter((l) => l.availableQty > 0);
+      pos[pos.length - 1].availableQty += available - sumNow;
+    } else if (sumNow < available && whLines.length > 0) {
+      whLines[whLines.length - 1].availableQty += available - sumNow;
     }
   });
 

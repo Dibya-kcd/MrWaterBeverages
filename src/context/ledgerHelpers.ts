@@ -8,6 +8,8 @@ import { DEFAULT_BILLING_SETTINGS, DEFAULT_ORG_PROFILE, INIT_WAREHOUSES } from "
 import { loadCachedBillingSettings, loadCachedOrders, loadCachedGrns, reportSyncFailure, reportSyncSuccess } from "../utils/storage";
 import { Audit, Bill, BillingSettings, CartState, Customer, ExistingCustomer, FontSize, GRN, GrnLineItem, GrnChange, GstMode, InventoryBatch, OrganizationProfile, PaymentRecord, PaymentAuditEntry, Product, Promotion, StickyTotalPosition, StockTransfer, Trip, Warehouse } from "../types";
 import { generateAutoSku, generateBatchNumber, normalizeTo8DigitHsn, gstRateFromHsn, inferUnitsPerCase, productTaxFields, resolveItemCrateCost, resolveItemLandedCrateCost } from "../utils/billing";
+import { dedupeSameShopCustomers, findCustomerNameClash } from "../utils/customerDedupe";
+export { dedupeSameShopCustomers, findCustomerNameClash };
 import { buildProductBatchLines, productHasBatchInWarehouse, validateGrnDraft, replayStockTransfers } from "../utils/stockLocations";
 import { todayISO } from "../utils/dateLocal";
 
@@ -15,6 +17,7 @@ export const PAYMENT_TOMBSTONE_KEY = "payment_deleted_ids_v1";
 export const PAYMENT_AUDIT_KEY = "payment_audit_log_v1";
 export const CUSTOMER_TOMBSTONE_KEY = "customer_deleted_ids_v1";
 export const EXPENSE_TOMBSTONE_KEY = "expense_deleted_ids_v1";
+export const BILL_TOMBSTONE_KEY = "bill_deleted_ids_v1";
 
 export function readExpenseTombstones(): Set<string> {
   try {
@@ -121,6 +124,46 @@ export function withoutDeletedCustomers<T extends { id?: string; name?: string }
     if (c.name && (tomb.has(c.name.trim()) || tomb.has(normCustName(c.name)))) return false;
     return true;
   });
+}
+
+export function readBillTombstones(): Set<number> {
+  try {
+    const raw = localStorage.getItem(BILL_TOMBSTONE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    const out = new Set<number>();
+    if (Array.isArray(arr)) {
+      for (const x of arr) {
+        const n = Number(x);
+        if (Number.isFinite(n) && n > 0) out.add(n);
+      }
+    }
+    return out;
+  } catch {
+    return new Set();
+  }
+}
+
+export function addBillTombstones(ids: number[]) {
+  if (!ids.length) return;
+  try {
+    const set = readBillTombstones();
+    for (const raw of ids) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) set.add(n);
+    }
+    localStorage.setItem(
+      BILL_TOMBSTONE_KEY,
+      JSON.stringify(Array.from(set).slice(-5000)),
+    );
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+export function withoutDeletedBills<T extends { id: number; status?: string; cancellation?: any }>(list: T[]): T[] {
+  const tomb = readBillTombstones();
+  if (!tomb.size) return list;
+  return list.filter((b) => b.status === "cancelled" || Boolean(b.cancellation) || !tomb.has(Number(b.id)));
 }
 
 /* Customers that are only known from old bills come back into the directory on their own (the
@@ -286,7 +329,6 @@ export function findDuplicateCustomer(
  * Every other entry is returned unchanged.
  */
 export function splitSameNameShops(existing: ExistingCustomer[], masters: Customer[]): ExistingCustomer[] {
-  const last10 = (p?: string) => (p || "").replace(/\D/g, "").slice(-10);
   const byName = new Map<string, Customer[]>();
   for (const c of masters || []) {
     const k = normCustName(c.name);
@@ -296,7 +338,7 @@ export function splitSameNameShops(existing: ExistingCustomer[], masters: Custom
   }
   const split = new Set<string>();
   byName.forEach((list, k) => {
-    const phones = new Set(list.map((c) => last10(c.phone)).filter((d) => d.length === 10));
+    const phones = new Set(list.map((c) => last10PhoneDigits(c.phone)).filter((d) => d.length === 10));
     if (phones.size > 1) split.add(k);
   });
   if (split.size === 0) return existing;
@@ -1075,6 +1117,7 @@ export function buildCatalogFromGrns(
       // being silently reassigned to whichever warehouse happens to be baseWarehouses[0].
       const targetWh = grn.warehouseId || "";
 
+      const isNonGstItem = item.taxability === "non_gst";
       if (!existing) {
         const prodId = item.productId || nextId++;
         const skuCode =
@@ -1085,6 +1128,7 @@ export function buildCatalogFromGrns(
             item.productName,
             item.schemeText ? "SCH" : undefined,
           );
+        const resolvedHsn = normalizeTo8DigitHsn(item.hsn, item.category, item.productName, item.taxability);
 
         const newProd: Product = {
           id: prodId,
@@ -1103,10 +1147,13 @@ export function buildCatalogFromGrns(
           mfgDate: item.mfgDate,
           batchNumber: batchLot,
           warehouseId: isStockPosted ? targetWh : "",
-          hsn: normalizeTo8DigitHsn(item.hsn, item.category, item.productName),
-          gstRate:
-            gstRateFromHsn(normalizeTo8DigitHsn(item.hsn, item.category, item.productName)) ??
-            (item.cgstPercent + item.sgstPercent) / 100,
+          taxability: isNonGstItem ? "non_gst" : undefined,
+          labourCost: item.labourCost,
+          freightCost: item.freightCost,
+          hsn: resolvedHsn,
+          gstRate: isNonGstItem
+            ? 0
+            : (gstRateFromHsn(resolvedHsn) ?? (item.cgstPercent + item.sgstPercent) / 100),
           unitsPerCrate:
             Number(item.unitsPerCrate) > 0
               ? Number(item.unitsPerCrate)
@@ -1141,7 +1188,15 @@ export function buildCatalogFromGrns(
         if (item.expiry) existing.expiry = item.expiry;
         if (item.batchNumber) existing.batchNumber = item.batchNumber;
         if (item.schemeText) existing.scheme = item.schemeText;
-        existing.hsn = normalizeTo8DigitHsn(item.hsn || existing.hsn, existing.category, existing.name);
+        if (item.labourCost !== undefined) existing.labourCost = item.labourCost;
+        if (item.freightCost !== undefined) existing.freightCost = item.freightCost;
+        if (isNonGstItem) {
+          existing.taxability = "non_gst";
+          existing.gstRate = 0;
+          existing.hsn = String(item.hsn || existing.hsn || "").trim();
+        } else {
+          existing.hsn = normalizeTo8DigitHsn(item.hsn || existing.hsn, existing.category, existing.name, existing.taxability);
+        }
         // FIX: this field is only a legacy "primary warehouse" hint for old single-
         // warehouse screens/exports — it must NEVER be treated as the source of truth
         // for where a product's stock physically is (a product can have live stock in
@@ -1182,9 +1237,9 @@ export function buildCatalogFromGrns(
         supplierSchemeId: item.supplierSchemeId,
         supplierSchemeFreeQty: (isStockPosted && supplierSchemeFreeQty) ? supplierSchemeFreeQty : undefined,
         notes: `GRN: ${grn.grnNumber} · Inv: ${grn.invoiceNo}`,
-        cgstRate: item.cgstPercent,
-        sgstRate: item.sgstPercent,
-        hsn: item.hsn || existing.hsn,
+        cgstRate: isNonGstItem ? 0 : item.cgstPercent,
+        sgstRate: isNonGstItem ? 0 : item.sgstPercent,
+        hsn: isNonGstItem ? String(item.hsn || existing.hsn || "").trim() : (item.hsn || existing.hsn),
       });
     }
   }
@@ -1377,8 +1432,8 @@ export function loadInitialState(): PersistedState {
         billMap.set(b.id, b),
       );
       cachedBills.forEach((b) => billMap.set(b.id, b));
-      const loadedBills = Array.from(billMap.values()).sort(
-        (a, b) => b.id - a.id,
+      const loadedBills = withoutDeletedBills(
+        Array.from(billMap.values()).sort((a, b) => b.id - a.id),
       );
 
       return {

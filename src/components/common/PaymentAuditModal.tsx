@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { X, History } from "lucide-react";
+import { EmptyState } from './EmptyState';
 import type { PaymentAuditEntry } from "../../types";
 import { money } from "../../utils/billing";
 
@@ -56,7 +57,7 @@ export const PaymentAuditModal: React.FC<{
             className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm mb-3"
           />
           {shown.length === 0 ? (
-            <p className="text-sm text-slate-500 py-6 text-center">No payment changes logged yet.</p>
+            <EmptyState compact title="No payment changes logged yet" description="Edits and deletions of payments will be listed here." />
           ) : (
             <ul className="divide-y divide-slate-100 max-h-[60vh] overflow-y-auto">
               {shown.map((e) => (

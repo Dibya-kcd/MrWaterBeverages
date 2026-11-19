@@ -1,4 +1,4 @@
-import { CategoryKey, GrnSchemeType, Product } from '../types';
+import { CategoryKey, GrnSchemeType, Product, Taxability } from '../types';
 import {
   generateBatchNumber,
   generateSkuId,
@@ -24,6 +24,9 @@ export interface ParsedInvoiceItem {
   packSize?: string;
   unitsPerCrate?: number; // bottles/units per crate
   hsn: string;
+  taxability?: Taxability;
+  labourCost?: number;
+  freightCost?: number;
   qty: number;
   freeQty: number;
   unitPrice: number;
@@ -67,6 +70,9 @@ export interface ParsedInvoiceData {
   billedTo: string;
   shippedTo: string;
   overallDiscount: number;
+  /** Round-off and other charges (freight, TCS...) printed on the supplier invoice; part of the printed grand total. */
+  roundOff?: number;
+  otherCharges?: number;
   grandTotal: number;
   totalCases: number;
   items: ParsedInvoiceItem[];
@@ -505,18 +511,27 @@ export async function parseSpreadsheetInvoice(
     const freeQty = Math.max(0, parseNumericCell(freeKey ? row[freeKey] : 0, 0));
     const rawListPrice = parseNumericCell(rateKey ? row[rateKey] : 158.57, 158.57);
     const hsn = hsnKey && row[hsnKey] ? String(row[hsnKey]).trim() : '';
+    const taxTypeKey = Object.keys(row).find((k) => /taxability|gst\s*type|tax\s*status|gst\s*status/i.test(k));
+    const taxTypeRaw = taxTypeKey ? String(row[taxTypeKey] || '').trim().toLowerCase() : '';
+    const { isNewProduct, matchedProduct } = matchProductCatalog(rawName, catalog);
+    const isNonGstRow =
+      taxTypeRaw.includes('non') ||
+      taxTypeRaw === 'no' ||
+      taxTypeRaw === 'exempt' ||
+      taxTypeRaw === 'nil' ||
+      matchedProduct?.taxability === 'non_gst';
 
-    const hsnDefaultRate = gstRateFromHsn(normalizeTo8DigitHsn(hsn, undefined, rawName));
-    const hsnHalf = hsnDefaultRate != null ? (hsnDefaultRate * 100) / 2 : 20;
-    let cgstPercent = cgstKey ? parseNumericCell(row[cgstKey], hsnHalf) : hsnHalf;
-    let sgstPercent = sgstKey ? parseNumericCell(row[sgstKey], hsnHalf) : hsnHalf;
-    if (igstKey && row[igstKey]) {
+    const hsnDefaultRate = isNonGstRow ? 0 : gstRateFromHsn(normalizeTo8DigitHsn(hsn, undefined, rawName));
+    const hsnHalf = isNonGstRow ? 0 : (hsnDefaultRate != null ? (hsnDefaultRate * 100) / 2 : 20);
+    let cgstPercent = isNonGstRow ? 0 : (cgstKey ? parseNumericCell(row[cgstKey], hsnHalf) : hsnHalf);
+    let sgstPercent = isNonGstRow ? 0 : (sgstKey ? parseNumericCell(row[sgstKey], hsnHalf) : hsnHalf);
+    if (!isNonGstRow && igstKey && row[igstKey]) {
       const totalGst = parseNumericCell(row[igstKey], 40);
       cgstPercent = totalGst / 2;
       sgstPercent = totalGst / 2;
     }
 
-    const totalGstRate = (cgstPercent + sgstPercent) / 100;
+    const totalGstRate = isNonGstRow ? 0 : (cgstPercent + sgstPercent) / 100;
 
     // Check if list price is included GST? If not then calculate:
     const gstIncludedKey = Object.keys(row).find((k) =>
@@ -607,7 +622,6 @@ export async function parseSpreadsheetInvoice(
     const totalUnits = qty + freeQty;
     const landedCost = totalUnits > 0 ? lineTotal / totalUnits : priceInclGst;
 
-    const { isNewProduct, matchedProduct } = matchProductCatalog(rawName, catalog);
     const cat = (catKey && row[catKey] ? String(row[catKey]).toLowerCase() : null) as CategoryKey ||
       matchedProduct?.category ||
       detectCategory(rawName);
@@ -650,7 +664,8 @@ export async function parseSpreadsheetInvoice(
       category: cat,
       pack,
       volume,
-      hsn: normalizeTo8DigitHsn(matchedProduct?.hsn || hsn, cat, rawName),
+      hsn: normalizeTo8DigitHsn(matchedProduct?.hsn || hsn, cat, rawName, isNonGstRow ? 'non_gst' : undefined),
+      taxability: isNonGstRow ? 'non_gst' : 'taxable',
       unitsPerCrate: matchedProduct?.unitsPerCrate || inferUnitsPerCase(`${rawName} ${matchedProduct?.pack || ''}`, matchedProduct?.volume || volume),
       qty,
       freeQty,
@@ -806,7 +821,22 @@ export async function recognizeInvoiceWithAi(
     const detected = detectPackAndVolume(rawName);
     const pack = matchedProduct?.pack || item.pack || detected.pack;
     const volume = matchedProduct?.volume || item.volume || detected.volume;
-    const hsn = normalizeTo8DigitHsn(matchedProduct?.hsn || item.hsn, category, rawName);
+    const aiPrintedZeroNoHsn =
+      Number(item.cgstPercent) === 0 &&
+      Number(item.sgstPercent) === 0 &&
+      Number((item as { igstPercent?: number | null }).igstPercent || 0) === 0 &&
+      !String(item.hsn || '').trim() &&
+      !matchedProduct?.hsn;
+    const isNonGstItem =
+      item.taxability === 'non_gst' ||
+      matchedProduct?.taxability === 'non_gst' ||
+      aiPrintedZeroNoHsn;
+    const hsn = normalizeTo8DigitHsn(
+      matchedProduct?.hsn || item.hsn,
+      category,
+      rawName,
+      isNonGstItem ? 'non_gst' : undefined,
+    );
 
     const qty = Math.max(1, Number(item.qty) || 1);
     const freeQty = Math.min(qty, Math.max(0, Number(item.freeQty) || 0));
@@ -815,11 +845,19 @@ export async function recognizeInvoiceWithAi(
     const discountAmount = Number(item.discountAmount) || 0;
 
     // GST: use what the invoice printed; only when it printed nothing fall back to the HSN slab.
-    const hsnRate = gstRateFromHsn(hsn);
-    const hsnHalf = hsnRate != null ? (hsnRate * 100) / 2 : 20;
+    const hsnRate = isNonGstItem ? 0 : gstRateFromHsn(hsn);
+    const hsnHalf = isNonGstItem ? 0 : (hsnRate != null ? (hsnRate * 100) / 2 : 20);
     let cgstPercent: number;
     let sgstPercent: number;
-    if (item.cgstPercent === null || item.cgstPercent === undefined || item.sgstPercent === null || item.sgstPercent === undefined) {
+    const printedIgst = Number((item as { igstPercent?: number | null }).igstPercent) || 0;
+    if (isNonGstItem) {
+      cgstPercent = 0;
+      sgstPercent = 0;
+    } else if ((item.cgstPercent === null || item.cgstPercent === undefined || item.sgstPercent === null || item.sgstPercent === undefined) && printedIgst > 0) {
+      // inter-state invoice: IGST printed instead of CGST + SGST -> same combined rate, split in two halves
+      cgstPercent = printedIgst / 2;
+      sgstPercent = printedIgst / 2;
+    } else if (item.cgstPercent === null || item.cgstPercent === undefined || item.sgstPercent === null || item.sgstPercent === undefined) {
       cgstPercent = hsnHalf;
       sgstPercent = hsnHalf;
       warnings.push(`Line ${idx + 1} (${rawName}): GST rate was not readable; used ${hsnHalf * 2}% from HSN ${hsn}.`);
@@ -873,6 +911,7 @@ export async function recognizeInvoiceWithAi(
       pack,
       volume,
       hsn,
+      taxability: isNonGstItem ? 'non_gst' : 'taxable',
       unitsPerCrate:
         matchedProduct?.unitsPerCrate ||
         item.unitsPerCase ||
@@ -917,6 +956,8 @@ export async function recognizeInvoiceWithAi(
     billedTo: data.billedTo || '',
     shippedTo: data.shippedTo || '',
     overallDiscount: Number(data.overallDiscount) || 0,
+    roundOff: Number((data as { roundOff?: number }).roundOff) || 0,
+    otherCharges: Number((data as { otherCharges?: number }).otherCharges) || 0,
     // 0 = "not printed": the review screen then skips the amount cross-check instead of comparing with itself
     grandTotal: Number(data.grandTotal) || 0,
     totalCases: Number(data.totalCases) || processedItems.reduce((s, it) => s + it.qty, 0),

@@ -19,6 +19,7 @@ import {
   MicOff,
   Minus,
   Package,
+  Phone,
   Plus,
   Printer,
   RotateCcw,
@@ -41,7 +42,7 @@ import { PaymentCollectionPanel } from '../billing/PaymentCollectionPanel';
 import { SchemeSelectorModal } from '../billing/SchemeSelectorModal';
 import { StockSourcePanel } from '../billing/StockSourcePanel';
 import { CustomerSelector } from '../common/CustomerSelector';
-import { billTotals, computeLine, normalizeGstFraction, money, schemeLabel, evaluateBundlePromotion, resolveProductGstRate } from '../../utils/billing';
+import { billTotals, computeLine, normalizeGstFraction, money, schemeLabel, evaluateBundlePromotion, resolveProductGstRate, resolveProductHsn } from '../../utils/billing';
 import {
   startSpeechRecognition,
   parseSpokenQuantityAndProduct,
@@ -51,6 +52,7 @@ import { billBalance } from '../../utils/salesReturns';
 import { validateBillDraft, summarizeErrors, validatePhone } from '../../utils/validation';
 import { collectExpiryAlerts } from '../../utils/fefo';
 import { todayISO } from "../../utils/dateLocal";
+import { tripPrimaryWarehouseId } from '../../utils/tripLoads';
 
 interface BillingWorkflowProps {
   onOpenInvoiceModal: (bill: Bill, defaultFormat?: 'gst' | 'non_gst') => void;
@@ -69,6 +71,7 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
     cart,
     setCart,
     finalizeBill,
+    finalizeSplitBills,
     editingBillId,
     cancelEditBill,
     remainingStock,
@@ -91,6 +94,7 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
     productWarehouseStock,
     findBillingCustomer,
     getCustomerLedger,
+    updateCustomer,
   } = useLedger();
 
   // ---------------------------------------------------------------------------
@@ -340,7 +344,10 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
   // Keep cart metadata synchronized without triggering infinite re-render loops
   useEffect(() => {
     setCart((prev) => {
-      const targetWarehouseId = stockSourceType === 'warehouse' ? selectedWarehouseId : selectedTrip?.warehouseId || '';
+      const targetWarehouseId =
+        stockSourceType === 'warehouse'
+          ? selectedWarehouseId
+          : tripPrimaryWarehouseId(selectedTrip);
       const targetTripId = stockSourceType === 'trip' ? selectedTrip?.id : undefined;
       const targetVehicle = stockSourceType === 'trip' ? selectedTrip?.vehicle : undefined;
       const targetSalesman = stockSourceType === 'trip' ? selectedTrip?.salesman : undefined;
@@ -379,6 +386,7 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
     selectedWarehouseId,
     selectedTrip?.id,
     selectedTrip?.warehouseId,
+    selectedTrip?.warehouseLoads,
     selectedTrip?.vehicle,
     selectedTrip?.salesman,
     selectedTrip?.salesmanId,
@@ -391,7 +399,6 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [productAlphaFilter, setProductAlphaFilter] = useState<string>('ALL');
-  const [onlyInStock, setOnlyInStock] = useState<boolean>(true);
 
   // Voice Search for Products (e.g. "5 Apple Fizz", "dozen cola")
   const [isVoiceActive, setIsVoiceActive] = useState<boolean>(false);
@@ -408,14 +415,23 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
     }, 2800);
   };
 
-  // Distinct Categories from Products
+  // Distinct Categories from in-stock products
   const categories = useMemo(() => {
     const set = new Set<string>();
     products.forEach((p) => {
-      if (p.category) set.add(p.category);
+      if (p.category) {
+        const hasInCart = cart.items.some((it) => Number(it.productId) === Number(p.id));
+        const avail =
+          stockSourceType === 'trip'
+            ? selectedTrip
+              ? Math.max(0, Number(getVehicleStock(selectedTrip, p.id).available) || 0)
+              : 0
+            : Math.max(0, Number(selectedWarehouseId ? warehouseStock(selectedWarehouseId, p.id) : remainingStock(p.id)) || 0);
+        if (avail > 0 || hasInCart) set.add(p.category);
+      }
     });
     return ['ALL', ...Array.from(set)];
-  }, [products]);
+  }, [products, cart.items, stockSourceType, selectedTrip, selectedWarehouseId, getVehicleStock, warehouseStock, remainingStock]);
 
   // Existing Customers compiled from customer directory AND past bills
   // One source of truth for customer balances: the ledger's own list (opening balance, every
@@ -460,9 +476,13 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
     }
   };
 
-  // Filtered Products for Catalog
+  // Filtered Products for Catalog (always hide 0-stock items unless already in cart)
   const filteredProducts = useMemo(() => {
     return products.filter((prod) => {
+      const stock = getProductStock(prod.id);
+      const inCart = cart.items.some((it) => Number(it.productId) === Number(prod.id));
+      if (stock.available <= 0 && !inCart) return false;
+
       // Category filter
       if (selectedCategory !== 'ALL' && prod.category !== selectedCategory) {
         return false;
@@ -486,14 +506,9 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
         if (productAlphaFilter === 'Q-T' && !(first >= 'Q' && first <= 'T')) return false;
         if (productAlphaFilter === 'U-Z' && !(first >= 'U' && first <= 'Z')) return false;
       }
-      // Only In Stock Filter
-      if (onlyInStock) {
-        const stock = getProductStock(prod.id);
-        if (stock.available <= 0) return false;
-      }
       return true;
     });
-  }, [products, selectedCategory, searchTerm, productAlphaFilter, onlyInStock, stockSourceType, selectedWarehouseId, selectedTrip, warehouses, cart.items]);
+  }, [products, selectedCategory, searchTerm, productAlphaFilter, stockSourceType, selectedWarehouseId, selectedTrip, warehouses, cart.items]);
 
   const catalogStats = useMemo(() => {
     let inStockAtSource = 0;
@@ -591,6 +606,8 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
         productId: product.id,
         productName: product.name,
         category: product.category,
+        hsn: resolveProductHsn(product),
+        taxability: product.taxability,
         gst: resolveProductGstRate(product),
         priceType,
         qty: effectiveQty,
@@ -603,7 +620,10 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
         promoLabel: promoLabelText,
         appliedPromo: promo,
         schemeSkipped: promo ? false : existingItem?.schemeSkipped,
-        warehouseId: stockSourceType === 'warehouse' ? selectedWarehouseId : undefined,
+        warehouseId:
+          stockSourceType === 'warehouse'
+            ? selectedWarehouseId
+            : tripPrimaryWarehouseId(selectedTrip) || undefined,
       };
 
       if (existingIdx >= 0) {
@@ -702,6 +722,37 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
   const totalCasesInCart = useMemo(() => {
     return cart.items.reduce((sum, it) => sum + it.qty, 0);
   }, [cart.items]);
+
+  const cartTaxStatus = useMemo(() => {
+    const items = cart.items || [];
+    if (items.length === 0) {
+      return { hasNonGst: false, allNonGst: false, hasMixedTax: false };
+    }
+    const isNonGstItem = (it: BillItem) => {
+      if (it.taxability === 'non_gst') return true;
+      const prod = products.find((p) => Number(p.id) === Number(it.productId));
+      return prod?.taxability === 'non_gst';
+    };
+    const nonGstCount = items.filter(isNonGstItem).length;
+    return {
+      hasNonGst: nonGstCount > 0,
+      allNonGst: nonGstCount === items.length,
+      hasMixedTax: nonGstCount > 0 && nonGstCount < items.length,
+    };
+  }, [cart.items, products]);
+
+  useEffect(() => {
+    if (cartTaxStatus.allNonGst && invoiceFormat === 'gst') {
+      setInvoiceFormat('non_gst');
+      setSupplyType('B2C');
+    }
+  }, [cartTaxStatus.allNonGst, invoiceFormat]);
+
+  const settlePhoneError = useMemo(() => {
+    const trimmed = customerPhone.trim();
+    if (!trimmed) return null;
+    return validatePhone(trimmed, { required: false, label: 'Phone' });
+  }, [customerPhone]);
 
   // Smart assist (read-only hints — does not change cart, stock, or finalize behaviour)
   const billingSmartHints = useMemo(() => {
@@ -904,6 +955,8 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
         productId: rewardProd.id,
         productName: rewardProd.name,
         category: rewardProd.category,
+        hsn: resolveProductHsn(rewardProd),
+        taxability: rewardProd.taxability,
         gst: resolveProductGstRate(rewardProd),
         priceType: 'Retail',
         qty: count,
@@ -956,6 +1009,8 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
                 productId: rewardProd.id,
                 productName: rewardProd.name,
                 category: rewardProd.category,
+                hsn: resolveProductHsn(rewardProd),
+                taxability: rewardProd.taxability,
                 gst: resolveProductGstRate(rewardProd),
                 priceType: 'Retail',
                 qty: res.freeCasesAwarded,
@@ -1136,6 +1191,45 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
     if (isRetrospective) {
       note = (note ? note + ' · ' : '') + 'Retrospective / uncaptured sale (stock already issued)';
     }
+
+    if (!editingBillId && cartTaxStatus.hasMixedTax) {
+      const splitRes = finalizeSplitBills({
+        amountPaid: paidAmount,
+        tripId: tripToAssign,
+        overallDiscount: currentDiscount,
+        paymentDate,
+        paymentMode,
+        paymentNote: note || undefined,
+        billDate: saleDate,
+        extras: {
+          supplyType,
+          customerGstin: supplyType === 'B2B' ? customerGstin.trim().toUpperCase() : undefined,
+          isRetrospective,
+          invoiceType: invoiceFormat === 'gst' ? 'tax_invoice' : 'retail',
+          isGstInvoice: invoiceFormat === 'gst',
+        },
+      });
+      if (splitRes) {
+        const cleanPhone = customerPhone.trim();
+        if (cleanPhone && billCustomer !== 'Cash Sale') {
+          const matchedCustomer = findBillingCustomer(billCustomer, cleanPhone);
+          if (matchedCustomer && !matchedCustomer.phone?.trim()) {
+            updateCustomer({ ...matchedCustomer, phone: cleanPhone });
+          }
+        }
+        const first = splitRes.gstBill ?? splitRes.nonGstBill;
+        if (first) {
+          setFinalizedBill(first);
+        }
+        setIsCheckoutOpen(false);
+        showNotification(
+          `✓ Split order saved: ${splitRes.gstBill?.docNo || 'GST invoice'} + ${splitRes.nonGstBill?.docNo || 'Non-GST memo'}!`,
+          'success',
+        );
+      }
+      return;
+    }
+
     const billId = finalizeBill(
       paidAmount,
       tripToAssign,
@@ -1154,6 +1248,14 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
     );
 
     if (billId !== null) {
+      const cleanPhone = customerPhone.trim();
+      if (cleanPhone && billCustomer !== 'Cash Sale') {
+        const matchedCustomer = findBillingCustomer(billCustomer, cleanPhone);
+        if (matchedCustomer && !matchedCustomer.phone?.trim()) {
+          updateCustomer({ ...matchedCustomer, phone: cleanPhone });
+        }
+      }
+
       // Find created / updated bill
       const created = bills.find((b) => b.id === billId) || {
         ...totals,
@@ -1163,7 +1265,10 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
         date: saleDate,
         items: cart.items,
         amountPaid: paidAmount,
-        warehouseId: stockSourceType === 'warehouse' ? selectedWarehouseId : undefined,
+        warehouseId:
+          stockSourceType === 'warehouse'
+            ? selectedWarehouseId
+            : tripPrimaryWarehouseId(selectedTrip) || undefined,
         tripId: tripToAssign,
         vehicle: selectedTrip?.vehicle,
         salesman: selectedTrip?.salesman,
@@ -1182,7 +1287,7 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
       setFinalizedBill(created);
       setIsCheckoutOpen(false);
       showNotification(
-        `✓ ${invoiceFormat === 'gst' ? 'GST Tax Invoice' : 'Non-GST Retail Bill'} #${billId} generated successfully!`,
+        `✓ ${cartTaxStatus.allNonGst ? 'Non-GST Cash Memo' : invoiceFormat === 'gst' ? 'GST Tax Invoice' : 'Non-GST Retail Bill'} #${billId} generated successfully!`,
         'success'
       );
     }
@@ -1209,7 +1314,11 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
       phone: '',
       date: todayISO(),
       items: [],
-      warehouseId: selectedWarehouseId,
+      warehouseId:
+        stockSourceType === 'warehouse'
+          ? selectedWarehouseId
+          : tripPrimaryWarehouseId(selectedTrip),
+      tripId: stockSourceType === 'trip' ? selectedTrip?.id : undefined,
     });
   };
 
@@ -1553,20 +1662,39 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
               <button
                 type="button"
                 id="btn-bill-format-gst"
+                disabled={cartTaxStatus.allNonGst}
                 onClick={() => {
+                  if (cartTaxStatus.allNonGst) return;
                   setInvoiceFormat('gst');
                 }}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black cursor-pointer transition-all ${
-                  invoiceFormat === 'gst'
-                    ? 'bg-amber-600 text-white shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all ${
+                  cartTaxStatus.allNonGst
+                    ? 'opacity-50 cursor-not-allowed text-slate-400 bg-slate-50'
+                    : invoiceFormat === 'gst'
+                    ? 'bg-amber-600 text-white shadow-xs cursor-pointer'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100 cursor-pointer'
                 }`}
-                title="Generate official GST Tax Invoice with HSN code & CGST/SGST tax breakdown"
+                title={
+                  cartTaxStatus.allNonGst
+                    ? 'Cart only contains Non-GST items — GST Tax Invoice is disabled'
+                    : 'Generate official GST Tax Invoice with HSN code & CGST/SGST tax breakdown'
+                }
               >
                 <span>🏢 GST (Tax Invoice)</span>
               </button>
             </div>
           </div>
+
+          {cartTaxStatus.allNonGst && (
+            <div className="rounded-lg bg-slate-100 border border-slate-200 px-3 py-2 text-[11px] font-semibold text-slate-700">
+              All items currently in cart are Non-GST (0% tax) — GST does not apply to this bill.
+            </div>
+          )}
+          {cartTaxStatus.hasMixedTax && (
+            <div className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-[11px] font-semibold text-sky-900">
+              Mixed cart: GST items save on an INV- invoice and Non-GST items automatically split into a linked NG- Cash Memo.
+            </div>
+          )}
 
           {/* Contextual Options based on selected format */}
           {invoiceFormat === 'non_gst' ? (
@@ -1890,7 +2018,7 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
                 className="w-full pl-9 pr-8 py-2 rounded-xl border-2 border-slate-200 text-xs font-bold text-slate-900 focus:outline-none focus:border-sky-600 bg-white"
               />
               {searchTerm && (
-                <button
+                <button aria-label="Clear search"
                   type="button"
                   onClick={() => setSearchTerm('')}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-black text-slate-400 hover:text-slate-600 cursor-pointer p-1"
@@ -1940,15 +2068,9 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
               })}
             </div>
 
-            <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={onlyInStock}
-                onChange={(e) => setOnlyInStock(e.target.checked)}
-                className="w-4 h-4 rounded text-sky-700 focus:ring-blue-800"
-              />
-              <span>In-Stock Only</span>
-            </label>
+            <span className="text-[11px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+              In-Stock Items Only
+            </span>
           </div>
         </div>
 
@@ -2001,6 +2123,11 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
                       )}
                       <SizeChip volume={prod.volume} pack={prod.pack} name={prod.name} />
                       {prod.unitsPerCrate ? <span>• {prod.unitsPerCrate} per case</span> : null}
+                      {prod.taxability === 'non_gst' && (
+                        <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 font-bold text-[10px]">
+                          Non-GST · 0%
+                        </span>
+                      )}
                     </div>
 
                     {/* Scheme Selector Button right on product card */}
@@ -2254,7 +2381,7 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
                 ? stockSourceType === 'trip'
                   ? 'No cases loaded on this van, or no trip selected. Switch stock source or load the van first.'
                   : 'No stock in the selected godown. Switch warehouse or receive an inward first.'
-                : 'Try clearing search / category filters, or turn off “In stock only”.'}
+                : 'Try clearing search or category filters.'}
             </p>
             <div className="text-[11px] font-bold text-slate-400">
               Catalog: {catalogStats.totalCatalog} · In stock here: {catalogStats.inStockAtSource} · Cases: {catalogStats.totalCasesAtSource}
@@ -2303,26 +2430,54 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
         >
           <div className="w-full h-full bg-white flex flex-col overflow-hidden">
             {/* Header */}
-            <div className="p-4 sm:p-5 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
-              <div>
+            <div className="p-4 sm:p-5 border-b border-slate-200 bg-slate-50 flex flex-wrap items-start sm:items-center justify-between gap-3">
+              <div className="space-y-1.5">
                 <h3 className="text-lg font-black text-slate-900">
                   Review Invoice & Settle Payment
                 </h3>
-                <p className="text-xs text-slate-600 mt-0.5">
-                  Party: <strong className="text-slate-900">{customerName || 'Cash Sale'}</strong> •{' '}
-                  Source:{' '}
-                  <strong className="text-sky-700">
-                    {stockSourceType === 'warehouse'
-                      ? warehouses.find((w) => w.id === selectedWarehouseId)?.name || 'Godown'
-                      : selectedTrip?.vehicle || 'Trip'}
-                  </strong>
-                </p>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                  <span>
+                    Party: <strong className="text-slate-900">{customerName || 'Cash Sale'}</strong>
+                  </span>
+                  <span>•</span>
+                  <span>
+                    Source:{' '}
+                    <strong className="text-sky-700">
+                      {stockSourceType === 'warehouse'
+                        ? warehouses.find((w) => w.id === selectedWarehouseId)?.name || 'Godown'
+                        : selectedTrip?.vehicle || 'Trip'}
+                    </strong>
+                  </span>
+                  <span>•</span>
+                  <div className="inline-flex flex-col">
+                    <div className="relative inline-flex items-center">
+                      <Phone size={12} className={`absolute left-2 pointer-events-none ${settlePhoneError ? 'text-rose-500' : 'text-slate-400'}`} />
+                      <input
+                        type="tel"
+                        value={customerPhone}
+                        onChange={(e) => setCustomerPhone(e.target.value)}
+                        placeholder="Customer phone"
+                        aria-label="Customer phone"
+                        className={`pl-6 pr-2 py-1 text-xs font-semibold rounded-lg bg-white border focus:outline-none w-36 sm:w-44 ${
+                          settlePhoneError
+                            ? 'border-rose-400 text-rose-900 focus:border-rose-600'
+                            : 'border-slate-300 text-slate-900 focus:border-sky-600'
+                        }`}
+                      />
+                    </div>
+                    {settlePhoneError && (
+                      <span className="text-[10px] font-semibold text-rose-600 mt-0.5">
+                        {settlePhoneError}
+                      </span>
+                    )}
+                  </div>
+                </div>
               </div>
 
               <button
                 type="button"
                 onClick={() => { setBillingStep('products'); setIsCheckoutOpen(false); }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 cursor-pointer shrink-0"
               >
                 ← Back to beverages
               </button>
@@ -2353,6 +2508,11 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
                         </div>
                         <div className="text-[11px] text-slate-500 font-semibold flex items-center gap-1.5 flex-wrap">
                           <span>{it.category}</span>
+                          {(it.taxability === 'non_gst' || products.find((p) => Number(p.id) === Number(it.productId))?.taxability === 'non_gst') && (
+                            <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 font-bold text-[10px]">
+                              Non-GST · 0%
+                            </span>
+                          )}
                           {it.freeQty > 0 && (
                             <span className="text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
                               +{it.freeQty} free of {it.qty} ({it.chargeableQty} paid)
@@ -2584,17 +2744,37 @@ export const BillingWorkflow: React.FC<BillingWorkflowProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setInvoiceFormat('gst')}
-                    className={`p-2.5 rounded-xl border text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer transition-all ${
-                      invoiceFormat === 'gst'
-                        ? 'border-amber-600 bg-amber-50 text-amber-900 shadow-xs ring-2 ring-amber-500/20'
-                        : 'border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-600'
+                    disabled={cartTaxStatus.allNonGst}
+                    onClick={() => {
+                      if (cartTaxStatus.allNonGst) return;
+                      setInvoiceFormat('gst');
+                    }}
+                    className={`p-2.5 rounded-xl border text-xs font-black flex items-center justify-center gap-1.5 transition-all ${
+                      cartTaxStatus.allNonGst
+                        ? 'opacity-50 cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400'
+                        : invoiceFormat === 'gst'
+                        ? 'border-amber-600 bg-amber-50 text-amber-900 shadow-xs ring-2 ring-amber-500/20 cursor-pointer'
+                        : 'border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-600 cursor-pointer'
                     }`}
-                    title="Generate official GST Tax Invoice with tax breakdown"
+                    title={
+                      cartTaxStatus.allNonGst
+                        ? 'All items in cart are Non-GST (0% tax)'
+                        : 'Generate official GST Tax Invoice with tax breakdown'
+                    }
                   >
                     <span>🏢 GST (Tax Invoice)</span>
                   </button>
                 </div>
+                {cartTaxStatus.allNonGst && (
+                  <p className="text-[11px] font-semibold text-slate-600">
+                    All items in this bill are Non-GST (0% tax) — GST does not apply.
+                  </p>
+                )}
+                {cartTaxStatus.hasMixedTax && (
+                  <p className="text-[11px] font-semibold text-sky-800">
+                    Mixed cart: GST items save on an INV- invoice and Non-GST items automatically split into a linked NG- Cash Memo.
+                  </p>
+                )}
               </div>
             </div>
 

@@ -9,6 +9,8 @@ import { TripEditScreen } from './TripEditScreen';
 import { TripRecordReturnScreen } from './TripRecordReturnScreen';
 import { NewTripSheet, NewTripPayload } from './trips/NewTripSheet';
 import { useCreateTrip } from './trips/useCreateTrip';
+import { useCloseTrip } from './trips/useCloseTrip';
+import { useLoadValidator } from './trips/useLoadValidator';
 import { TripListCard } from './trips/TripListCard';
 import { SalesmanDuesPanel } from './trips/SalesmanDuesPanel';
 import { useBeats } from '../../hooks/useBeats';
@@ -30,6 +32,8 @@ const fmtDay = (d?: string) => {
 export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }) => {
   const { activeBeats } = useBeats();
   const createTrip = useCreateTrip();
+  const { closeTrip: closeTripAndPost } = useCloseTrip();
+  const validateLoad = useLoadValidator();
   const {
     trips,
     bills,
@@ -39,13 +43,10 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
     warehouses,
     defaultWarehouse,
     warehouseStock,
-    remainingStock,
-    getVehicleStock,
     addTrip,
     reopenTrip,
     toggleBillAssignment,
     autoAssignTripBills,
-    saveReturn,
     saveReturnDraft,
     recordTripCashRecovery,
     writeOffTripCashShort,
@@ -155,6 +156,8 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
       ...r,
       reason: t.shortageReasons?.[r.productId]?.reason,
       reasonNote: t.shortageReasons?.[r.productId]?.note,
+      damagedQty: t.shortageReasons?.[r.productId]?.missing ? t.shortageReasons?.[r.productId]?.qty : undefined,
+      missing: t.shortageReasons?.[r.productId]?.missing,
     }));
     const stats = tripBillStats(t);
     return (
@@ -196,26 +199,7 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
         warehouses={warehouses}
         warehouseStock={warehouseStock}
         allTrips={trips}
-        validateLoad={(t, newLoaded, billed) => {
-          // Same free-stock rule as a new trip, applied only to products whose load goes up so
-          // older trips can still be edited. Stock is deducted at billing, not at loading, so
-          // crates unsold on other open vans must be counted as taken.
-          for (const [pidStr, qty] of Object.entries(newLoaded)) {
-            const pid = Number(pidStr);
-            const before = Number(t.loaded?.[pid]) || 0;
-            if (qty <= before) continue;
-            const unsoldOnThisVan = Math.max(0, qty - (billed[pid] || 0));
-            const onOtherVans = trips
-              .filter((x) => x.status === 'out' && Number(x.id) !== Number(t.id))
-              .reduce((sum, x) => sum + getVehicleStock(x, pid).available, 0);
-            const free = remainingStock(pid) - onOtherVans;
-            if (unsoldOnThisVan > free) {
-              const name = products.find((x) => x.id === pid)?.name || `Product #${pid}`;
-              return `${name}: only ${Math.max(0, free)} free to load (${onOtherVans} already on other vans), but this van would carry ${unsoldOnThisVan} unsold.`;
-            }
-          }
-          return null;
-        }}
+        validateLoad={validateLoad}
         reopensOnSave={editReopens}
         onReopenTripNow={(id) => {
           reopenTrip(id);
@@ -255,11 +239,11 @@ export const TripsView: React.FC<TripsViewProps> = ({ initialSubTab = 'active' }
           setTripForReturn(null);
         }}
         payments={payments}
-        onSaveReturn={(tripId, finalReturn, closeTrip, shortageReasons, cashHandedIn, cashShortBooked) => {
+        onSaveReturn={(tripId, finalReturn, closeTrip, shortageReasons, cashHandedIn, cashShortBooked, tripExpense) => {
           // A draft is kept apart from the recorded returns and never closes the trip.
           if (closeTrip) {
-            const saved = saveReturn(tripId, finalReturn, shortageReasons, cashHandedIn, cashShortBooked);
-            if (saved.ok === false) return saved.error; // stay on the screen and show why
+            const refused = closeTripAndPost({ tripId, returned: finalReturn, shortageReasons, cashHandedIn, cashShortBooked, tripExpense });
+            if (refused) return refused; // stay on the screen and show why
           } else saveReturnDraft(tripId, finalReturn, cashHandedIn);
           setViewMode('list');
           setTripForReturn(null);

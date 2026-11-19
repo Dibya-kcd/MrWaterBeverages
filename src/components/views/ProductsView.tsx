@@ -2,14 +2,15 @@ import React, { useMemo, useState, useCallback } from "react";
 import { SizeChip } from "../common/SizeChip";
 import { PackIcon } from "../common/PackIcon";
 import { sizeTheme } from "../../utils/sizeColor";
-import { Plus, Search, Trash2, X, Languages, Loader2 } from "lucide-react";
+import { Plus, Search, Trash2, X, Languages, Loader2, CheckSquare, Square, Layers } from "lucide-react";
 import { useLedger } from "../../context/LedgerContext";
 import { useLanguage } from "../../i18n/LanguageContext";
 import { useAutoOdiaNameMap, nameFromMap } from "../../hooks/useAutoOdiaName";
-import { CategoryKey, Product } from "../../types";
+import { CategoryKey, Product, Taxability } from "../../types";
 import { CATS } from "../../constants/initialData";
 import { CASE_PACK_SIZES, gstRateFromHsn, money, resolveProductGstRate, resolveProductHsn, volumeFromName, detectPack } from "../../utils/billing";
 import { ConfirmModal, ToggleSwitch } from "../ui";
+import { notify } from "../../utils/toast";
 
 // Current GST slabs for beverages (12% and 28% no longer exist). An old product that still carries
 // another rate keeps showing it until you pick a valid one.
@@ -22,6 +23,7 @@ const emptyProductForm = () => ({
   brand: "",
   category: "general" as CategoryKey,
   categoryText: "",
+  taxability: "taxable" as Taxability,
   hsn: "",
   gstPct: "18%",
   cessPct: "0",
@@ -29,12 +31,18 @@ const emptyProductForm = () => ({
   unitsPerCase: "1",
   mrp: "0",
   purchaseRate: "0",
+  labourCost: "0",
+  freightCost: "0",
   retailRate: "0",
   wholesaleRate: "0",
   specialRate: "0",
   reorderLevel: "0",
   imageUrl: "",
   ratesIncludeGst: false,
+  opening: "0",
+  warehouseId: "",
+  batchNumber: "",
+  expiry: "",
   returnable: false,
   active: true,
 });
@@ -56,8 +64,10 @@ const hsnLooksValid = (h: string) => /^\d{8}$/.test(h.trim());
 export const ProductsView: React.FC = () => {
   const {
     products,
+    warehouses,
     addProduct,
     updateProductFields,
+    bulkSetProductTaxability,
     deleteProduct,
   } = useLedger();
   const { language } = useLanguage();
@@ -70,11 +80,23 @@ export const ProductsView: React.FC = () => {
   const [form, setForm] = useState(emptyProductForm());
   const [formError, setFormError] = useState<string | null>(null);
   const [toDelete, setToDelete] = useState<Product | null>(null);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+
+  const toggleSelectProduct = (id: number) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
 
   const filtered = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
     return products.filter((p) => {
-      if (filterCat !== "all" && p.category !== filterCat) return false;
+      if (filterCat === "non_gst") {
+        if (p.taxability !== "non_gst") return false;
+      } else if (filterCat !== "all" && p.category !== filterCat) {
+        return false;
+      }
       if (!q) return true;
       return (
         p.name.toLowerCase().includes(q) ||
@@ -95,6 +117,7 @@ export const ProductsView: React.FC = () => {
 
   const openEdit = (p: Product) => {
     setEditingId(p.id);
+    const isNonGst = p.taxability === "non_gst";
     setForm({
       name: p.name || "",
       nameOr: p.nameOr || "",
@@ -102,19 +125,26 @@ export const ProductsView: React.FC = () => {
       brand: p.brand || "",
       category: p.category || "general",
       categoryText: CATS[p.category]?.name || "",
+      taxability: isNonGst ? "non_gst" : "taxable",
       hsn: resolveProductHsn(p),
-      gstPct: rateToGstLabel(resolveProductGstRate(p)),
+      gstPct: isNonGst ? "0%" : rateToGstLabel(resolveProductGstRate(p)),
       cessPct: "0",
       unit: p.pack || "pcs",
       unitsPerCase: String(p.unitsPerCrate ?? 1),
       mrp: "0",
       purchaseRate: String(p.cost ?? 0),
+      labourCost: String(p.labourCost ?? 0),
+      freightCost: String(p.freightCost ?? 0),
       retailRate: String(p.retail ?? 0),
       wholesaleRate: String(p.wholesale ?? 0),
       specialRate: "0",
       reorderLevel: "0",
       imageUrl: "",
-      ratesIncludeGst: p.ratesIncludeGst === true,
+      ratesIncludeGst: !isNonGst && p.ratesIncludeGst === true,
+      opening: String(p.opening ?? 0),
+      warehouseId: p.warehouseId || "",
+      batchNumber: p.batchNumber || "",
+      expiry: p.expiry || "",
       returnable: p.returnable === true,
       active: p.active !== false,
     });
@@ -129,6 +159,34 @@ export const ProductsView: React.FC = () => {
     setForm((f) => ({ ...f, [key]: value }));
   };
 
+  const landedPreview = useMemo(() => {
+    const isNonGst = form.taxability === "non_gst";
+    const rawRate = Math.max(0, Number(form.purchaseRate) || 0);
+    const gstFrac = isNonGst ? 0 : gstToRate(form.gstPct);
+    const exGstBase =
+      !isNonGst && form.ratesIncludeGst && gstFrac > 0
+        ? rawRate / (1 + gstFrac)
+        : rawRate;
+    const gstAmtPerCase = isNonGst ? 0 : exGstBase * gstFrac;
+    const labour = Math.max(0, Number(form.labourCost) || 0);
+    const freight = Math.max(0, Number(form.freightCost) || 0);
+    const landedPerCase = Math.round((exGstBase + gstAmtPerCase + labour + freight) * 100) / 100;
+    const unitsPerCase = Math.max(1, Number(form.unitsPerCase) || 1);
+    const landedPerUnit = Math.round((landedPerCase / unitsPerCase) * 100) / 100;
+    const effectiveCost = Math.round((exGstBase + labour + freight) * 100) / 100;
+    return {
+      isNonGst,
+      exGstBase: Math.round(exGstBase * 100) / 100,
+      gstAmtPerCase: Math.round(gstAmtPerCase * 100) / 100,
+      labour,
+      freight,
+      landedPerCase,
+      landedPerUnit,
+      effectiveCost,
+      unitsPerCase,
+    };
+  }, [form.taxability, form.purchaseRate, form.gstPct, form.ratesIncludeGst, form.labourCost, form.freightCost, form.unitsPerCase]);
+
   const handleSave = () => {
     const name = form.name.trim().toUpperCase();
     if (!name) {
@@ -136,8 +194,9 @@ export const ProductsView: React.FC = () => {
       return;
     }
     const cat = form.category;
+    const isNonGst = form.taxability === "non_gst";
     const hsnClean = form.hsn.trim();
-    if (!hsnLooksValid(hsnClean)) {
+    if (!isNonGst && !hsnLooksValid(hsnClean)) {
       setFormError("Enter the full 8-digit HSN code, e.g. 22021090");
       return;
     }
@@ -145,6 +204,7 @@ export const ProductsView: React.FC = () => {
     const existingVol = editingId != null ? products.find((p) => p.id === editingId)?.volume : undefined;
     const finalVolume = Number(existingVol) > 0 ? Number(existingVol) : (detectedVol || 150);
     const pack = form.unit.trim() && form.unit.trim() !== "pcs" ? form.unit.trim() : detectPack(name);
+    const openingQty = Math.max(0, Number(form.opening) || 0);
 
     const payload: Omit<Product, "id"> = {
       name,
@@ -152,25 +212,32 @@ export const ProductsView: React.FC = () => {
       sku: form.sku.trim() || undefined,
       brand: form.brand.trim(),
       category: cat,
+      taxability: isNonGst ? "non_gst" : "taxable",
       hsn: hsnClean,
-      gstRate: gstToRate(form.gstPct),
+      gstRate: isNonGst ? 0 : gstToRate(form.gstPct),
       pack,
-      unitsPerCrate: Number(form.unitsPerCase) || 1,
+      unitsPerCrate: Math.max(1, Number(form.unitsPerCase) || 1),
       cost: Number(form.purchaseRate) || 0,
+      labourCost: landedPreview.labour,
+      freightCost: landedPreview.freight,
+      effectiveCost: landedPreview.effectiveCost,
+      landedCostPerCrate: landedPreview.landedPerCase,
+      landedCostPerUnit: landedPreview.landedPerUnit,
       retail: Number(form.retailRate) || 0,
       wholesale: Number(form.wholesaleRate) || 0,
       volume: finalVolume,
-      expiry: "",
-      opening: 0,
+      expiry: form.expiry.trim() || "",
+      opening: openingQty,
+      warehouseId: form.warehouseId || undefined,
+      batchNumber: form.batchNumber.trim() || undefined,
       returnable: !!form.returnable,
       active: form.active !== false,
-      ratesIncludeGst: !!form.ratesIncludeGst,
+      ratesIncludeGst: !isNonGst && !!form.ratesIncludeGst,
     };
 
     if (editingId != null) {
-      // The form has no opening-stock or expiry field, so the placeholder values in `payload` must not be written
-      // over the real ones (an edit used to reset opening stock to 0 and clear the expiry date).
-      const { opening: _opening, expiry: _expiry, ...edited } = payload;
+      // Editing a catalog SKU must not overwrite existing batch stock or expiry dates.
+      const { opening: _opening, expiry: _expiry, warehouseId: _wh, batchNumber: _bn, ...edited } = payload;
       updateProductFields(editingId, edited);
     } else {
       addProduct(payload);
@@ -240,6 +307,64 @@ export const ProductsView: React.FC = () => {
             </Field>
           </div>
 
+          {/* Tax regime toggle */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  Tax Applicability
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {form.taxability === "non_gst"
+                    ? "Non-GST / Trading item: 0% GST, prints on separate Cash Memo (NG-...) & excluded from GST returns."
+                    : "GST taxable item: HSN & GST slab apply normally."}
+                </p>
+              </div>
+              <div className="inline-flex rounded-xl bg-slate-100 p-1 border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForm((f) => {
+                      const inferred = f.hsn.length === 8 ? gstRateFromHsn(f.hsn) : null;
+                      const fallback = inferred ?? CATS[f.category]?.gst ?? 0.18;
+                      return {
+                        ...f,
+                        taxability: "taxable",
+                        gstPct: f.gstPct === "0%" ? rateToGstLabel(fallback) : f.gstPct,
+                      };
+                    });
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+                    form.taxability !== "non_gst"
+                      ? "bg-[var(--primary)] text-white shadow-xs"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  GST Product
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForm((f) => ({
+                      ...f,
+                      taxability: "non_gst",
+                      gstPct: "0%",
+                      cessPct: "0",
+                      ratesIncludeGst: false,
+                    }));
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+                    form.taxability === "non_gst"
+                      ? "bg-amber-600 text-white shadow-xs"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  Non-GST Product
+                </button>
+              </div>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Category">
               <input
@@ -258,25 +383,26 @@ export const ProductsView: React.FC = () => {
                     key = "joos";
                   else if (lower.includes("water")) key = "water";
                   setField("category", key);
-                  if (!form.hsn) {
+                  if (form.taxability !== "non_gst" && !form.hsn) {
                     setField("hsn", CATS[key]?.hsn || "");
                     setField("gstPct", rateToGstLabel(CATS[key]?.gst));
                   }
                 }}
               />
             </Field>
-            <Field label="HSN">
+            <Field label={form.taxability === "non_gst" ? "HSN (optional for Non-GST)" : "HSN"}>
               <input
                 className="crate-input"
                 value={form.hsn}
                 inputMode="numeric"
-                placeholder="e.g. 22021090"
+                placeholder={form.taxability === "non_gst" ? "Optional" : "e.g. 22021090"}
                 onChange={(e) => {
                   const v = e.target.value.replace(/[^0-9]/g, "");
                   setField("hsn", v);
-                  // a complete 8-digit HSN with a known slab pre-selects the GST rate (you can still change it)
-                  const known = v.length === 8 ? gstRateFromHsn(v) : null;
-                  if (known != null) setField("gstPct", rateToGstLabel(known));
+                  if (form.taxability !== "non_gst") {
+                    const known = v.length === 8 ? gstRateFromHsn(v) : null;
+                    if (known != null) setField("gstPct", rateToGstLabel(known));
+                  }
                 }}
               />
             </Field>
@@ -284,33 +410,43 @@ export const ProductsView: React.FC = () => {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="GST %">
-              <select
-                className="crate-input"
-                value={form.gstPct}
-                onChange={(e) => setField("gstPct", e.target.value)}
-              >
-                {(GST_OPTIONS.includes(form.gstPct) ? GST_OPTIONS : [...GST_OPTIONS, form.gstPct]).map((g) => (
-                  <option key={g} value={g}>
-                    {g}
-                    {GST_OPTIONS.includes(g) ? "" : " (old rate - please change)"}
-                  </option>
-                ))}
-              </select>
-              {(() => {
-                const expect = form.hsn.length >= 6 ? gstRateFromHsn(form.hsn) : null;
-                if (expect == null || rateToGstLabel(expect) === form.gstPct) return null;
-                return (
-                  <p className="text-[11px] text-amber-700 mt-1">
-                    HSN {form.hsn} is normally {rateToGstLabel(expect)} - check the rate.
-                  </p>
-                );
-              })()}
+              {form.taxability === "non_gst" ? (
+                <div className="crate-input bg-slate-50 text-slate-500 font-semibold flex items-center justify-between">
+                  <span>0% (Non-GST)</span>
+                  <span className="text-[11px] uppercase tracking-wide text-amber-700">Tax Free</span>
+                </div>
+              ) : (
+                <>
+                  <select
+                    className="crate-input"
+                    value={form.gstPct}
+                    onChange={(e) => setField("gstPct", e.target.value)}
+                  >
+                    {(GST_OPTIONS.includes(form.gstPct) ? GST_OPTIONS : [...GST_OPTIONS, form.gstPct]).map((g) => (
+                      <option key={g} value={g}>
+                        {g}
+                        {GST_OPTIONS.includes(g) ? "" : " (old rate - please change)"}
+                      </option>
+                    ))}
+                  </select>
+                  {(() => {
+                    const expect = form.hsn.length >= 6 ? gstRateFromHsn(form.hsn) : null;
+                    if (expect == null || rateToGstLabel(expect) === form.gstPct) return null;
+                    return (
+                      <p className="text-[11px] text-amber-700 mt-1">
+                        HSN {form.hsn} is normally {rateToGstLabel(expect)} - check the rate.
+                      </p>
+                    );
+                  })()}
+                </>
+              )}
             </Field>
             <Field label="Cess %">
               <input
-                className="crate-input"
+                className="crate-input disabled:bg-slate-50 disabled:text-slate-400"
                 inputMode="decimal"
-                value={form.cessPct}
+                disabled={form.taxability === "non_gst"}
+                value={form.taxability === "non_gst" ? "0" : form.cessPct}
                 onChange={(e) => setField("cessPct", e.target.value)}
               />
             </Field>
@@ -337,7 +473,7 @@ export const ProductsView: React.FC = () => {
                     key={n}
                     type="button"
                     onClick={() => setField("unitsPerCase", String(n))}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold border cursor-pointer ${
                       String(n) === String(form.unitsPerCase)
                         ? "bg-slate-900 text-white border-slate-900"
                         : "bg-white text-slate-700 border-slate-300"
@@ -359,9 +495,9 @@ export const ProductsView: React.FC = () => {
                 onChange={(e) => setField("mrp", e.target.value)}
               />
             </Field>
-            <Field label="Purchase rate">
+            <Field label={form.taxability === "non_gst" ? "Purchase rate (₹/case)" : form.ratesIncludeGst ? "Purchase rate incl. GST (₹/case)" : "Purchase rate ex-GST (₹/case)"}>
               <input
-                className="crate-input"
+                className="crate-input tabular-nums"
                 inputMode="decimal"
                 value={form.purchaseRate}
                 onChange={(e) => setField("purchaseRate", e.target.value)}
@@ -369,10 +505,88 @@ export const ProductsView: React.FC = () => {
             </Field>
           </div>
 
+          {/* Manual Labour & Freight + Auto-Decided Landed Price */}
+          <div className="rounded-2xl border border-slate-200 bg-white p-3.5 space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                Handling &amp; Auto-Decided Landed Cost
+              </span>
+              {form.taxability !== "non_gst" && (
+                <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.ratesIncludeGst}
+                    onChange={(e) => setField("ratesIncludeGst", e.target.checked)}
+                    className="rounded border-slate-300 accent-[var(--primary)]"
+                  />
+                  Purchase rate includes GST
+                </label>
+              )}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="Labour (₹ / case)">
+                <input
+                  className="crate-input tabular-nums"
+                  inputMode="decimal"
+                  placeholder="0"
+                  value={form.labourCost}
+                  onChange={(e) => setField("labourCost", e.target.value)}
+                />
+              </Field>
+              <Field label="Freight (₹ / case)">
+                <input
+                  className="crate-input tabular-nums"
+                  inputMode="decimal"
+                  placeholder="0"
+                  value={form.freightCost}
+                  onChange={(e) => setField("freightCost", e.target.value)}
+                />
+              </Field>
+            </div>
+            <div className="rounded-xl bg-emerald-50/70 border border-emerald-200 px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-emerald-800">
+                  Auto Landed Cost
+                </div>
+                <div className="flex items-baseline gap-2.5 mt-0.5 tabular-nums">
+                  <span className="text-base font-bold text-slate-900">
+                    ₹{money(landedPreview.landedPerCase)} <span className="text-xs font-medium text-slate-500">/ case</span>
+                  </span>
+                  <span className="text-xs font-semibold text-emerald-800">
+                    ₹{money(landedPreview.landedPerUnit)} / unit ({landedPreview.unitsPerCase} pcs)
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-600 mt-0.5 tabular-nums">
+                  {landedPreview.isNonGst
+                    ? `Base ₹${money(landedPreview.exGstBase)} + Labour ₹${money(landedPreview.labour)} + Freight ₹${money(landedPreview.freight)} · Non-GST`
+                    : `Ex-GST ₹${money(landedPreview.exGstBase)} + GST ₹${money(landedPreview.gstAmtPerCase)} + Labour ₹${money(landedPreview.labour)} + Freight ₹${money(landedPreview.freight)}`}
+                </div>
+              </div>
+              {landedPreview.landedPerCase > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const baseForMargin = landedPreview.landedPerCase;
+                    const ws = Math.round(baseForMargin * 1.15);
+                    const rt = Math.round(baseForMargin * 1.25);
+                    setForm((f) => ({
+                      ...f,
+                      wholesaleRate: String(ws),
+                      retailRate: String(rt),
+                    }));
+                  }}
+                  className="shrink-0 px-3 py-1.5 rounded-xl bg-white border border-emerald-300 text-emerald-800 text-xs font-semibold hover:bg-emerald-100/70 cursor-pointer"
+                >
+                  Apply +15% W/S · +25% Retail
+                </button>
+              )}
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Retail rate">
               <input
-                className="crate-input"
+                className="crate-input tabular-nums"
                 inputMode="decimal"
                 value={form.retailRate}
                 onChange={(e) => setField("retailRate", e.target.value)}
@@ -380,13 +594,62 @@ export const ProductsView: React.FC = () => {
             </Field>
             <Field label="Wholesale rate">
               <input
-                className="crate-input"
+                className="crate-input tabular-nums"
                 inputMode="decimal"
                 value={form.wholesaleRate}
                 onChange={(e) => setField("wholesaleRate", e.target.value)}
               />
             </Field>
           </div>
+
+          {editingId == null && (
+            <div className="rounded-2xl border border-slate-200 bg-white p-3.5 space-y-3">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                Initial Opening Stock (Optional · Individual Entry)
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field label="Opening cases">
+                  <input
+                    className="crate-input tabular-nums"
+                    inputMode="numeric"
+                    placeholder="0"
+                    value={form.opening}
+                    onChange={(e) => setField("opening", e.target.value)}
+                  />
+                </Field>
+                <Field label="Warehouse">
+                  <select
+                    className="crate-input"
+                    value={form.warehouseId}
+                    onChange={(e) => setField("warehouseId", e.target.value)}
+                  >
+                    <option value="">Default godown</option>
+                    {warehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name} ({w.code})
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Batch / Lot no. (optional)">
+                  <input
+                    className="crate-input font-mono"
+                    placeholder="Auto-generated if blank"
+                    value={form.batchNumber}
+                    onChange={(e) => setField("batchNumber", e.target.value)}
+                  />
+                </Field>
+                <Field label="Expiry date (optional)">
+                  <input
+                    type="date"
+                    className="crate-input"
+                    value={form.expiry}
+                    onChange={(e) => setField("expiry", e.target.value)}
+                  />
+                </Field>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Special rate">
@@ -490,6 +753,21 @@ export const ProductsView: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => {
+                setBulkMode((v) => !v);
+                setSelectedIds([]);
+              }}
+              className={`px-3 py-2 rounded-full text-xs font-semibold inline-flex items-center gap-1.5 border cursor-pointer transition ${
+                bulkMode
+                  ? "bg-amber-600 text-white border-amber-600 shadow-sm"
+                  : "bg-white text-slate-700 border-black/10 hover:bg-slate-50"
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>{bulkMode ? "Exit Bulk Switch" : "Bulk Tax Switch"}</span>
+            </button>
+            <button
+              type="button"
               onClick={openAdd}
               className="size-10 sm:size-11 rounded-full bg-[var(--primary)] text-white flex items-center justify-center shadow-md cursor-pointer active:scale-95"
               aria-label="Add product"
@@ -516,6 +794,11 @@ export const ProductsView: React.FC = () => {
             onClick={() => setFilterCat("all")}
             label="All"
           />
+          <Chip
+            active={filterCat === "non_gst"}
+            onClick={() => setFilterCat("non_gst")}
+            label={`Non-GST (${products.filter((p) => p.taxability === "non_gst").length})`}
+          />
           {(Object.keys(CATS) as CategoryKey[]).map((k) => (
             <Chip
               key={k}
@@ -526,6 +809,27 @@ export const ProductsView: React.FC = () => {
           ))}
         </div>
 
+        {bulkMode && (
+          <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50/80 px-3.5 py-2.5 flex items-center justify-between gap-2 flex-wrap">
+            <div className="text-xs font-semibold text-amber-950">
+              Tap products below to switch between <span className="font-bold">Non-GST Trading (NG-...)</span> and <span className="font-bold">GST Taxable</span>. ({selectedIds.length} selected)
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const visibleIds = filtered.map((p) => p.id);
+                  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id));
+                  setSelectedIds(allSelected ? [] : visibleIds);
+                }}
+                className="px-2.5 py-1 rounded-lg bg-white border border-amber-300 text-xs font-semibold text-amber-900 cursor-pointer"
+              >
+                {filtered.length > 0 && filtered.every((p) => selectedIds.includes(p.id)) ? "Clear visible" : `Select visible (${filtered.length})`}
+              </button>
+            </div>
+          </div>
+        )}
+
         {filtered.length === 0 ? (
           <div className="bg-white rounded-2xl border border-black/5 shadow-sm px-6 py-12 text-center">
             <p className="text-base font-bold text-slate-900">No products yet</p>
@@ -535,40 +839,94 @@ export const ProductsView: React.FC = () => {
           </div>
         ) : (
           <ul className="hh-list-grid">
-            {filtered.map((p) => (
-              <li key={p.id}>
-                <button
-                  type="button"
-                  onClick={() => openEdit(p)}
-                  style={{ borderLeftWidth: 6, borderLeftColor: sizeTheme(p.volume, p.name).hex }}
-                  className="w-full text-left bg-white rounded-2xl border border-black/5 shadow-sm px-3 sm:px-4 py-3 flex items-center gap-2.5 sm:gap-3 hover:border-black/10 cursor-pointer active:scale-[0.99] transition"
-                >
-                  <PackIcon pack={p.pack} name={p.name} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] sm:text-base font-semibold text-slate-900 leading-snug break-words">
-                      {nameFromMap(productNameMap, p, language)}{' '}
-                      <SizeChip volume={p.volume} pack={p.pack} name={nameFromMap(productNameMap, p, language)} className="align-middle ml-1" />
+            {filtered.map((p) => {
+              const isSelected = selectedIds.includes(p.id);
+              return (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    onClick={() => (bulkMode ? toggleSelectProduct(p.id) : openEdit(p))}
+                    style={{ borderLeftWidth: 6, borderLeftColor: sizeTheme(p.volume, p.name).hex }}
+                    className={`w-full text-left bg-white rounded-2xl border shadow-sm px-3 sm:px-4 py-3 flex items-center gap-2.5 sm:gap-3 cursor-pointer active:scale-[0.99] transition ${
+                      bulkMode && isSelected
+                        ? "border-amber-500 ring-2 ring-amber-400/30 bg-amber-50/30"
+                        : "border-black/5 hover:border-black/10"
+                    }`}
+                  >
+                    {bulkMode && (
+                      <span className="shrink-0 text-amber-700">
+                        {isSelected ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5 text-slate-400" />}
+                      </span>
+                    )}
+                    <PackIcon pack={p.pack} name={p.name} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] sm:text-base font-semibold text-slate-900 leading-snug break-words">
+                        {nameFromMap(productNameMap, p, language)}{' '}
+                        <SizeChip volume={p.volume} pack={p.pack} name={nameFromMap(productNameMap, p, language)} className="align-middle ml-1" />
+                        {p.taxability === "non_gst" && (
+                          <span className="inline-block align-middle ml-1.5 px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                            Non-GST
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] sm:text-xs text-slate-500 leading-tight mt-0.5 break-words">
+                        {[
+                          p.brand,
+                          p.sku,
+                          CATS[p.category]?.name,
+                          p.taxability === "non_gst" ? "0% GST (Trading)" : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ") || "—"}
+                      </div>
                     </div>
-                    <div className="text-[11px] sm:text-xs text-slate-500 leading-tight mt-0.5 break-words">
-                      {[p.brand, p.sku, CATS[p.category]?.name]
-                        .filter(Boolean)
-                        .join(" · ") || "—"}
+                    <div className="text-right shrink-0">
+                      <div className="text-sm font-bold text-slate-800">
+                        ₹{money(p.retail || p.wholesale || 0)}
+                      </div>
+                      <div className="text-[10px] text-slate-400 uppercase tracking-wide">
+                        retail
+                      </div>
                     </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-sm font-bold text-slate-800">
-                      ₹{money(p.retail || p.wholesale || 0)}
-                    </div>
-                    <div className="text-[10px] text-slate-400 uppercase tracking-wide">
-                      retail
-                    </div>
-                  </div>
-                </button>
-              </li>
-            ))}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
+
+      {bulkMode && selectedIds.length > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-xl bg-slate-900 text-white rounded-2xl shadow-xl px-4 py-3 flex items-center justify-between gap-2.5 flex-wrap">
+          <span className="text-xs font-bold tabular-nums">{selectedIds.length} selected</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const count = bulkSetProductTaxability(selectedIds, "non_gst");
+                notify(`${count} product${count === 1 ? "" : "s"} marked Non-GST / Trading (0% GST).`);
+                setSelectedIds([]);
+                setBulkMode(false);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold cursor-pointer"
+            >
+              Mark Non-GST (0%)
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const count = bulkSetProductTaxability(selectedIds, "taxable");
+                notify(`${count} product${count === 1 ? "" : "s"} restored to GST Taxable.`);
+                setSelectedIds([]);
+                setBulkMode(false);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 text-xs font-bold cursor-pointer"
+            >
+              Mark GST Taxable
+            </button>
+          </div>
+        </div>
+      )}
 
       {toDelete && (
         <ConfirmModal

@@ -27,9 +27,11 @@ import { sortBatchesFefo } from '../../utils/fefo';
 import { ExpiryReturnsTracker } from './ExpiryReturnsTracker';
 import { CustomerReturnsList } from './CustomerReturnsList';
 import { CustomerReturnLauncher } from '../common/CustomerReturnLauncher';
+import { SizeChip } from '../common/SizeChip';
 import { InfoTip } from "../common/InfoTip";
 import { ConfirmModal } from "../ui/ConfirmModal";
 import { todayISO } from "../../utils/dateLocal";
+import { writeOffNetForPeriod } from '../../utils/pnlBridge';
 
 const TYPE_OPTIONS: { id: InventoryDispositionType; label: string; group: string }[] = [
   { id: 'expiry_return', label: 'Expiry return to supplier', group: 'Return' },
@@ -81,8 +83,10 @@ export const DispositionsView: React.FC = () => {
   const [showForm, setShowForm] = useState(false);
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'open_claims' | 'settled' | 'writeoff'>('all');
+  const [warehouseFilter, setWarehouseFilter] = useState<string>('all');
   const [msg, setMsg] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<{ id: any; settled: boolean } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: any; settled: boolean; stockApplied: boolean } | null>(null);
 
   // Form state
   const [dispositionType, setDispositionType] = useState<InventoryDispositionType>('expiry_return');
@@ -253,6 +257,14 @@ export const DispositionsView: React.FC = () => {
   const filtered = useMemo(() => {
     let rows = inventoryDispositions;
     if (typeFilter !== 'all') rows = rows.filter((r) => r.dispositionType === typeFilter);
+    if (warehouseFilter !== 'all') rows = rows.filter((r) => r.warehouseId === warehouseFilter);
+    if (statusFilter === 'open_claims') {
+      rows = rows.filter((r) => r.compensationStatus === 'pending' || r.compensationStatus === 'partial');
+    } else if (statusFilter === 'settled') {
+      rows = rows.filter((r) => r.compensationStatus === 'settled');
+    } else if (statusFilter === 'writeoff') {
+      rows = rows.filter((r) => r.compensationStatus === 'not_applicable' || r.compensationStatus === 'rejected');
+    }
     const q = search.trim().toLowerCase();
     if (q) {
       rows = rows.filter(
@@ -261,11 +273,36 @@ export const DispositionsView: React.FC = () => {
           (r.supplierName || '').toLowerCase().includes(q) ||
           (r.batchNumber || '').toLowerCase().includes(q) ||
           (r.creditNoteNumber || '').toLowerCase().includes(q) ||
-          (r.distributedToName || '').toLowerCase().includes(q)
+          (r.distributedToName || '').toLowerCase().includes(q) ||
+          (r.warehouseName || '').toLowerCase().includes(q)
       );
     }
     return rows;
-  }, [inventoryDispositions, typeFilter, search]);
+  }, [inventoryDispositions, typeFilter, warehouseFilter, statusFilter, search]);
+
+  const ledgerStats = useMemo(() => {
+    const open = inventoryDispositions.filter(
+      (r) => r.compensationStatus === 'pending' || r.compensationStatus === 'partial',
+    );
+    const openValue = open.reduce(
+      (s, r) => s + Math.max(0, (Number(r.costValue) || 0) - (Number(r.compensatedAmount) || 0)),
+      0,
+    );
+    const settledRows = inventoryDispositions.filter((r) => r.compensationStatus === 'settled');
+    const net = writeOffNetForPeriod(inventoryDispositions);
+    const totalCases = inventoryDispositions.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+    const hasCnExport = inventoryDispositions.some((r) => r.creditNoteNumber || Number(r.compensatedAmount) > 0);
+    return {
+      count: inventoryDispositions.length,
+      totalCases,
+      openCount: open.length,
+      openValue,
+      settledCount: settledRows.length,
+      recovered: net.recovered,
+      netLoss: net.net,
+      hasCnExport,
+    };
+  }, [inventoryDispositions]);
 
   const openClaims = inventoryDispositions.filter((r) =>
     r.compensationStatus === 'pending' || r.compensationStatus === 'partial'
@@ -462,33 +499,36 @@ export const DispositionsView: React.FC = () => {
         </div>
       )}
 
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="rounded-2xl border border-[#DCE5F2] bg-white shadow-sm p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="size-11 rounded-full bg-amber-600 text-white flex items-center justify-center shadow-md shrink-0">
+          <div className="size-11 rounded-2xl bg-amber-600 text-white flex items-center justify-center shadow-sm shrink-0">
             <FileWarning className="w-5 h-5" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 min-w-0">
-              <h2 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">Returns & Disposals</h2>
+              <h2 className="text-lg sm:text-2xl font-bold text-[#0A1F44] tracking-tight">Returns & Disposals</h2>
               <InfoTip title="Returns & disposals">
                 <p>Everything that leaves stock without a normal customer sale: supplier returns, free near-expiry issues, expiry / damage write-offs and customer-returned crates sent back to the company.</p>
                 <p>Each claim stays <strong>pending</strong> until you record the supplier’s credit note. Recorded credit notes also appear under Supplier credits → Claims, and always edit here, where the GST split and partial receipts are kept.</p>
               </InfoTip>
             </div>
+            <p className="text-xs text-slate-500">
+              Customer returns, company claims, credit notes & write-offs
+            </p>
           </div>
         </div>
-        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-        <CustomerReturnLauncher className="w-full sm:w-auto justify-center px-4 py-2.5 rounded-2xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-[0.99]" />
-        <button
-          type="button"
-          onClick={() => {
-            setShowForm(true);
-            if (!warehouseId && warehouses[0]) setWarehouseId(warehouses[0].id);
-          }}
-          className="w-full sm:w-auto justify-center px-4 py-2.5 rounded-2xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-[0.99]"
-        >
-          <Plus className="w-4 h-4" /> New disposition
-        </button>
+        <div className="grid grid-cols-2 sm:flex sm:flex-row gap-2 w-full sm:w-auto">
+          <CustomerReturnLauncher className="w-full sm:w-auto min-h-[44px] justify-center px-3.5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-[0.99]" />
+          <button
+            type="button"
+            onClick={() => {
+              setShowForm(true);
+              if (!warehouseId && warehouses[0]) setWarehouseId(warehouses[0].id);
+            }}
+            className="w-full sm:w-auto min-h-[44px] justify-center px-3.5 py-2.5 rounded-xl bg-[var(--primary)] hover:bg-[var(--primary-hover)] text-white text-xs font-bold flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-[0.99]"
+          >
+            <Plus className="w-4 h-4" /> New disposition
+          </button>
         </div>
       </div>
 
@@ -584,33 +624,127 @@ export const DispositionsView: React.FC = () => {
         </div>
       )}
 
-      <div className="flex flex-col sm:flex-row gap-2">
-        <div className="relative flex-1">
-          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search product, supplier, batch, CN…"
-            className="w-full pl-9 pr-3 py-2.5 rounded-full border border-black/8 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25"
-          />
+      {/* Stock Disposals & Supplier Claims Ledger */}
+      <section className="rounded-2xl border border-[#DCE5F2] bg-white shadow-sm p-3.5 sm:p-4 space-y-3" aria-label="Dispositions and claims ledger">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-base font-bold text-[#0A1F44]">Stock disposals & supplier claims ledger</h3>
+            <p className="text-xs text-slate-500">
+              All warehouse write-offs, free near-expiry issues, and customer-return company claims ({ledgerStats.count} entries · {ledgerStats.totalCases} cs)
+            </p>
+          </div>
+          {ledgerStats.hasCnExport && (
+            <button
+              type="button"
+              onClick={() => exportGstrCnCsv(inventoryDispositions)}
+              className="px-3 py-2 rounded-xl border border-[#DCE5F2] bg-slate-50 hover:bg-slate-100 text-xs font-bold text-[#0A1F44] inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" /> Export CN CSV
+            </button>
+          )}
         </div>
-        <select
-          value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value)}
-          className="px-3 py-2.5 rounded-full border border-black/8 text-sm font-semibold bg-white"
-        >
-          <option value="all">All types</option>
-          {TYPE_OPTIONS.map((t) => (
-            <option key={t.id} value={t.id}>{t.label}</option>
-          ))}
-        </select>
-      </div>
+
+        {ledgerStats.count > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="rounded-xl border border-[#DCE5F2] bg-slate-50 px-3 py-2">
+              <div className="text-xs font-semibold text-slate-500">Entries / Cases</div>
+              <div className="text-base font-extrabold text-[#0A1F44] tabular-nums mt-0.5">
+                {ledgerStats.count} <span className="text-xs font-semibold text-slate-500">({ledgerStats.totalCases} cs)</span>
+              </div>
+            </div>
+            <div className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2">
+              <div className="text-xs font-semibold text-amber-800">Open claims ({ledgerStats.openCount})</div>
+              <div className="text-base font-extrabold text-amber-950 tabular-nums mt-0.5">₹{money(ledgerStats.openValue)}</div>
+            </div>
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 px-3 py-2">
+              <div className="text-xs font-semibold text-emerald-800">Recovered ({ledgerStats.settledCount})</div>
+              <div className="text-base font-extrabold text-emerald-950 tabular-nums mt-0.5">₹{money(ledgerStats.recovered)}</div>
+            </div>
+            <div className="rounded-xl border border-rose-200 bg-rose-50/70 px-3 py-2">
+              <div className="text-xs font-semibold text-rose-800">Net loss</div>
+              <div className="text-base font-extrabold text-rose-950 tabular-nums mt-0.5">₹{money(ledgerStats.netLoss)}</div>
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filter ledger by claim status">
+          {[
+            { id: 'all' as const, label: 'All', count: ledgerStats.count },
+            { id: 'open_claims' as const, label: 'Open claims', count: ledgerStats.openCount },
+            { id: 'settled' as const, label: 'CN settled', count: ledgerStats.settledCount },
+            {
+              id: 'writeoff' as const,
+              label: 'Write-offs / Refused',
+              count: ledgerStats.count - ledgerStats.openCount - ledgerStats.settledCount,
+            },
+          ].map((tab) => {
+            const active = statusFilter === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setStatusFilter(tab.id)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border cursor-pointer inline-flex items-center gap-1.5 ${
+                  active
+                    ? 'bg-[#0A1F44] text-white border-[#0A1F44]'
+                    : 'bg-white text-slate-700 border-[#DCE5F2] hover:bg-slate-50'
+                }`}
+              >
+                <span>{tab.label}</span>
+                <span className={`px-1.5 py-0.5 rounded-md text-[11px] font-bold tabular-nums ${active ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700'}`}>
+                  {tab.count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="search"
+              enterKeyHint="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search product, supplier, batch, CN, godown…"
+              className="w-full pl-9 pr-3 py-2 rounded-xl border border-[#DCE5F2] bg-slate-50/70 text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/25"
+            />
+          </div>
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            className="px-3 py-2 rounded-xl border border-[#DCE5F2] text-sm font-semibold bg-white"
+          >
+            <option value="all">All types</option>
+            {TYPE_OPTIONS.map((t) => (
+              <option key={t.id} value={t.id}>{t.label}</option>
+            ))}
+          </select>
+          {warehouses.length > 1 && (
+            <select
+              value={warehouseFilter}
+              onChange={(e) => setWarehouseFilter(e.target.value)}
+              className="px-3 py-2 rounded-xl border border-[#DCE5F2] text-sm font-semibold bg-white"
+            >
+              <option value="all">All godowns</option>
+              {warehouses.map((w) => (
+                <option key={w.id} value={w.id}>{w.name}</option>
+              ))}
+            </select>
+          )}
+        </div>
 
       {/* Desktop table */}
-      <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-black/5 bg-white shadow-sm">
-        <table className="w-full text-left data-table min-w-[640px]">
+      <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-[#DCE5F2] bg-white">
+        <table className="w-full text-left data-table min-w-[680px]">
           <thead>
-            <tr className="border-b border-black/5 bg-[#f6f4ef]/80">
+            <tr className="border-b border-[#DCE5F2] bg-slate-50">
+              <th className="w-8 px-2 py-2.5 text-center" aria-label="Select claim">
+                <span className="sr-only">Select</span>
+              </th>
               <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Date</th>
               <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Type</th>
               <th className="px-2.5 py-2.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Product / Batch</th>
@@ -623,14 +757,14 @@ export const DispositionsView: React.FC = () => {
           <tbody className="divide-y divide-slate-100">
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={7} className="text-center py-10 text-slate-500 text-sm">
-                  No dispositions yet. Record returns, free issues or write-offs above.
+                <td colSpan={8} className="text-center py-10 text-slate-500 text-sm">
+                  No dispositions match the current filters. Record returns, free issues or write-offs above.
                 </td>
               </tr>
             ) : (
               filtered.map((r) => (
                 <tr key={r.id} className="hover:bg-sky-50/40">
-                  <td className="px-2 py-2.5">
+                  <td className="px-2 py-2.5 text-center">
                     {(r.compensationStatus === 'pending' || r.compensationStatus === 'partial') && (
                       <input
                         type="checkbox"
@@ -756,9 +890,9 @@ export const DispositionsView: React.FC = () => {
                       )}
                       <button
                         type="button"
-                        title="Delete disposal (stock returns to inventory)"
+                        title={r.stockApplied === false ? 'Delete record' : 'Delete disposal (stock returns to inventory)'}
                         onClick={() => {
-                          setDeleteTarget({ id: r.id, settled: r.compensationStatus === 'settled' });
+                          setDeleteTarget({ id: r.id, settled: r.compensationStatus === 'settled', stockApplied: r.stockApplied !== false });
                         }}
                         className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 cursor-pointer"
                       >
@@ -776,90 +910,138 @@ export const DispositionsView: React.FC = () => {
       {/* Mobile / tablet cards */}
       <div className="block md:hidden space-y-2.5">
         {filtered.length === 0 ? (
-          <div className="bg-white rounded-2xl border border-black/5 shadow-sm px-4 py-10 text-center text-sm text-slate-500">
-            No dispositions yet. Record returns, free issues or write-offs above.
+          <div className="bg-slate-50 rounded-2xl border border-dashed border-slate-200 px-4 py-8 text-center text-sm text-slate-500">
+            No dispositions match the current filters.
           </div>
         ) : (
-          filtered.map((r) => (
-            <div key={r.id} className="bg-white rounded-2xl border border-black/5 shadow-sm p-3.5 space-y-2.5">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {(r.compensationStatus === 'pending' || r.compensationStatus === 'partial') && (
-                      <input
-                        type="checkbox"
-                        checked={selectedClaimIds.includes(r.id)}
-                        onChange={() => toggleClaimSelect(r.id)}
-                        className="rounded border-slate-300 cursor-pointer"
-                      />
+          filtered.map((r) => {
+            const prod = products.find((p) => p.id === r.productId);
+            const openDays =
+              (r.compensationStatus === 'pending' || r.compensationStatus === 'partial')
+                ? daysOpen(r.eventDate)
+                : 0;
+            return (
+              <div key={r.id} className="bg-white rounded-2xl border border-[#DCE5F2] p-3.5 space-y-2.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {(r.compensationStatus === 'pending' || r.compensationStatus === 'partial') && (
+                        <input
+                          type="checkbox"
+                          checked={selectedClaimIds.includes(r.id)}
+                          onChange={() => toggleClaimSelect(r.id)}
+                          className="rounded border-slate-300 cursor-pointer"
+                          aria-label={`Select ${r.productName || 'claim'}`}
+                        />
+                      )}
+                      <span className="font-mono text-xs font-bold text-slate-500">{r.eventDate}</span>
+                      <span className="text-xs font-semibold px-2 py-0.5 rounded-lg bg-[#e9edfb] text-[#0A1F44]">
+                        {TYPE_OPTIONS.find((t) => t.id === r.dispositionType)?.label || r.dispositionType}
+                      </span>
+                      {openDays >= 30 && (
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200">
+                          {openDays}d open
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-bold text-sm text-[#0A1F44] break-words">
+                        {r.productName || `#${r.productId}`}
+                      </span>
+                      <SizeChip volume={prod?.volume} pack={prod?.pack} name={r.productName} />
+                      <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-800 text-xs font-bold tabular-nums">
+                        {r.quantity} cs
+                      </span>
+                    </div>
+                    {r.stockApplied === false && (
+                      <span className="inline-block px-2 py-0.5 rounded-md text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                        {r.returnTracking ? 'Customer return · stock already out' : 'Doc only · stock kept'}
+                      </span>
                     )}
-                    <span className="font-mono text-[10px] font-bold text-slate-500">{r.eventDate}</span>
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#ebe8e1] text-slate-700">
-                      {TYPE_OPTIONS.find((t) => t.id === r.dispositionType)?.label || r.dispositionType}
-                    </span>
+                    <div className="text-xs text-slate-500 leading-snug break-words">
+                      <strong className="font-bold text-amber-900">₹{money(r.costValue)}</strong>
+                      <span className="text-slate-400"> (₹{money(r.costPerUnit)}/cs)</span>
+                      {r.warehouseName ? ` · ${r.warehouseName}` : ''}
+                      {r.batchNumber ? ` · Lot ${r.batchNumber}` : ''}
+                      {r.expiryDate ? ` · Exp ${r.expiryDate}` : ''}
+                      {r.distributedToName ? ` · To ${r.distributedToName}` : ''}
+                      {r.supplierName ? ` · ${r.supplierName}` : ''}
+                    </div>
+                    {r.creditNoteNumber && (
+                      <div className="text-xs font-mono font-semibold text-emerald-800">
+                        CN {r.creditNoteNumber}
+                        {r.compensatedAmount ? ` · ₹${money(r.compensatedAmount)}` : ''}
+                      </div>
+                    )}
                   </div>
-                  <div className="font-semibold text-sm text-slate-900 mt-1 truncate">
-                    {r.productName || `#${r.productId}`}
-                  </div>
-                  <div className="text-[10px] text-slate-500">
-                    {r.quantity} cs · ₹{money(r.costValue)}
-                    {r.batchNumber ? ` · Lot ${r.batchNumber}` : ''}
-                    {r.supplierName ? ` · ${r.supplierName}` : ''}
-                  </div>
+                  <span className={`shrink-0 text-[11px] font-bold px-2 py-0.5 rounded-lg border ${statusBadge(r.compensationStatus)}`}>
+                    {r.compensationStatus.replace('_', ' ')}
+                  </span>
                 </div>
-                <span className={`shrink-0 text-[10px] font-black px-2 py-0.5 rounded-md border ${statusBadge(r.compensationStatus)}`}>
-                  {r.compensationStatus.replace('_', ' ')}
-                </span>
-              </div>
-              <div className="flex flex-wrap gap-1.5 pt-1 border-t border-black/5">
-                {(r.compensationStatus === 'pending' || r.compensationStatus === 'partial') && (
+                <div className="flex flex-wrap gap-1.5 pt-2 border-t border-slate-100">
+                  {(r.compensationStatus === 'pending' || r.compensationStatus === 'partial') && (
+                    <button
+                      type="button"
+                      onClick={() => openCnPanel(r)}
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 cursor-pointer"
+                    >
+                      Record CN
+                    </button>
+                  )}
+                  {r.compensationStatus === 'settled' && (
+                    <button
+                      type="button"
+                      onClick={() => openCnPanel(r)}
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold bg-sky-50 text-sky-800 border border-sky-200 cursor-pointer inline-flex items-center gap-1"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" /> Edit CN
+                    </button>
+                  )}
+                  {r.approvalStatus === 'pending_approval' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateInventoryDisposition(r.id, {
+                          approvalStatus: 'approved',
+                          approvedBy: 'Admin',
+                        });
+                        setMsg('Claim approved');
+                        setTimeout(() => setMsg(null), 2500);
+                      }}
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold bg-violet-50 text-violet-800 border border-violet-200 cursor-pointer"
+                    >
+                      Approve
+                    </button>
+                  )}
+                  {(r.compensationStatus === 'pending' || r.compensationStatus === 'partial' || r.compensationStatus === 'settled') && (
+                    <button
+                      type="button"
+                      onClick={() => printDispositionClaimVoucher([r], orgProfile)}
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold bg-white text-slate-700 border border-slate-200 cursor-pointer inline-flex items-center gap-1"
+                    >
+                      <Printer className="w-3.5 h-3.5" /> Print
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
-                      setCompId(r.id);
-                      setCnNo(r.creditNoteNumber || '');
-                      setCnDate(r.creditNoteDate || today());
-                      setCnTaxable(r.cnTaxableValue || '');
-                      setCnCgst(r.cnCgst || '');
-                      setCnSgst(r.cnSgst || '');
-                      setCnIgst(r.cnIgst || '');
-                      setCompAmt(r.compensationStatus === 'partial' ? '' : (r.compensatedAmount || r.costValue || ''));
-                      setClaimVal(r.costValue || '');
-                      setAppendPayment(r.compensationStatus === 'partial');
-                      setCnAttachment(r.attachmentRef || '');
+                      setDeleteTarget({ id: r.id, settled: r.compensationStatus === 'settled', stockApplied: r.stockApplied !== false });
                     }}
-                    className="px-2.5 py-1.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 cursor-pointer"
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold text-rose-600 border border-rose-200 hover:bg-rose-50 cursor-pointer"
                   >
-                    Record CN
+                    Delete
                   </button>
-                )}
-                {(r.compensationStatus === 'pending' || r.compensationStatus === 'partial' || r.compensationStatus === 'settled') && (
-                  <button
-                    type="button"
-                    onClick={() => printDispositionClaimVoucher([r], orgProfile)}
-                    className="px-2.5 py-1.5 rounded-full text-[10px] font-bold bg-white text-slate-700 border border-slate-200 cursor-pointer inline-flex items-center gap-0.5"
-                  >
-                    <Printer className="w-3 h-3" /> Print
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDeleteTarget({ id: r.id, settled: r.compensationStatus === 'settled' });
-                  }}
-                  className="px-2.5 py-1.5 rounded-full text-[10px] font-bold text-rose-600 border border-rose-100 cursor-pointer"
-                >
-                  Delete
-                </button>
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
+      </section>
 
       {/* New disposition modal */}
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/50 p-0 sm:p-4" role="dialog">
+        <div aria-modal="true" className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/50 p-0 sm:p-4" role="dialog">
           <div className="w-full sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[92vh] overflow-y-auto">
             <div className="sticky top-0 bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between">
               <h3 className="font-black text-slate-900 text-sm">New return / disposal</h3>
@@ -1217,7 +1399,7 @@ export const DispositionsView: React.FC = () => {
         const targetRow = inventoryDispositions.find((d) => d.id === compId);
         const isSettled = targetRow?.compensationStatus === 'settled' || Number(targetRow?.compensatedAmount || 0) > 0;
         return (
-          <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-slate-900/50 p-0 sm:p-4" role="dialog">
+          <div aria-modal="true" className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-slate-900/50 p-0 sm:p-4" role="dialog">
             <div className="w-full sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[92vh] flex flex-col overflow-hidden">
               <div className="shrink-0 sticky top-0 z-10 bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between">
                 <div className="min-w-0 pr-2">
@@ -1418,7 +1600,7 @@ export const DispositionsView: React.FC = () => {
 
       {/* Multi-line supplier CN */}
       {showMultiCn && (
-        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-slate-900/50 p-0 sm:p-4" role="dialog">
+        <div aria-modal="true" className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-slate-900/50 p-0 sm:p-4" role="dialog">
           <div className="w-full sm:max-w-lg bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl max-h-[90vh] flex flex-col overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
               <div>
@@ -1468,14 +1650,18 @@ export const DispositionsView: React.FC = () => {
         isOpen={deleteTarget !== null}
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => {
-          if (deleteTarget) deleteInventoryDisposition(deleteTarget.id, { restoreStock: true });
+          if (deleteTarget) deleteInventoryDisposition(deleteTarget.id, { restoreStock: deleteTarget.stockApplied });
           setDeleteTarget(null);
         }}
         title="Delete this disposition?"
         message={
           deleteTarget?.settled
-            ? 'This claim is SETTLED with a credit note. Deleting removes the disposal, its linked supplier CN and returns the stock.'
-            : 'The stock will return to inventory.'
+            ? deleteTarget.stockApplied
+              ? 'This claim is SETTLED with a credit note. Deleting removes the disposal, its linked supplier CN and returns the stock.'
+              : 'This claim is SETTLED with a credit note. Deleting removes the record and its linked supplier CN (godown stock is unchanged).'
+            : deleteTarget?.stockApplied
+              ? 'The stock will return to inventory.'
+              : 'This removes the document / customer-return tracking record without changing godown stock.'
         }
         confirmButtonLabel="Delete"
       />

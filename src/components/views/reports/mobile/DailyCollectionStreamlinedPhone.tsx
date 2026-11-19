@@ -482,7 +482,7 @@ export const DailyCollectionStreamlinedPhone: React.FC<DailyCollectionStreamline
       {/* 10. FILTER BOTTOM SHEET MODAL (Moved all filters to icon)  */}
       {/* ========================================================== */}
       {isFilterSheetOpen && (
-        <div
+        <div data-esc-close
           className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200"
           onClick={() => setIsFilterSheetOpen(false)}
           role="dialog"

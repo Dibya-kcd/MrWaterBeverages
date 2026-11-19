@@ -1419,7 +1419,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
 
       {/* MODAL: ADD / EDIT WAREHOUSE */}
       {showWarehouseModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+        <div role="dialog" aria-modal="true" aria-label="Warehouse details" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
           <div
             className="w-full max-w-lg border-2 p-6 shadow-xl"
             style={{ backgroundColor: palette.panel, borderColor: palette.line }}
@@ -1573,7 +1573,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
 
       {/* MODAL: ADD / EDIT BATCH */}
       {showBatchModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+        <div role="dialog" aria-modal="true" aria-label="Product batch" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
           <div
             className="w-full max-w-lg border-2 p-6 shadow-xl"
             style={{ backgroundColor: palette.panel, borderColor: palette.line }}
@@ -1784,7 +1784,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
         );
 
         return (
-          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50">
+          <div role="dialog" aria-modal="true" aria-label="Stock transfer" className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50">
             <div
               className="w-full sm:max-w-lg max-h-[95dvh] overflow-y-auto border-0 sm:border-2 p-4 sm:p-6 shadow-xl rounded-t-2xl sm:rounded-none"
               style={{ backgroundColor: palette.panel, borderColor: palette.line }}
@@ -2135,7 +2135,7 @@ export const WarehousesView: React.FC<WarehousesViewProps> = ({
 
       {/* Cannot Delete Warehouse Alert Modal */}
       {cannotDeleteWarehouse && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+        <div role="dialog" aria-modal="true" aria-label="Cannot delete warehouse with stock" className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
           <div className="w-full max-w-md bg-white border-2 border-amber-500 rounded p-5 shadow-xl">
             <div className="flex items-center gap-2 text-amber-700 font-bold mb-2">
               <AlertTriangle size={20} />

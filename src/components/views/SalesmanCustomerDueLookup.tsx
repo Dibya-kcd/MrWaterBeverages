@@ -611,7 +611,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
 
       {/* SHARE STATEMENT MODAL (Download, WhatsApp, Copy, Native Share) */}
       {sharingCustomer && (
-        <div
+        <div data-esc-close
           role="dialog"
           aria-modal="true"
           aria-labelledby="modal-share-title"
@@ -751,7 +751,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
 
       {/* COLLECT PAYMENT MODAL (WITH INVOICE SELECTION OPTION LIKE OWNER) */}
       {payingCustomer && (
-        <div
+        <div data-esc-close
           role="dialog"
           aria-modal="true"
           aria-labelledby="modal-collect-payment-title"

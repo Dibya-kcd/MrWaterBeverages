@@ -150,35 +150,17 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
   const [voiceActionResult, setVoiceActionResult] = useState<{ text: string; type: 'success' | 'warn' } | null>(null);
   const voiceSessionRef = useRef<ActiveSpeechSession | null>(null);
 
-  // Total loaded products on this trip
-  const vanLoadedProductCount = useMemo(() => {
-    if (!activeTrip) return 0;
-    return products.filter((p) => {
-      const { loaded, available } = getVehicleStock(activeTrip, p.id);
-      return (Number(loaded) || 0) > 0 || (Number(available) || 0) > 0;
-    }).length;
-  }, [products, activeTrip, getVehicleStock]);
-
-  // Product source filter: 'van' (only items with loaded stock) vs 'all' (entire catalog)
-  const [productSourceFilter, setProductSourceFilter] = useState<'van' | 'all'>('van');
-  // If the vehicle run has 0 pre-loaded stock, auto-fallback to 'all' so products are never hidden!
-  const effectiveProductFilter = vanLoadedProductCount > 0 ? productSourceFilter : 'all';
-
-  // Available product categories
+  // Available product categories (only categories with available van stock or items in cart)
   const categories = useMemo(() => {
     const set = new Set<string>();
     products.forEach((p) => {
-      if (effectiveProductFilter === 'van') {
-        const { loaded, available } = getVehicleStock(activeTrip, p.id);
-        if (((Number(loaded) || 0) > 0 || (Number(available) || 0) > 0) && p.category) {
-          set.add(p.category);
-        }
-      } else if (p.category) {
+      const { available } = getVehicleStock(activeTrip, p.id);
+      if (((Number(available) || 0) > 0 || getProductCartQty(p.id) > 0) && p.category) {
         set.add(p.category);
       }
     });
     return ['ALL', ...Array.from(set)];
-  }, [products, activeTrip, getVehicleStock, effectiveProductFilter]);
+  }, [products, activeTrip, getVehicleStock, cart.items]);
 
   // Beat filter (a salesman starts on his own beat). With a beat chosen, tapping the empty search box lists that
   // beat's customers so he can pick the next shop without typing.
@@ -194,15 +176,12 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
       .slice(0, 12);
   }, [customers, customerSearchQuery, beatFilter.apply, beatFilter.active]);
 
-  // Filtered products: respects vehicle stock when available, with seamless catalog fallback
+  // Filtered products: strictly show only products with available van stock (or already in cart)
   const filteredProducts = useMemo(() => {
     return products.filter((prod) => {
-      // If filtering strictly to van stock:
-      if (effectiveProductFilter === 'van') {
-        const { loaded, available } = getVehicleStock(activeTrip, prod.id);
-        if ((Number(loaded) || 0) <= 0 && (Number(available) || 0) <= 0) {
-          return false;
-        }
+      const { available } = getVehicleStock(activeTrip, prod.id);
+      if ((Number(available) || 0) <= 0 && getProductCartQty(prod.id) <= 0) {
+        return false;
       }
 
       // Category filter
@@ -228,7 +207,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
       }
       return true;
     });
-  }, [products, activeTrip, getVehicleStock, effectiveProductFilter, selectedCategory, searchTerm, productAlphaFilter]);
+  }, [products, activeTrip, getVehicleStock, cart.items, selectedCategory, searchTerm, productAlphaFilter]);
 
   // Total items in cart
   const cartItemCount = cart.items.reduce((sum, it) => sum + it.qty, 0);
@@ -515,7 +494,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
             {voiceActionResult.type === 'success' ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
             <span>{voiceActionResult.text}</span>
           </div>
-          <button aria-label="Close"
+          <button aria-label="Dismiss message"
             type="button"
             onClick={() => setVoiceActionResult(null)}
             className="p-1 cursor-pointer text-slate-600 hover:text-slate-900"
@@ -552,11 +531,11 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
             <div className="text-[11px] font-black uppercase tracking-wider opacity-80">
               {t('salesman.stockSource')}
             </div>
-            <div className="text-base sm:text-lg font-black truncate">
+            <div className="text-base sm:text-lg font-black min-w-0 break-words lg:truncate">
               {activeTrip ? `${activeTrip.vehicle} (Trip #${activeTrip.id})` : t('salesman.vehicleNotDispatched')}
             </div>
             {activeTrip ? (
-              <div className="text-xs font-semibold opacity-90 truncate">
+              <div className="text-xs font-semibold opacity-90 min-w-0 break-words lg:truncate">
                 {t('salesman.route')}: {activeTrip.route || t('salesman.cityBeat')} • {t('salesman.loaded')}: {Object.values(activeTrip.loaded || {}).reduce((a, b) => a + (Number(b) || 0), 0)} cs
               </div>
             ) : (
@@ -635,7 +614,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 id="btn-header-cart-salesman"
                 onClick={onOpenCart}
                 disabled={cart.items.length === 0}
-                className={`relative shrink-0 size-9 rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
+                className={`relative shrink-0 size-9 max-lg:hidden! rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
                   cart.items.length > 0
                     ? 'bg-[var(--primary)] border-[var(--primary)] text-white hover:brightness-110'
                     : 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed'
@@ -679,10 +658,10 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
             <div className="min-w-0 flex-1">
               <div className="text-[11px] font-black uppercase text-emerald-800">{t('salesman.billedTo')}</div>
               <div className="flex items-center gap-2">
-                <div className="text-base sm:text-lg font-black text-slate-900 truncate min-w-0">
+                <div className="text-base sm:text-lg font-black text-slate-900 min-w-0 break-words lg:truncate min-w-0">
                   <div>{selectedRetailer}</div>
                   {isOdia && (
-                    <div className="text-xs font-bold text-emerald-800 font-odia truncate mt-0.5">
+                    <div className="text-xs font-bold text-emerald-800 font-odia min-w-0 break-words lg:truncate mt-0.5">
                       {getCustomerOdiaName(selectedRetailer, customers || ledgerCustomers || [])}
                     </div>
                   )}
@@ -693,7 +672,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                   id="btn-customer-cart"
                   onClick={onOpenCart}
                   disabled={cart.items.length === 0}
-                  className={`relative shrink-0 size-9 rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
+                  className={`relative shrink-0 size-9 max-lg:hidden! rounded-xl border flex items-center justify-center transition-colors cursor-pointer ${
                     cart.items.length > 0
                       ? 'bg-[var(--primary)] border-[var(--primary)] text-white hover:brightness-110'
                       : 'bg-white border-emerald-200 text-slate-400 cursor-not-allowed'
@@ -715,6 +694,25 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                   <span>{retailerPhone}</span>
                 </div>
               )}
+              {(() => {
+                const sameName = (customers || []).filter((c) => c.name === selectedRetailer);
+                const last10 = (v?: string) => (v || '').replace(/\D/g, '').slice(-10);
+                // Same shop name can exist twice (different phones): match the phone first, never guess.
+                const sel =
+                  sameName.find((c) => retailerPhone && last10(c.phone) === last10(retailerPhone)) ||
+                  (sameName.length === 1 ? sameName[0] : undefined);
+                if (!sel) return null;
+                const due = Math.max(0, Number(sel.balanceDue) || 0);
+                return (
+                  <span
+                    className={`mt-1 inline-block text-xs font-bold rounded-full px-2.5 py-0.5 ${
+                      due > 0.004 ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'
+                    }`}
+                  >
+                    {due > 0.004 ? `Due ₹${money(due)}` : 'Due ₹0'}
+                  </span>
+                );
+              })()}
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <button
@@ -785,10 +783,10 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                       className="w-full min-h-[48px] p-3 text-left hover:bg-sky-50 active:bg-blue-100 flex items-center justify-between cursor-pointer transition-colors"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="text-sm sm:text-base font-black text-slate-900 truncate">
+                        <div className="text-sm sm:text-base font-black text-slate-900 min-w-0 break-words lg:truncate">
                           <div>{cust.name}</div>
                           {isOdia && (cust.nameOr || nameFromMap(customerNameMap, cust, language)) && (
-                            <div className="text-xs font-bold text-sky-800 font-odia truncate mt-0.5">
+                            <div className="text-xs font-bold text-sky-800 font-odia min-w-0 break-words lg:truncate mt-0.5">
                               {cust.nameOr || nameFromMap(customerNameMap, cust, language)}
                             </div>
                           )}
@@ -1054,7 +1052,7 @@ export const SalesmanSaleWorkflow: React.FC<SalesmanSaleWorkflowProps> = ({
                 className="w-full pl-9 pr-8 py-2 rounded-xl border-2 border-slate-200 text-xs font-bold text-slate-900 focus:outline-none focus:border-sky-600 bg-white"
               />
               {searchTerm && (
-                <button
+                <button aria-label="Clear search"
                   type="button"
                   onClick={() => setSearchTerm('')}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-xs font-black text-slate-400 hover:text-slate-600 cursor-pointer p-1"

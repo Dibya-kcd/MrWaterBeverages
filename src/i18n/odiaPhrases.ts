@@ -10,7 +10,7 @@
 
 export const PHRASES_OR: Record<string, string> = {
   // ── bottom menu / main tabs ──
-  'Home': 'ହୋମ୍', 'Sale': 'ବିକ୍ରି', 'Payment': 'ପେମେଣ୍ଟ', 'Trips': 'ଟ୍ରିପ୍', 'Stock': 'ଷ୍ଟକ୍', 'My Bills': 'ମୋ ବିଲ୍',
+  'Home': 'ହୋମ୍', 'Sale': 'ବିକ୍ରି', 'Sales': 'ବିକ୍ରି', 'Payment': 'ପେମେଣ୍ଟ', 'Trips': 'ଟ୍ରିପ୍', 'Stock': 'ଷ୍ଟକ୍', 'My Bills': 'ମୋ ବିଲ୍',
   'Salesman navigation': 'ସେଲ୍ସମ୍ୟାନ୍ ମେନୁ', 'Back to Dashboard Home': 'ହୋମ୍ କୁ ଫେରନ୍ତୁ',
   // ── home ──
   'Quick Actions': 'ଶୀଘ୍ର କାମ', 'Create bill for retailer': 'ଦୋକାନୀ ପାଇଁ ବିଲ୍ କରନ୍ତୁ', '2. Payments': '୨. ପେମେଣ୍ଟ',
