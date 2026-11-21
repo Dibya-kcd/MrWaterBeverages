@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowRight, Check, Layers } from 'lucide-react';
+import { ArrowRight, ChevronDown, ChevronUp, Layers, Search, Truck, X } from 'lucide-react';
 import { Warehouse } from '../../../types';
 import { useLedger } from '../../../context/LedgerContext';
 import { money } from '../../../utils/billing';
@@ -22,24 +22,8 @@ import {
   ReportStatGrid,
   ReportTitleBar,
 } from './ReportKit';
-import {
-  Chips,
-  EmptyNote,
-  HeroCard,
-  IconTile,
-  MiniStat,
-  PhoneDownloadBar,
-  PhoneHeader,
-  PhoneSearch,
-  RowCard,
-  Tag,
-  UnifiedPhoneFilterBar,
-  PhoneFilterBottomSheet,
-  PhonePeriodPicker,
-  isPeriodFilterActive,
-  type PhonePeriodControl,
-  rs,
-} from './mobile/PhoneKit';
+import { PhoneDownloadBar, type PhonePeriodControl, rs } from './mobile/PhoneKit';
+import { MobileReportTopBar } from './mobile/MobileReportContext';
 
 interface PurchasesReportProps {
   purchaseStats: {
@@ -123,7 +107,6 @@ export const PurchasesReport: React.FC<PurchasesReportProps> = ({
   const [search, setSearch] = useState('');
   const [openDays, setOpenDays] = useState<Set<string>>(new Set());
   const [explainOpen, setExplainOpen] = useState(false);
-  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
 
   const todayStr = useMemo(() => todayISO(), []);
   const yesterdayStr = useMemo(() => {
@@ -216,17 +199,9 @@ export const PurchasesReport: React.FC<PurchasesReportProps> = ({
     [shownLines],
   );
 
-  const periodActive = !!periodControl && isPeriodFilterActive(periodControl.period);
-  const filterCount = (viewMode !== 'daywise' ? 1 : 0) + (godown !== 'all' ? 1 : 0) + (periodActive ? 1 : 0);
-
   const resetFilters = () => {
     setGodown('all');
     setSearch('');
-  };
-  const resetSheet = () => {
-    resetFilters();
-    setViewMode('daywise');
-    periodControl?.onPeriodChange('thisMonth');
   };
 
   const forceOpen = q.length > 0;
@@ -291,177 +266,200 @@ export const PurchasesReport: React.FC<PurchasesReportProps> = ({
   const lineSub = (l: GrnLine, withDate: boolean) =>
     `${l.g.id}${withDate ? ` · ${formatDateHuman(l.date)}` : ''}${l.invoiceNo ? ` · Inv ${l.invoiceNo}` : ''} · ${l.godown} · ${l.crates} cs`;
 
+  const compactRs = (n: number) => {
+    const abs = Math.abs(n);
+    if (abs >= 100000) return `₹${(abs / 100000).toFixed(1)}L`;
+    if (abs >= 1000) return `₹${(abs / 1000).toFixed(abs >= 10000 ? 0 : 1)}k`;
+    return `₹${Math.round(abs)}`;
+  };
+  const shortDate = (d: string) => {
+    const dt = new Date(`${d}T12:00:00`);
+    return isNaN(dt.getTime()) ? d : dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  };
+
+  const shareProps = {
+    reportTitle: 'Inward & purchases',
+    summaryLines: [
+      { label: 'Bought (incl. GST)', value: rs(shownTotals.total) },
+      { label: 'Taxable purchases', value: rs(shownTotals.net) },
+      { label: 'Input GST', value: rs(shownTotals.tax) },
+      { label: 'Cases received', value: `${shownTotals.crates} cs` },
+    ],
+    sheets: [
+      {
+        name: 'Consignments',
+        header: ['GRN', 'Date', 'Supplier', 'Godown', 'Cases', 'Total'],
+        rows: shownLines.map((l) => [String(l.g.id), l.date, l.supplier, l.godown, l.crates, l.total]),
+      },
+    ],
+    pdfSections: [
+      {
+        title: 'Consignments',
+        header: ['GRN', 'Date', 'Supplier', 'Cases', 'Total'],
+        rows: shownLines.map((l) => [String(l.g.id), l.date, l.supplier, l.crates, money(l.total)]),
+        rightAlign: [3, 4],
+      },
+    ],
+  };
+
   return (
     <>
       {/* ============================ PHONE ============================ */}
       <div className="md:hidden space-y-3" id="report-inward-phone">
-        <PhoneHeader title="Inward & purchases" sub="Consignments and inward stock" />
-
-        <HeroCard tone="navy" label="Purchases (net of GST)" value={rs(purchaseStats.netPurchaseVal)}>
-          <div className="text-[12.5px] text-white/90">
-            {filteredGrns.length} consignment{filteredGrns.length === 1 ? '' : 's'} · {purchaseStats.totalCratesInward} crates received
-          </div>
-        </HeroCard>
-
-        <div className="grid grid-cols-3 gap-2">
-          <MiniStat label="Input GST (ITC)" value={rs(purchaseStats.totalGstPaid)} tone="green" />
-          <MiniStat label="Cess paid" value={rs(purchaseStats.totalCessPaid)} />
-          <MiniStat label="Supplier discount" value={rs(discountTotals.total)} tone={discountTotals.total > 0 ? 'green' : 'ink'} />
-        </div>
-
-        <UnifiedPhoneFilterBar
-          search={search}
-          onSearch={setSearch}
-          placeholder="Search supplier or invoice no…"
-          onOpenFilter={() => setIsFilterSheetOpen(true)}
-          activeFilterCount={filterCount}
+        <MobileReportTopBar
+          title="Inward & purchases"
+          sub={viewMode === 'daywise' ? 'Day-wise summary' : 'Consignments'}
+          showPeriod
+          shareProps={shareProps}
         />
 
-        <PhoneFilterBottomSheet
-          isOpen={isFilterSheetOpen}
-          onClose={() => setIsFilterSheetOpen(false)}
-          title="Filter Inward & Purchases"
-          activeCount={filterCount}
-          onReset={resetSheet}
-        >
-          {periodControl && <PhonePeriodPicker {...periodControl} />}
-
-          {/* View Mode */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              View Grouping
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              {VIEW_OPTIONS.map((opt) => {
-                const isSelected = viewMode === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setViewMode(opt.id)}
-                    className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer ${
-                      isSelected
-                        ? 'border-blue-600 bg-blue-50/70 text-blue-900 shadow-xs'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    <span>{opt.label}</span>
-                    {isSelected && <Check size={14} className="text-blue-600 shrink-0" />}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Godowns */}
-          {showGodownFilter && (
-            <div className="space-y-2">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Godown / Warehouse
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                {godownOptions.map((opt) => {
-                  const isSelected = godown === opt.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => setGodown(opt.id)}
-                      className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer ${
-                        isSelected
-                          ? 'border-blue-600 bg-blue-50/70 text-blue-900 shadow-xs'
-                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      <span className="truncate">{opt.label}</span>
-                      {isSelected && <Check size={14} className="text-blue-600 shrink-0" />}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </PhoneFilterBottomSheet>
-
-        {(viewMode === 'daywise' && dayGroups.length > 1 && !forceOpen) || isFiltered ? (
-          <div className="flex items-center justify-between px-1 text-xs text-slate-500">
-            <span>
-              {shownLines.length} consignment{shownLines.length === 1 ? '' : 's'}
-              {isFiltered && (
-                <>
-                  {' · '}
-                  <button type="button" onClick={resetFilters} className="font-bold text-rose-600 cursor-pointer">
-                    Clear filters
-                  </button>
-                </>
-              )}
-            </span>
-            {viewMode === 'daywise' && dayGroups.length > 1 && !forceOpen && (
-              <button type="button" onClick={toggleAll} className="font-bold text-slate-700 cursor-pointer min-h-[36px]">
-                {allOpen ? 'Collapse all' : 'Expand all'}
-              </button>
-            )}
-          </div>
-        ) : null}
-
-        {shownLines.length === 0 && <EmptyNote>{emptyText}</EmptyNote>}
-
-        {viewMode === 'daywise' &&
-          dayGroups.map((d) => {
-            const open = isOpen(d.date);
+        {/* Row 1: View chips */}
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+          {VIEW_OPTIONS.map((opt) => {
+            const active = viewMode === opt.id;
             return (
-              <RowCard key={d.date}>
-                <button
-                  type="button"
-                  onClick={() => toggleDay(d.date)}
-                  aria-expanded={open}
-                  disabled={forceOpen}
-                  className="w-full text-left p-3 cursor-pointer active:bg-slate-50 disabled:cursor-default"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-[15px] font-extrabold text-slate-900 leading-snug break-words">{d.dateLabel}</div>
-                      <div className="text-xs text-slate-500">
-                        {d.lines.length} consignment{d.lines.length === 1 ? '' : 's'} · {d.crates} cs
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className="text-[17px] font-extrabold text-slate-900 tabular-nums leading-tight">{rs(d.total)}</div>
-                      <div className="text-[11px] text-slate-500">invoiced</div>
-                    </div>
-                  </div>
-                  <div className="mt-1.5 flex flex-wrap gap-x-3 text-[12px] font-semibold tabular-nums text-slate-600">
-                    <span>Taxable {rs(d.net)}</span>
-                    <span className="text-emerald-700">GST {rs(d.tax)}</span>
-                  </div>
-                </button>
-                {open && (
-                  <ul className="divide-y divide-slate-100 border-t border-slate-100">
-                    {d.lines.map((l) => (
-                      <PhoneGrnRow key={String(l.g.id)} title={lineTitle(l)} sub={lineSub(l, false)} total={l.total} godown={l.godown} />
-                    ))}
-                  </ul>
-                )}
-              </RowCard>
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setViewMode(opt.id)}
+                className={`shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                    : 'bg-white text-[var(--text)] border-[var(--border)]'
+                }`}
+              >
+                {opt.label}
+              </button>
             );
           })}
+        </div>
 
-        {viewMode === 'log' && shownLines.length > 0 && (
-          <RowCard>
-            <ul className="divide-y divide-slate-100">
-              {shownLines.map((l) => (
-                <PhoneGrnRow key={String(l.g.id)} title={lineTitle(l)} sub={lineSub(l, true)} total={l.total} godown={l.godown} />
-              ))}
-            </ul>
-          </RowCard>
+        {/* Row 2: Godown chips */}
+        {godownOptions.length > 1 && (
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+            {godownOptions.map((opt) => {
+              const active = godown === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => setGodown(opt.id)}
+                  className={`shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold border transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                      : 'bg-white text-[var(--text)] border-[var(--border)]'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Bought summary card */}
+        <section className="rt-rep-card rt-rep-pad">
+          <div className="text-[12px] font-medium text-[var(--text-2)]">Bought</div>
+          <div className="text-[26px] font-extrabold text-[var(--text)] tracking-tight leading-tight tabular-nums mt-0.5">
+            {rs(shownTotals.total)}
+          </div>
+          <div className="text-[11.5px] text-[var(--text-2)] mt-1 tabular-nums">
+            Taxable {rs(shownTotals.net)} · GST {rs(shownTotals.tax)}
+          </div>
+          <div className="rt-kv-grid grid-cols-3">
+            <div className="rt-kv">
+              <div className="rt-kv__l">Cases</div>
+              <div className="rt-kv__v text-[var(--text)]">{shownTotals.crates.toLocaleString('en-IN')}</div>
+            </div>
+            <div className="rt-kv">
+              <div className="rt-kv__l">Taxable</div>
+              <div className="rt-kv__v text-[var(--paid)]">{compactRs(shownTotals.net)}</div>
+            </div>
+            <div className="rt-kv">
+              <div className="rt-kv__l">GST</div>
+              <div className="rt-kv__v text-[var(--text)]">{compactRs(shownTotals.tax)}</div>
+            </div>
+          </div>
+        </section>
+
+        {/* Search bar */}
+        <div className="rt-search-bar">
+          <Search size={15} className="text-[var(--text-2)] shrink-0" aria-hidden="true" />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search supplier or invoice no…"
+          />
+          {search.trim() && (
+            <button
+              type="button"
+              onClick={() => setSearch('')}
+              className="text-[var(--text-2)] p-1 cursor-pointer"
+              aria-label="Clear search"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {shownLines.length === 0 ? (
+          <div className="rt-rep-card py-10 px-4 text-center text-[13px] font-semibold text-[var(--text-2)]">
+            {emptyText}
+          </div>
+        ) : viewMode === 'daywise' ? (
+          <div className="space-y-2.5">
+            {dayGroups.map((d) => {
+              const open = isOpen(d.date) || dayGroups.length === 1;
+              return (
+                <section key={d.date} className="rt-rep-card overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => toggleDay(d.date)}
+                    aria-expanded={open}
+                    className="w-full px-3.5 py-3 flex items-center justify-between gap-3 text-left cursor-pointer active:bg-[#f8fafc]"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-[13.5px] font-bold text-[var(--text)] truncate">{shortDate(d.date)}</div>
+                      <div className="text-[11.5px] text-[var(--text-2)] mt-0.5">
+                        {d.lines.length} consignment{d.lines.length === 1 ? '' : 's'} · {d.crates} cases
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div className="text-right">
+                        <div className="text-[13.5px] font-extrabold text-[var(--text)] tabular-nums">{rs(d.total)}</div>
+                        <div className="text-[11px] font-semibold text-[var(--paid)] tabular-nums">GST {compactRs(d.tax)}</div>
+                      </div>
+                      {dayGroups.length > 1 && (
+                        open ? <ChevronUp size={15} className="text-[var(--text-2)]" /> : <ChevronDown size={15} className="text-[var(--text-2)]" />
+                      )}
+                    </div>
+                  </button>
+                  {open && (
+                    <div className="border-t border-[var(--divider)] divide-y divide-[var(--divider)]">
+                      {d.lines.map((l) => (
+                        <PhoneGrnRow key={String(l.g.id)} line={l} dateText={shortDate(l.date)} />
+                      ))}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        ) : (
+          <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+            {shownLines.map((l) => (
+              <PhoneGrnRow key={String(l.g.id)} line={l} dateText={shortDate(l.date)} />
+            ))}
+          </section>
         )}
 
         <button
           type="button"
           onClick={onNavigateInventory}
-          className="w-full min-h-[48px] rounded-2xl border border-slate-200 bg-white text-[14px] font-bold text-slate-800 inline-flex items-center justify-center gap-2 cursor-pointer active:bg-slate-100"
+          className="w-full h-[46px] rounded-2xl border border-[var(--border)] bg-white text-[13.5px] font-bold text-[var(--text)] inline-flex items-center justify-center gap-2 cursor-pointer active:bg-[#f8fafc]"
         >
-          Open Inward workspace <ArrowRight size={16} aria-hidden="true" />
+          Open Inward workspace <ArrowRight size={15} aria-hidden="true" />
         </button>
 
         <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} disabled={!hasAny} />
@@ -594,21 +592,24 @@ export const PurchasesReport: React.FC<PurchasesReportProps> = ({
 };
 
 /** One consignment line on the phone. */
-const PhoneGrnRow: React.FC<{ title: string; sub: string; total: number; godown: string }> = ({ title, sub, total, godown }) => (
-  <li className="p-3 flex items-start gap-3">
-    <IconTile tone="blue">
-      <Layers size={20} />
-    </IconTile>
+const PhoneGrnRow: React.FC<{ line: GrnLine; dateText: string }> = ({ line, dateText }) => (
+  <div className="px-3.5 py-3 flex items-center gap-3">
+    <div className="w-9 h-9 rounded-full bg-[var(--paid-bg)] text-[var(--paid)] flex items-center justify-center shrink-0">
+      <Truck size={16} />
+    </div>
     <div className="min-w-0 flex-1">
-      <div className="text-[15px] font-bold text-slate-900 leading-snug break-words">{title}</div>
-      <div className="text-xs text-slate-500 leading-snug break-words">{sub}</div>
-      <div className="mt-1.5">
-        <Tag tone="grey">{godown}</Tag>
+      <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug truncate">
+        {line.invoiceNo || line.g.id} · {line.supplier}
+      </div>
+      <div className="text-[11.5px] text-[var(--text-2)] mt-0.5 truncate">
+        {dateText} · {line.crates} cases · {line.godown}
       </div>
     </div>
     <div className="text-right shrink-0">
-      <div className="text-[17px] font-extrabold tabular-nums leading-tight text-slate-900">{rs(total)}</div>
-      <div className="text-[11px] text-slate-400">invoice</div>
+      <div className="text-[13.5px] font-extrabold text-[var(--text)] tabular-nums">{rs(line.total)}</div>
+      <span className="inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[var(--paid-bg)] text-[var(--paid)]">
+        Received
+      </span>
     </div>
-  </li>
+  </div>
 );

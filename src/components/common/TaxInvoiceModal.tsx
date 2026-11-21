@@ -9,9 +9,12 @@ import {
   Share2,
   X,
   Edit,
+  ArrowLeft,
   ArrowRight,
   Paperclip,
 } from 'lucide-react';
+import { useIsMobile } from '../../hooks/useIsMobile';
+import { useLanguage } from '../../i18n/LanguageContext';
 import { useLedger } from '../../context/LedgerContext';
 import { Bill } from '../../types';
 import {
@@ -37,6 +40,7 @@ interface TaxInvoiceModalProps {
   onClose: () => void;
   defaultFormat?: 'gst' | 'non_gst';
   onEditBill?: (bill: Bill) => void;
+  onCancelBill?: (bill: Bill) => void;
 }
 
 export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
@@ -44,8 +48,11 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
   onClose,
   defaultFormat,
   onEditBill,
+  onCancelBill,
 }) => {
   const { bills, products, orgProfile, billingSettings, palette, fz, scale } = useLedger();
+  const isPhone = useIsMobile(767);
+  const { t } = useLanguage();
   const [activeBillId, setActiveBillId] = useState<number>(propBill.id);
   useEffect(() => {
     setActiveBillId(propBill.id);
@@ -162,6 +169,228 @@ export const TaxInvoiceModal: React.FC<TaxInvoiceModalProps> = ({
       window.open(whatsappLink(bill.phone, text), '_blank');
     }
   };
+
+  if (isPhone) {
+    const isPaid = status.balance <= 0.01;
+    const isUnpaid = status.balance >= bill.total - 0.01;
+    return (
+      <div
+        data-esc-close
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${isGst ? 'Tax Invoice' : 'Retail Bill'} ${invoiceNo}`}
+        className="rt-sale-checkout-sheet print:static print:bg-white"
+      >
+        <header className="rt-sale-header print:hidden">
+          <div className="rt-sale-header__row">
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label={t('common.back')}
+              className="rt-sale-header__back"
+            >
+              <ArrowLeft size={20} />
+            </button>
+            <h2 className="rt-sale-header__title">
+              {t('sell.invoiceNum', { no: invoiceNo })}
+            </h2>
+            <div className="rt-sale-header__right">
+              <span
+                className={`rt-tag ${
+                  isPaid ? 'rt-tag--paid' : isUnpaid ? 'rt-tag--due' : 'rt-tag--soon'
+                }`}
+              >
+                {isPaid
+                  ? t('sell.paid')
+                  : isUnpaid
+                    ? t('sell.unpaid')
+                    : `${t('home.dueLabel')} ₹${money(status.balance)}`}
+              </span>
+            </div>
+          </div>
+        </header>
+
+        <div className="rt-checkout-body print:p-0 print:overflow-visible">
+          <div id="printable-tax-invoice" className="hh-paper space-y-1">
+            <div className="flex items-baseline justify-between gap-2">
+              <b className="text-[13px] text-[var(--text)] break-words">{orgName}</b>
+              <span className="text-[11px] text-[var(--text-2)] shrink-0 tabular-nums">{bill.date}</span>
+            </div>
+            <div className="text-[11px] text-[var(--text-2)]">{t('sell.invoiceNum', { no: invoiceNo })}</div>
+            <hr className="hh-paper__hr" />
+            <div className="text-[11px] text-[var(--text-2)] font-semibold">{t('sell.billTo')}</div>
+            <div className="text-[12.5px] font-bold text-[var(--text)] break-words">
+              {bill.retailer || t('sell.walkInSale')}
+            </div>
+            {bill.phone && (
+              <div className="text-[11px] text-[var(--text-2)] tabular-nums">{bill.phone}</div>
+            )}
+            <hr className="hh-paper__hr" />
+            <div className="space-y-0.5">
+              {bill.items.map((it, idx) => {
+                const d = freeStockInvoiceDisplay(it);
+                return (
+                  <div key={it.key || `p_it_${idx}`} className="rt-ln !text-[11.5px] !py-1">
+                    <span className="min-w-0 break-words pr-2 text-[var(--text)]">
+                      {it.productName} × {it.qty}
+                      {it.freeQty ? ` + ${it.freeQty} free` : ''}
+                    </span>
+                    <b className="shrink-0 tabular-nums text-[var(--text)]">
+                      {d.isFreeStock ? 'FREE' : `₹${money(d.amount)}`}
+                    </b>
+                  </div>
+                );
+              })}
+            </div>
+            <hr className="hh-paper__hr" />
+            <div className="rt-ln !text-[11.5px] !py-1">
+              <span className="text-[var(--text-2)]">{t('sell.total')}</span>
+              <b className="tabular-nums text-[var(--text)]">₹{money(bill.total)}</b>
+            </div>
+            <div className="rt-ln !text-[11.5px] !py-1">
+              <span className="text-[var(--text-2)]">{t('sell.paid')}</span>
+              <b className="tabular-nums text-[var(--text)]">₹{money(bill.amountPaid || 0)}</b>
+            </div>
+            <div className="rt-ln !text-[11.5px] !py-1">
+              <span className="text-[var(--text-2)]">{t('sell.balance')}</span>
+              <b className={`tabular-nums ${status.balance > 0.01 ? 'text-[var(--due)]' : 'text-[var(--paid)]'}`}>
+                ₹{money(status.balance)}
+              </b>
+            </div>
+          </div>
+
+          <div className="flex gap-2 print:hidden">
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="rt-btn-outline flex-1 !px-2 text-xs"
+            >
+              <Printer size={14} />
+              <span>{t('sell.print')}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={downloading}
+              className="rt-btn-outline flex-1 !px-2 text-xs"
+            >
+              <Download size={14} />
+              <span>{t('sell.pdf')}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowShareModal(true)}
+              className="rt-btn rt-btn--wa flex-1 !px-2 text-xs"
+            >
+              <MessageCircle size={14} />
+              <span>{t('sell.share')}</span>
+            </button>
+          </div>
+
+          {(onEditBill || onCancelBill) && (
+            <div className="flex gap-2 print:hidden">
+              {onEditBill && (
+                <button
+                  type="button"
+                  onClick={() => onEditBill(bill)}
+                  disabled={(bill.returns || []).length > 0}
+                  className="rt-btn-outline flex-1 text-xs disabled:opacity-40"
+                >
+                  {t('sell.editBill')}
+                </button>
+              )}
+              {onCancelBill && bill.status !== 'cancelled' && (
+                <button
+                  type="button"
+                  onClick={() => onCancelBill(bill)}
+                  className="rt-btn-outline rt-btn-outline--due flex-1 text-xs"
+                >
+                  {t('sell.cancelBill')}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {showShareModal && (
+          <div
+            data-esc-close
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-60 flex items-end justify-center bg-black/45 select-none"
+            onClick={() => setShowShareModal(false)}
+          >
+            <div
+              className="hh-sheet rt-sheet-phone w-full space-y-2.5 max-h-[85vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="hh-grab" aria-hidden="true" />
+              <div className="flex items-center justify-between pb-1">
+                <h3 className="font-extrabold text-[15px] text-[var(--text)]">
+                  {t('sell.share')}
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setShowShareModal(false)}
+                  className="size-9 rounded-full flex items-center justify-center text-[var(--text-2)] cursor-pointer"
+                  aria-label="Close share sheet"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  setShowShareModal(false);
+                  const msg = whatsAppResultMessage(await sendBillOnWhatsApp(bill, orgProfile, billingSettings, invoiceFormat));
+                  if (msg) notify(msg.text, msg.kind);
+                }}
+                className="rt-btn rt-btn--wa w-full"
+              >
+                <MessageCircle size={17} />
+                <span>{t('sell.shareOnWhatsapp')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleSharePdf}
+                disabled={sharing}
+                className="rt-btn-outline w-full"
+              >
+                <Paperclip size={16} />
+                <span>Share PDF file</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleDownload();
+                  setShowShareModal(false);
+                }}
+                disabled={downloading}
+                className="rt-btn-outline w-full"
+              >
+                <Download size={16} />
+                <span>{t('sell.pdf')}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowShareModal(false);
+                  handleNativeShare();
+                }}
+                className="rt-btn-outline w-full"
+              >
+                <Share2 size={16} />
+                <span>{t('common.share')}</span>
+              </button>
+              {shareNote && (
+                <p role="status" className="rt-notice rt-notice--soon">{shareNote}</p>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div data-esc-close

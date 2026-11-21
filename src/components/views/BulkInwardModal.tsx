@@ -3,6 +3,7 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowDownToLine,
+  ArrowLeft,
   ArrowRight,
   Boxes,
   Building2,
@@ -11,6 +12,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Copy,
   Download,
@@ -38,6 +40,8 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { useIsMobile } from '../../hooks/useIsMobile';
+import { PackIcon } from '../common/PackIcon';
 import { CATS } from '../../constants/initialData';
 import { useLedger } from '../../context/LedgerContext';
 import { CategoryKey, GrnImportWarning, GrnLineItem, GrnSchemeMode, GrnSchemeType, Product, Taxability } from '../../types';
@@ -75,7 +79,11 @@ import { validatePhone } from "../../utils/validation";
 interface BulkInwardModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess?: (grnNumber: string, count: number) => void;
+  onSuccess?: (
+    grnNumber: string,
+    count: number,
+    extra?: { grnId?: string; totalCases?: number; warehouseName?: string }
+  ) => void;
 }
 
 interface EditableInwardRow {
@@ -189,6 +197,13 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   const [showInwardCostDetails, setShowInwardCostDetails] = useState<boolean>(true);
   const [invoiceRoundOff, setInvoiceRoundOff] = useState<number>(0);
   const [invoiceOtherCharges, setInvoiceOtherCharges] = useState<number>(0);
+  const isPhone = useIsMobile(767);
+  const [mobileSubView, setMobileSubView] = useState<'overview' | 'bill' | 'costs' | 'edit_line'>('overview');
+  const [editingRowId, setEditingRowId] = useState<string | null>(null);
+  const [phoneDismissWarning, setPhoneDismissWarning] = useState(false);
+  const [showAutoBatchSheet, setShowAutoBatchSheet] = useState(false);
+  const [phoneDeleteConfirmId, setPhoneDeleteConfirmId] = useState<string | null>(null);
+  const [phoneCatalogSizeFilter, setPhoneCatalogSizeFilter] = useState<'all' | '200' | '600' | '1000'>('all');
   const [showConfirmStep, setShowConfirmStep] = useState<boolean>(false);
   const [confirmQuery, setConfirmQuery] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -197,6 +212,12 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
       setShowConfirmStep(false);
       setConfirmDeleteId(null);
       setConfirmQuery('');
+      setMobileSubView('overview');
+      setEditingRowId(null);
+      setPhoneDismissWarning(false);
+      setShowAutoBatchSheet(false);
+      setPhoneDeleteConfirmId(null);
+      setCatalogPickerRowId(null);
     }
   }, [isOpen]);
 
@@ -1301,7 +1322,11 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
     });
 
     if (onSuccess) {
-      onSuccess(createdGrn.grnNumber, items.length);
+      onSuccess(createdGrn.grnNumber, items.length, {
+        grnId: createdGrn.id,
+        totalCases: totalReceivedQty,
+        warehouseName: createdGrn.warehouseName || targetWhObj?.name || 'Main godown',
+      });
     }
   };
 
@@ -1351,6 +1376,1299 @@ export const BulkInwardModal: React.FC<BulkInwardModalProps> = ({
   const handleDownloadCsvSample = () => {
     downloadImportTemplate();
   };
+
+  if (isPhone) {
+    const whObj = warehouses.find((w) => w.id === targetWarehouseId);
+    const activeEditRow = rows.find((r) => r.id === editingRowId) || null;
+    const lineBreakdown = (r: EditableInwardRow) => {
+      const isNonGst = r.taxability === 'non_gst';
+      return calculateLandedCostBreakdown({
+        qty: r.qty,
+        unitPrice: r.unitPrice,
+        unitsPerCrate: r.unitsPerCrate || inferUnitsPerCase(`${r.productName || ''} ${r.rawName || ''} ${r.pack || ''}`, r.volume),
+        pack: r.pack,
+        volume: r.volume,
+        packSize: r.packSize,
+        cgstPercent: isNonGst ? 0 : r.cgstPercent,
+        sgstPercent: isNonGst ? 0 : r.sgstPercent,
+        schemeType: r.schemeType,
+        schemeMode: r.schemeMode || 'inclusive',
+        schemeBuyQty: r.schemeBuyQty,
+        schemeFreeQty: r.schemeFreeQty,
+        freeQty: r.freeQty,
+        paidQty: r.paidQty,
+        discountPercent: r.discountPercent,
+        discountFlat: r.discountFlat,
+        discountAmount: r.discountAmount,
+        inwardCostPerCrate,
+      });
+    };
+
+    const compactMoney = (val: number) => {
+      if (val >= 100000) return `₹${(val / 100000).toFixed(2)}L`;
+      return `₹${money(val)}`;
+    };
+
+    // Confirm purchase phone view
+    if (showConfirmStep) {
+      const q = confirmQuery.trim().toLowerCase();
+      const list = rows.filter((r) => !q || `${r.productName || ''} ${r.rawName || ''} ${r.batchNumber || ''}`.toLowerCase().includes(q));
+      const discountText = (r: EditableInwardRow) =>
+        r.schemeType === 'discount_percent' ? `${r.discountPercent}%`
+        : r.schemeType === 'discount_flat' ? `₹${r.discountFlat}/cs`
+        : r.schemeType === 'b2g1' ? `B${r.schemeBuyQty ?? 2}G${r.schemeFreeQty ?? 1}`
+        : r.freeQty > 0 ? `${r.freeQty} free` : '0%';
+      const missingCount = rows.filter((r) => !r.batchNumber?.trim() || !r.expiry).length;
+      const blockers = [
+        !invoiceNo.trim() ? 'enter the invoice no.' : '',
+        !targetWarehouseId ? 'pick a warehouse' : '',
+        missingCount > 0 ? `add batch or expiry on ${missingCount} line${missingCount > 1 ? 's' : ''}` : '',
+      ].filter(Boolean);
+
+      return (
+        <>
+          <div role="dialog" aria-modal="true" aria-label="Confirm purchase" className="rt-flow-phone">
+            <div className="hh-sales-top hh-sales-top--flush hh-inv-top--flow">
+              <div>
+                <div className="text-[20px] font-extrabold text-white tracking-tight leading-tight">
+                  Confirm purchase
+                </div>
+                <div className="text-[12px] text-white/85 font-medium mt-0.5">
+                  Check every line before saving
+                </div>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-3.5 py-3 space-y-2.5">
+              {parseError && (
+                <div className="hh-inv-card hh-inv-card--alert-red text-[12px] font-semibold text-rose-700 whitespace-pre-line">
+                  {parseError}
+                </div>
+              )}
+
+              <div className="rt-search-bar">
+                <Search size={16} className="text-slate-400 shrink-0" />
+                <input
+                  type="search"
+                  enterKeyHint="search"
+                  value={confirmQuery}
+                  onChange={(e) => setConfirmQuery(e.target.value)}
+                  placeholder="Search lines"
+                />
+              </div>
+
+              {list.map((r) => {
+                const bd = lineBreakdown(r);
+                const rateIncl = r.priceInclGst ?? (r.unitPrice * (1 + ((r.taxability === 'non_gst' ? 0 : (r.cgstPercent + r.sgstPercent)) / 100)));
+                return (
+                  <div key={r.id} className="hh-inv-card space-y-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="text-[14px] font-bold text-slate-900 min-w-0">
+                        {rows.indexOf(r) + 1} · {r.productName || r.rawName}
+                      </div>
+                      <div className="text-[14px] font-extrabold text-slate-900 tabular-nums shrink-0">
+                        ₹{money(bd.lineTotal)}
+                      </div>
+                    </div>
+                    <div className="text-[12px] text-slate-500 leading-snug">
+                      Rate ₹{money(rateIncl)} incl. GST · Disc {discountText(r)} · Exp {r.expiry || 'missing'} · Landed ₹{money(bd.landedCostPerCrate)}/cs
+                    </div>
+                  </div>
+                );
+              })}
+
+              <div className="hh-inv-card space-y-2">
+                <div className="flex items-center justify-between text-[13px]">
+                  <span className="text-slate-500">Invoice printed total</span>
+                  <span className="font-bold text-slate-900 tabular-nums">
+                    {printedTotalCases !== null ? `${printedTotalCases.toLocaleString()} cs` : `${totalReceivedQty.toLocaleString()} cs`}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[13px]">
+                  <span className="text-slate-500">Imported (working table)</span>
+                  <span className="font-bold text-slate-900 tabular-nums">{totalReceivedQty.toLocaleString()} cs</span>
+                </div>
+                <div className="flex items-center justify-between text-[13px] pt-1.5 border-t border-slate-100">
+                  <span className="text-slate-500">Difference</span>
+                  <span className={`font-extrabold tabular-nums ${casesDiff !== 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                    {casesDiff > 0 ? `+${casesDiff}` : casesDiff} cs
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[13px] pt-1.5 border-t border-slate-100">
+                  <span className="text-slate-500">Grand total ({whObj?.name || 'Godown'})</span>
+                  <span className="font-extrabold text-slate-900 tabular-nums">₹{money(calculatedGrandTotal)}</span>
+                </div>
+              </div>
+
+              {blockers.length > 0 && (
+                <div className="hh-inv-card hh-inv-card--alert-amber text-[12px] font-semibold text-amber-800">
+                  To save: {blockers.join(', ')}.
+                </div>
+              )}
+            </div>
+
+            <div className="px-3.5 py-2.5 bg-[#f3f5f9] border-t border-slate-200 grid grid-cols-2 gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowConfirmStep(false)}
+                className="hh-inv-btn-outline w-full"
+              >
+                Back to edit
+              </button>
+              <button
+                type="button"
+                disabled={blockers.length > 0}
+                onClick={handleConfirmAndPostGrn}
+                className="hh-inv-btn-accent w-full leading-tight text-center"
+              >
+                Confirm purchase
+              </button>
+            </div>
+          </div>
+
+          {showWarningDialog && hasCasesMismatch && (
+            <div className="rt-bsheet-scrim" onClick={() => setShowWarningDialog(false)}>
+              <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+                <div className="hh-grab" />
+                <h3 className="text-[17px] font-extrabold text-slate-900">Import with warning?</h3>
+                <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-[12.5px] text-amber-950 space-y-1">
+                  <div>Invoice printed total: <strong>{printedTotalCases?.toLocaleString()} cs</strong></div>
+                  <div>Imported (working table): <strong>{totalReceivedQty.toLocaleString()} cs</strong></div>
+                  <div>Difference: <strong>{casesDiff > 0 ? `+${casesDiff}` : casesDiff} cs</strong></div>
+                </div>
+                <div className="hh-inv-field">
+                  <span className="hh-inv-field__label">OPTIONAL NOTE</span>
+                  <input
+                    value={warningNote}
+                    onChange={(e) => setWarningNote(e.target.value)}
+                    placeholder="e.g. 2 crates short, claim raised"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button type="button" onClick={() => setShowWarningDialog(false)} className="hh-inv-btn-outline w-full">
+                    Go back &amp; fix
+                  </button>
+                  <button type="button" onClick={handleImportWithWarning} className="hh-inv-btn-primary w-full">
+                    Import anyway
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      );
+    }
+
+    return (
+      <>
+        <div role="dialog" aria-modal="true" aria-label="Bulk inward" className="rt-flow-phone">
+          <div className="hh-sales-top hh-sales-top--flush hh-inv-top--flow">
+            <div className="flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (step === 'review' && mobileSubView !== 'overview') {
+                    setMobileSubView('overview');
+                  } else if (step === 'review') {
+                    setStep('upload');
+                  } else {
+                    onClose();
+                  }
+                }}
+                className="hh-inv-backbtn"
+              >
+                <ArrowLeft size={19} />
+                <span>{step === 'upload' ? 'Bulk purchase import' : 'Review purchase'}</span>
+              </button>
+              {step === 'review' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileSubView('overview');
+                    setStep('upload');
+                  }}
+                  className="hh-inv-glass-pill"
+                >
+                  Change file
+                </button>
+              )}
+            </div>
+
+            <div className="hh-inv-seg">
+              <div className="hh-inv-seg__bar hh-inv-seg__bar--on" />
+              <div className={`hh-inv-seg__bar ${step === 'review' ? 'hh-inv-seg__bar--on' : ''}`} />
+            </div>
+
+            <div className="text-[12px] font-semibold text-white/90">
+              {step === 'upload' ? 'Step 1 of 2 · Upload / Scan' : 'Step 2 of 2 · Review lines'}
+            </div>
+          </div>
+
+          {step === 'upload' ? (
+            <UploadStep
+              isDragging={isDragging}
+              setIsDragging={setIsDragging}
+              fileInputRef={fileInputRef}
+              processUploadedFile={processUploadedFile}
+              isParsing={isParsing}
+              parsingStatus={parsingStatus}
+              handleDownloadCsvSample={handleDownloadCsvSample}
+              handleDownloadSample={handleDownloadSample}
+              handleStartBlankConsignment={handleStartBlankConsignment}
+              parseError={parseError}
+              lastUploadedFile={lastUploadedFile}
+              uploadedFileName={fileName}
+              onClearError={() => setParseError(null)}
+            />
+          ) : mobileSubView === 'bill' ? (
+            <div className="flex-1 overflow-y-auto px-3.5 py-3 space-y-2.5">
+              <div className="hh-inv-field hh-inv-field--focus">
+                <span className="hh-inv-field__label">SUPPLIER NAME</span>
+                <input
+                  list="bulk-inward-known-suppliers"
+                  type="text"
+                  value={supplierName}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setSupplierName(v);
+                    applySupplierAutofill(v);
+                  }}
+                  onBlur={(e) => applySupplierAutofill(e.target.value)}
+                  placeholder="Supplier name"
+                />
+                <datalist id="bulk-inward-known-suppliers">
+                  {knownSuppliers.map((s) => (
+                    <option key={s.name} value={s.name} />
+                  ))}
+                </datalist>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="hh-inv-field">
+                  <span className="hh-inv-field__label">SUPPLIER PHONE</span>
+                  <input
+                    type="tel"
+                    inputMode="tel"
+                    autoComplete="tel"
+                    value={supplierPhone}
+                    onChange={(e) => setSupplierPhone(e.target.value)}
+                    placeholder="+91 98765 43210"
+                  />
+                </div>
+                <div className="hh-inv-field">
+                  <span className="hh-inv-field__label">INVOICE DATE</span>
+                  <input
+                    type="date"
+                    value={inwardDate}
+                    onChange={(e) => setInwardDate(e.target.value)}
+                  />
+                </div>
+              </div>
+              {supplierPhoneError && (
+                <div className="text-[11.5px] font-semibold text-rose-600 px-1">{supplierPhoneError}</div>
+              )}
+
+              <div className="hh-inv-field">
+                <span className="hh-inv-field__label">INVOICE NO.</span>
+                <input
+                  type="text"
+                  value={invoiceNo}
+                  onChange={(e) => setInvoiceNo(e.target.value)}
+                  placeholder="e.g. A-4471"
+                />
+              </div>
+
+              <div className="hh-inv-field">
+                <span className="hh-inv-field__label">SUPPLIER GSTIN</span>
+                <input
+                  type="text"
+                  autoCapitalize="characters"
+                  value={supplierGstin}
+                  onChange={(e) => setSupplierGstin(e.target.value)}
+                  placeholder="Optional"
+                />
+              </div>
+
+              <div className="hh-inv-field">
+                <span className="hh-inv-field__label">RECEIVE INTO GODOWN *</span>
+                <select
+                  value={targetWarehouseId}
+                  onChange={(e) => setTargetWarehouseId(e.target.value)}
+                >
+                  <option value="">Select godown…</option>
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>{w.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="hh-inv-field">
+                <span className="hh-inv-field__label">VEHICLE NO.</span>
+                <input
+                  type="text"
+                  value={vehicleNo}
+                  onChange={(e) => setVehicleNo(e.target.value)}
+                  placeholder="e.g. OD-02-AB-4471"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="hh-inv-field">
+                  <span className="hh-inv-field__label">BILL DISCOUNT (₹)</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    value={overallDiscount || ''}
+                    onChange={(e) => setOverallDiscount(Math.max(0, parseFloat(e.target.value) || 0))}
+                    placeholder="0"
+                  />
+                </div>
+                <div className="hh-inv-field">
+                  <span className="hh-inv-field__label">PARTY INVOICE TOTAL (₹)</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    value={originalInvoiceTotal ?? ''}
+                    onChange={(e) => setOriginalInvoiceTotal(e.target.value === '' ? null : Math.max(0, parseFloat(e.target.value) || 0))}
+                    placeholder="0"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setMobileSubView('costs')}
+                className="hh-inv-card w-full flex items-center justify-between text-left cursor-pointer"
+              >
+                <div>
+                  <div className="text-[13px] font-bold text-slate-900">Inward costs (Freight &amp; Labour)</div>
+                  <div className="text-[11.5px] text-slate-500">Total ₹{money(totalInwardCost)}</div>
+                </div>
+                <ChevronRight size={16} className="text-slate-400" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setMobileSubView('overview')}
+                className="hh-inv-btn-primary w-full"
+              >
+                Done, contract info
+              </button>
+            </div>
+          ) : mobileSubView === 'costs' ? (
+            <div className="flex-1 overflow-y-auto px-3.5 py-3 space-y-2.5">
+              <div className="hh-inv-card space-y-2.5">
+                <div className="text-[13.5px] font-extrabold text-slate-900">
+                  Inward costs (added to landed cost)
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="hh-inv-field">
+                    <span className="hh-inv-field__label">TRANSPORT (₹)</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={transportCost || ''}
+                      onChange={(e) => setTransportCost(Math.max(0, parseFloat(e.target.value) || 0))}
+                      placeholder="0"
+                    />
+                  </div>
+                  <div className="hh-inv-field">
+                    <span className="hh-inv-field__label">FREIGHT (₹)</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={freightCost || ''}
+                      onChange={(e) => setFreightCost(Math.max(0, parseFloat(e.target.value) || 0))}
+                      placeholder="0"
+                    />
+                  </div>
+                  <div className="hh-inv-field">
+                    <span className="hh-inv-field__label">LOADING LABOUR (₹)</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={loadingLabourCost || ''}
+                      onChange={(e) => setLoadingLabourCost(Math.max(0, parseFloat(e.target.value) || 0))}
+                      placeholder="0"
+                    />
+                  </div>
+                  <div className="hh-inv-field">
+                    <span className="hh-inv-field__label">UNLOADING LABOUR (₹)</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={unloadingLabourCost || ''}
+                      onChange={(e) => setUnloadingLabourCost(Math.max(0, parseFloat(e.target.value) || 0))}
+                      placeholder="0"
+                    />
+                  </div>
+                </div>
+                <div className="hh-inv-field">
+                  <span className="hh-inv-field__label">OTHER INWARD COST (₹)</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    value={otherInwardCost || ''}
+                    onChange={(e) => setOtherInwardCost(Math.max(0, parseFloat(e.target.value) || 0))}
+                    placeholder="0"
+                  />
+                </div>
+              </div>
+
+              <div className="hh-inv-card space-y-2.5">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="hh-inv-field">
+                    <span className="hh-inv-field__label">INVOICE ROUND-OFF (₹)</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step="0.01"
+                      value={invoiceRoundOff}
+                      onChange={(e) => setInvoiceRoundOff(parseFloat(e.target.value) || 0)}
+                    />
+                  </div>
+                  <div className="hh-inv-field">
+                    <span className="hh-inv-field__label">OTHER CHARGES (₹)</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      value={invoiceOtherCharges || ''}
+                      onChange={(e) => setInvoiceOtherCharges(Math.max(0, parseFloat(e.target.value) || 0))}
+                      placeholder="0"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between text-[13px] pt-1">
+                  <span className="text-slate-500">Total inward cost</span>
+                  <span className="font-extrabold text-slate-900 tabular-nums">₹{money(totalInwardCost)}</span>
+                </div>
+                <div className="flex items-center justify-between text-[13px]">
+                  <span className="text-slate-500">Avg landed ₹ / case</span>
+                  <span className="font-extrabold text-slate-900 tabular-nums">
+                    ₹{totalReceivedQty > 0 ? money(totalLandedInventoryValue / totalReceivedQty) : '0'}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setMobileSubView('overview')}
+                className="hh-inv-btn-primary w-full"
+              >
+                Done
+              </button>
+            </div>
+          ) : mobileSubView === 'edit_line' && activeEditRow ? (
+            (() => {
+              const r = activeEditRow;
+              const bd = lineBreakdown(r);
+              return (
+                <div className="flex-1 overflow-y-auto px-3.5 py-3 space-y-2.5">
+                  <div className={`hh-inv-card space-y-2.5 ${r.isNewProduct ? 'border-[#2864d9] border-[1.5px]' : ''}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[15px] font-extrabold text-slate-900 truncate">{r.productName || r.rawName}</div>
+                      {r.isNewProduct ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPhoneCatalogSizeFilter('all');
+                            setCatalogPickerSearch('');
+                            setCatalogPickerRowId(r.id);
+                          }}
+                          className="hh-inv-chip-compact bg-sky-50 text-[#2864d9] border border-sky-200 cursor-pointer shrink-0"
+                        >
+                          New product
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPhoneCatalogSizeFilter('all');
+                            setCatalogPickerSearch('');
+                            setCatalogPickerRowId(r.id);
+                          }}
+                          className="hh-inv-chip-compact bg-sky-50 text-[#2864d9] border border-sky-200 cursor-pointer shrink-0"
+                        >
+                          Catalog ▾
+                        </button>
+                      )}
+                    </div>
+
+                    {r.isNewProduct ? (
+                      <>
+                        <div className="hh-inv-field">
+                          <span className="hh-inv-field__label">PRODUCT NAME</span>
+                          <input
+                            value={r.productName}
+                            onChange={(e) => updateRowField(r.id, 'productName', e.target.value)}
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="hh-inv-field">
+                            <span className="hh-inv-field__label">CATEGORY</span>
+                            <select
+                              value={r.category}
+                              onChange={(e) => updateRowField(r.id, 'category', e.target.value)}
+                            >
+                              {Object.entries(CATS).map(([k, v]) => (
+                                <option key={k} value={k}>{v.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="hh-inv-field">
+                            <span className="hh-inv-field__label">ML / UNITS</span>
+                            <input
+                              type="number"
+                              inputMode="numeric"
+                              value={r.volume}
+                              onChange={(e) => updateRowField(r.id, 'volume', e.target.value)}
+                            />
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="hh-inv-field">
+                            <span className="hh-inv-field__label">UNITS / CASE</span>
+                            <input
+                              type="number"
+                              inputMode="numeric"
+                              value={r.unitsPerCrate || 24}
+                              onChange={(e) => updateRowField(r.id, 'unitsPerCrate', Number(e.target.value) || 24)}
+                            />
+                          </div>
+                          <div className="hh-inv-field">
+                            <span className="hh-inv-field__label">AUTO SKU PREVIEW</span>
+                            <div className="text-[13.5px] font-bold text-slate-900 pt-0.5 truncate">
+                              {generateAutoSku(r.productName, r.category, rows.indexOf(r) + 100)}
+                            </div>
+                          </div>
+                        </div>
+                        <p className="text-[11.5px] text-slate-500">
+                          The product is added to your catalog when you confirm the purchase.
+                        </p>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPhoneCatalogSizeFilter('all');
+                          setCatalogPickerSearch('');
+                          setCatalogPickerRowId(r.id);
+                        }}
+                        className="text-[12px] font-bold text-[#2864d9] underline cursor-pointer"
+                      >
+                        Change matched catalog beverage
+                      </button>
+                    )}
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="hh-inv-field">
+                        <span className="hh-inv-field__label">QTY (CS)</span>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          value={r.qty}
+                          onChange={(e) => updateRowField(r.id, 'qty', e.target.value)}
+                        />
+                      </div>
+                      <div className="hh-inv-field">
+                        <span className="hh-inv-field__label">FREE CS</span>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          value={r.freeQty}
+                          onChange={(e) => updateRowField(r.id, 'freeQty', e.target.value)}
+                        />
+                      </div>
+                      <div className="hh-inv-field">
+                        <span className="hh-inv-field__label">RATE (₹)</span>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          value={r.listPrice ?? r.unitPrice}
+                          onChange={(e) => updateRowField(r.id, 'listPrice', e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="hh-inv-field">
+                        <span className="hh-inv-field__label">BATCH / TAG NO</span>
+                        <input
+                          value={r.batchNumber}
+                          onChange={(e) => updateRowField(r.id, 'batchNumber', e.target.value)}
+                        />
+                      </div>
+                      <div className="hh-inv-field">
+                        <span className="hh-inv-field__label">EXPIRY DATE</span>
+                        <input
+                          type="date"
+                          value={r.expiry}
+                          onChange={(e) => updateRowField(r.id, 'expiry', e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="hh-inv-field">
+                        <span className="hh-inv-field__label">GST MODE</span>
+                        <select
+                          value={r.taxability === 'non_gst' ? 'non_gst' : (r.isGstIncluded ? 'incl' : 'excl')}
+                          onChange={(e) => {
+                            if (e.target.value === 'non_gst') {
+                              updateRowField(r.id, 'taxability', 'non_gst');
+                            } else {
+                              if (r.taxability === 'non_gst') updateRowField(r.id, 'taxability', 'taxable');
+                              updateRowField(r.id, 'isGstIncluded', e.target.value === 'incl');
+                            }
+                          }}
+                        >
+                          <option value="incl">Incl. GST ({r.cgstPercent + r.sgstPercent}%)</option>
+                          <option value="excl">+Calc GST ({r.cgstPercent + r.sgstPercent}%)</option>
+                          <option value="non_gst">Non-GST (0%)</option>
+                        </select>
+                      </div>
+                      <div className="hh-inv-field">
+                        <span className="hh-inv-field__label">LINE TOTAL</span>
+                        <div className="text-[14px] font-extrabold text-slate-900 pt-0.5 tabular-nums">
+                          ₹{money(bd.lineTotal)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setPhoneDeleteConfirmId(r.id)}
+                      className="hh-inv-btn-danger w-full"
+                    >
+                      Delete line
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMobileSubView('overview')}
+                      className="hh-inv-btn-primary w-full"
+                    >
+                      Done
+                    </button>
+                  </div>
+                </div>
+              );
+            })()
+          ) : (
+            /* Review Overview */
+            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              <div className="flex-1 overflow-y-auto px-3.5 py-3 space-y-2.5">
+                {parseError && (
+                  <div className="hh-inv-card hh-inv-card--alert-red text-[12px] font-semibold text-rose-700">
+                    {parseError}
+                  </div>
+                )}
+
+                {aiWarnings.length > 0 && !phoneDismissWarning && (
+                  <div className="hh-inv-card bg-[#fef9e7] border-amber-300 flex items-start justify-between gap-2 py-2.5">
+                    <div className="text-[12.5px] font-semibold text-slate-800 leading-snug">
+                      <strong>Read invoice.</strong> {aiWarnings[0]}
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="Dismiss note"
+                      onClick={() => setPhoneDismissWarning(true)}
+                      className="text-slate-400 hover:text-slate-700 p-0.5 min-w-0 min-h-0 shrink-0 cursor-pointer"
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+                )}
+
+                <div className="hh-inv-card flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[14.5px] font-extrabold text-slate-900 truncate">
+                      {supplierName || 'Select supplier'}
+                    </div>
+                    <div className="text-[12px] text-slate-500 mt-0.5 leading-snug">
+                      {invoiceNo ? `Inv ${invoiceNo}` : 'No invoice no.'} · {inwardDate} ·{' '}
+                      <span className={!targetWarehouseId ? 'text-rose-600 font-bold' : ''}>
+                        {whObj?.name || 'Pick godown'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setMobileSubView('costs')}
+                      className="text-[11.5px] font-bold text-[#2864d9] mt-1 min-h-0 cursor-pointer"
+                    >
+                      Freight &amp; Labour: ₹{money(totalInwardCost)}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setMobileSubView('bill')}
+                    className="text-[12.5px] font-bold text-[#2864d9] shrink-0 py-1 px-1 min-w-0 min-h-0 cursor-pointer"
+                  >
+                    Edit ▾
+                  </button>
+                </div>
+
+                {/* Discrepancy & Action chips */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                    <button
+                      type="button"
+                      onClick={() => hasCasesMismatch && setShowMismatchDetail(true)}
+                      className={`hh-inv-chip-compact inline-flex items-center gap-1 shrink-0 cursor-pointer border ${
+                        hasCasesMismatch
+                          ? 'bg-amber-50 border-amber-300 text-amber-900'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                      }`}
+                    >
+                      <span>
+                        Cases {totalInvoicePrintedQty}
+                        {printedTotalCases !== null ? ` vs ${printedTotalCases}` : ''}
+                      </span>
+                    </button>
+
+                    {originalInvoiceTotal !== null && (
+                      <button
+                        type="button"
+                        onClick={() => hasAmountMismatch && setShowAmountMismatchDetail(true)}
+                        className={`hh-inv-chip-compact inline-flex items-center gap-1 shrink-0 cursor-pointer border ${
+                          hasAmountMismatch
+                            ? 'bg-amber-50 border-amber-300 text-amber-900'
+                            : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                        }`}
+                      >
+                        <span>
+                          Amount {compactMoney(calculatedGrandTotal)} vs {compactMoney(originalInvoiceTotal)}
+                        </span>
+                      </button>
+                    )}
+
+                    {attentionCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setFilterAttentionOnly((v) => !v)}
+                        className={`hh-inv-chip-compact inline-flex items-center gap-1 shrink-0 cursor-pointer border ${
+                          filterAttentionOnly
+                            ? 'bg-amber-100 border-amber-400 text-amber-950'
+                            : 'bg-amber-50 border-amber-300 text-amber-900'
+                        }`}
+                      >
+                        <span>{attentionCount} need attention</span>
+                        {filterAttentionOnly && <span>×</span>}
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setShowAutoBatchSheet(true)}
+                      className="hh-inv-chip-compact bg-white border border-[#2864d9] text-[#2864d9] shrink-0 cursor-pointer"
+                    >
+                      Auto batch/tag
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowBulkSchemeModal(true)}
+                      className="hh-inv-chip-compact bg-white border border-[#2864d9] text-[#2864d9] shrink-0 cursor-pointer"
+                    >
+                      Scheme to all
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAddNewRow}
+                      className="hh-inv-chip-compact bg-white border border-[#2864d9] text-[#2864d9] shrink-0 cursor-pointer"
+                    >
+                      + Add
+                    </button>
+                  </div>
+                </div>
+
+                {/* Count + Cards | Table toggle */}
+                <div className="flex items-center justify-between gap-2 pt-0.5">
+                  <span className="text-[12.5px] font-medium text-slate-500">
+                    {filteredRows.length} line{filteredRows.length === 1 ? '' : 's'}
+                    {viewMode === 'table' ? ' · swipe sideways' : ''}
+                  </span>
+                  <div className="inline-flex rounded-full bg-slate-200/80 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setViewMode('cards')}
+                      className={`px-3 py-1 rounded-full text-[12px] font-bold min-w-0 min-h-0 cursor-pointer ${
+                        viewMode === 'cards' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500'
+                      }`}
+                    >
+                      Cards
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setViewMode('table')}
+                      className={`px-3 py-1 rounded-full text-[12px] font-bold min-w-0 min-h-0 cursor-pointer ${
+                        viewMode === 'table' ? 'bg-white text-[#2864d9] shadow-xs' : 'text-slate-500'
+                      }`}
+                    >
+                      Table
+                    </button>
+                  </div>
+                </div>
+
+                {viewMode === 'cards' ? (
+                  <div className="space-y-2.5">
+                    {filteredRows.map((r) => {
+                      const bd = lineBreakdown(r);
+                      const isMissing = !r.batchNumber?.trim() || !r.expiry;
+                      const leftAccent = isMissing
+                        ? '#eab308'
+                        : r.isNewProduct
+                          ? '#eab308'
+                          : '#16a34a';
+                      return (
+                        <div
+                          key={r.id}
+                          onClick={() => {
+                            setEditingRowId(r.id);
+                            setMobileSubView('edit_line');
+                          }}
+                          style={{ borderLeft: `3.5px solid ${leftAccent}` }}
+                          className="hh-inv-card space-y-1 cursor-pointer active:scale-[0.99]"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="text-[14.5px] font-extrabold text-slate-900 min-w-0">
+                              {r.productName || r.rawName}
+                            </div>
+                            {isMissing ? (
+                              <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[10.5px] font-bold shrink-0">
+                                Batch or expiry missing
+                              </span>
+                            ) : r.isNewProduct ? (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10.5px] font-bold shrink-0">
+                                New product
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[10.5px] font-bold shrink-0">
+                                OK
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-start justify-between gap-2 text-[12px] text-slate-500">
+                            <div className="min-w-0 leading-snug">
+                              {r.qty} cs{r.freeQty > 0 ? ` + ${r.freeQty} free` : ''}
+                              {isMissing ? (
+                                <>
+                                  {' · '}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setShowAutoBatchSheet(true);
+                                    }}
+                                    className="font-bold text-[#2864d9] min-w-0 min-h-0 cursor-pointer"
+                                  >
+                                    Auto batch / tag
+                                  </button>
+                                  {' or enter'}
+                                </>
+                              ) : r.isNewProduct ? (
+                                <>
+                                  {' · '}
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingRowId(r.id);
+                                      setMobileSubView('edit_line');
+                                    }}
+                                    className="font-bold text-[#2864d9] min-w-0 min-h-0 cursor-pointer"
+                                  >
+                                    Create as new product
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  {' · '}
+                                  {r.batchNumber} · exp {r.expiry}
+                                </>
+                              )}
+                            </div>
+                            <span className="text-slate-400 shrink-0 text-[11.5px]">line total</span>
+                          </div>
+
+                          <div className="text-[14px] font-extrabold text-slate-900 tabular-nums pt-0.5">
+                            ₹{money(bd.lineTotal)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="hh-inv-card p-0 overflow-x-auto">
+                      <table className="w-full text-left text-[12px] min-w-[540px]">
+                        <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+                          <tr>
+                            <th className="px-2.5 py-2">Product</th>
+                            <th className="px-2 py-2 text-right">Qty</th>
+                            <th className="px-2 py-2">Scheme</th>
+                            <th className="px-2 py-2 text-right">Rate</th>
+                            <th className="px-2 py-2">Batch</th>
+                            <th className="px-2 py-2">Expiry</th>
+                            <th className="px-2.5 py-2 text-right">Total</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {filteredRows.map((r) => {
+                            const bd = lineBreakdown(r);
+                            return (
+                              <tr
+                                key={r.id}
+                                onClick={() => {
+                                  setEditingRowId(r.id);
+                                  setMobileSubView('edit_line');
+                                }}
+                                className="cursor-pointer active:bg-slate-50"
+                              >
+                                <td className="px-2.5 py-2.5 font-bold text-slate-900">{r.productName || r.rawName}</td>
+                                <td className="px-2 py-2.5 text-right font-semibold tabular-nums">{r.qty}</td>
+                                <td className="px-2 py-2.5 text-slate-500">{r.freeQty > 0 ? `+${r.freeQty}` : r.discountPercent > 0 ? `${r.discountPercent}%` : '—'}</td>
+                                <td className="px-2 py-2.5 text-right font-semibold tabular-nums">{Math.round(r.unitPrice)}</td>
+                                <td className={`px-2 py-2.5 font-semibold ${r.batchNumber?.trim() ? 'text-slate-700' : 'text-rose-600'}`}>
+                                  {r.batchNumber?.trim() || 'missing'}
+                                </td>
+                                <td className={`px-2 py-2.5 font-semibold ${r.expiry ? 'text-slate-700' : 'text-rose-600'}`}>
+                                  {r.expiry || 'missing'}
+                                </td>
+                                <td className="px-2.5 py-2.5 text-right font-bold tabular-nums text-slate-900">
+                                  ₹{money(bd.lineTotal)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="text-[12px] text-slate-500 px-0.5">
+                      Density: compact. Cards is the default on phones.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-3.5 py-2.5 bg-[#f3f5f9] border-t border-slate-200 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!targetWarehouseId) {
+                      setMobileSubView('bill');
+                      return;
+                    }
+                    setShowConfirmStep(true);
+                  }}
+                  className="hh-inv-btn-primary w-full"
+                >
+                  {targetWarehouseId ? 'Review & confirm' : 'Pick godown first'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Bottom Sheets */}
+        {hasCasesMismatch && showMismatchDetail && (
+          <div className="rt-bsheet-scrim" onClick={() => setShowMismatchDetail(false)}>
+            <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+              <div className="hh-grab" />
+              <h3 className="text-[18px] font-extrabold text-slate-900">Cases check</h3>
+              <div className="grid grid-cols-3 gap-2 py-1">
+                <div>
+                  <div className="text-[11.5px] text-slate-500">Printed</div>
+                  <div className="text-[17px] font-extrabold text-slate-900 tabular-nums">{printedTotalCases?.toLocaleString()} cs</div>
+                </div>
+                <div>
+                  <div className="text-[11.5px] text-slate-500">Table</div>
+                  <div className="text-[17px] font-extrabold text-slate-900 tabular-nums">{totalInvoicePrintedQty.toLocaleString()} cs</div>
+                </div>
+                <div>
+                  <div className="text-[11.5px] text-slate-500">Difference</div>
+                  <div className="text-[17px] font-extrabold text-rose-600 tabular-nums">{casesDiff > 0 ? `+${casesDiff}` : casesDiff} cs</div>
+                </div>
+              </div>
+              <p className="text-[12.5px] text-slate-500 leading-relaxed">
+                Includes {totalFreeQty + totalSupplierSchemeBonusQty} cs of free bonus from supplier schemes.
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowMismatchDetail(false)}
+                className="hh-inv-card w-full text-left cursor-pointer"
+              >
+                <div className="text-[14px] font-bold text-slate-900">Review lines</div>
+                <div className="text-[12px] text-slate-500 mt-0.5">Check quantities against the paper invoice</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowMismatchDetail(false)}
+                className="hh-inv-btn-outline w-full"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        )}
+
+        {hasAmountMismatch && showAmountMismatchDetail && originalInvoiceTotal !== null && (
+          <div className="rt-bsheet-scrim" onClick={() => setShowAmountMismatchDetail(false)}>
+            <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+              <div className="hh-grab" />
+              <h3 className="text-[18px] font-extrabold text-slate-900">Amount mismatch</h3>
+              <p className="text-[13px] text-slate-600 leading-relaxed">
+                Rows add up to <strong>₹{money(calculatedGrandTotal)}</strong> but the party invoice total is{' '}
+                <strong>₹{money(originalInvoiceTotal)}</strong>. Difference ₹{money(Math.abs(amountDiff))}.
+              </p>
+              <div className="rounded-xl border border-sky-200 bg-sky-50/70 p-3 text-[12.5px] text-[#0A1F44] leading-relaxed">
+                {Math.abs(amountDiff - totalTax) < 2
+                  ? `The difference equals the total GST (₹${money(Math.abs(amountDiff))}). The party total was probably recorded as the taxable base (before GST), while line totals include GST.`
+                  : 'Check quantities, unit rates, discounts and whether list prices include or exclude GST.'}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setOriginalInvoiceTotal(calculatedGrandTotal);
+                  setShowAmountMismatchDetail(false);
+                }}
+                className="hh-inv-btn-primary w-full"
+              >
+                Use party total as before-GST
+              </button>
+              <p className="text-[12px] text-slate-500 leading-snug">
+                Or check quantities, unit rates, discounts and whether list prices include GST.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {catalogPickerRowId && (
+          <div className="rt-bsheet-scrim" onClick={() => setCatalogPickerRowId(null)}>
+            <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+              <div className="hh-grab" />
+              <h3 className="text-[18px] font-extrabold text-slate-900">Select catalog beverage</h3>
+              <div className="rt-search-bar">
+                <Search size={16} className="text-slate-400 shrink-0" />
+                <input
+                  type="search"
+                  enterKeyHint="search"
+                  value={catalogPickerSearch}
+                  onChange={(e) => setCatalogPickerSearch(e.target.value)}
+                  placeholder="Search catalog"
+                />
+              </div>
+              <div>
+                <div className="text-[10.5px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">SELECT SIZE</div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {(
+                    [
+                      ['all', 'All'],
+                      ['200', '200ml'],
+                      ['600', '600ml'],
+                      ['1000', '1L'],
+                    ] as const
+                  ).map(([val, label]) => (
+                    <button
+                      key={val}
+                      type="button"
+                      onClick={() => setPhoneCatalogSizeFilter(val)}
+                      className={`px-3.5 py-1.5 rounded-full text-[12.5px] font-bold min-w-0 min-h-0 cursor-pointer border ${
+                        phoneCatalogSizeFilter === val
+                          ? 'bg-[#101d3a] text-white border-[#101d3a]'
+                          : 'bg-white text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white divide-y divide-slate-100 max-h-[42vh] overflow-y-auto">
+                {products
+                  .filter((p) => {
+                    if (phoneCatalogSizeFilter !== 'all' && String(p.volume) !== phoneCatalogSizeFilter) return false;
+                    const q = catalogPickerSearch.trim().toLowerCase();
+                    return !q || p.name.toLowerCase().includes(q);
+                  })
+                  .map((p) => (
+                    <div key={p.id} className="px-3 py-2.5 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <PackIcon size="sm" pack={p.pack} name={p.name} />
+                        <div className="min-w-0">
+                          <div className="text-[13.5px] font-bold text-slate-900 truncate">{p.name}</div>
+                          <div className="text-[11.5px] text-slate-500">{p.unitsPerCrate || 24} pcs / case</div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleCatalogMappingChange(catalogPickerRowId, String(p.id));
+                          setCatalogPickerRowId(null);
+                        }}
+                        className="text-[13px] font-bold text-[#2864d9] px-2 py-1 min-w-0 min-h-0 cursor-pointer shrink-0"
+                      >
+                        Select
+                      </button>
+                    </div>
+                  ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  handleCatalogMappingChange(catalogPickerRowId, 'new_product');
+                  setCatalogPickerRowId(null);
+                }}
+                className="hh-inv-btn-outline w-full"
+              >
+                Create as new product
+              </button>
+            </div>
+          </div>
+        )}
+
+        {showBulkSchemeModal && (
+          <div className="rt-bsheet-scrim" onClick={() => setShowBulkSchemeModal(false)}>
+            <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+              <div className="hh-grab" />
+              <h3 className="text-[18px] font-extrabold text-slate-900">Scheme to all lines</h3>
+              <div className="hh-inv-field">
+                <span className="hh-inv-field__label">SCHEME TYPE</span>
+                <select
+                  value={bulkSchemeType}
+                  onChange={(e) => setBulkSchemeType(e.target.value as GrnSchemeType)}
+                >
+                  <option value="discount_percent">Discount %</option>
+                  <option value="discount_flat">Flat Cash Discount (₹/cs)</option>
+                  <option value="free_cases">Free Bonus Crates (+1 per 10 cs)</option>
+                </select>
+              </div>
+              <p className="text-[11.5px] text-slate-500 -mt-1">
+                Other types: Flat, Free Bonus Crates (e.g. +1 per 10 cases)
+              </p>
+              <div className="hh-inv-field">
+                <span className="hh-inv-field__label">SCHEME NAME / LABEL</span>
+                <input
+                  value={bulkSchemeName}
+                  onChange={(e) => setBulkSchemeName(e.target.value)}
+                  placeholder="Dealer Scheme"
+                />
+              </div>
+              <div className="hh-inv-field">
+                <span className="hh-inv-field__label">
+                  {bulkSchemeType === 'discount_percent' ? 'VALUE (%)' : bulkSchemeType === 'discount_flat' ? 'VALUE (₹/CS)' : 'FREE CRATES / 10'}
+                </span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={bulkSchemeValue}
+                  onChange={(e) => setBulkSchemeValue(parseFloat(e.target.value) || 0)}
+                />
+              </div>
+              <div className="hh-inv-card bg-[#fef9e7] border-amber-300 text-[12px] font-medium text-slate-700 py-2.5">
+                Applies to all {rows.length} lines. You can still change a single line afterwards.
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button type="button" onClick={() => setShowBulkSchemeModal(false)} className="hh-inv-btn-outline w-full">
+                  Cancel
+                </button>
+                <button type="button" onClick={handleApplyBulkScheme} className="hh-inv-btn-primary w-full">
+                  Apply
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showAutoBatchSheet && (
+          <div className="rt-bsheet-scrim" onClick={() => setShowAutoBatchSheet(false)}>
+            <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+              <div className="hh-grab" />
+              <h3 className="text-[18px] font-extrabold text-slate-900">Auto batch / tag</h3>
+              <p className="text-[12.5px] text-slate-500 -mt-1">
+                Fill the missing values for {Math.max(1, attentionCount)} line{Math.max(1, attentionCount) === 1 ? '' : 's'}
+              </p>
+              <div className="hh-inv-field">
+                <span className="hh-inv-field__label">BATCH / TAG NO</span>
+                <div className="text-[13.5px] font-bold text-slate-900 pt-0.5 truncate">
+                  Auto: fresh unique batch numbers
+                </div>
+              </div>
+              <div className="hh-inv-field">
+                <span className="hh-inv-field__label">EXPIRY (FOR ALL MISSING)</span>
+                <input
+                  type="date"
+                  value={bulkExpiryDate}
+                  onChange={(e) => setBulkExpiryDate(e.target.value)}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button type="button" onClick={() => setShowAutoBatchSheet(false)} className="hh-inv-btn-outline w-full">
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleAutoGenerateAllBatches();
+                    if (bulkExpiryDate) {
+                      setRows((prev) => prev.map((r) => (r.expiry ? r : { ...r, expiry: bulkExpiryDate })));
+                    }
+                    setShowAutoBatchSheet(false);
+                  }}
+                  className="hh-inv-btn-primary w-full"
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {phoneDeleteConfirmId && (() => {
+          const target = rows.find((r) => r.id === phoneDeleteConfirmId);
+          if (!target) return null;
+          const bd = lineBreakdown(target);
+          return (
+            <div className="rt-bsheet-scrim" onClick={() => setPhoneDeleteConfirmId(null)}>
+              <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+                <div className="hh-grab" />
+                <h3 className="text-[18px] font-extrabold text-rose-600">Delete this line?</h3>
+                <p className="text-[13px] text-slate-600">
+                  {target.productName || target.rawName} · {target.qty} cs · ₹{money(bd.lineTotal)}
+                </p>
+                <div className="grid grid-cols-2 gap-2.5 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setPhoneDeleteConfirmId(null)}
+                    className="hh-inv-btn-outline w-full"
+                  >
+                    Keep
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleDeleteRow(target.id);
+                      setPhoneDeleteConfirmId(null);
+                      setEditingRowId(null);
+                      setMobileSubView('overview');
+                    }}
+                    className="hh-inv-btn-danger w-full"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+      </>
+    );
+  }
 
   return (
     <div role="dialog" aria-modal="true" aria-label="Bulk inward"

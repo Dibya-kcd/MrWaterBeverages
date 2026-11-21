@@ -8,6 +8,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { Button } from '../ui';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 interface UploadStepProps {
   isDragging: boolean;
@@ -19,6 +20,10 @@ interface UploadStepProps {
   handleDownloadCsvSample: () => void;
   handleDownloadSample: () => void;
   handleStartBlankConsignment: () => void;
+  parseError?: string | null;
+  lastUploadedFile?: File | null;
+  uploadedFileName?: string | null;
+  onClearError?: () => void;
 }
 
 export const UploadStep: React.FC<UploadStepProps> = ({
@@ -31,7 +36,168 @@ export const UploadStep: React.FC<UploadStepProps> = ({
   handleDownloadCsvSample,
   handleDownloadSample,
   handleStartBlankConsignment,
+  parseError,
+  lastUploadedFile,
+  uploadedFileName,
+  onClearError,
 }) => {
+  const isPhone = useIsMobile(767);
+
+  if (isPhone) {
+    const activeFileName = uploadedFileName || lastUploadedFile?.name;
+    return (
+      <div className="p-3.5 overflow-y-auto flex flex-col gap-3 flex-1 bg-[#f3f5f9]">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".xlsx,.xls,.csv,.pdf,.jpg,.jpeg,.png,.webp"
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files && e.target.files[0]) {
+              processUploadedFile(e.target.files[0]);
+            }
+          }}
+        />
+
+        {isParsing ? (
+          <div className="hh-inv-card py-10 px-5 flex flex-col items-center text-center gap-3">
+            <div className="w-10 h-10 border-[3.5px] border-[#2864d9] border-t-slate-200 rounded-full animate-spin" />
+            <div className="text-[16px] font-extrabold text-slate-900">
+              Analyzing document...
+            </div>
+            <p className="text-[12.5px] text-slate-500 leading-relaxed max-w-[280px]">
+              Extracting header details, matching the beverage catalog, calculating taxes and scheme incentives.
+            </p>
+            {activeFileName && (
+              <span className="px-3 py-1 rounded-full bg-sky-50 text-[#2864d9] text-[12px] font-bold max-w-full truncate">
+                {activeFileName}
+              </span>
+            )}
+          </div>
+        ) : parseError ? (
+          <div className="flex flex-col gap-2.5">
+            <div className="hh-inv-card hh-inv-card--alert-red space-y-1">
+              <div className="text-[14.5px] font-extrabold text-rose-600">
+                Could not read this file
+              </div>
+              <p className="text-[12.5px] text-slate-600 leading-relaxed break-words">
+                {parseError}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                onClearError?.();
+                fileInputRef.current?.click();
+              }}
+              className="hh-inv-btn-primary w-full"
+            >
+              Try another file
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadSample}
+              className="hh-inv-btn-outline w-full"
+            >
+              Download template
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onClearError?.();
+                handleStartBlankConsignment();
+              }}
+              className="hh-inv-btn-outline w-full"
+            >
+              Start manual entry
+            </button>
+          </div>
+        ) : (
+          <>
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              className="hh-inv-card border-dashed border-[1.5px] border-slate-300 py-5 px-4 flex flex-col items-center text-center gap-2.5 cursor-pointer"
+            >
+              <div className="flex items-center gap-2.5 mb-0.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center">
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-sky-50 text-[#2864d9] border border-sky-200 flex items-center justify-center">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center justify-center">
+                  <ImageIcon className="w-5 h-5" />
+                </div>
+              </div>
+              <h3 className="text-[15.5px] font-extrabold text-slate-900 leading-snug">
+                Upload your supplier invoice
+              </h3>
+              <p className="text-[12px] text-slate-500 leading-relaxed max-w-[270px]">
+                Excel (.xlsx, .xls), CSV (.csv), PDF invoices, or a photo / scanned bill (.jpg, .png).
+              </p>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
+                className="hh-inv-btn-primary w-full mt-1"
+              >
+                Browse file
+              </button>
+            </div>
+
+            <div className="hh-inv-card space-y-2.5">
+              <div>
+                <h4 className="text-[14px] font-extrabold text-slate-900">
+                  Download inward templates
+                </h4>
+                <p className="text-[12px] text-slate-500 mt-0.5 leading-snug">
+                  Fill provider details and item columns, then upload.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handleDownloadCsvSample}
+                  className="hh-inv-btn-outline text-[13px]!"
+                >
+                  CSV template
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadSample}
+                  className="hh-inv-btn-outline text-[13px]!"
+                >
+                  Excel (.xlsx)
+                </button>
+              </div>
+            </div>
+
+            <div className="hh-inv-card space-y-2.5">
+              <div>
+                <h4 className="text-[14px] font-extrabold text-slate-900">
+                  Direct manual inward entry
+                </h4>
+                <p className="text-[12px] text-slate-500 mt-0.5 leading-relaxed">
+                  Skip the file and start with an empty consignment. Fast entry for physical paper receipts.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleStartBlankConsignment}
+                className="hh-inv-btn-primary w-full"
+              >
+                Start manual entry →
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 sm:p-6 overflow-y-auto flex flex-col gap-6 flex-1">
       {/* Drag & Drop Dropzone */}

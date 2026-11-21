@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { MessageCircle, Plus } from 'lucide-react';
+import { ChevronDown, MessageCircle, Plus, Search, X } from 'lucide-react';
 import { money } from '../../../utils/billing';
 import { dueGapNote } from '../../../utils/dueSummary';
 import { todayISO, toLocalISODate } from '../../../utils/dateLocal';
@@ -18,21 +18,10 @@ import {
   ReportStatGrid,
   ReportTitleBar,
 } from './ReportKit';
+import { MobileReportTopBar } from './mobile/MobileReportContext';
 import {
-  Chips,
-  EmptyNote,
-  HeroCard,
-  IconTile,
-  LegendDot,
   MiniStat,
   PhoneDownloadBar,
-  PhoneHeader,
-  PhoneSearch,
-  RowCard,
-  SplitBar,
-  Tag,
-  UnifiedPhoneFilterBar,
-  PhoneFilterBottomSheet,
   rs,
 } from './mobile/PhoneKit';
 
@@ -129,7 +118,7 @@ export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLed
   const headlineDue = ledgerTotalDue ?? totals.due;
   const dueGap = ledgerTotalDue !== undefined ? dueGapNote(headlineDue, totals.due) : '';
 
-  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
+  const [showPhoneSearch, setShowPhoneSearch] = useState(false);
   const q = search.toLowerCase().trim();
   const isFiltered = ageFilter !== 'all' || q.length > 0;
 
@@ -249,14 +238,13 @@ export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLed
 
   const hasAny = debtorsLedger.length > 0;
   const ageOptionsWithCount = AGE_OPTIONS.map((o) => ({ ...o, count: ageCounts[o.id] }));
-  const phoneAgeOptions = AGE_OPTIONS.map((o) => ({ id: o.id, label: o.id === 'all' ? o.label : `${o.label} ${ageCounts[o.id]}` }));
   const emptyText = hasAny && isFiltered ? 'Nothing matches these filters' : '🎉 All customer accounts are settled. No credit outstanding.';
 
   /** Open part of one party: ageing split, invoiced / paid and the two buttons. */
   const detail = (d: DebtorItem, phone: boolean) => {
     const wa = waLinkFor(d);
     return (
-      <div className={phone ? 'p-3 space-y-3 bg-slate-50/60' : 'px-3.5 py-3 space-y-3 bg-white'}>
+      <div className={phone ? 'p-3 space-y-3 bg-[#f8fafc]' : 'px-3.5 py-3 space-y-3 bg-white'}>
         <div className={phone ? 'grid grid-cols-3 gap-2' : 'grid grid-cols-6 gap-2'}>
           <MiniStat label="0-15 days" value={rs(d.aging.current)} />
           <MiniStat label="16-30 days" value={rs(d.aging.due15)} tone={d.aging.due15 > 0 ? 'amber' : 'ink'} />
@@ -270,8 +258,8 @@ export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLed
           <button
             type="button"
             onClick={() => onRecordPayment(d.retailer)}
-            className={`flex-1 rounded-xl bg-emerald-700 text-white font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer active:bg-emerald-800 ${
-              phone ? 'min-h-[48px] text-[14px]' : 'min-h-[38px] text-xs'
+            className={`flex-1 rounded-xl bg-[var(--primary)] text-white font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer active:opacity-90 ${
+              phone ? 'min-h-[44px] text-[13.5px]' : 'min-h-[38px] text-xs'
             }`}
           >
             <Plus className="w-4 h-4" /> Record payment
@@ -283,7 +271,7 @@ export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLed
               rel="noreferrer"
               aria-label={`Send WhatsApp reminder to ${d.retailer}`}
               className={`rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 flex items-center justify-center ${
-                phone ? 'min-h-[48px] min-w-[48px]' : 'min-h-[38px] min-w-[38px]'
+                phone ? 'min-h-[44px] min-w-[44px]' : 'min-h-[38px] min-w-[38px]'
               }`}
             >
               <MessageCircle className="w-5 h-5" />
@@ -294,161 +282,237 @@ export const ReceivablesReport: React.FC<ReceivablesReportProps> = ({ debtorsLed
     );
   };
 
+  const phoneInitials = (name: string) => {
+    const parts = (name || '?').trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return '?';
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  };
+
+  const daysSinceDate = (iso?: string) => {
+    if (!iso) return 0;
+    const t0 = new Date(`${iso.slice(0, 10)}T00:00:00`).getTime();
+    const t1 = new Date(`${todayStr}T00:00:00`).getTime();
+    if (Number.isNaN(t0) || Number.isNaN(t1)) return 0;
+    return Math.max(0, Math.round((t1 - t0) / 86400000));
+  };
+
+  const cyclePhoneSort = () => {
+    setSortOrder((prev) => (prev === 'balance' ? 'overdue' : prev === 'overdue' ? 'latestDay' : 'balance'));
+  };
+
+  const currentSortLabel = SORT_OPTIONS.find((s) => s.id === sortOrder)?.label || 'Highest due';
+  const totalAged = Math.max(1, totals.current + totals.d15 + totals.d30);
+
+  const shareProps = {
+    reportTitle: 'Party credit',
+    summaryMetrics: [
+      { label: 'Total receivable', value: rs(headlineDue) },
+      { label: '0-15 days', value: rs(totals.current) },
+      { label: '16-30 days', value: rs(totals.d15) },
+      { label: '30+ days', value: rs(totals.d30) },
+    ],
+    sheets: [
+      {
+        name: 'Debtors Aging',
+        header: ['Retailer', 'Phone', 'Outstanding Due (Rs)', 'Current 0-15d (Rs)', 'Overdue 15-30d (Rs)', 'Overdue >30d (Rs)', 'Last Bill Date'],
+        rows: rows.map((d) => [d.retailer, d.phone || '-', d.balance, d.aging.current, d.aging.due15, d.aging.overdue30, d.lastBillDate || '-']),
+      },
+    ],
+    pdfSections: [
+      {
+        title: 'Party credit aging',
+        header: ['Retailer', 'Due (Rs.)', '0-15d (Rs.)', '16-30d (Rs.)', '30+d (Rs.)', 'Last bill'],
+        rows: rows.map((d) => [d.retailer, money(d.balance), money(d.aging.current), money(d.aging.due15), money(d.aging.overdue30), formatFriendlyDate(d.lastBillDate)]),
+        rightAlign: [1, 2, 3, 4],
+      },
+    ],
+  };
+
   return (
     <>
       {/* ============================ PHONE ============================ */}
       <div className="md:hidden space-y-3" id="report-party-credit-phone">
-        <PhoneHeader title="Party credit" sub="Outstanding as on today" />
-
-        <HeroCard tone="red" label="Total due" value={rs(headlineDue)}>
-          <SplitBar
-            label="Current, 16-30 days and 30+ days"
-            parts={[
-              { value: totals.current, className: 'bg-slate-300' },
-              { value: totals.d15, className: 'bg-amber-400' },
-              { value: totals.d30, className: 'bg-rose-300' },
-            ]}
-          />
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-white/90">
-            <LegendDot dot="bg-slate-300">0-15d {rs(totals.current)}</LegendDot>
-            <LegendDot dot="bg-amber-400">16-30d {rs(totals.d15)}</LegendDot>
-            <LegendDot dot="bg-rose-300">30+d {rs(totals.d30)}</LegendDot>
-          </div>
-        </HeroCard>
-
-        <div className="grid grid-cols-3 gap-2">
-          <MiniStat label="Customers" value={debtorsLedger.length} />
-          <MiniStat label="Overdue 15d+" value={rs(overdueTotal)} tone={overdueTotal > 0 ? 'red' : 'ink'} />
-          <MiniStat label="Collected so far" value={rs(totals.paid)} tone="green" />
-        </div>
-
-        <UnifiedPhoneFilterBar
-          search={search}
-          onSearch={setSearch}
-          placeholder="Search customer or phone…"
-          onOpenFilter={() => setIsFilterSheetOpen(true)}
-          activeFilterCount={(ageFilter !== 'all' ? 1 : 0) + (sortOrder !== 'latestDay' ? 1 : 0)}
+        <MobileReportTopBar
+          title="Party credit"
+          sub="Aging of due"
+          showPeriod={false}
+          shareProps={shareProps}
         />
 
-        <PhoneFilterBottomSheet
-          isOpen={isFilterSheetOpen}
-          onClose={() => setIsFilterSheetOpen(false)}
-          title="Filter Party Credit"
-          activeCount={(ageFilter !== 'all' ? 1 : 0) + (sortOrder !== 'latestDay' ? 1 : 0)}
-          onReset={resetFilters}
-        >
-          {/* Age Filter */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Due Age
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              {phoneAgeOptions.map((opt) => {
-                const isCurrent = ageFilter === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setAgeFilter(opt.id)}
-                    className={`px-3 py-2.5 rounded-xl text-xs font-bold border transition-colors text-center ${
-                      isCurrent
-                        ? 'bg-rose-700 text-white border-rose-700 shadow-xs'
-                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
+        {/* Total receivable card with aging bar */}
+        <section className="rt-rep-card rt-rep-pad space-y-2.5">
+          <div>
+            <div className="text-[12px] font-medium text-[var(--text-2)]">Total receivable</div>
+            <div className="text-[26px] font-extrabold text-[var(--due)] tracking-tight leading-tight tabular-nums mt-0.5">
+              {rs(headlineDue)}
             </div>
           </div>
 
-          {/* Sort Order */}
-          <div className="space-y-2 pt-2 border-t border-slate-100">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Sort Order
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              {SORT_OPTIONS.map((opt) => {
-                const isCurrent = sortOrder === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setSortOrder(opt.id)}
-                    className={`px-3 py-2.5 rounded-xl text-xs font-bold border transition-colors text-center ${
-                      isCurrent
-                        ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
+          <div className="h-[8px] w-full rounded-full bg-[#eef1f4] overflow-hidden flex gap-0.5">
+            {totals.current > 0 && (
+              <div
+                className="h-full bg-[#2a8703]"
+                style={{ width: `${Math.max(4, (totals.current / totalAged) * 100)}%` }}
+              />
+            )}
+            {totals.d15 > 0 && (
+              <div
+                className="h-full bg-[#f59e0b]"
+                style={{ width: `${Math.max(4, (totals.d15 / totalAged) * 100)}%` }}
+              />
+            )}
+            {totals.d30 > 0 && (
+              <div
+                className="h-full bg-[#de1c24]"
+                style={{ width: `${Math.max(4, (totals.d30 / totalAged) * 100)}%` }}
+              />
+            )}
           </div>
-        </PhoneFilterBottomSheet>
 
-        {(rows.length > 1 && !forceOpen) || isFiltered ? (
-          <div className="flex items-center justify-between px-1 text-xs text-slate-500">
-            <span>
-              {rows.length} customer{rows.length === 1 ? '' : 's'}
-              {isFiltered && (
-                <>
-                  {' · '}
-                  <button type="button" onClick={resetFilters} className="font-bold text-rose-600 cursor-pointer">
-                    Clear filters
-                  </button>
-                </>
-              )}
-            </span>
-            {rows.length > 1 && !forceOpen && (
-              <button type="button" onClick={toggleAll} className="font-bold text-slate-700 cursor-pointer min-h-[36px]">
-                {allOpen ? 'Collapse all' : 'Expand all'}
+          <div className="text-[11px] font-medium text-[var(--text-2)] leading-snug tabular-nums">
+            Current {rs(totals.current)} · 16-30d {rs(totals.d15)} · 30+ days {rs(totals.d30)}
+          </div>
+        </section>
+
+        {/* Age filter chips */}
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+          {([
+            { id: 'all', label: 'All parties' },
+            { id: 'overdue', label: 'Overdue 15+' },
+            { id: 'old', label: 'Over 30 days' },
+            { id: 'current', label: 'Current' },
+          ] as { id: AgeFilter; label: string }[]).map((opt) => {
+            const active = ageFilter === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setAgeFilter(opt.id)}
+                className={`shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                    : 'bg-white text-[var(--text)] border-[var(--border)]'
+                }`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Count + Search toggle + Sort pill */}
+        <div className="flex items-center justify-between gap-2 px-0.5">
+          <span className="text-[12px] font-semibold text-[var(--text-2)]">
+            {rows.length} {rows.length === 1 ? 'party' : 'parties'}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowPhoneSearch((s) => !s)}
+              aria-label="Search party"
+              className={`h-7 w-7 rounded-full border flex items-center justify-center cursor-pointer ${
+                showPhoneSearch || search
+                  ? 'bg-[#eaf3fd] border-[var(--primary)] text-[var(--primary)]'
+                  : 'bg-white border-[var(--border)] text-[var(--text-2)]'
+              }`}
+            >
+              <Search size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={cyclePhoneSort}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white border border-[var(--border)] text-[11.5px] font-bold text-[var(--primary)] cursor-pointer"
+            >
+              <span>{currentSortLabel}</span>
+              <ChevronDown size={13} />
+            </button>
+          </div>
+        </div>
+
+        {(showPhoneSearch || search.length > 0) && (
+          <div className="rt-search-bar">
+            <Search size={16} className="text-[var(--text-2)] shrink-0" />
+            <input
+              type="text"
+              enterKeyHint="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search customer or phone…"
+            />
+            {search && (
+              <button
+                type="button"
+                aria-label="Clear search"
+                onClick={() => setSearch('')}
+                className="text-[var(--text-2)] p-0.5 cursor-pointer shrink-0"
+              >
+                <X size={15} />
               </button>
             )}
           </div>
-        ) : null}
+        )}
 
-        {rows.length === 0 && <EmptyNote>{emptyText}</EmptyNote>}
-
-        {rows.map((d) => {
-          const k = keyOf(d);
-          const open = isOpen(k);
-          const tag = dayTag(d);
-          return (
-            <RowCard key={k} edge={d.aging.overdue30 > 0 ? 'red' : d.aging.due15 > 0 ? 'amber' : undefined}>
-              <button
-                type="button"
-                onClick={() => toggle(k)}
-                aria-expanded={open}
-                disabled={forceOpen}
-                className="w-full text-left p-3 cursor-pointer active:bg-slate-50 disabled:cursor-default"
-              >
-                <div className="flex items-start gap-3">
-                  <IconTile tone={d.aging.overdue30 > 0 ? 'red' : d.aging.due15 > 0 ? 'grey' : 'blue'}>
-                    {(d.retailer || '?').trim().charAt(0).toUpperCase()}
-                  </IconTile>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[15px] font-extrabold text-slate-900 leading-snug break-words">{d.retailer}</div>
-                    <div className="text-xs text-slate-500">Latest bill {formatFriendlyDate(d.lastBillDate)}</div>
-                    <div className="mt-1.5 flex flex-wrap gap-1.5">
-                      {tag && <Tag tone={tag === 'Today' ? 'green' : 'blue'}>{tag}</Tag>}
-                      {d.aging.overdue30 > 0 && <Tag tone="red">30+ days {rs(d.aging.overdue30)}</Tag>}
-                      {d.aging.overdue30 <= 0 && d.aging.due15 > 0 && <Tag tone="amber">16-30 days {rs(d.aging.due15)}</Tag>}
+        {rows.length === 0 ? (
+          <div className="rt-rep-card py-10 px-4 text-center text-[13px] font-semibold text-[var(--text-2)]">
+            {emptyText}
+          </div>
+        ) : (
+          <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+            {rows.map((d) => {
+              const k = keyOf(d);
+              const open = isOpen(k);
+              const daysOld = daysSinceDate(d.lastBillDate);
+              const isLate = d.aging.overdue30 > 0.004 || d.aging.due15 > 0.004 || daysOld > 15;
+              return (
+                <div key={k}>
+                  <button
+                    type="button"
+                    onClick={() => toggle(k)}
+                    aria-expanded={open}
+                    disabled={forceOpen}
+                    className="w-full text-left px-3.5 py-3 flex items-center gap-3 active:bg-[#f8fafc] transition-colors cursor-pointer disabled:cursor-default"
+                  >
+                    <div className="w-9 h-9 rounded-full bg-[#eaf3fd] text-[var(--primary)] font-extrabold text-[12px] flex items-center justify-center shrink-0">
+                      {phoneInitials(d.retailer)}
                     </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-[17px] font-extrabold text-rose-700 tabular-nums leading-tight">{rs(d.balance)}</div>
-                    <div className="text-[11px] text-slate-500">due</div>
-                  </div>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug break-words">
+                        {d.retailer}
+                      </div>
+                      <div className="text-[11.5px] text-[var(--text-2)] mt-0.5">
+                        Last bill {formatFriendlyDate(d.lastBillDate)}
+                      </div>
+                    </div>
+
+                    <div className="text-right shrink-0 flex flex-col items-end">
+                      <div className="text-[13.5px] font-extrabold text-[var(--text)] tabular-nums leading-tight">
+                        {rs(d.balance)}
+                      </div>
+                      {daysOld > 0 ? (
+                        <span
+                          className={`mt-1 inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold tabular-nums leading-tight ${
+                            isLate
+                              ? 'bg-[var(--due-bg)] text-[var(--due)]'
+                              : 'bg-[var(--soon-bg)] text-[var(--soon)]'
+                          }`}
+                        >
+                          {daysOld} {isLate ? 'days late' : 'days'}
+                        </span>
+                      ) : (
+                        <span className="mt-1 inline-flex items-center px-2 py-0.5 rounded-full bg-[var(--paid-bg)] text-[var(--paid)] text-[10px] font-bold leading-tight">
+                          Today
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                  {open && <div className="border-t border-[var(--divider)]">{detail(d, true)}</div>}
                 </div>
-              </button>
-              {open && <div className="border-t border-slate-100">{detail(d, true)}</div>}
-            </RowCard>
-          );
-        })}
+              );
+            })}
+          </section>
+        )}
 
         <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} disabled={!hasAny} />
       </div>

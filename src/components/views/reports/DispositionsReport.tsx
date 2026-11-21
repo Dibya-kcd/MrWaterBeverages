@@ -1,10 +1,9 @@
 import React, { useMemo, useState } from 'react';
-import { ClipboardList, Gift, HandCoins, Layers, PackageX, ReceiptText } from 'lucide-react';
+import { ChevronRight, ClipboardList, Gift, HandCoins, Layers, PackageX, ReceiptText, Search, Sigma, X } from 'lucide-react';
 import { useLedger } from '../../../context/LedgerContext';
 import { InventoryDisposition, InventoryDispositionType, SupplierCreditNote } from '../../../types';
 import { money } from '../../../utils/billing';
 import { trackedStage } from '../ExpiryReturnsTracker';
-import { RegisterCard, Pill } from './mobile/ReportCards';
 import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
 import {
@@ -24,18 +23,8 @@ import {
   reportCard,
   type StatTone,
 } from './ReportKit';
-import { SubPageBack, SubPageMenu, type SubPageCard } from './mobile/SubPageMenu';
-import {
-  EmptyNote,
-  HeroCard,
-  LegendDot,
-  MiniStat,
-  PhoneDownloadBar,
-  PhoneHeader,
-  PhoneSearch,
-  RowCard,
-  SplitBar,
-} from './mobile/PhoneKit';
+import { PhoneDownloadBar } from './mobile/PhoneKit';
+import { MobileReportTopBar } from './mobile/MobileReportContext';
 
 const STAGE_LABEL = {
   held: 'In godown',
@@ -508,62 +497,6 @@ export const DispositionsReport: React.FC<Props> = ({
   const countFor = (id: SubTab) =>
     id === 'free' ? freeRows.length : id === 'writeoffs' ? writeoffRows.length : id === 'claims' ? claimRows.length : id === 'batches' ? batchTracking.length : id === 'creditnotes' ? kpis.scnCount : undefined;
   const tabOptionsWithCount = tabOptions.map((t) => ({ ...t, count: countFor(t.id) }));
-  const phoneCards: SubPageCard<SubTab>[] = [
-    {
-      id: 'summary',
-      title: 'Summary of Losses and Claims',
-      summary: `Free issues ${money0(kpis.freeCost)} · write-offs ${money0(kpis.writeoffCost)} · returns ${money0(kpis.returnCost)} · claims settled ${money0(kpis.claimedSettled)}`,
-      badge: `Loss ${money0(kpis.totalLossCost)}`,
-      badgeTone: kpis.totalLossCost > 0 ? 'red' : 'green',
-      icon: Layers,
-      tone: 'indigo',
-    },
-    {
-      id: 'free',
-      title: 'Free Issues (near-expiry and scheme)',
-      summary: 'Stock given away free to move near-expiry cases or to honour a scheme, valued at cost',
-      badge: `${freeRows.length} record${freeRows.length === 1 ? '' : 's'} · ${money0(kpis.freeCost)}`,
-      badgeTone: 'blue',
-      icon: Gift,
-      tone: 'sky',
-    },
-    {
-      id: 'writeoffs',
-      title: 'Write-offs (expired and damaged)',
-      summary: 'Stock thrown out because it expired or broke. This cost reduces your profit',
-      badge: `${writeoffRows.length} record${writeoffRows.length === 1 ? '' : 's'} · ${money0(kpis.writeoffCost)}`,
-      badgeTone: 'red',
-      icon: PackageX,
-      tone: 'rose',
-    },
-    {
-      id: 'claims',
-      title: 'Supplier Claims (returns to company)',
-      summary: `Goods sent back to the supplier or company and the credit still to come · ${kpis.openClaims} claim${kpis.openClaims === 1 ? '' : 's'} open`,
-      badge: `Pending ${money0(kpis.claimedPending)}`,
-      badgeTone: kpis.claimedPending > 0 ? 'amber' : 'green',
-      icon: HandCoins,
-      tone: 'amber',
-    },
-    {
-      id: 'batches',
-      title: 'Batch and Lot Tracking',
-      summary: 'Each lot with how much of it was returned, free or written off, and how much is still in stock',
-      badge: `${batchTracking.length} lot${batchTracking.length === 1 ? '' : 's'}`,
-      badgeTone: 'purple',
-      icon: ClipboardList,
-      tone: 'purple',
-    },
-    {
-      id: 'creditnotes',
-      title: 'Scheme Credit Notes from Suppliers',
-      summary: `Credit notes for supplier schemes · expected ${money0(kpis.scnExpected)}, received ${money0(kpis.scnActual)}`,
-      badge: `${kpis.scnCount} note${kpis.scnCount === 1 ? '' : 's'}`,
-      badgeTone: 'cyan',
-      icon: ReceiptText,
-      tone: 'cyan',
-    },
-  ];
 
   const emptyTextFor = (tab: SubTab) =>
     isFiltered
@@ -604,35 +537,6 @@ export const DispositionsReport: React.FC<Props> = ({
     />
   );
 
-  const phoneRegisterCard = (r: InventoryDisposition) => (
-    <RegisterCard
-      key={r.id}
-      title={r.productName || `#${r.productId}`}
-      pills={<Pill tone="amber">{TYPE_LABEL[r.dispositionType]}</Pill>}
-      subtitle={
-        <>
-          <div className="font-mono">{r.eventDate}</div>
-          <div className="text-slate-500">{rowSub(r)}</div>
-        </>
-      }
-      heroLabel="Cost"
-      hero={money0(r.costValue)}
-      heroTone="amber"
-      stats={[
-        { label: 'Qty', value: r.quantity },
-        { label: 'Status', value: <span className="capitalize text-[13px]">{statusOf(r)}</span>, tone: 'muted' },
-      ]}
-      note={
-        rowSupplier(r) || r.returnTracking ? (
-          <div className="text-[11px] text-slate-600 space-y-0.5">
-            {rowSupplier(r) && <div className="text-slate-700">{rowSupplier(r)}</div>}
-            {r.returnTracking && <div>Customer return · {r.returnTracking.customerName}</div>}
-          </div>
-        ) : null
-      }
-    />
-  );
-
   const batchRowsUi = batchTracking;
   const cnList = kpis.scnInPeriod as SupplierCreditNote[];
   const showSearch = subTab !== 'summary' && subTab !== 'creditnotes';
@@ -661,137 +565,301 @@ export const DispositionsReport: React.FC<Props> = ({
     </div>
   );
 
+  const compactRs = (n: number) => {
+    const abs = Math.abs(n);
+    if (abs >= 100000) return `₹${(abs / 100000).toFixed(1)}L`;
+    if (abs >= 1000) return `₹${(abs / 1000).toFixed(1)}k`;
+    return `₹${Math.round(abs)}`;
+  };
+
+  const phoneSections: {
+    id: SubTab;
+    title: string;
+    sub: string;
+    metric: string;
+    icon: React.ReactNode;
+    iconBg: string;
+  }[] = [
+    {
+      id: 'summary',
+      title: 'Summary of losses and claims',
+      sub: 'Total loss and amount claimable',
+      metric: compactRs(kpis.totalLossCost),
+      icon: <Sigma size={16} />,
+      iconBg: 'bg-[#f1f5f9] text-[var(--text-2)]',
+    },
+    {
+      id: 'free',
+      title: 'Free issues',
+      sub: 'Near-expiry and scheme',
+      metric: String(kpis.freeQty),
+      icon: <Gift size={16} />,
+      iconBg: 'bg-[var(--soon-bg)] text-[var(--soon)]',
+    },
+    {
+      id: 'writeoffs',
+      title: 'Write-offs',
+      sub: 'Expired and damaged',
+      metric: compactRs(kpis.writeoffCost),
+      icon: <PackageX size={16} />,
+      iconBg: 'bg-[#f1f5f9] text-[var(--text-2)]',
+    },
+    {
+      id: 'claims',
+      title: 'Supplier claims',
+      sub: 'Raised and recovered',
+      metric: compactRs(kpis.claimedPending > 0 ? kpis.claimedPending : kpis.returnCost),
+      icon: <HandCoins size={16} />,
+      iconBg: 'bg-[#eaf3fd] text-[var(--primary)]',
+    },
+    {
+      id: 'batches',
+      title: 'Batch tracking',
+      sub: 'Batches near expiry',
+      metric: String(batchTracking.length),
+      icon: <ClipboardList size={16} />,
+      iconBg: 'bg-[#f1f5f9] text-[var(--text-2)]',
+    },
+    {
+      id: 'creditnotes',
+      title: 'Scheme credit notes',
+      sub: 'Credit from supplier schemes',
+      metric: compactRs(kpis.scnActual > 0 ? kpis.scnActual : kpis.scnExpected),
+      icon: <ReceiptText size={16} />,
+      iconBg: 'bg-[#f1f5f9] text-[var(--text-2)]',
+    },
+  ];
+
+  const shareProps = {
+    reportTitle: 'Returns, free & claims',
+    summaryLines: [
+      { label: 'Trading loss (free + write-off)', value: money0(kpis.totalLossCost) },
+      { label: 'Free issues', value: `${kpis.freeQty} cases (${money0(kpis.freeCost)})` },
+      { label: 'Pending supplier claims', value: money0(kpis.claimedPending) },
+      { label: 'Scheme credit notes', value: money0(kpis.scnActual) },
+    ],
+    sheets: [
+      {
+        name: 'Summary',
+        header: ['Item', 'Amount'],
+        rows: [
+          ['Free issue cost', kpis.freeCost],
+          ['Write-off cost', kpis.writeoffCost],
+          ['Pending claims', kpis.claimedPending],
+          ['Scheme CN received', kpis.scnActual],
+        ],
+      },
+    ],
+    pdfSections: [
+      {
+        title: 'Summary',
+        header: ['Item', 'Amount (Rs.)'],
+        rows: [
+          ['Free issue cost', money(kpis.freeCost)],
+          ['Write-off cost', money(kpis.writeoffCost)],
+          ['Pending claims', money(kpis.claimedPending)],
+        ],
+        rightAlign: [1],
+      },
+    ],
+  };
+
+  const activePhoneSection = phoneSections.find((s) => s.id === phoneOpen);
+
   return (
     <>
       {/* ============================ PHONE ============================ */}
       <div className="md:hidden space-y-3" id="report-dispositions-phone">
         {phoneOpen === null ? (
           <>
-        <PhoneHeader title="Returns, free & claims" sub="Returns, samples & write-offs summary" />
+            <MobileReportTopBar
+              title="Returns, free & claims"
+              sub="Breakage and supplier credit"
+              showPeriod
+              shareProps={shareProps}
+            />
 
-        <HeroCard tone="navy" label="Trading loss (free + write-off)" value={money0(kpis.totalLossCost)}>
-          <SplitBar
-            label="Free issues versus write-offs"
-            parts={[
-              { value: kpis.freeCost, className: 'bg-sky-400' },
-              { value: kpis.writeoffCost, className: 'bg-rose-400' },
-            ]}
-          />
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-white/90">
-            <LegendDot dot="bg-sky-400">Free {money0(kpis.freeCost)}</LegendDot>
-            <LegendDot dot="bg-rose-400">Write-off {money0(kpis.writeoffCost)}</LegendDot>
-          </div>
-        </HeroCard>
-
-        <div className="grid grid-cols-3 gap-2">
-          <MiniStat label="Open claims" value={kpis.openClaims} tone={kpis.openClaims > 0 ? 'amber' : 'green'} />
-          <MiniStat label="Claim value" value={money0(kpis.claimedPending)} tone={kpis.claimedPending > 0 ? 'amber' : 'green'} />
-          <MiniStat label="Scheme CNs" value={money0(kpis.scnActual)} tone="green" />
-        </div>
-
-        <SubPageMenu<SubTab>
-          heading="Returns, free & claims sections"
-          cards={phoneCards}
-          onOpen={(id) => {
-            setSubTab(id);
-            setSearch('');
-            setPhoneOpen(id);
-          }}
-        />
+            <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+              {phoneSections.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => {
+                    setSubTab(s.id);
+                    setSearch('');
+                    setPhoneOpen(s.id);
+                  }}
+                  className="w-full px-3.5 py-3 flex items-center gap-3 text-left active:bg-[#f8fafc] transition-colors cursor-pointer"
+                >
+                  <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${s.iconBg}`}>
+                    {s.icon}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug">{s.title}</div>
+                    <div className="text-[11.5px] text-[var(--text-2)] mt-0.5 leading-snug">{s.sub}</div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-[13px] font-extrabold text-[var(--text)] tabular-nums">{s.metric}</span>
+                    <ChevronRight size={15} className="text-[var(--text-2)]" aria-hidden="true" />
+                  </div>
+                </button>
+              ))}
+            </section>
           </>
         ) : (
           <>
-            <SubPageBack backLabel="All returns, free & claims" title={phoneCards.find((c) => c.id === phoneOpen)?.title || ''} onBack={() => setPhoneOpen(null)} />
-            {showSearch && <PhoneSearch value={search} onChange={setSearch} placeholder="Search product, lot or supplier…" />}
-          </>
-        )}
+            <MobileReportTopBar
+              title={activePhoneSection?.title || 'Details'}
+              sub="Returns, free & claims"
+              doubleBack
+              onBack={() => setPhoneOpen(null)}
+              showPeriod
+              shareProps={shareProps}
+            />
 
-
-        {phoneOpen !== null && (
-          <>
-        {subTab === 'summary' && (
-          <RowCard>
-            <div className="p-3 space-y-2 text-[13px]">
-              {[
-                ['Free near-expiry / scheme free', kpis.freeCost, 'text-sky-800'],
-                ['Write-offs (expiry / damage)', kpis.writeoffCost, 'text-rose-700'],
-                ['Returns (claim base at cost)', kpis.returnCost, 'text-amber-700'],
-                ['Disposition CN settled', kpis.claimedSettled, 'text-emerald-700'],
-                ['Claims still open', kpis.claimedPending, 'text-amber-700'],
-                ['Scheme CN expected', kpis.scnExpected, 'text-slate-900'],
-                ['Scheme CN received', kpis.scnActual, 'text-emerald-700'],
-              ].map(([label, value, tone]) => (
-                <div key={label as string} className="flex justify-between gap-3">
-                  <span className="text-slate-600">{label as string}</span>
-                  <span className={`font-extrabold tabular-nums ${tone}`}>{money0(value as number)}</span>
-                </div>
-              ))}
-            </div>
-          </RowCard>
-        )}
-
-        {(subTab === 'free' || subTab === 'writeoffs' || subTab === 'claims') &&
-          (activeRows.length === 0 ? <EmptyNote>{emptyTextFor(subTab)}</EmptyNote> : activeRows.map(phoneRegisterCard))}
-
-        {subTab === 'batches' &&
-          (batchRowsUi.length === 0 ? (
-            <EmptyNote>{emptyTextFor('batches')}</EmptyNote>
-          ) : (
-            batchRowsUi.map((r) => (
-              <RegisterCard
-                key={r.batchId}
-                title={r.productName}
-                subtitle={
-                  <>
-                    <div className="font-mono font-bold text-slate-900">Lot {r.batchNumber}</div>
-                    <div className="text-slate-500">
-                      {r.warehouseName} · {r.expiryDate ? `Exp ${r.expiryDate}` : 'No expiry'} · {r.events} event(s)
-                    </div>
-                  </>
-                }
-                heroLabel="Cost out"
-                hero={money0(r.disposedCost)}
-                heroTone="amber"
-                stats={[
-                  { label: 'Disposed', value: r.disposedQty },
-                  { label: 'Still in stock', value: r.remainingQty, tone: 'sky' },
-                  { label: 'Supplier inv', value: r.supplierInvoiceNo || '—', tone: 'muted' },
-                ]}
-              />
-            ))
-          ))}
-
-        {subTab === 'creditnotes' &&
-          (cnList.length === 0 ? (
-            <EmptyNote>{emptyTextFor('creditnotes')}</EmptyNote>
-          ) : (
-            cnList.map((n) => {
-              const outstanding = Math.max(0, n.expectedAmount - n.actualAmount);
-              return (
-                <RegisterCard
-                  key={n.id}
-                  title={n.supplierName}
-                  pills={<Pill tone={outstanding > 0 ? 'amber' : 'green'}>{n.status.replace('_', ' ')}</Pill>}
-                  subtitle={
-                    <>
-                      <div className="font-mono font-bold text-slate-900">{n.creditNoteNumber || '—'}</div>
-                      <div className="text-slate-500">
-                        {n.creditNoteDate || n.createdAt?.slice(0, 10)} · {n.period || n.grnId || '—'}
-                      </div>
-                    </>
-                  }
-                  heroLabel="Expected"
-                  hero={money0(n.expectedAmount)}
-                  split={{ a: n.actualAmount, b: outstanding, label: 'Received versus outstanding' }}
-                  stats={[
-                    { label: 'Received', value: money0(n.actualAmount), tone: 'green' },
-                    { label: 'Outstanding', value: money0(outstanding), tone: outstanding > 0 ? 'amber' : 'muted' },
-                  ]}
+            {showSearch && (
+              <div className="rt-search-bar">
+                <Search size={15} className="text-[var(--text-2)] shrink-0" aria-hidden="true" />
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search product, lot or supplier…"
                 />
-              );
-            })
-          ))}
+                {search.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => setSearch('')}
+                    className="text-[var(--text-2)] p-1 cursor-pointer"
+                    aria-label="Clear search"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+            )}
 
+            {subTab === 'summary' && (
+              <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+                {[
+                  ['Free near-expiry / scheme free', kpis.freeCost, 'text-[var(--text)]'],
+                  ['Write-offs (expiry / damage)', kpis.writeoffCost, 'text-[var(--due)]'],
+                  ['Returns (claim base at cost)', kpis.returnCost, 'text-[var(--text)]'],
+                  ['Disposition CN settled', kpis.claimedSettled, 'text-[var(--paid)]'],
+                  ['Claims still open', kpis.claimedPending, 'text-[var(--soon)]'],
+                  ['Scheme CN expected', kpis.scnExpected, 'text-[var(--text)]'],
+                  ['Scheme CN received', kpis.scnActual, 'text-[var(--paid)]'],
+                ].map(([label, value, tone]) => (
+                  <div key={label as string} className="px-3.5 py-2.5 flex items-center justify-between gap-3 text-[13px]">
+                    <span className="font-medium text-[var(--text-2)]">{label as string}</span>
+                    <span className={`font-extrabold tabular-nums ${tone}`}>{money0(value as number)}</span>
+                  </div>
+                ))}
+              </section>
+            )}
+
+            {(subTab === 'free' || subTab === 'writeoffs' || subTab === 'claims') &&
+              (activeRows.length === 0 ? (
+                <div className="rt-rep-card py-10 px-4 text-center text-[13px] font-semibold text-[var(--text-2)]">
+                  {emptyTextFor(subTab)}
+                </div>
+              ) : (
+                <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+                  {activeRows.map((r) => {
+                    const stTone =
+                      r.compensationStatus === 'settled'
+                        ? 'bg-[var(--paid-bg)] text-[var(--paid)]'
+                        : r.compensationStatus === 'pending' || r.compensationStatus === 'partial'
+                          ? 'bg-[var(--soon-bg)] text-[var(--soon)]'
+                          : 'bg-[#f1f5f9] text-[var(--text-2)]';
+                    return (
+                      <div key={r.id} className="px-3.5 py-3 flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug">
+                            {r.productName || `#${r.productId}`} · ×{r.quantity}
+                          </div>
+                          <div className="text-[11.5px] text-[var(--text-2)] mt-0.5 break-words">
+                            {r.eventDate} · {TYPE_LABEL[r.dispositionType]} · {rowSub(r)}
+                          </div>
+                          {(rowSupplier(r) || r.returnTracking) && (
+                            <div className="text-[11px] text-[var(--text-2)] mt-0.5 break-words">
+                              {rowSupplier(r)}
+                              {r.returnTracking ? ` · Customer: ${r.returnTracking.customerName}` : ''}
+                            </div>
+                          )}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-[13.5px] font-extrabold text-[var(--text)] tabular-nums">{money0(r.costValue)}</div>
+                          <span className={`inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold capitalize ${stTone}`}>
+                            {statusOf(r)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </section>
+              ))}
+
+            {subTab === 'batches' &&
+              (batchRowsUi.length === 0 ? (
+                <div className="rt-rep-card py-10 px-4 text-center text-[13px] font-semibold text-[var(--text-2)]">
+                  {emptyTextFor('batches')}
+                </div>
+              ) : (
+                <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+                  {batchRowsUi.map((r) => (
+                    <div key={r.batchId} className="px-3.5 py-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug">
+                          {r.productName} · Lot {r.batchNumber}
+                        </div>
+                        <div className="text-[11.5px] text-[var(--text-2)] mt-0.5">
+                          {r.warehouseName} · {r.expiryDate ? `Exp ${r.expiryDate}` : 'No expiry'} · Disposed {r.disposedQty} · In stock {r.remainingQty}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-[13.5px] font-extrabold text-[var(--text)] tabular-nums">{money0(r.disposedCost)}</div>
+                        <div className="text-[11px] text-[var(--text-2)]">{r.events} event(s)</div>
+                      </div>
+                    </div>
+                  ))}
+                </section>
+              ))}
+
+            {subTab === 'creditnotes' &&
+              (cnList.length === 0 ? (
+                <div className="rt-rep-card py-10 px-4 text-center text-[13px] font-semibold text-[var(--text-2)]">
+                  {emptyTextFor('creditnotes')}
+                </div>
+              ) : (
+                <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+                  {cnList.map((n) => {
+                    const outstanding = Math.max(0, n.expectedAmount - n.actualAmount);
+                    return (
+                      <div key={n.id} className="px-3.5 py-3 flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug">
+                            {n.supplierName}
+                          </div>
+                          <div className="text-[11.5px] text-[var(--text-2)] mt-0.5">
+                            {n.creditNoteNumber || 'No CN no'} · {n.creditNoteDate || n.createdAt?.slice(0, 10)} · Received {money0(n.actualAmount)}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-[13.5px] font-extrabold text-[var(--text)] tabular-nums">{money0(n.expectedAmount)}</div>
+                          <span
+                            className={`inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold capitalize ${
+                              outstanding > 0 ? 'bg-[var(--soon-bg)] text-[var(--soon)]' : 'bg-[var(--paid-bg)] text-[var(--paid)]'
+                            }`}
+                          >
+                            {outstanding > 0 ? `Due ${compactRs(outstanding)}` : 'Settled'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </section>
+              ))}
           </>
         )}
 

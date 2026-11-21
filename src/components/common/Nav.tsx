@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { useLanguage } from '../../i18n/LanguageContext';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { TabId } from '../../types';
 import { UserAvatar } from './UserAvatar';
 import { BrandMark } from './BrandMark';
@@ -35,23 +36,24 @@ export interface NavItem {
     size?: number;
     strokeWidth?: number;
   }>;
+  tone?: 'sales' | 'received' | 'warning' | 'profit' | 'due' | 'neutral';
 }
 
 /** Full destination list: desktop sidebar and the phone/tablet menu sheet. Order follows the design. */
 const MENU_ITEMS: NavItem[] = [
-  { id: 'dashboard', labelKey: 'nav.home', icon: Home },
-  { id: 'billing', labelKey: 'nav.sell', icon: ShoppingCart },
-  { id: 'customers', labelKey: 'nav.parties', icon: Users },
-  { id: 'products', labelKey: 'nav.products', icon: BookOpen },
-  { id: 'inventory', labelKey: 'nav.inventory', icon: Boxes },
-  { id: 'supplierSchemes', labelKey: 'nav.supplierCredits', icon: FileText },
-  { id: 'payments', labelKey: 'nav.payments', icon: Wallet },
-  { id: 'expenses', labelKey: 'nav.expenses', icon: Receipt },
-  { id: 'crates', labelKey: 'nav.crates', icon: Container },
-  { id: 'promotions', labelKey: 'nav.promotions', icon: Tag },
-  { id: 'trips', labelKey: 'nav.trips', icon: Truck },
-  { id: 'reports', labelKey: 'nav.reports', icon: BarChart3 },
-  { id: 'settings', labelKey: 'nav.settings', icon: Settings },
+  { id: 'dashboard', labelKey: 'nav.home', icon: Home, tone: 'sales' },
+  { id: 'billing', labelKey: 'nav.sell', icon: ShoppingCart, tone: 'sales' },
+  { id: 'customers', labelKey: 'nav.parties', icon: Users, tone: 'profit' },
+  { id: 'products', labelKey: 'nav.products', icon: BookOpen, tone: 'profit' },
+  { id: 'inventory', labelKey: 'nav.inventory', icon: Boxes, tone: 'warning' },
+  { id: 'supplierSchemes', labelKey: 'nav.supplierCredits', icon: FileText, tone: 'sales' },
+  { id: 'payments', labelKey: 'nav.payments', icon: Wallet, tone: 'received' },
+  { id: 'expenses', labelKey: 'nav.expenses', icon: Receipt, tone: 'due' },
+  { id: 'crates', labelKey: 'nav.crates', icon: Container, tone: 'warning' },
+  { id: 'promotions', labelKey: 'nav.promotions', icon: Tag, tone: 'profit' },
+  { id: 'trips', labelKey: 'nav.trips', icon: Truck, tone: 'warning' },
+  { id: 'reports', labelKey: 'nav.reports', icon: BarChart3, tone: 'received' },
+  { id: 'settings', labelKey: 'nav.settings', icon: Settings, tone: 'neutral' },
 ];
 
 /** Tablet icon rail: six main destinations, Settings pinned at the bottom. */
@@ -116,6 +118,7 @@ export interface NavProps {
 export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
   const { tab, setTab, logout } = useLedger();
   const { t } = useLanguage();
+  const isPhone = useIsMobile(767);
   const { email } = useUserCard();
 
   if (!open) return null;
@@ -136,12 +139,13 @@ export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
     >
       <button type="button" className="hh-sheet__scrim absolute inset-0 cursor-pointer" aria-label={t('nav.closeMenu')} onClick={onClose} />
       <div className="hh-sheet relative w-full sm:max-w-lg max-h-[88vh] overflow-y-auto">
+        <div className="hh-grab md:hidden" aria-hidden="true" />
         <div className="flex items-start justify-between gap-3 mb-3">
           <div className="min-w-0">
             <h2 className="hh-sheet__title">{t('nav.menu')}</h2>
             {email && <p className="text-xs mt-0.5 break-words" style={{ color: 'var(--text-2)' }}>{email}</p>}
           </div>
-          <button type="button" onClick={onClose} className="hh-iconbtn" aria-label={t('nav.closeMenu')}>
+          <button type="button" onClick={onClose} className="hh-iconbtn hh-sheet__close" aria-label={t('nav.closeMenu')}>
             <X size={20} aria-hidden="true" />
           </button>
         </div>
@@ -149,6 +153,7 @@ export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
         <div className="hh-sheet__grid">
           {MENU_ITEMS.map(({ id, labelKey, icon: Icon }) => {
             const isActive = active === id;
+            const resolvedLabel = isPhone && id === 'billing' ? t('nav.sellTab') : t(labelKey);
             return (
               <button
                 key={`${id}-${labelKey}`}
@@ -156,10 +161,13 @@ export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
                 onClick={() => go(id)}
                 aria-current={isActive ? 'page' : undefined}
                 className="hh-sheet__item"
+                data-menu-id={id}
                 data-active={isActive ? 'true' : 'false'}
               >
-                <Icon size={24} aria-hidden="true" />
-                <span>{t(labelKey)}</span>
+                <span className="hh-sheet__icon" aria-hidden="true">
+                  <Icon size={20} strokeWidth={2.2} aria-hidden="true" />
+                </span>
+                <span>{resolvedLabel}</span>
               </button>
             );
           })}
@@ -171,9 +179,12 @@ export const Nav: React.FC<NavProps> = ({ open, onClose }) => {
               if (typeof logout === 'function') logout();
               else window.location.reload();
             }}
+            data-menu-id="signOut"
             className="hh-sheet__item hh-sheet__item--danger"
           >
-            <LogOut size={24} aria-hidden="true" />
+            <span className="hh-sheet__icon" aria-hidden="true">
+              <LogOut size={20} strokeWidth={2.2} aria-hidden="true" />
+            </span>
             <span>{t('nav.signOut')}</span>
           </button>
         </div>

@@ -7,6 +7,8 @@ import {
   GRN,
   InventoryBatch,
   OrganizationProfile,
+  PaymentAuditEntry,
+  PaymentEntryKind,
   PaymentRecord,
   Product,
   Promotion,
@@ -1023,6 +1025,7 @@ export async function pushLedgerToSupabase(data: {
       vehicle: t.vehicle,
       salesman_id: isValidUuid(t.salesmanId) ? t.salesmanId : null,
       salesman: t.salesman || null,
+      salesman_phone: t.salesmanPhone || null,
       date: t.date,
       warehouse_id: t.warehouseId || null,
       loaded: parseJsonDict(t.loaded),
@@ -1030,6 +1033,7 @@ export async function pushLedgerToSupabase(data: {
       shortage_reasons: t.shortageReasons || {},
       route: t.route || null,
       driver: t.driver || null,
+      driver_phone: t.driverPhone || null,
       returned: t.status === "closed" ? parseJsonDict(t.returned) : {},
       draft_returned: t.status === "closed" ? {} : parseJsonDict(t.draftReturned),
       cash_handed_in: t.cashHandedIn ?? null,
@@ -1912,8 +1916,207 @@ export async function dropDeletedFromList<T extends { id?: string }>(
   return dead.size ? list.filter((x) => !(x.id && dead.has(x.id))) : list;
 }
 
+function inferPaymentEntryKind(p: PaymentRecord): PaymentEntryKind {
+  if (
+    p.entryKind === "receipt" ||
+    p.entryKind === "advance" ||
+    p.entryKind === "refund" ||
+    p.entryKind === "advance_adjustment"
+  ) {
+    return p.entryKind;
+  }
+  if (p.isRefund || (Number(p.amount) || 0) < 0) return "refund";
+  if (
+    p.billId &&
+    (p.referenceNote || "").startsWith("Advance / credit adjusted")
+  ) {
+    return "advance_adjustment";
+  }
+  if (
+    p.isAdvance ||
+    (!p.billId && (p.referenceNote || "").includes("Advance / on account"))
+  ) {
+    return "advance";
+  }
+  return "receipt";
+}
+
+export function paymentToDbRow(p: PaymentRecord) {
+  const createdAt = p.createdAt || new Date().toISOString();
+  const updatedAt = p.updatedAt || createdAt;
+  return {
+    id: String(p.id),
+    bill_id: p.billId ? Number(p.billId) : null,
+    customer_id: p.customerId || null,
+    customer_name: p.customerName || "",
+    customer_phone: p.customerPhone || "",
+    salesman_id: p.salesmanId || null,
+    payment_date: p.paymentDate || String(createdAt).slice(0, 10) || todayISO(),
+    amount: Number(p.amount) || 0,
+    mode: p.mode || "cash",
+    entry_kind: inferPaymentEntryKind(p),
+    is_advance: Boolean(p.isAdvance),
+    is_refund: Boolean(p.isRefund),
+    is_advance_applied: Boolean(p.isAdvanceApplied),
+    applied_amount: Number(p.appliedAmount) || 0,
+    source_payment_id: p.sourcePaymentId || null,
+    source_bill_id: p.sourceBillId ? Number(p.sourceBillId) : null,
+    reference_note: p.referenceNote || "",
+    recorded_by: p.recordedBy || "",
+    deleted_at: null,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  };
+}
+
+export function dbRowToPayment(r: any): PaymentRecord {
+  const createdAt = r.created_at || r.createdAt || new Date().toISOString();
+  const entryKind = r.entry_kind || r.entryKind;
+  const rec: PaymentRecord = {
+    id: String(r.id),
+    ...(r.bill_id !== null && r.bill_id !== undefined
+      ? { billId: Number(r.bill_id) }
+      : {}),
+    ...(r.customer_id ? { customerId: String(r.customer_id) } : {}),
+    customerName: r.customer_name || r.customerName || "",
+    customerPhone: r.customer_phone || r.customerPhone || "",
+    ...(r.salesman_id ? { salesmanId: String(r.salesman_id) } : {}),
+    paymentDate: r.payment_date || r.paymentDate || String(createdAt).slice(0, 10),
+    amount: Number(r.amount) || 0,
+    mode: (r.mode || "cash") as PaymentRecord["mode"],
+    ...(entryKind ? { entryKind: entryKind as PaymentEntryKind } : {}),
+    referenceNote: r.reference_note ?? r.referenceNote ?? "",
+    recordedBy: r.recorded_by ?? r.recordedBy ?? "",
+    isAdvance: Boolean(r.is_advance ?? r.isAdvance),
+    ...(Boolean(r.is_advance_applied ?? r.isAdvanceApplied)
+      ? { isAdvanceApplied: true }
+      : {}),
+    ...(Number(r.applied_amount ?? r.appliedAmount) > 0
+      ? { appliedAmount: Number(r.applied_amount ?? r.appliedAmount) }
+      : {}),
+    ...(r.source_payment_id || r.sourcePaymentId
+      ? { sourcePaymentId: String(r.source_payment_id || r.sourcePaymentId) }
+      : {}),
+    ...(r.source_bill_id !== null && r.source_bill_id !== undefined
+      ? { sourceBillId: Number(r.source_bill_id) }
+      : r.sourceBillId !== undefined
+        ? { sourceBillId: Number(r.sourceBillId) }
+        : {}),
+    ...(Boolean(r.is_refund ?? r.isRefund) ? { isRefund: true } : {}),
+    createdAt,
+    ...(r.updated_at || r.updatedAt
+      ? { updatedAt: r.updated_at || r.updatedAt }
+      : {}),
+  };
+  return rec;
+}
+
+export function auditToDbRow(e: PaymentAuditEntry) {
+  return {
+    id: String(e.id),
+    payment_id: e.paymentId || null,
+    bill_id: e.billId ? Number(e.billId) : null,
+    customer_name: e.customerName || "",
+    action: e.action,
+    amount: e.amount !== undefined && e.amount !== null ? Number(e.amount) : null,
+    note: e.note || "",
+    changed_by: e.by || "Admin",
+    before_data: e.before ?? null,
+    after_data: e.after ?? null,
+    changed_at: e.at || new Date().toISOString(),
+  };
+}
+
+export function dbRowToAudit(r: any): PaymentAuditEntry {
+  return {
+    id: String(r.id),
+    at: r.changed_at || r.at || new Date().toISOString(),
+    by: r.changed_by || r.by || "Admin",
+    action: r.action,
+    ...(r.payment_id || r.paymentId
+      ? { paymentId: String(r.payment_id || r.paymentId) }
+      : {}),
+    ...(r.bill_id !== null && r.bill_id !== undefined
+      ? { billId: Number(r.bill_id) }
+      : r.billId !== undefined
+        ? { billId: Number(r.billId) }
+        : {}),
+    ...(r.customer_name || r.customerName
+      ? { customerName: r.customer_name || r.customerName }
+      : {}),
+    ...(r.amount !== null && r.amount !== undefined
+      ? { amount: Number(r.amount) }
+      : {}),
+    ...(r.note ? { note: r.note } : {}),
+    ...(r.before_data || r.before
+      ? { before: (r.before_data || r.before) as PaymentRecord }
+      : {}),
+    ...(r.after_data || r.after
+      ? { after: (r.after_data || r.after) as PaymentRecord }
+      : {}),
+  };
+}
+
+export async function softDeletePaymentsInSupabase(
+  ids: string[],
+  by = "Admin",
+  reason = "",
+): Promise<void> {
+  const client = getSupabaseClient();
+  const cleanIds = Array.from(new Set(ids.map((x) => String(x || "").trim()).filter(Boolean)));
+  if (!client || cleanIds.length === 0) return;
+  try {
+    const now = new Date().toISOString();
+    await client
+      .from("payments")
+      .update({
+        deleted_at: now,
+        deleted_by: by || "Admin",
+        delete_reason: reason || "",
+        updated_at: now,
+      })
+      .in("id", cleanIds);
+  } catch {
+    // public.payments table may not be migrated yet (017)
+  }
+}
+
+export async function pushPaymentAuditEntryToSupabase(
+  entry: PaymentAuditEntry,
+): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client || !entry?.id) return;
+  try {
+    await client
+      .from("payment_history")
+      .upsert(auditToDbRow(entry), { onConflict: "id" });
+  } catch {
+    // public.payment_history table may not be migrated yet (017)
+  }
+}
+
+export async function pullPaymentHistoryFromSupabase(
+  limit = 1000,
+): Promise<PaymentAuditEntry[]> {
+  const client = getSupabaseClient();
+  if (!client) return [];
+  try {
+    const { data, error } = await client
+      .from("payment_history")
+      .select("*")
+      .order("changed_at", { ascending: false })
+      .limit(limit);
+    if (error || !Array.isArray(data)) return [];
+    return data.map(dbRowToAudit);
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Pushes customer payments and settlements to Supabase cloud
+ * Pushes customer payments and settlements to Supabase cloud.
+ * Dual-writes to the dedicated public.payments table (when migrated) as well as
+ * public.app_collections['payments'] and billing_settings for zero-downtime compatibility.
  */
 export async function pushPaymentsToSupabase(
   payments: PaymentRecord[],
@@ -1926,14 +2129,31 @@ export async function pushPaymentsToSupabase(
     // Never write back a payment the owner already deleted (a stale device would resurrect it).
     payments = await dropDeletedFromList("payment", payments);
     if (payments.length === 0 && !allowEmpty) return;
-    // 1. Try public.app_collections
+
+    // 1. Dual-write to dedicated public.payments table (additive; safe if migration 017 isn't applied yet)
+    try {
+      if (payments.length > 0) {
+        const rows = payments.map(paymentToDbRow);
+        for (let i = 0; i < rows.length; i += 500) {
+          const chunk = rows.slice(i, i + 500);
+          const { error } = await client
+            .from("payments")
+            .upsert(chunk, { onConflict: "id" });
+          if (error) break;
+        }
+      }
+    } catch {
+      // public.payments table may not exist yet
+    }
+
+    // 2. Try public.app_collections (keeps live probeCloudChanges and older clients working)
     try {
       await writeCollectionMerged(client, "payments", payments);
     } catch {
       // app_collections table may not exist
     }
 
-    // 2. Mirror in billing_settings
+    // 3. Mirror in billing_settings
     await client.from("billing_settings").upsert(
       {
         id: "collection_payments",
@@ -2123,6 +2343,7 @@ export async function pushTripToSupabase(
       vehicle: t.vehicle,
       salesman_id: isValidUuid(t.salesmanId) ? t.salesmanId : null,
       salesman: t.salesman || null,
+      salesman_phone: t.salesmanPhone || null,
       date: t.date,
       warehouse_id: t.warehouseId || null,
       loaded: parseJsonDict(t.loaded),
@@ -2132,6 +2353,7 @@ export async function pushTripToSupabase(
       shortage_reasons: t.shortageReasons || {},
       route: t.route || null,
       driver: t.driver || null,
+      driver_phone: t.driverPhone || null,
       returned: t.status === "closed" ? parseJsonDict(t.returned) : {},
       draft_returned: t.status === "closed" ? {} : parseJsonDict(t.draftReturned),
       cash_handed_in: t.cashHandedIn ?? null,
@@ -3382,6 +3604,7 @@ export async function pullLedgerFromSupabase(): Promise<{
   trips?: Trip[];
   audits?: Audit[];
   payments?: PaymentRecord[];
+  paymentAudit?: PaymentAuditEntry[];
   orgProfile?: OrganizationProfile;
   billingSettings?: BillingSettings;
   salesmen?: Salesman[];
@@ -3408,6 +3631,8 @@ export async function pullLedgerFromSupabase(): Promise<{
       inwardGrnAppCollectionRes,
       paymentsSettingRes,
       paymentsAppCollectionRes,
+      paymentsTableRes,
+      paymentHistoryRes,
       salesmanRes,
       auditSessionsRes,
       reconciliationTransactionsRes,
@@ -3442,6 +3667,8 @@ export async function pullLedgerFromSupabase(): Promise<{
       fetchRowIfChanged(client, "app_collections", "key", "inward_grns"),
       fetchRowIfChanged(client, "billing_settings", "id", "collection_payments"),
       fetchRowIfChanged(client, "app_collections", "key", "payments"),
+      fetchTableDelta(client, { table: "payments", idCol: "id", cursorCol: "updated_at", orderCol: "payment_date", ascending: false }).catch(() => ({ data: null, error: true })),
+      Promise.resolve(client.from("payment_history").select("*").order("changed_at", { ascending: false }).limit(1000)).catch(() => ({ data: null, error: true })),
       fetchTableDelta(client, { table: "salesmen", idCol: "id", cursorCol: "updated_at", orderCol: "name", ascending: true }),
       fetchTableDelta(client, { table: "audit_sessions", idCol: "id", cursorCol: "updated_at", orderCol: "created_at", ascending: false }),
       fetchTableDelta(client, { table: "reconciliation_transactions", idCol: "id", cursorCol: "created_at", orderCol: "created_at", ascending: false }),
@@ -3662,16 +3889,23 @@ export async function pullLedgerFromSupabase(): Promise<{
       });
     }
 
-    // Process Payments & Collections from Supabase
+    // Process Payments & Collections from Supabase (merge billing_settings, app_collections, and public.payments)
     const payMap = new Map<string, PaymentRecord>();
+    const payTime = (p: any) => Date.parse(String(p?.updatedAt || p?.createdAt || "")) || 0;
+    const mergePay = (p: PaymentRecord) => {
+      if (!p?.id) return;
+      const key = String(p.id);
+      const cur = payMap.get(key);
+      if (!cur || payTime(p) >= payTime(cur)) {
+        payMap.set(key, p);
+      }
+    };
     if (
       !paymentsSettingRes.error &&
       paymentsSettingRes.data?.data &&
       Array.isArray(paymentsSettingRes.data.data.payments)
     ) {
-      paymentsSettingRes.data.data.payments.forEach((p: any) => {
-        if (p && p.id) payMap.set(String(p.id), p);
-      });
+      paymentsSettingRes.data.data.payments.forEach((p: any) => mergePay(p));
     }
     if (
       !paymentsAppCollectionRes.error &&
@@ -3681,9 +3915,22 @@ export async function pullLedgerFromSupabase(): Promise<{
         ? paymentsAppCollectionRes.data.data
         : paymentsAppCollectionRes.data.data.payments;
       if (Array.isArray(list)) {
-        list.forEach((p: any) => {
-          if (p && p.id) payMap.set(String(p.id), p);
-        });
+        list.forEach((p: any) => mergePay(p));
+      }
+    }
+    if (
+      !(paymentsTableRes as any)?.error &&
+      Array.isArray((paymentsTableRes as any)?.data) &&
+      (paymentsTableRes as any).data.length > 0
+    ) {
+      for (const r of (paymentsTableRes as any).data) {
+        if (!r?.id) continue;
+        const id = String(r.id);
+        if (r.deleted_at) {
+          payMap.delete(id);
+          continue;
+        }
+        mergePay(dbRowToPayment(r));
       }
     }
     if (payMap.size > 0) {
@@ -3692,6 +3939,13 @@ export async function pullLedgerFromSupabase(): Promise<{
         const db = b.paymentDate || b.createdAt || "";
         return db.localeCompare(da);
       });
+    }
+    if (
+      !(paymentHistoryRes as any)?.error &&
+      Array.isArray((paymentHistoryRes as any)?.data) &&
+      (paymentHistoryRes as any).data.length > 0
+    ) {
+      result.paymentAudit = (paymentHistoryRes as any).data.map(dbRowToAudit);
     }
 
     // Prefer full scheme objects from app_collections (preserves group_buy_n_get_m_free,
@@ -4485,6 +4739,46 @@ CREATE TABLE IF NOT EXISTS public.grn_edit_log (
     edited_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS public.payments (
+    id                 TEXT PRIMARY KEY,
+    bill_id            BIGINT,
+    customer_id        TEXT,
+    customer_name      TEXT NOT NULL DEFAULT '',
+    customer_phone     TEXT DEFAULT '',
+    salesman_id        TEXT,
+    payment_date       TEXT NOT NULL,
+    amount             NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    mode               TEXT NOT NULL DEFAULT 'cash',
+    entry_kind         TEXT NOT NULL DEFAULT 'receipt',
+    is_advance         BOOLEAN NOT NULL DEFAULT FALSE,
+    is_refund          BOOLEAN NOT NULL DEFAULT FALSE,
+    is_advance_applied BOOLEAN NOT NULL DEFAULT FALSE,
+    applied_amount     NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    source_payment_id  TEXT,
+    source_bill_id     BIGINT,
+    reference_note     TEXT DEFAULT '',
+    recorded_by        TEXT DEFAULT '',
+    deleted_at         TIMESTAMPTZ,
+    deleted_by         TEXT,
+    delete_reason      TEXT,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.payment_history (
+    id            TEXT PRIMARY KEY,
+    payment_id    TEXT,
+    bill_id       BIGINT,
+    customer_name TEXT DEFAULT '',
+    action        TEXT NOT NULL,
+    amount        NUMERIC(12, 2),
+    note          TEXT DEFAULT '',
+    changed_by    TEXT NOT NULL DEFAULT 'Admin',
+    before_data   JSONB,
+    after_data    JSONB,
+    changed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ---------------------------------------------------------------
 -- SECTION 2: REPAIR OLDER TABLES (add columns that may be missing)
 -- ---------------------------------------------------------------
@@ -4903,6 +5197,12 @@ CREATE POLICY "Allow all access to stock_ledger_entries" ON public.stock_ledger_
 ALTER TABLE public.grn_edit_log ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Allow all access to grn_edit_log" ON public.grn_edit_log;
 CREATE POLICY "Allow all access to grn_edit_log" ON public.grn_edit_log FOR ALL USING (true) WITH CHECK (true);
+ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all access to payments" ON public.payments;
+CREATE POLICY "Allow all access to payments" ON public.payments FOR ALL USING (true) WITH CHECK (true);
+ALTER TABLE public.payment_history ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Allow all access to payment_history" ON public.payment_history;
+CREATE POLICY "Allow all access to payment_history" ON public.payment_history FOR ALL USING (true) WITH CHECK (true);
 
 -- ---------------------------------------------------------------
 -- SECTION 5: refresh the API cache so new tables/columns work immediately

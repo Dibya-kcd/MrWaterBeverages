@@ -15,7 +15,7 @@ export const LoadingSkeleton: React.FC<LoadingSkeletonProps> = ({ rows = 4, clas
       {Array.from({ length: rows }).map((_, i) => (
         <div
           key={i}
-          className="h-12 rounded-xl bg-slate-100 border border-slate-200/80"
+          className="hh-skeleton__row h-12 rounded-xl bg-slate-100 border border-slate-200/80"
           style={{ opacity: 1 - i * 0.12 }}
         />
       ))}

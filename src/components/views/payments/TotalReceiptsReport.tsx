@@ -1,11 +1,15 @@
 import React, { useMemo, useState } from 'react';
+import { Search, X } from 'lucide-react';
 import { useLedger } from '../../../context/LedgerContext';
 import { useBeats } from '../../../hooks/useBeats';
+import { useIsMobile } from '../../../hooks/useIsMobile';
+import { useLanguage } from '../../../i18n/LanguageContext';
 import { money } from '../../../utils/billing';
 import { todayISO } from '../../../utils/dateLocal';
-import { buildDueInvoices, buildReceiptRegister, OVERDUE_AFTER_DAYS } from '../../../utils/beatReports';
+import { buildDaySummary, buildDueInvoices, buildReceiptRegister, OVERDUE_AFTER_DAYS } from '../../../utils/beatReports';
 import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
+import { rsShort } from '../reports/mobile/PhoneKit';
 import { fmtShort, MODE_LABEL, ShowMore } from './reportUi';
 import {
   ReportBreakdownLine,
@@ -33,6 +37,8 @@ const PAGE = 100;
  * The download button always downloads the list that is on screen.
  */
 export const TotalReceiptsReport: React.FC<Props> = ({ periodLabel, inPeriod }) => {
+  const isPhone = useIsMobile(767);
+  const { t } = useLanguage();
   const { bills, payments, customers, existingCustomers, orgProfile } = useLedger();
   const { beats, activeBeats } = useBeats();
   const [mode, setMode] = useState<'paid' | 'due'>('paid');
@@ -61,6 +67,27 @@ export const TotalReceiptsReport: React.FC<Props> = ({ periodLabel, inPeriod }) 
   const paidRows = useMemo(
     () => [...reg.rows].sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount),
     [reg.rows],
+  );
+  const upiTotal = useMemo(
+    () => reg.rows.filter((r) => r.mode === 'upi').reduce((s, r) => s + r.amount, 0),
+    [reg.rows],
+  );
+  const otherModeTotal = useMemo(
+    () => reg.rows.filter((r) => r.mode !== 'cash' && r.mode !== 'upi').reduce((s, r) => s + r.amount, 0),
+    [reg.rows],
+  );
+  const dayPreview = useMemo(
+    () =>
+      buildDaySummary({
+        bills: bills || [],
+        payments: payments || [],
+        customers: customers || [],
+        existingCustomers: existingCustomers || [],
+        beats,
+        inPeriod,
+        beatFilter: beat,
+      }),
+    [bills, payments, customers, existingCustomers, beats, inPeriod, beat],
   );
 
   const due = useMemo(
@@ -142,11 +169,224 @@ export const TotalReceiptsReport: React.FC<Props> = ({ periodLabel, inPeriod }) 
     { id: 'due', label: `Due ${due.rows.length}` },
   ];
   const beatOptions = [
-    { id: 'all', label: 'All beats' },
+    { id: 'all', label: t('parties.allBeats', { n: '' }).trim() },
     ...activeBeats.map((b) => ({ id: b.id, label: b.name })),
-    { id: 'none', label: 'No beat yet' },
+    { id: 'none', label: t('parties.noBeatYet') },
   ];
   const shownCount = mode === 'paid' ? paidRows.length : due.rows.length;
+
+  if (isPhone) {
+    const topDays = dayPreview.days.slice(0, 5);
+    const maxDayAmt = Math.max(1, ...topDays.map((d) => Math.max(d.received, d.sales)));
+
+    return (
+      <div className="space-y-3" id="report-total-receipts">
+        {mode === 'paid' ? (
+          <div className="rt-card space-y-3">
+            <div>
+              <div className="text-[12px] font-semibold" style={{ color: 'var(--text-2)' }}>
+                {t('pay.totalReceived')}
+              </div>
+              <div
+                className="text-[30px] font-extrabold tracking-tight leading-tight tabular-nums mt-1"
+                style={{ color: 'var(--text)' }}
+              >
+                ₹{money(reg.total)}
+              </div>
+            </div>
+            <div className="rt-three">
+              <div className="rt-three__item">
+                <span className="rt-three__label">{t('pay.modeCash')}</span>
+                <span className="rt-three__val">{rsShort(reg.cash)}</span>
+              </div>
+              <div className="rt-three__item">
+                <span className="rt-three__label">{t('pay.modeUpi')}</span>
+                <span className="rt-three__val">{rsShort(upiTotal)}</span>
+              </div>
+              <div className="rt-three__item">
+                <span className="rt-three__label">{t('pay.modeOther')}</span>
+                <span className="rt-three__val">{rsShort(otherModeTotal)}</span>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="rt-card space-y-3">
+            <div>
+              <div className="text-[12px] font-semibold" style={{ color: 'var(--text-2)' }}>
+                {t('pay.totalDue')}
+              </div>
+              <div
+                className="text-[30px] font-extrabold tracking-tight leading-tight tabular-nums mt-1"
+                style={{ color: 'var(--due)' }}
+              >
+                ₹{money(due.total)}
+              </div>
+            </div>
+            <div className="rt-three">
+              <div className="rt-three__item">
+                <span className="rt-three__label">{t('pay.openInvoices')}</span>
+                <span className="rt-three__val">{due.rows.length}</span>
+              </div>
+              <div className="rt-three__item">
+                <span className="rt-three__label">&gt;{OVERDUE_AFTER_DAYS}d</span>
+                <span className="rt-three__val rt-three__val--due">{rsShort(overdue)}</span>
+              </div>
+              <div className="rt-three__item">
+                <span className="rt-three__label">{t('parties.clear')}</span>
+                <span className="rt-three__val">{reg.count}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {mode === 'paid' && topDays.length > 0 && (
+          <div className="rt-card space-y-2.5">
+            <div className="text-[14px] font-bold" style={{ color: 'var(--text)' }}>
+              {t('pay.dayWiseCollectionSales')}
+            </div>
+            <div className="space-y-2.5">
+              {topDays.map((d) => {
+                const pct = Math.max(4, Math.min(100, Math.round((d.received / maxDayAmt) * 100)));
+                return (
+                  <div key={d.date} className="flex items-center gap-2.5">
+                    <span className="text-[12px] w-14 shrink-0 tabular-nums" style={{ color: 'var(--text-2)' }}>
+                      {fmtShort(d.date)}
+                    </span>
+                    <div className="rt-meter flex-1">
+                      <div className="rt-meter__fill" style={{ width: `${pct}%` }} />
+                    </div>
+                    <span className="text-[12.5px] font-bold tabular-nums shrink-0 w-16 text-right" style={{ color: 'var(--text)' }}>
+                      {rsShort(d.received)}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+          {modeOptions.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              aria-pressed={mode === o.id}
+              onClick={() => reset(() => setMode(o.id))}
+              className="rt-chip shrink-0"
+            >
+              {o.label}
+            </button>
+          ))}
+          {activeBeats.length > 0 &&
+            beatOptions.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                aria-pressed={beat === b.id}
+                onClick={() => reset(() => setBeat(b.id))}
+                className="rt-chip shrink-0"
+              >
+                {b.label}
+              </button>
+            ))}
+        </div>
+
+        <div className="rt-search-bar">
+          <Search size={16} style={{ color: 'var(--text-2)', flexShrink: 0 }} />
+          <input
+            type="text"
+            enterKeyHint="search"
+            value={search}
+            onChange={(e) => reset(() => setSearch(e.target.value))}
+            placeholder={mode === 'paid' ? t('pay.searchPayments') : t('pay.searchCustomerOrInv')}
+          />
+          {search && (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => reset(() => setSearch(''))}
+              className="p-1 bg-transparent border-0 cursor-pointer"
+              style={{ color: 'var(--text-2)' }}
+            >
+              <X size={15} />
+            </button>
+          )}
+        </div>
+
+        {empty ? (
+          <div className="rt-card px-5 py-8 text-center text-[13px]" style={{ color: 'var(--text-2)' }}>
+            {t('common.noData')}
+          </div>
+        ) : (
+          <div className="rt-card">
+            {mode === 'paid'
+              ? paidRows.slice(0, visible).map((r) => (
+                  <div key={r.key} className="rt-rowi cursor-default">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13.5px] font-bold break-words" style={{ color: 'var(--text)' }}>
+                        {r.customerName}
+                      </div>
+                      <div className="text-[11.5px] mt-0.5 break-words" style={{ color: 'var(--text-2)' }}>
+                        {fmtShort(r.date)} · {r.receiptNo} · {MODE_LABEL[r.mode] || r.mode}
+                        {r.invoiceLabel ? ` · ${r.invoiceLabel}` : ''}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-[14px] font-extrabold tabular-nums" style={{ color: 'var(--paid)' }}>
+                        ₹{money(r.amount)}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              : due.rows.slice(0, visible).map((r) => (
+                  <div key={r.billId} className="rt-rowi cursor-default">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13.5px] font-bold break-words" style={{ color: 'var(--text)' }}>
+                        {r.customerName}
+                      </div>
+                      <div className="text-[11.5px] mt-0.5 break-words" style={{ color: 'var(--text-2)' }}>
+                        {r.invoiceNo} · {fmtShort(r.date)}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-[14px] font-extrabold tabular-nums" style={{ color: 'var(--due)' }}>
+                        ₹{money(r.balance)}
+                      </div>
+                      <span className={`rt-tag mt-0.5 ${r.ageDays > OVERDUE_AFTER_DAYS ? 'rt-tag--due' : 'rt-tag--soon'}`}>
+                        {r.ageDays === 0 ? '0d' : `${r.ageDays}d`}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+          </div>
+        )}
+
+        <ShowMore shown={visible} total={shownCount} onMore={() => setVisible((v) => v + PAGE)} />
+
+        <div className="h-20" aria-hidden="true" />
+        <div className="rt-dlbar">
+          <div className="rt-dlbar__grid">
+            <button
+              type="button"
+              disabled={empty}
+              onClick={exportExcel}
+              className="rt-btn-outline rt-btn-outline--primary w-full"
+            >
+              {t('pay.excel')}
+            </button>
+            <button
+              type="button"
+              disabled={empty}
+              onClick={exportPdf}
+              className="rt-btn w-full"
+            >
+              {t('pay.pdf')}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3" id="report-total-receipts">

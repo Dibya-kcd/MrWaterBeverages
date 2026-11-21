@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Gift, X, Check, Percent, Tag, Sparkles } from 'lucide-react';
 import { Product, Promotion } from '../../types';
 import { schemeLabel, money } from '../../utils/billing';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 interface SchemeSelectorModalProps {
   product: Product;
@@ -28,6 +29,7 @@ export const SchemeSelectorModal: React.FC<SchemeSelectorModalProps> = ({
   onSelectScheme,
   onClose,
 }) => {
+  const isPhone = useIsMobile(767);
   const [customType, setCustomType] = useState<'bogo' | 'percent' | 'flat'>('bogo');
   const [customBuyQty, setCustomBuyQty] = useState<number>(5);
   const [customFreeQty, setCustomFreeQty] = useState<number>(1);
@@ -135,21 +137,21 @@ export const SchemeSelectorModal: React.FC<SchemeSelectorModalProps> = ({
       aria-modal="true"
       className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
     >
-      <div className="w-full max-w-xl bg-white rounded-2xl border-2 border-slate-300 shadow-2xl overflow-hidden my-auto max-h-[92vh] flex flex-col">
-        <div className="p-4 sm:p-5 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+      <div className={`w-full max-w-xl bg-white overflow-hidden my-auto max-h-[92vh] flex flex-col ${isPhone ? 'rounded-[14px] border border-[var(--border)]' : 'rounded-2xl border-2 border-slate-300 shadow-2xl'}`}>
+        <div className={`p-4 sm:p-5 border-b flex items-center justify-between ${isPhone ? 'bg-[var(--primary)] text-[var(--surface)] border-[var(--border)]' : 'border-slate-200 bg-slate-50'}`}>
           <div className="min-w-0">
-            <div className="text-sm font-black text-slate-900 flex items-center gap-2">
-              <Gift size={18} className="text-emerald-600 shrink-0" />
+            <div className={`text-sm font-black flex items-center gap-2 ${isPhone ? 'text-[var(--surface)]' : 'text-slate-900'}`}>
+              <Gift size={18} className={isPhone ? 'text-[var(--accent)] shrink-0' : 'text-emerald-600 shrink-0'} />
               <span>Select Trade Scheme</span>
             </div>
-            <div className="text-xs text-slate-500 mt-0.5 min-w-0 break-words lg:truncate">
+            <div className={`text-xs mt-0.5 min-w-0 break-words lg:truncate ${isPhone ? 'text-white/85' : 'text-slate-500'}`}>
               {product.name} · Rate Rs {money(currentRate)}/case
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="p-2 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-600"
+            className={`min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full cursor-pointer ${isPhone ? 'text-[var(--surface)] hover:bg-white/15' : 'p-2 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-600'}`}
             aria-label="Close"
           >
             <X size={18} />

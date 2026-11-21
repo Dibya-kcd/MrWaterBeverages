@@ -1,7 +1,9 @@
 import React from 'react';
-import { IndianRupee, CreditCard, Banknote, QrCode, Clock, CheckCircle2, AlertCircle, Percent } from 'lucide-react';
+import { Banknote, QrCode, Clock, CheckCircle2, AlertCircle, Percent } from 'lucide-react';
 import { PaymentMode } from '../../types';
 import { money } from '../../utils/billing';
+import { useIsMobile } from '../../hooks/useIsMobile';
+import { useLanguage } from '../../i18n/LanguageContext';
 
 interface PaymentCollectionPanelProps {
   totalAmount: number;
@@ -40,13 +42,171 @@ export const PaymentCollectionPanel: React.FC<PaymentCollectionPanelProps> = ({
   onPaymentNoteChange,
   compact = false,
 }) => {
+  const isPhone = useIsMobile(767);
+  const { t } = useLanguage();
   const currentDiscount = Number(overallDiscountDraft) || 0;
+
+  if (isPhone) {
+    const phoneModes: { id: 'cash' | 'upi' | 'credit'; label: string; icon: React.ElementType }[] = [
+      { id: 'cash', label: t('sell.cash'), icon: Banknote },
+      { id: 'upi', label: t('sell.upi'), icon: QrCode },
+      { id: 'credit', label: t('sell.credit'), icon: Clock },
+    ];
+    const activePhoneMode = paymentMode === 'upi' ? 'upi' : paymentMode === 'credit' ? 'credit' : 'cash';
+
+    return (
+      <div className="space-y-2.5">
+        <section className="rt-card space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-xs font-bold uppercase text-[var(--text-2)]">{t('sell.schemeDiscount')}</h4>
+            <span className="text-xs font-semibold text-[var(--text-2)] tabular-nums">
+              ₹{money(subtotal)}
+            </span>
+          </div>
+          <div className="rt-amt-field">
+            <span className="rt-amt-field__prefix">Rs</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              placeholder="0"
+              value={overallDiscountDraft}
+              onChange={(e) => onDiscountChange(e.target.value)}
+              aria-label={t('sell.schemeDiscount')}
+              className="rt-amt-field__input"
+            />
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {[
+              { label: '₹50', val: 50, isPct: false },
+              { label: '₹100', val: 100, isPct: false },
+              { label: '2%', val: 2, isPct: true },
+              { label: '5%', val: 5, isPct: true },
+            ].map((btn) => (
+              <button
+                key={btn.label}
+                type="button"
+                onClick={() => onApplyQuickDiscount(btn.val, btn.isPct)}
+                className="rt-chip min-h-[44px]"
+              >
+                {btn.label}
+              </button>
+            ))}
+            {currentDiscount > 0 && (
+              <button
+                type="button"
+                onClick={() => onDiscountChange('0')}
+                className="rt-chip min-h-[44px] ml-auto text-[var(--due)]"
+              >
+                {t('common.delete')}
+              </button>
+            )}
+          </div>
+        </section>
+
+        <section className="rt-card space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-xs font-bold uppercase text-[var(--text-2)]">{t('sell.payment')}</h4>
+            <span className="text-base font-extrabold text-[var(--text)] tabular-nums">
+              ₹{money(totalAmount)}
+            </span>
+          </div>
+
+          <div className="rt-pay-pills" role="group" aria-label={t('sell.payment')}>
+            {phoneModes.map(({ id, label, icon: Icon }) => {
+              const selected = activePhoneMode === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={selected}
+                  onClick={() => {
+                    onPaymentModeChange(id);
+                    if (id === 'credit') {
+                      onAmountPaidChange('0');
+                    } else if (amountPaidDraft === '0' || amountPaidDraft === '') {
+                      onAmountPaidChange(String(totalAmount));
+                    }
+                  }}
+                  className="rt-pay-pill"
+                >
+                  <Icon size={16} />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-[var(--text-2)]">
+              {t('sell.amountCollected')}
+            </label>
+            <div className="rt-amt-field">
+              <span className="rt-amt-field__prefix">Rs</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min="0"
+                max={totalAmount}
+                placeholder="0"
+                value={amountPaidDraft}
+                onChange={(e) => onAmountPaidChange(e.target.value)}
+                className="rt-amt-field__input"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-2 pt-2 border-t border-[var(--border)]">
+            <span className={`rt-tag ${isPaidInFull ? 'rt-tag--paid' : 'rt-tag--due'}`}>
+              {isPaidInFull ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
+              <span>{isPaidInFull ? t('status.paid') : t('status.due')}</span>
+            </span>
+            <span className={`text-sm font-extrabold tabular-nums ${balanceDue > 0 ? 'text-[var(--due)]' : 'text-[var(--paid)]'}`}>
+              ₹{money(balanceDue)}
+            </span>
+          </div>
+        </section>
+
+        {!compact && (onPaymentDateChange || onPaymentNoteChange) && (
+          <section className="rt-card space-y-2.5">
+            {onPaymentDateChange && (
+              <div>
+                <label className="block text-xs font-semibold text-[var(--text-2)] mb-1">
+                  {t('common.date')}
+                </label>
+                <input
+                  type="date"
+                  value={paymentDate}
+                  onChange={(e) => onPaymentDateChange(e.target.value)}
+                  className="w-full min-h-[44px] px-3 text-sm bg-[var(--surface)] border border-[var(--border)] rounded-full"
+                />
+              </div>
+            )}
+            {onPaymentNoteChange && (
+              <div>
+                <label className="block text-xs font-semibold text-[var(--text-2)] mb-1">
+                  {t('common.notes')}
+                </label>
+                <input
+                  type="text"
+                  value={paymentNote}
+                  onChange={(e) => onPaymentNoteChange(e.target.value)}
+                  placeholder="UPI Ref / Note"
+                  className="w-full min-h-[44px] px-3 text-sm bg-[var(--surface)] border border-[var(--border)] rounded-full"
+                />
+              </div>
+            )}
+          </section>
+        )}
+      </div>
+    );
+  }
 
   const paymentModes: { id: PaymentMode; label: string; icon: React.ElementType }[] = [
     { id: 'cash', label: 'Cash', icon: Banknote },
     { id: 'upi', label: 'UPI / QR', icon: QrCode },
     { id: 'credit', label: 'Credit (Due)', icon: Clock },
-    { id: 'cheque', label: 'Cheque', icon: CreditCard },
+    { id: 'cheque', label: 'Cheque', icon: CheckCircle2 },
   ];
 
   return (

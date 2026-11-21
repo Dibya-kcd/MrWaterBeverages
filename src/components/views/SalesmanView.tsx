@@ -4,7 +4,6 @@ import { SalesmanTripScreens, SalesmanTripScreenMode } from "./trips/SalesmanTri
 import { NewTripSheet } from "./trips/NewTripSheet";
 import { useCreateTrip } from "./trips/useCreateTrip";
 import { SizeChip } from "../common/SizeChip";
-import { sizeTheme, sizeStripe } from "../../utils/sizeColor";
 import {
   AlertTriangle,
   ArrowRight,
@@ -223,14 +222,20 @@ export const SalesmanView: React.FC = () => {
   const [tripLimit, setTripLimit] = useState(30);
   const matchedHistoryTrips = useMemo(() => {
     const q = tripSearch.trim().toLowerCase();
+    const qDigits = q.replace(/\D/g, '');
     if (!q) return olderOrClosedTrips;
-    return olderOrClosedTrips.filter(
-      (t) =>
+    return olderOrClosedTrips.filter((t) => {
+      const phones = `${t.driverPhone || ''} ${t.salesmanPhone || ''}`;
+      return (
         (t.vehicle || '').toLowerCase().includes(q) ||
         (t.route || '').toLowerCase().includes(q) ||
+        (t.driver || '').toLowerCase().includes(q) ||
         (t.date || '').includes(q) ||
-        String(t.id).includes(q),
-    );
+        String(t.id).includes(q) ||
+        phones.toLowerCase().includes(q) ||
+        (qDigits.length >= 3 && phones.replace(/\D/g, '').includes(qDigits))
+      );
+    });
   }, [olderOrClosedTrips, tripSearch]);
   const shownHistoryTrips = matchedHistoryTrips.slice(0, tripLimit);
 
@@ -1443,27 +1448,24 @@ export const SalesmanView: React.FC = () => {
         <main className="max-w-none lg:max-w-6xl mx-auto px-4 py-4">
         {/* VIEW 0: FIELD ROUTE DASHBOARD (HOME SCREEN) */}
         {salesmanTab === 'home' && (
-          <section id="salesman-home-dashboard" className="space-y-6">
+          <section id="salesman-home-dashboard" className={`space-y-6 ${!isLowVision ? 'hh-salesman-flat' : ''}`}>
             {/* 4 Summary KPI Cards (2x2 Grid) */}
             <div className="grid grid-cols-2 gap-3 sm:gap-4">
               {/* Card 1: Cash in Hand */}
               <div
+                data-card-tone="received"
                 onClick={() => setSalesmanTab('customerDue')}
-                className="p-3.5 sm:p-4 rounded-2xl border-2 shadow-sm transition-transform hover:scale-[1.01] cursor-pointer"
-                style={{
-                  backgroundColor: '#ECFDF5',
-                  borderColor: '#A7F3D0',
-                }}
+                className="p-3.5 sm:p-4 rounded-2xl border shadow-sm transition-transform active:scale-[0.98] hover:scale-[1.01] cursor-pointer"
               >
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center justify-between gap-2 mb-2.5">
                   <span className="text-xs font-bold text-emerald-800">
                     Cash in Hand
                   </span>
-                  <div className="w-8 h-8 rounded-xl bg-emerald-200/60 text-emerald-800 flex items-center justify-center">
-                    <IndianRupee size={18} />
+                  <div className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--green">
+                    <IndianRupee size={16} />
                   </div>
                 </div>
-                <div className="text-xl sm:text-2xl font-black font-mono text-emerald-950">
+                <div className="text-xl sm:text-2xl font-black font-mono tabular-nums text-emerald-950">
                   ₹{money(todayCash)}
                 </div>
                 <div className="text-[11px] font-semibold text-emerald-700 mt-1">
@@ -1473,47 +1475,41 @@ export const SalesmanView: React.FC = () => {
 
               {/* Card 2: UPI / Online */}
               <div
+                data-card-tone="sales"
                 onClick={() => setSalesmanTab('customerDue')}
-                className="p-3.5 sm:p-4 rounded-2xl border-2 shadow-sm transition-transform hover:scale-[1.01] cursor-pointer"
-                style={{
-                  backgroundColor: '#ECFEFF',
-                  borderColor: '#A5F3FC',
-                }}
+                className="p-3.5 sm:p-4 rounded-2xl border shadow-sm transition-transform active:scale-[0.98] hover:scale-[1.01] cursor-pointer"
               >
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-cyan-800">
+                <div className="flex items-center justify-between gap-2 mb-2.5">
+                  <span className="text-xs font-bold text-blue-800">
                     UPI / Online
                   </span>
-                  <div className="w-8 h-8 rounded-xl bg-cyan-200/60 text-cyan-800 flex items-center justify-center">
-                    <Zap size={18} />
+                  <div className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--blue">
+                    <Zap size={16} />
                   </div>
                 </div>
-                <div className="text-xl sm:text-2xl font-black font-mono text-cyan-950">
+                <div className="text-xl sm:text-2xl font-black font-mono tabular-nums text-blue-950">
                   ₹{money(todayUpi)}
                 </div>
-                <div className="text-[11px] font-semibold text-cyan-700 mt-1">
+                <div className="text-[11px] font-semibold text-blue-700 mt-1">
                   Direct transfers
                 </div>
               </div>
 
               {/* Card 3: Total Sales */}
               <div
+                data-card-tone="warning"
                 onClick={() => setSalesmanTab('bills')}
-                className="p-3.5 sm:p-4 rounded-2xl border-2 shadow-sm transition-transform hover:scale-[1.01] cursor-pointer"
-                style={{
-                  backgroundColor: '#FFFBEB',
-                  borderColor: '#FDE68A',
-                }}
+                className="p-3.5 sm:p-4 rounded-2xl border shadow-sm transition-transform active:scale-[0.98] hover:scale-[1.01] cursor-pointer"
               >
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center justify-between gap-2 mb-2.5">
                   <span className="text-xs font-bold text-amber-800">
                     Total Sales
                   </span>
-                  <div className="w-8 h-8 rounded-xl bg-amber-200/60 text-amber-800 flex items-center justify-center">
-                    <Receipt size={18} />
+                  <div className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--amber">
+                    <Receipt size={16} />
                   </div>
                 </div>
-                <div className="text-xl sm:text-2xl font-black font-mono text-amber-950">
+                <div className="text-xl sm:text-2xl font-black font-mono tabular-nums text-amber-950">
                   ₹{money(todaySales)}
                 </div>
                 <div className="text-[11px] font-semibold text-amber-700 mt-1">
@@ -1523,25 +1519,22 @@ export const SalesmanView: React.FC = () => {
 
               {/* Card 4: Crates Delivered */}
               <div
+                data-card-tone="profit"
                 onClick={() => setSalesmanTab('vanStock')}
-                className="p-3.5 sm:p-4 rounded-2xl border-2 shadow-sm transition-transform hover:scale-[1.01] cursor-pointer"
-                style={{
-                  backgroundColor: '#FAF5FF',
-                  borderColor: '#E9D5FF',
-                }}
+                className="p-3.5 sm:p-4 rounded-2xl border shadow-sm transition-transform active:scale-[0.98] hover:scale-[1.01] cursor-pointer"
               >
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-purple-800">
+                <div className="flex items-center justify-between gap-2 mb-2.5">
+                  <span className="text-xs font-bold text-violet-800">
                     Crates Delivered
                   </span>
-                  <div className="w-8 h-8 rounded-xl bg-purple-200/60 text-purple-800 flex items-center justify-center">
-                    <Package size={18} />
+                  <div className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--purple">
+                    <Package size={16} />
                   </div>
                 </div>
-                <div className="text-xl sm:text-2xl font-black font-mono text-purple-950">
+                <div className="text-xl sm:text-2xl font-black font-mono tabular-nums text-violet-950">
                   {todayDeliveredCrates}
                 </div>
-                <div className="text-[11px] font-semibold text-purple-700 mt-1">
+                <div className="text-[11px] font-semibold text-violet-700 mt-1">
                   {totalLoadedItems} items loaded
                 </div>
               </div>
@@ -1559,22 +1552,19 @@ export const SalesmanView: React.FC = () => {
                 <button
                   type="button"
                   id="home-action-sale"
+                  data-card-tone="sales"
                   onClick={() => setSalesmanTab('sell')}
-                  className="group p-4 rounded-2xl border-2 flex items-center justify-between gap-3 text-left transition-all hover:shadow-md cursor-pointer"
-                  style={{
-                    backgroundColor: palette.panel,
-                    borderColor: palette.line,
-                  }}
+                  className="group p-4 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all hover:shadow-md active:scale-[0.99] cursor-pointer"
                 >
                   <div className="flex items-center gap-3.5 min-w-0">
-                    <div className="w-12 h-12 rounded-2xl bg-slate-900 text-white flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
-                      <ShoppingCart size={22} />
+                    <div className="hh-icon-badge hh-icon-badge--navy group-hover:scale-105 transition-transform">
+                      <ShoppingCart size={20} />
                     </div>
                     <div className="min-w-0">
-                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-amber-600 transition-colors">
+                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-blue-700 transition-colors">
                         {t('salesman.newSale')}
                       </div>
-                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                      <div className="text-xs text-slate-600 truncate mt-0.5">
                         Create bill for retailer
                       </div>
                     </div>
@@ -1586,22 +1576,19 @@ export const SalesmanView: React.FC = () => {
                 <button
                   type="button"
                   id="home-action-payment"
+                  data-card-tone="received"
                   onClick={() => setSalesmanTab('customerDue')}
-                  className="group p-4 rounded-2xl border-2 flex items-center justify-between gap-3 text-left transition-all hover:shadow-md cursor-pointer"
-                  style={{
-                    backgroundColor: palette.panel,
-                    borderColor: palette.line,
-                  }}
+                  className="group p-4 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all hover:shadow-md active:scale-[0.99] cursor-pointer"
                 >
                   <div className="flex items-center gap-3.5 min-w-0">
-                    <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
-                      <IndianRupee size={22} />
+                    <div className="hh-icon-badge hh-icon-badge--green group-hover:scale-105 transition-transform">
+                      <IndianRupee size={20} />
                     </div>
                     <div className="min-w-0">
-                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-emerald-600 transition-colors">
+                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-emerald-700 transition-colors">
                         2. Payments
                       </div>
-                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                      <div className="text-xs text-slate-600 truncate mt-0.5">
                         Collect dues & receipts
                       </div>
                     </div>
@@ -1613,22 +1600,19 @@ export const SalesmanView: React.FC = () => {
                 <button
                   type="button"
                   id="home-action-trip"
+                  data-card-tone="warning"
                   onClick={() => setSalesmanTab('trips')}
-                  className="group p-4 rounded-2xl border-2 flex items-center justify-between gap-3 text-left transition-all hover:shadow-md cursor-pointer"
-                  style={{
-                    backgroundColor: palette.panel,
-                    borderColor: palette.line,
-                  }}
+                  className="group p-4 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all hover:shadow-md active:scale-[0.99] cursor-pointer"
                 >
                   <div className="flex items-center gap-3.5 min-w-0">
-                    <div className="w-12 h-12 rounded-2xl bg-amber-500 text-slate-950 flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
-                      <Truck size={22} />
+                    <div className="hh-icon-badge hh-icon-badge--amber group-hover:scale-105 transition-transform">
+                      <Truck size={20} />
                     </div>
                     <div className="min-w-0">
-                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-amber-600 transition-colors">
+                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-amber-700 transition-colors">
                         3. Trips
                       </div>
-                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                      <div className="text-xs text-slate-600 truncate mt-0.5">
                         Manage vehicle runs & loads
                       </div>
                     </div>
@@ -1640,22 +1624,19 @@ export const SalesmanView: React.FC = () => {
                 <button
                   type="button"
                   id="home-action-stock"
+                  data-card-tone="profit"
                   onClick={() => setSalesmanTab('vanStock')}
-                  className="group p-4 rounded-2xl border-2 flex items-center justify-between gap-3 text-left transition-all hover:shadow-md cursor-pointer"
-                  style={{
-                    backgroundColor: palette.panel,
-                    borderColor: palette.line,
-                  }}
+                  className="group p-4 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all hover:shadow-md active:scale-[0.99] cursor-pointer"
                 >
                   <div className="flex items-center gap-3.5 min-w-0">
-                    <div className="w-12 h-12 rounded-2xl bg-purple-600 text-white flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
-                      <Package size={22} />
+                    <div className="hh-icon-badge hh-icon-badge--purple group-hover:scale-105 transition-transform">
+                      <Package size={20} />
                     </div>
                     <div className="min-w-0">
-                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-purple-600 transition-colors">
+                      <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-violet-700 transition-colors">
                         {t('salesman.tab.vanStock')}
                       </div>
-                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                      <div className="text-xs text-slate-600 truncate mt-0.5">
                         Check remaining stock & crates
                       </div>
                     </div>
@@ -1667,22 +1648,19 @@ export const SalesmanView: React.FC = () => {
                 <button
                   type="button"
                   id="home-action-add-customer"
+                  data-card-tone="received"
                   onClick={() => setShowHomeAddCustomerModal(true)}
-                  className="group p-4 rounded-2xl border-2 flex items-center justify-between gap-3 text-left transition-all hover:shadow-md cursor-pointer sm:col-span-2"
-                  style={{
-                    backgroundColor: palette.panel,
-                    borderColor: palette.line,
-                  }}
+                  className="group p-4 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all hover:shadow-md active:scale-[0.99] cursor-pointer sm:col-span-2"
                 >
                   <div className="flex items-center gap-3.5 min-w-0">
-                    <div className="w-12 h-12 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm group-hover:scale-105 transition-transform">
-                      <UserPlus size={22} />
+                    <div className="hh-icon-badge hh-icon-badge--green group-hover:scale-105 transition-transform">
+                      <UserPlus size={20} />
                     </div>
                     <div className="min-w-0">
                       <div className="font-black text-sm sm:text-base text-slate-900 group-hover:text-emerald-700 transition-colors flex items-center gap-2">
                         <span>5. Add Customer</span>
                       </div>
-                      <div className="text-xs text-slate-500 truncate mt-0.5">
+                      <div className="text-xs text-slate-600 truncate mt-0.5">
                         Register new retailer on route
                       </div>
                     </div>
@@ -1694,13 +1672,10 @@ export const SalesmanView: React.FC = () => {
 
             {/* TODAY'S INVOICES SECTION */}
             <div
-              className="p-4 sm:p-5 rounded-2xl border-2 shadow-sm space-y-4"
-              style={{
-                backgroundColor: palette.panel,
-                borderColor: palette.line,
-              }}
+              data-card-tone="neutral"
+              className="p-4 sm:p-5 rounded-2xl border shadow-sm space-y-4"
             >
-              <div className="flex items-center justify-between gap-3 pb-3 border-b-2" style={{ borderColor: palette.line }}>
+              <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-200/80">
                 <div className="flex items-center gap-2">
                   <Receipt size={20} className="text-emerald-700 shrink-0" />
                   <h2 className="font-black text-base sm:text-lg text-slate-900">
@@ -1748,8 +1723,8 @@ export const SalesmanView: React.FC = () => {
                     return (
                       <div
                         key={bill.id}
-                        className="p-3.5 rounded-xl border-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 transition-colors bg-white hover:bg-slate-50"
-                        style={{ borderColor: palette.line }}
+                        data-card-tone={isFullyPaid ? 'received' : isPartial ? 'warning' : 'due'}
+                        className="p-3.5 rounded-2xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 transition-colors"
                       >
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
@@ -1804,7 +1779,7 @@ export const SalesmanView: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => setInvoiceModalBill(bill)}
-                              className="px-2.5 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100 text-xs font-bold text-slate-700 cursor-pointer"
+                              className="hh-salesman-bill-btn px-2.5 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100 text-xs font-bold text-slate-700 cursor-pointer"
                               title="View Invoice Details"
                             >
                               View
@@ -1815,7 +1790,7 @@ export const SalesmanView: React.FC = () => {
                                 const text = `Invoice #${bill.id} from ${orgProfile?.name || 'MrWater Distribution'}: ₹${bill.total} for ${bill.retailer}. Thank you!`;
                                 window.open(`https://wa.me/${bill.phone ? '91' + bill.phone.replace(/\D/g, '') : ''}?text=${encodeURIComponent(text)}`, '_blank');
                               }}
-                              className="p-1.5 rounded-lg border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer"
+                              className="hh-salesman-bill-btn p-1.5 rounded-lg border border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer inline-flex items-center justify-center"
                               title="Share via WhatsApp"
                             >
                               <Share2 size={14} />
@@ -1835,16 +1810,13 @@ export const SalesmanView: React.FC = () => {
         {salesmanTab === 'vanStock' && (
           <section id="salesman-van-stock-view" className="space-y-4">
             <div
-              className="p-3 sm:p-4 rounded-xl border-2 shadow-sm"
-              style={{
-                backgroundColor: palette.panel,
-                borderColor: palette.line,
-              }}
+              data-card-tone="neutral"
+              className="p-3.5 sm:p-4 rounded-2xl border shadow-sm"
             >
               {/* Header with Title & Live Van Run Metrics */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 border-b-2" style={{ borderColor: palette.line }}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3 border-b border-slate-200/80">
                 <div className="flex items-center gap-2.5">
-                  <div className="w-10 h-10 rounded-xl bg-sky-100 text-sky-800 flex items-center justify-center shrink-0">
+                  <div className="hh-icon-badge hh-icon-badge--blue">
                     <Truck size={20} />
                   </div>
                   <div>
@@ -1860,10 +1832,10 @@ export const SalesmanView: React.FC = () => {
                 </div>
                 {activeTrip && (
                   <div className="flex items-center gap-2 flex-wrap">
-                    <div className="px-2.5 py-1 rounded-md bg-emerald-50 border border-emerald-300 text-xs font-bold text-emerald-800">
+                    <div className="px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-bold tabular-nums text-emerald-800">
                       Invoiced: ₹{money(tripTotalBilled)}
                     </div>
-                    <div className="px-2.5 py-1 rounded-md bg-sky-50 border border-blue-300 text-xs font-bold text-sky-800">
+                    <div className="px-2.5 py-1 rounded-lg bg-blue-50 border border-blue-200 text-xs font-bold tabular-nums text-blue-800">
                       Collected: ₹{money(tripTotalCollected)}
                     </div>
                   </div>
@@ -1872,19 +1844,19 @@ export const SalesmanView: React.FC = () => {
 
               {/* High-Level On-Board Cases Summary Bar */}
               <div className="grid grid-cols-3 gap-2 sm:gap-3 mb-4">
-                <div className="bg-slate-50 border-2 rounded-lg p-2.5 sm:p-3 text-center" style={{ borderColor: palette.line }}>
+                <div data-card-tone="neutral" className="border rounded-2xl p-2.5 sm:p-3 text-center">
                   <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Total Loaded</div>
-                  <div className="text-lg sm:text-2xl font-black text-slate-900 mt-0.5">{vanStockCounts.totalLoadedCases} cs</div>
+                  <div className="text-lg sm:text-2xl font-black tabular-nums text-slate-900 mt-0.5">{vanStockCounts.totalLoadedCases} cs</div>
                   <div className="text-[10.5px] text-slate-500 font-medium hidden sm:block">Departed on van</div>
                 </div>
-                <div className="bg-sky-50/60 border-2 border-sky-200 rounded-lg p-2.5 sm:p-3 text-center">
-                  <div className="text-[11px] font-bold text-sky-700 uppercase tracking-wider">Total Sold</div>
-                  <div className="text-lg sm:text-2xl font-black text-sky-700 mt-0.5">{vanStockCounts.totalSoldCases} cs</div>
-                  <div className="text-[10.5px] text-sky-600 font-medium hidden sm:block">Delivered on route</div>
+                <div data-card-tone="sales" className="border rounded-2xl p-2.5 sm:p-3 text-center">
+                  <div className="text-[11px] font-bold text-blue-700 uppercase tracking-wider">Total Sold</div>
+                  <div className="text-lg sm:text-2xl font-black tabular-nums text-blue-800 mt-0.5">{vanStockCounts.totalSoldCases} cs</div>
+                  <div className="text-[10.5px] text-blue-600 font-medium hidden sm:block">Delivered on route</div>
                 </div>
-                <div className="bg-emerald-50/60 border-2 border-emerald-200 rounded-lg p-2.5 sm:p-3 text-center">
+                <div data-card-tone="received" className="border rounded-2xl p-2.5 sm:p-3 text-center">
                   <div className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider">Remaining</div>
-                  <div className="text-lg sm:text-2xl font-black text-emerald-800 mt-0.5">{vanStockCounts.totalAvailableCases} cs</div>
+                  <div className="text-lg sm:text-2xl font-black tabular-nums text-emerald-800 mt-0.5">{vanStockCounts.totalAvailableCases} cs</div>
                   <div className="text-[10.5px] text-emerald-600 font-medium hidden sm:block">Ready to bill now</div>
                 </div>
               </div>
@@ -1959,8 +1931,8 @@ export const SalesmanView: React.FC = () => {
                     return (
                       <div
                         key={p.id}
-                        className="border-2 rounded-xl p-3.5 bg-white shadow-sm hover:shadow-sm transition-shadow flex flex-col justify-between"
-                        style={{ borderColor: isOutOfStock ? `${palette.bad}80` : palette.line, borderLeftWidth: 6, borderLeftColor: sizeTheme(p.volume, p.name).hex }}
+                        data-card-tone={isOutOfStock ? 'due' : 'received'}
+                        className="border rounded-2xl p-3.5 shadow-sm hover:shadow transition-shadow flex flex-col justify-between"
                       >
                         <div>
                           {/* Card Header: Name, SKU, and Status Badge */}
@@ -1971,7 +1943,7 @@ export const SalesmanView: React.FC = () => {
                               </h3>
                               <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                                 {p.sku && (
-                                  <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 border border-slate-200">
+                                  <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-white/80 text-slate-600 border border-slate-200">
                                     {p.sku}
                                   </span>
                                 )}
@@ -1981,18 +1953,18 @@ export const SalesmanView: React.FC = () => {
 
                             {/* Van Status Badge: Loaded items are either AVAILABLE or VAN EMPTY */}
                             {isOutOfStock ? (
-                              <span className="px-2 py-0.5 rounded text-[10.5px] font-extrabold bg-rose-100 text-rose-800 border border-rose-200 shrink-0">
+                              <span className="px-2 py-0.5 rounded-md text-[10.5px] font-extrabold bg-rose-100 text-rose-800 border border-rose-200 shrink-0">
                                 VAN EMPTY
                               </span>
                             ) : (
-                              <span className="px-2 py-0.5 rounded text-[10.5px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
+                              <span className="px-2 py-0.5 rounded-md text-[10.5px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
                                 AVAILABLE
                               </span>
                             )}
                           </div>
 
                           {/* 3-Column Reconciliation Metrics Box */}
-                          <div className="grid grid-cols-3 gap-1.5 my-2.5 p-2 bg-slate-50/80 rounded-lg border border-slate-200 text-center">
+                          <div className="grid grid-cols-3 gap-1.5 my-2.5 p-2 bg-white/80 rounded-xl border border-black/5 text-center tabular-nums">
                             <div>
                               <div className="text-[10px] font-bold text-slate-500 uppercase">Loaded</div>
                               <div className="text-sm font-extrabold text-slate-800">{p.vanLoaded} cs</div>
@@ -2068,19 +2040,18 @@ export const SalesmanView: React.FC = () => {
 
         {/* VIEW 3: MY BILLS (SCOPED TO OWN TRIPS/BILLS ONLY) */}
         {salesmanTab === 'bills' && (
-          <section id="salesman-bills-view" className="space-y-4">
+          <section id="salesman-bills-view" className={`space-y-4 ${!isLowVision ? 'hh-salesman-flat' : ''}`}>
             <div
-              className="p-4 sm:p-5 rounded-2xl border-2 shadow-sm space-y-4"
-              style={{
-                backgroundColor: palette.panel,
-                borderColor: palette.line,
-              }}
+              data-card-tone="neutral"
+              className="p-4 sm:p-5 rounded-2xl border shadow-sm space-y-4"
             >
               {/* Header */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b-2" style={{ borderColor: palette.line }}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200/80">
                 <div>
-                  <h2 style={fz(18, { fontWeight: 900 })} className="text-slate-900 flex items-center gap-2">
-                    <FileText size={20} className="text-sky-700" />
+                  <h2 style={fz(18, { fontWeight: 900 })} className="text-slate-900 flex items-center gap-2.5">
+                    <span className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--blue">
+                      <FileText size={16} />
+                    </span>
                     <span>My Bills</span>
                   </h2>
                   <p className="text-xs font-semibold text-slate-500 mt-0.5">
@@ -2170,11 +2141,8 @@ export const SalesmanView: React.FC = () => {
                       <div
                         key={bill.id}
                         id={`salesman-bill-row-${bill.id}`}
-                        className="p-3.5 rounded-xl border-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 transition-colors"
-                        style={{
-                          borderColor: due > 0 ? '#FCA5A5' : palette.line,
-                          backgroundColor: palette.cream,
-                        }}
+                        data-card-tone={due > 0 ? 'due' : 'received'}
+                        className="p-3.5 rounded-2xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 transition-colors"
                       >
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
@@ -2211,7 +2179,7 @@ export const SalesmanView: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => setInvoiceModalBill(bill)}
-                              className="p-2 rounded-lg border-2 cursor-pointer bg-white hover:bg-slate-100 transition-colors"
+                              className="hh-salesman-bill-btn p-2 rounded-lg border-2 cursor-pointer bg-white hover:bg-slate-100 transition-colors inline-flex items-center justify-center"
                               style={{ borderColor: palette.line }}
                               title="View / Print Tax Invoice"
                               aria-label={`View invoice ${bill.id}`}
@@ -2224,7 +2192,7 @@ export const SalesmanView: React.FC = () => {
                                 const text = `Invoice #${bill.id} from ${orgProfile?.name || 'MrWater Distribution'}: ₹${bill.total} for ${bill.retailer}. Thank you!`;
                                 window.open(`https://wa.me/${bill.phone ? '91' + bill.phone.replace(/\D/g, '') : ''}?text=${encodeURIComponent(text)}`, '_blank');
                               }}
-                              className="p-2 rounded-lg border-2 cursor-pointer bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
+                              className="hh-salesman-bill-btn p-2 rounded-lg border-2 cursor-pointer bg-emerald-600 text-white hover:bg-emerald-700 transition-colors inline-flex items-center justify-center"
                               style={{ borderColor: '#047857' }}
                               title="Share via WhatsApp"
                               aria-label={`WhatsApp invoice ${bill.id}`}
@@ -2311,17 +2279,16 @@ export const SalesmanView: React.FC = () => {
         {salesmanTab === 'trips' && (
           <section id="salesman-trips-view" className="space-y-4">
             <div
-              className="p-4 sm:p-5 rounded-2xl border-2 shadow-sm space-y-4"
-              style={{
-                backgroundColor: palette.panel,
-                borderColor: palette.line,
-              }}
+              data-card-tone="neutral"
+              className="p-4 sm:p-5 rounded-2xl border shadow-sm space-y-4"
             >
               {/* Header */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b-2" style={{ borderColor: palette.line }}>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200/80">
                 <div>
-                  <h2 style={fz(18, { fontWeight: 900 })} className="text-slate-900 flex items-center gap-2">
-                    <Truck size={20} className="text-sky-700" />
+                  <h2 style={fz(18, { fontWeight: 900 })} className="text-slate-900 flex items-center gap-2.5">
+                    <span className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--blue">
+                      <Truck size={16} />
+                    </span>
                     <span>Trips</span>
                   </h2>
                   <p className="text-xs font-semibold text-slate-500 mt-0.5">
@@ -2346,11 +2313,8 @@ export const SalesmanView: React.FC = () => {
               {activeTrip ? (
                 <div
                   id={`salesman-trip-item-${activeTrip.id}`}
-                  className="p-4 rounded-xl border-2 shadow-sm space-y-3.5"
-                  style={{
-                    backgroundColor: '#EFF6FF',
-                    borderColor: '#3B82F6',
-                  }}
+                  data-card-tone="sales"
+                  className="p-4 rounded-2xl border shadow-sm space-y-3.5"
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -2373,8 +2337,16 @@ export const SalesmanView: React.FC = () => {
                     <div className="font-black text-lg text-slate-900 leading-tight">
                       {activeTrip.vehicle}
                     </div>
-                    <div className="text-xs font-bold text-slate-600 mt-0.5">
-                      Route: {activeTrip.route || 'Standard Route'} • Driver/Sales: {activeTrip.salesman || 'Assigned'} • Trip #{activeTrip.id}
+                    <div className="text-xs font-bold text-slate-600 mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span>Route: {activeTrip.route || 'Standard Route'} • Driver/Sales: {activeTrip.driver || activeTrip.salesman || 'Assigned'} • Trip #{activeTrip.id}</span>
+                      {(activeTrip.driverPhone || activeTrip.salesmanPhone) && (
+                        <a
+                          href={`tel:${(activeTrip.driverPhone || activeTrip.salesmanPhone || '').replace(/\s+/g, '')}`}
+                          className="inline-flex items-center gap-1 text-sky-700 hover:text-sky-900 no-underline"
+                        >
+                          <Phone size={11} /> {activeTrip.driverPhone || activeTrip.salesmanPhone}
+                        </a>
+                      )}
                     </div>
                   </div>
 
@@ -2431,14 +2403,11 @@ export const SalesmanView: React.FC = () => {
                 </div>
               ) : (
                 <div
-                  className="p-4 rounded-xl border-2 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                  style={{
-                    backgroundColor: '#F8FAFC',
-                    borderColor: '#CBD5E1',
-                  }}
+                  data-card-tone="neutral"
+                  className="p-4 rounded-2xl border shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-500 shrink-0">
+                    <div className="hh-icon-badge hh-icon-badge--slate">
                       <Truck size={20} />
                     </div>
                     <div>
@@ -2473,7 +2442,8 @@ export const SalesmanView: React.FC = () => {
                       <div
                         key={trip.id}
                         id={`salesman-trip-item-${trip.id}`}
-                        className="p-3.5 sm:p-4 rounded-xl border-2 border-slate-200 bg-white hover:border-slate-300 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors"
+                        data-card-tone="sales"
+                        className="p-3.5 sm:p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors"
                       >
                         <div>
                           <div className="flex items-center gap-2 flex-wrap">
@@ -2491,8 +2461,16 @@ export const SalesmanView: React.FC = () => {
                             </span>
                           </div>
 
-                          <div className="text-xs font-semibold text-slate-600 mt-1">
-                            Route: {trip.route || 'Delivery Route'} • Loaded: {tripLoadTotal} cases • Bills: {billsForTrip.length} (₹{money(totalTripBilled)})
+                          <div className="text-xs font-semibold text-slate-600 mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                            <span>Route: {trip.route || 'Delivery Route'} • Loaded: {tripLoadTotal} cases • Bills: {billsForTrip.length} (₹{money(totalTripBilled)})</span>
+                            {(trip.driverPhone || trip.salesmanPhone) && (
+                              <a
+                                href={`tel:${(trip.driverPhone || trip.salesmanPhone || '').replace(/\s+/g, '')}`}
+                                className="inline-flex items-center gap-1 text-sky-700 hover:text-sky-900 no-underline"
+                              >
+                                <Phone size={11} /> {trip.driverPhone || trip.salesmanPhone}
+                              </a>
+                            )}
                           </div>
                         </div>
 
@@ -2578,7 +2556,8 @@ export const SalesmanView: React.FC = () => {
                             <div
                               key={trip.id}
                               id={`salesman-trip-item-${trip.id}`}
-                              className="p-3.5 sm:p-4 rounded-xl border-2 bg-white border-slate-200 hover:border-slate-300 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors"
+                              data-card-tone="neutral"
+                              className="p-3.5 sm:p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors"
                             >
                               <div>
                                 <div className="flex items-center gap-2 flex-wrap">

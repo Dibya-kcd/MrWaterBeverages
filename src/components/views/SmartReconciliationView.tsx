@@ -14,7 +14,6 @@ import {
 } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { SizeChip } from '../common/SizeChip';
-import { sizeStripe } from '../../utils/sizeColor';
 import { Button, Card, CardContent, Badge, Modal } from '../ui';
 import {
   AuditSession,
@@ -236,8 +235,9 @@ export const SmartReconciliationView: React.FC = () => {
                 return (
                   <div
                     key={s.id}
+                    data-card-tone={summary.unresolved > 0 ? 'due' : summary.possibleSwaps > 0 ? 'warning' : 'received'}
                     onClick={() => setSelectedSessionId(s.id)}
-                    className="rounded-xl border border-slate-200 bg-white p-3 cursor-pointer hover:border-slate-300 transition-colors"
+                    className="rounded-2xl border p-3.5 cursor-pointer transition-all shadow-xs"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div>
@@ -391,7 +391,6 @@ export const SmartReconciliationView: React.FC = () => {
                   <div
                     key={p.id}
                     className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-100 lg:border-r"
-                    style={sizeStripe(p.volume, p.name)}
                   >
                     <div className="min-w-0">
                       <p className="text-sm text-slate-800 break-words leading-snug" title={p.name}>
@@ -533,7 +532,6 @@ export const SmartReconciliationView: React.FC = () => {
                   <div
                     key={p.id}
                     className={`flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-100 lg:border-r ${removed ? 'opacity-40' : ''}`}
-                    style={sizeStripe(p.volume, p.name)}
                   >
                     <div className="min-w-0">
                       <p className="text-sm text-slate-800 break-words leading-snug">
@@ -753,8 +751,17 @@ const SessionDetail: React.FC<{
             void pendingTxnsFor;
 
             return (
-              <Card key={entry.id} style={sizeStripe(products.find((p: any) => p.id === entry.productId)?.volume, entry.productName)}>
-                <CardContent className="space-y-2.5">
+              <Card
+                key={entry.id}
+                tone={
+                  entry.decisionStatus === 'applied'
+                    ? 'received'
+                    : entry.variance < 0
+                    ? 'due'
+                    : 'warning'
+                }
+              >
+                <CardContent className="space-y-2.5 pt-4">
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <p className="font-semibold text-sm text-slate-900">
@@ -928,15 +935,17 @@ const SessionDetail: React.FC<{
 };
 
 const SummaryChip: React.FC<{ label: string; value: number; tone: 'success' | 'warning' | 'danger' }> = ({ label, value, tone }) => {
-  const toneClasses = {
-    success: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-    warning: 'bg-amber-50 text-amber-700 border-amber-200',
-    danger: 'bg-rose-50 text-rose-700 border-rose-200',
-  } as const;
+  const cardTone = tone === 'success' ? 'received' : tone === 'warning' ? 'warning' : 'due';
+  const textClass =
+    tone === 'success'
+      ? 'text-emerald-800'
+      : tone === 'warning'
+      ? 'text-amber-800'
+      : 'text-rose-800';
   return (
-    <div className={`rounded-lg border p-2.5 text-center ${toneClasses[tone]}`}>
-      <p className="text-lg font-bold leading-tight">{value}</p>
-      <p className="text-[10px]">{label}</p>
+    <div data-card-tone={cardTone} className={`rounded-2xl border p-2.5 text-center ${textClass}`}>
+      <p className="text-lg font-extrabold tabular-nums leading-tight">{value}</p>
+      <p className="text-[10.5px] font-semibold mt-0.5">{label}</p>
     </div>
   );
 };

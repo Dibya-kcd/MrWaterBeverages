@@ -1,16 +1,35 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
+export type CardTone =
+  | 'navy'
+  | 'sales'
+  | 'blue'
+  | 'received'
+  | 'green'
+  | 'due'
+  | 'rose'
+  | 'warning'
+  | 'amber'
+  | 'orange'
+  | 'profit'
+  | 'purple'
+  | 'indigo'
+  | 'neutral'
+  | 'slate';
+
 export interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   noPadding?: boolean;
+  tone?: CardTone;
 }
 
 const Card = React.forwardRef<HTMLDivElement, CardProps>(
-  ({ className, noPadding, ...props }, ref) => (
+  ({ className, noPadding, tone, ...props }, ref) => (
     <div
       ref={ref}
+      data-card-tone={tone}
       className={cn(
-        "rounded-xl border border-slate-200 bg-white text-slate-950 shadow-xs",
+        "rounded-2xl border border-slate-200 bg-white text-slate-950 shadow-xs",
         noPadding ? "p-0" : "",
         className
       )}

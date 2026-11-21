@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { Check, Download, MessageCircle, Printer, Plus, ArrowRight } from 'lucide-react';
+import { Check, ChevronDown, Download, MessageCircle, Printer, Plus, ArrowRight } from 'lucide-react';
 import { Bill } from '../../types';
 import { money } from '../../utils/billing';
 import { downloadInvoicePdf, preloadInvoicePdf } from '../../utils/invoicePdfLazy';
 import { useLedger } from '../../context/LedgerContext';
 import { sendBillOnWhatsApp, whatsAppResultMessage } from '../../utils/whatsappBill';
 import { notify } from '../../utils/toast';
+import { useIsMobile } from '../../hooks/useIsMobile';
+import { useLanguage } from '../../i18n/LanguageContext';
+import { formatBillNumber } from '../../utils/invoiceCommon';
 
 interface InvoiceSuccessCardProps {
   bill: Bill;
@@ -20,7 +23,9 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
   onCreateNextBill,
   onOpenHistory,
 }) => {
-  const { orgProfile, billingSettings } = useLedger();
+  const { orgProfile, billingSettings, getCustomerLedger } = useLedger();
+  const isPhone = useIsMobile(767);
+  const { t } = useLanguage();
   useEffect(() => { preloadInvoicePdf().catch(() => {}); }, []);
 
   // Document format toggle (GST B2B Tax Invoice vs Non-GST B2C Retail Bill)
@@ -31,7 +36,17 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
   });
 
   const balanceDue = Math.max(0, bill.total - (bill.amountPaid || 0));
-  const isPaidInFull = balanceDue === 0;
+  const isWalkIn = !bill.retailer || bill.retailer === 'Apt / Walk-in sale';
+  let totalDueNow = balanceDue;
+  if (!isWalkIn && getCustomerLedger) {
+    try {
+      const ledgerBal = Number(getCustomerLedger(bill.retailer, bill.phone)?.rawBalance) || 0;
+      totalDueNow = Math.max(balanceDue, ledgerBal);
+    } catch {
+      totalDueNow = balanceDue;
+    }
+  }
+  const billDocNo = formatBillNumber(bill, billingSettings, selectedFormat);
 
   const handleDownloadPdf = () => {
     Promise.resolve(downloadInvoicePdf(bill, orgProfile, billingSettings, selectedFormat))
@@ -54,6 +69,147 @@ export const InvoiceSuccessCard: React.FC<InvoiceSuccessCardProps> = ({
   const itemsSubtotal = bill.items.reduce((s, it) => s + it.amount, 0);
   const discount = Math.max(0, Math.round((itemsSubtotal - bill.total) * 100) / 100);
   const fmtLabel = selectedFormat === 'gst' ? 'GST Invoice' : 'Retail Bill';
+  const modeLabel =
+    bill.paymentMode === 'upi'
+      ? t('sell.upi')
+      : bill.paymentMode === 'credit'
+        ? t('sell.credit')
+        : t('sell.cash');
+
+  if (isPhone) {
+    return (
+      <div className="rt-success-wrap pt-2" id="invoice-success-actions">
+        <div className="text-center space-y-1.5 py-2" role="status">
+          <div className="rt-success-check mx-auto">
+            <Check size={30} strokeWidth={3} aria-hidden="true" />
+          </div>
+          <div className="rt-success-total">₹{money(bill.total)}</div>
+          <div className="text-xs font-semibold text-[var(--text-2)] break-words">
+            #{billDocNo} · {isWalkIn ? t('sell.walkInSale') : bill.retailer}
+          </div>
+        </div>
+
+        <div className="rt-card !py-2 !px-3.5">
+          <div className="rt-ln">
+            <span className="text-[var(--text-2)] font-semibold">
+              {t('sell.receivedMode', { mode: modeLabel })}
+            </span>
+            <b className="text-[var(--paid)] tabular-nums">₹{money(bill.amountPaid || 0)}</b>
+          </div>
+          <div className="rt-ln">
+            <span className="text-[var(--text-2)] font-semibold">{t('sell.totalDueNow')}</span>
+            <b className={`tabular-nums ${totalDueNow > 0.004 ? 'text-[var(--due)]' : 'text-[var(--paid)]'}`}>
+              ₹{money(totalDueNow)}
+            </b>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          id="invoice-success-whatsapp"
+          onClick={handleSendWhatsApp}
+          disabled={!bill.phone || sendingWa}
+          className="rt-btn rt-btn--wa w-full"
+        >
+          <MessageCircle size={18} />
+          <span>{bill.phone ? (sendingWa ? '…' : t('sell.shareOnWhatsapp')) : t('salesman.noPhone')}</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => (onOpenInvoiceModal ? onOpenInvoiceModal(bill, selectedFormat) : handleDownloadPdf())}
+          className="rt-btn-outline rt-btn-outline--primary w-full"
+          aria-label={`${t('sell.printPdf')} ${fmtLabel}`}
+        >
+          <Printer size={17} />
+          <span>{t('sell.printPdf')}</span>
+        </button>
+
+        <button
+          type="button"
+          id="btn-create-next-invoice-bottom"
+          onClick={onCreateNextBill}
+          className="rt-link-btn"
+        >
+          <Plus size={16} strokeWidth={2.5} />
+          <span>{t('sell.startNewSale')}</span>
+        </button>
+
+        <details className="rt-card !p-3">
+          <summary className="flex items-center justify-between gap-2 text-xs font-bold text-[var(--text-2)] cursor-pointer list-none">
+            <span>{t('sell.items')} ({bill.items.length} · {totalCases} cs)</span>
+            <ChevronDown size={15} />
+          </summary>
+          <div className="mt-3 space-y-2.5">
+            <div className="flex items-center justify-between gap-2 text-xs font-bold text-[var(--text-2)]">
+              <span>{fmtLabel}</span>
+              <div className="inline-flex rounded-full bg-[var(--bg)] p-0.5 border border-[var(--border)]">
+                {(['non_gst', 'gst'] as const).map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    aria-pressed={selectedFormat === f}
+                    onClick={() => setSelectedFormat(f)}
+                    className={`px-3 min-h-[34px] rounded-full text-xs font-bold cursor-pointer ${
+                      selectedFormat === f
+                        ? 'bg-[var(--primary)] text-[var(--surface)]'
+                        : 'text-[var(--text-2)]'
+                    }`}
+                  >
+                    {f === 'gst' ? 'GST' : 'Retail'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <ul className="divide-y divide-[var(--border)]">
+              {bill.items.map((it, idx) => (
+                <li key={it.key || idx} className="py-2 flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-bold text-[var(--text)] break-words">{it.productName}</div>
+                    <div className="text-xs text-[var(--text-2)] tabular-nums">
+                      {it.qty} × ₹{money(it.rate)}
+                      {it.freeQty ? ` (+${it.freeQty} free)` : ''}
+                    </div>
+                  </div>
+                  <div className="text-sm font-bold text-[var(--text)] tabular-nums shrink-0">
+                    ₹{money(it.amount)}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {discount > 0 && (
+              <div className="pt-2 border-t border-[var(--border)] flex justify-between text-xs font-semibold text-[var(--paid)]">
+                <span>{t('salesman.discount')}</span>
+                <span>−₹{money(discount)}</span>
+              </div>
+            )}
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={handleDownloadPdf}
+                className="rt-btn-outline flex-1 text-xs"
+                aria-label={`${t('sell.pdf')} ${fmtLabel}`}
+              >
+                <Download size={15} />
+                <span>{t('sell.pdf')}</span>
+              </button>
+              {onOpenHistory && (
+                <button
+                  type="button"
+                  onClick={onOpenHistory}
+                  className="rt-btn-outline flex-1 text-xs"
+                >
+                  <span>{t('sell.viewInHistory')}</span>
+                  <ArrowRight size={14} />
+                </button>
+              )}
+            </div>
+          </div>
+        </details>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3 max-w-none lg:max-w-2xl mx-auto">

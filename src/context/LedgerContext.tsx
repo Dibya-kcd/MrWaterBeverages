@@ -16,7 +16,17 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { allocateReceipt, billPaymentGaps, buildAdvanceRestoreRow, buildReceiptRows, isAdvanceAdjustmentRow, isAdvanceRow, splitUnlinkedPayments } from "../utils/paymentAllocation";
+import {
+  allocateReceipt,
+  billPaymentGaps,
+  buildAdvanceRestoreRow,
+  buildReceiptRows,
+  isAdvanceAdjustmentRow,
+  isAdvanceRow,
+  remainingAdvanceAmount,
+  splitUnlinkedPayments,
+  sumCustomerRecordedPaid,
+} from "../utils/paymentAllocation";
 import {
   applyBillCostRepairPlan,
   applyCrossWarehouseRestorePlan,
@@ -80,6 +90,9 @@ import {
   pushBillToSupabase,
   deleteBillFromSupabase,
   pushPaymentsToSupabase,
+  softDeletePaymentsInSupabase,
+  pushPaymentAuditEntryToSupabase,
+  pullPaymentHistoryFromSupabase,
   pushTripToSupabase,
   deleteTripFromSupabase,
   pushWarehouseToSupabase,
@@ -942,6 +955,8 @@ interface LedgerContextType {
     salesmanId?: string,
     warehouseLoads?: Record<string, Record<number, number>>,
     driver?: string,
+    driverPhone?: string,
+    salesmanPhone?: string,
   ) => Trip;
   toggleBillAssignment: (tripId: number, billId: number) => string | null;
   unassignBillFromTrip: (tripId: number, billId: number) => void;
@@ -1668,7 +1683,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, [payments]);
 
-  // Payment audit trail: who recorded, edited, deleted or moved which payment (kept on this device).
+  // Payment audit trail: who recorded, edited, deleted or moved which payment (cached locally & synced to cloud payment_history).
   const [paymentAudit, setPaymentAudit] = useState<PaymentAuditEntry[]>(() =>
     readPaymentAudit(),
   );
@@ -1682,18 +1697,37 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       /* storage unavailable */
     }
   }, [paymentAudit]);
+  useEffect(() => {
+    pullPaymentHistoryFromSupabase(1000)
+      .then((remoteHist) => {
+        if (!remoteHist || remoteHist.length === 0) return;
+        setPaymentAudit((prev) => {
+          const map = new Map<string, PaymentAuditEntry>();
+          prev.forEach((item) => map.set(item.id, item));
+          remoteHist.forEach((item) => map.set(item.id, item));
+          return Array.from(map.values())
+            .sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))
+            .slice(0, 1000);
+        });
+      })
+      .catch(() => {});
+  }, []);
   function logPaymentAudit(e: Omit<PaymentAuditEntry, "id" | "at" | "by">) {
-    setPaymentAudit((prev) =>
-      [
-        {
-          id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          at: new Date().toISOString(),
-          by: currentUser?.name || "Admin",
-          ...e,
-        },
-        ...prev,
-      ].slice(0, 1000),
-    );
+    const entry: PaymentAuditEntry = {
+      id: `aud_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      at: new Date().toISOString(),
+      by: currentUser?.name || "Admin",
+      ...e,
+    };
+    setPaymentAudit((prev) => [entry, ...prev].slice(0, 1000));
+    pushPaymentAuditEntryToSupabase(entry).catch(() => {});
+    if (currentUser?.role !== "salesman") {
+      cloudFetch("/api/payment-history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(entry),
+      });
+    }
   }
 
   // Keep bills amountPaid synchronized with linked receipts so invoices never falsely show as due
@@ -3540,6 +3574,16 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
           setPayments((prev) =>
             reconcilePaymentsFromBills(prev, withoutDeletedBills(remote.bills!)),
           );
+        }
+        if (remote.paymentAudit && remote.paymentAudit.length > 0) {
+          setPaymentAudit((prev) => {
+            const map = new Map<string, PaymentAuditEntry>();
+            prev.forEach((item) => map.set(item.id, item));
+            remote.paymentAudit!.forEach((item) => map.set(item.id, item));
+            return Array.from(map.values())
+              .sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))
+              .slice(0, 1000);
+          });
         }
 
         const incomingTrips =
@@ -9971,7 +10015,10 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       Math.round(
         led.payments
           .filter((p) => realIds.has(p.id) && isAdvanceRow(p))
-          .reduce((t, p) => t + (Number(p.amount) || 0), 0) * 100,
+          .reduce((t, p) => {
+            const amt = Number(p.amount) || 0;
+            return t + (amt < 0 ? amt : remainingAdvanceAmount(p));
+          }, 0) * 100,
       ) / 100,
     );
     const overpaid =
@@ -9991,8 +10038,9 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
   }
 
   // Use a customer's advance (and money overpaid on an invoice after a return) to pay their unpaid
-  // invoices, oldest first. The customer's balance does not change; only which invoice is paid.
-  // Returns the amount applied.
+  // invoices, oldest first. Original cash/UPI receipts stay untouched at full value so Collections
+  // never loses historical cash received; advances are marked applied via `appliedAmount`/`isAdvanceApplied`
+  // and overpaid invoices emit balanced transfer adjustment pairs (`-amt` / `+amt`).
   function applyAdvanceToInvoices(customerName: string, onlyBillId?: number): number {
     const r2 = (n: number) => Math.round(n * 100) / 100;
     const led = getCustomerLedger(customerName);
@@ -10004,8 +10052,19 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     const advRows = led.payments
       .filter((p) => realIds.has(p.id) && isAdvanceRow(p))
       .sort((a, b) => ((a.paymentDate || "") > (b.paymentDate || "") ? 1 : -1));
-    const advNet = r2(advRows.reduce((t, p) => t + (Number(p.amount) || 0), 0));
+    const advNet = r2(
+      advRows.reduce((t, p) => {
+        const amt = Number(p.amount) || 0;
+        return t + (amt < 0 ? amt : remainingAdvanceAmount(p));
+      }, 0),
+    );
     let advLeft = Math.max(0, advNet);
+    const posAdvRem = new Map<string, number>();
+    for (const r of advRows) {
+      const rem = remainingAdvanceAmount(r);
+      if (rem > 0.004) posAdvRem.set(r.id, rem);
+    }
+
     const overpaid = liveBills
       .map((b) => ({ b, e: billRefundDue(b) }))
       .filter((x) => x.e > 0.004);
@@ -10027,59 +10086,104 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     const stamp = Date.now();
+    const nowIso = new Date(stamp).toISOString();
     let seq = 0;
     const newRows: PaymentRecord[] = [];
+    const appliedAuditRows: PaymentRecord[] = [];
     const billUpdates = new Map<number, Bill>();
-    let fromAdvance = 0;
+    const appliedByAdvId = new Map<string, number>();
     const fromOver = new Map<number, number>();
     let applied = 0;
 
     for (const t of targets) {
-      const need = billBalance(t);
-      let use = 0;
-      const fromAdv = Math.min(advLeft, need);
-      advLeft = r2(advLeft - fromAdv);
-      fromAdvance = r2(fromAdvance + fromAdv);
-      use = r2(use + fromAdv);
+      let need = billBalance(t);
+      let usedForBill = 0;
+
+      // 1. Allocate from remaining unapplied advance rows (oldest first) while keeping original amount intact
+      if (advLeft > 0.004) {
+        for (const advRow of advRows) {
+          if (need <= 0.004 || advLeft <= 0.004) break;
+          const rem = posAdvRem.get(advRow.id) || 0;
+          if (rem <= 0.004) continue;
+          const take = r2(Math.min(rem, advLeft, need));
+          if (take <= 0.004) continue;
+          posAdvRem.set(advRow.id, r2(rem - take));
+          advLeft = r2(advLeft - take);
+          need = r2(need - take);
+          usedForBill = r2(usedForBill + take);
+          appliedByAdvId.set(advRow.id, r2((appliedByAdvId.get(advRow.id) || 0) + take));
+          const adjRow: PaymentRecord = {
+            id: `pay_${stamp}_adj${seq++}_${Math.random().toString(36).slice(2, 6)}`,
+            billId: t.id,
+            customerId: advRow.customerId || led.customer?.id,
+            customerName: t.retailer,
+            customerPhone: t.phone,
+            paymentDate: todayISO(),
+            amount: take,
+            mode: "other",
+            entryKind: "advance_adjustment",
+            sourcePaymentId: advRow.id,
+            referenceNote: `Advance / credit adjusted against invoice #${t.id}`,
+            recordedBy: currentUser?.name || "Admin",
+            createdAt: new Date(stamp + seq).toISOString(),
+            updatedAt: new Date(stamp + seq).toISOString(),
+          };
+          newRows.push(adjRow);
+          appliedAuditRows.push(adjRow);
+        }
+      }
+
+      // 2. Allocate from overpaid invoices (after returns) via balanced transfer pairs
       for (const [obId, left] of Array.from(overLeft.entries())) {
-        if (r2(need - use) <= 0.004) break;
-        const take = Math.min(left, r2(need - use));
+        if (need <= 0.004) break;
+        const take = r2(Math.min(left, need));
         if (take <= 0.004) continue;
         overLeft.set(obId, r2(left - take));
+        need = r2(need - take);
+        usedForBill = r2(usedForBill + take);
         fromOver.set(obId, r2((fromOver.get(obId) || 0) + take));
-        use = r2(use + take);
+        const outRow: PaymentRecord = {
+          id: `pay_${stamp}_ovrout${seq++}_${Math.random().toString(36).slice(2, 6)}`,
+          billId: obId,
+          customerId: led.customer?.id,
+          customerName: t.retailer,
+          customerPhone: t.phone,
+          paymentDate: todayISO(),
+          amount: -take,
+          mode: "other",
+          entryKind: "advance_adjustment",
+          sourceBillId: obId,
+          referenceNote: `Advance / credit transferred from invoice #${obId} to #${t.id}`,
+          recordedBy: currentUser?.name || "Admin",
+          createdAt: new Date(stamp + seq).toISOString(),
+          updatedAt: new Date(stamp + seq).toISOString(),
+        };
+        const inRow: PaymentRecord = {
+          id: `pay_${stamp}_adj${seq++}_${Math.random().toString(36).slice(2, 6)}`,
+          billId: t.id,
+          customerId: led.customer?.id,
+          customerName: t.retailer,
+          customerPhone: t.phone,
+          paymentDate: todayISO(),
+          amount: take,
+          mode: "other",
+          entryKind: "advance_adjustment",
+          sourceBillId: obId,
+          referenceNote: `Advance / credit adjusted against invoice #${t.id} (from #${obId})`,
+          recordedBy: currentUser?.name || "Admin",
+          createdAt: new Date(stamp + seq).toISOString(),
+          updatedAt: new Date(stamp + seq).toISOString(),
+        };
+        newRows.push(inRow, outRow);
+        appliedAuditRows.push(inRow);
       }
-      if (use <= 0.004) continue;
-      applied = r2(applied + use);
-      billUpdates.set(t.id, { ...t, amountPaid: r2((t.amountPaid || 0) + use) });
-      newRows.push({
-        id: `pay_${stamp}_adj${seq++}_${Math.random().toString(36).slice(2, 6)}`,
-        billId: t.id,
-        customerName: t.retailer,
-        customerPhone: t.phone,
-        paymentDate: todayISO(),
-        amount: use,
-        mode: "other",
-        referenceNote: `Advance / credit adjusted against invoice #${t.id}`,
-        recordedBy: currentUser?.name || "Admin",
-        createdAt: new Date(stamp + seq).toISOString(),
-      });
+
+      if (usedForBill <= 0.004) continue;
+      applied = r2(applied + usedForBill);
+      billUpdates.set(t.id, { ...t, amountPaid: r2((t.amountPaid || 0) + usedForBill) });
     }
     if (applied <= 0.004) return 0;
 
-    // Take the used amount off the advance rows (oldest first) ...
-    const reducedAdv = new Map<string, number>();
-    let toTake = fromAdvance;
-    for (const r of advRows) {
-      if (toTake <= 0.004) break;
-      const amt = Number(r.amount) || 0;
-      if (amt <= 0) continue;
-      const take = Math.min(amt, toTake);
-      reducedAdv.set(r.id, r2(amt - take));
-      toTake = r2(toTake - take);
-    }
-    // ... and off the overpaid invoices (their paid amount and newest receipts first).
-    const reducedRows = new Map<string, number>();
     fromOver.forEach((amt, obId) => {
       const ob = liveBills.find((b) => b.id === obId);
       if (!ob) return;
@@ -10087,32 +10191,25 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         ...ob,
         amountPaid: Math.max(0, r2((ob.amountPaid || 0) - amt)),
       });
-      let left = amt;
-      const rows = payments
-        .filter((p) => p.billId === obId)
-        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-      for (const r of rows) {
-        if (left <= 0.004) break;
-        const ra = Number(r.amount) || 0;
-        const take = Math.min(ra, left);
-        reducedRows.set(r.id, r2(ra - take));
-        left = r2(left - take);
-      }
     });
-    const removedIds: string[] = [];
-    const adjust = (p: PaymentRecord): PaymentRecord[] => {
-      const v = reducedAdv.has(p.id) ? reducedAdv.get(p.id)! : reducedRows.get(p.id);
-      if (v === undefined) return [p];
-      if (v <= 0.004) {
-        removedIds.push(p.id);
-        return [];
-      }
-      return [{ ...p, amount: v }];
+
+    const markAdvanceApplied = (p: PaymentRecord): PaymentRecord => {
+      const addApplied = appliedByAdvId.get(p.id);
+      if (!addApplied) return p;
+      const total = Number(p.amount) || 0;
+      const nextApplied = Math.min(total, r2((Number(p.appliedAmount) || 0) + addApplied));
+      return {
+        ...p,
+        entryKind: p.entryKind || "advance",
+        appliedAmount: nextApplied,
+        isAdvanceApplied: nextApplied >= total - 0.004,
+        updatedAt: nowIso,
+      };
     };
+
     commitBillUpdates(billUpdates);
-    setPayments((prev) => [...newRows, ...prev.flatMap(adjust)]);
-    addPaymentTombstones(removedIds);
-    newRows.forEach((r) =>
+    setPayments((prev) => [...newRows, ...prev.map(markAdvanceApplied)]);
+    appliedAuditRows.forEach((r) =>
       logPaymentAudit({
         action: "apply_advance",
         paymentId: r.id,
@@ -10124,7 +10221,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       }),
     );
     notify(
-      `₹${applied.toLocaleString("en-IN", { maximumFractionDigits: 2 })} of advance/credit adjusted against ${newRows.length} unpaid invoice${newRows.length > 1 ? "s" : ""}.`,
+      `₹${applied.toLocaleString("en-IN", { maximumFractionDigits: 2 })} of advance/credit adjusted against ${appliedAuditRows.length} unpaid invoice${appliedAuditRows.length > 1 ? "s" : ""}.`,
     );
     return applied;
   }
@@ -10165,6 +10262,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       mode: mode || "cash",
       referenceNote: note ? `Refund paid to customer · ${note}` : "Refund paid to customer",
       recordedBy: currentUser?.name || "Admin",
+      entryKind: "refund",
       isAdvance: true,
       isRefund: true,
       createdAt: new Date().toISOString(),
@@ -10200,21 +10298,51 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
 
   function deletePayment(paymentId: string, rectificationReason?: string) {
     const target = payments.find((p) => p.id === paymentId);
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+    const delBillUpdates = new Map<number, Bill>();
     if (target && target.billId) {
       const b = allBillsRef.current.find((x) => x.id === target.billId);
       if (b) {
-        commitBillUpdates(
-          new Map([
-            [
-              b.id,
-              { ...b, amountPaid: Math.max(0, b.amountPaid - (target.amount || 0)) },
-            ],
-          ]),
-        );
+        delBillUpdates.set(b.id, {
+          ...b,
+          amountPaid: Math.max(0, r2(b.amountPaid - (target.amount || 0))),
+        });
       }
     }
+
+    // If this is the positive side of an overpaid-invoice credit transfer (`sourceBillId`), also reverse its
+    // paired negative transfer row on the source bill so that source bill's credit/paid amount stays accurate.
+    const pairedOutRow =
+      target &&
+      isAdvanceAdjustmentRow(target) &&
+      (Number(target.amount) || 0) > 0 &&
+      !target.sourcePaymentId &&
+      target.sourceBillId
+        ? payments.find(
+            (p) =>
+              p.id !== target.id &&
+              p.billId === target.sourceBillId &&
+              p.entryKind === "advance_adjustment" &&
+              Math.abs((Number(p.amount) || 0) + (Number(target.amount) || 0)) < 0.01,
+          )
+        : undefined;
+
+    if (pairedOutRow && pairedOutRow.billId) {
+      const sb = delBillUpdates.get(pairedOutRow.billId) ?? allBillsRef.current.find((x) => x.id === pairedOutRow.billId);
+      if (sb) {
+        delBillUpdates.set(sb.id, {
+          ...sb,
+          amountPaid: r2((sb.amountPaid || 0) + Math.abs(Number(pairedOutRow.amount) || 0)),
+        });
+      }
+    }
+    if (delBillUpdates.size > 0) {
+      commitBillUpdates(delBillUpdates);
+    }
+
+    const removedIds = pairedOutRow ? [paymentId, pairedOutRow.id] : [paymentId];
     if (target) {
-      const tombIds = [paymentId];
+      const tombIds = [...removedIds];
       if (target.billId) {
         tombIds.push(`pay_bill_${target.billId}`);
         tombIds.push(`legacy_pay_${target.billId}`);
@@ -10234,17 +10362,18 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         before: target,
       });
       // Record the delete in the cloud so no other device / stale cache can bring it back.
-      pushDeletionRecordsToSupabase([
-        {
-          kind: "payment",
-          id: paymentId,
+      softDeletePaymentsInSupabase(removedIds, currentUser?.name || "Admin", reason).catch(() => {});
+      pushDeletionRecordsToSupabase(
+        removedIds.map((id) => ({
+          kind: "payment" as const,
+          id,
           name: target.customerName,
           deletedAt: new Date().toISOString(),
           by: currentUser?.name || "Admin",
           reason,
           note: `₹${target.amount}${target.billId ? ` on invoice #${target.billId}` : ""}`,
-        },
-      ])
+        })),
+      )
         .then((ok) => {
           if (!ok) {
             reportSyncFailure("deletePayment(log)", new Error("Could not save the delete to the cloud"));
@@ -10252,17 +10381,37 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         })
         .catch(() => {});
     }
-    // Deleting an "advance adjusted against invoice" row must not make the customer lose that
-    // money: put it back on account as an advance.
+
+    // Reversing an adjustment row:
+    //  1) Linked to a kept advance row (`sourcePaymentId`): free up `appliedAmount` on that advance row.
+    //  2) Paired with an overpaid-invoice transfer (`pairedOutRow`): already restored onto source bill above.
+    //  3) Legacy positive adjustment row (no source link): restore onto customer's account as a new advance row.
+    const linkedSourceAdv =
+      target &&
+      isAdvanceAdjustmentRow(target) &&
+      target.sourcePaymentId &&
+      payments.some((p) => p.id === target.sourcePaymentId)
+        ? payments.find((p) => p.id === target.sourcePaymentId)
+        : undefined;
+
     const restoreRow =
-      target && isAdvanceAdjustmentRow(target)
+      target &&
+      isAdvanceAdjustmentRow(target) &&
+      (Number(target.amount) || 0) > 0 &&
+      !linkedSourceAdv &&
+      !pairedOutRow
         ? buildAdvanceRestoreRow(
             target,
             () => `pay_${Date.now()}_rst_${Math.random().toString(36).slice(2, 6)}`,
             currentUser?.name || "Admin",
           )
         : null;
-    if (restoreRow) {
+
+    if (linkedSourceAdv) {
+      notify(
+        `₹${(Number(target!.amount) || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })} adjustment removed; available advance on ${linkedSourceAdv.customerName}'s account updated.`,
+      );
+    } else if (restoreRow) {
       logPaymentAudit({
         action: "record",
         paymentId: restoreRow.id,
@@ -10275,9 +10424,29 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         `₹${restoreRow.amount.toLocaleString("en-IN", { maximumFractionDigits: 2 })} was put back on ${restoreRow.customerName}'s account as an advance.`,
       );
     }
-    const next = [...(restoreRow ? [restoreRow] : []), ...payments.filter((p) => p.id !== paymentId)];
+
+    const removeSet = new Set(removedIds);
+    const nowIso = new Date().toISOString();
+    const next = [
+      ...(restoreRow ? [restoreRow] : []),
+      ...payments
+        .filter((p) => !removeSet.has(p.id))
+        .map((p) => {
+          if (!linkedSourceAdv || p.id !== linkedSourceAdv.id) return p;
+          const total = Number(p.amount) || 0;
+          const nextApplied = Math.max(0, r2((Number(p.appliedAmount) || 0) - (Number(target?.amount) || 0)));
+          return {
+            ...p,
+            appliedAmount: nextApplied,
+            isAdvanceApplied: nextApplied >= total - 0.004 && nextApplied > 0.004,
+            updatedAt: nowIso,
+          };
+        }),
+    ];
     setPayments(next);
-    cloudFetch(`/api/payments/${encodeURIComponent(paymentId)}`, { method: "DELETE" });
+    for (const delId of removedIds) {
+      cloudFetch(`/api/payments/${encodeURIComponent(delId)}`, { method: "DELETE" });
+    }
     // The save effect skips an empty list (so a not-yet-loaded list can never wipe saved data).
     // When the last payment is deleted on purpose, save the empty list here, otherwise the
     // deleted payment comes back after a reload.
@@ -10342,6 +10511,11 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         reason,
         note: `₹${t.amount}${t.billId ? ` on invoice #${t.billId}` : ""}`,
       })),
+    ).catch(() => {});
+    softDeletePaymentsInSupabase(
+      targets.map((t) => t.id),
+      currentUser?.name || "Admin",
+      reason,
     ).catch(() => {});
     for (const id of targets.map((t) => t.id)) {
       cloudFetch(`/api/payments/${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -10965,7 +11139,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
         );
       });
 
-      const totalRecordedPaid = custPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      const totalRecordedPaid = sumCustomerRecordedPaid(custPayments);
       // An invoice's "paid" that has no receipt row behind it (old data) is added invoice by invoice,
       // exactly like the customer ledger does. Comparing only the grand totals let an advance
       // receipt hide another invoice's missing payment, so the list and the ledger disagreed.
@@ -11258,10 +11432,7 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       0,
     );
     const netBilled = Math.max(0, totalBilled - totalReturns);
-    const totalPaid = allPayments.reduce(
-      (sum, p) => sum + (Number(p.amount) || 0),
-      0,
-    );
+    const totalPaid = sumCustomerRecordedPaid(allPayments);
     const openingBal = resolvedCustomer.openingBalance || 0;
     const rawBalance = openingBal + totalBilled - totalReturns - totalPaid;
     const balanceDue = Math.max(0, Math.round(rawBalance * 100) / 100);
@@ -12879,6 +13050,8 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
     salesmanId?: string,
     warehouseLoads?: Record<string, Record<number, number>>,
     driver?: string,
+    driverPhone?: string,
+    salesmanPhone?: string,
   ): Trip {
     // Highest id ever used: live trips AND deleted ones, so an id on the deletion list is never handed out again.
     const highestUsed = Math.max(
@@ -12900,6 +13073,10 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       salesman ||
       matchedSalesmanObj?.name ||
       (currentUser?.role === "salesman" ? currentUser.name : undefined);
+    const resolvedSalesmanPhone =
+      salesmanPhone?.trim() ||
+      matchedSalesmanObj?.phone ||
+      undefined;
 
     const validWhIds = new Set(warehouses.map((w) => w.id));
     const explicitWh =
@@ -12924,8 +13101,10 @@ export const LedgerProvider: React.FC<{ children: React.ReactNode }> = ({
       vehicle,
       salesman: resolvedSalesmanName || undefined,
       salesmanId: resolvedSalesmanId || undefined,
+      salesmanPhone: resolvedSalesmanPhone,
       route: route || undefined,
       driver: driver?.trim() || undefined,
+      driverPhone: driverPhone?.trim() || undefined,
       date,
       warehouseId: resolvedWarehouseId || "",
       loaded,

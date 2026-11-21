@@ -1,8 +1,9 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowDownRight,
   ArrowLeft,
   ArrowUpRight,
+  Calendar,
   ChevronRight,
   Download,
   IndianRupee,
@@ -21,6 +22,7 @@ import {
   Calculator,
   Gift,
   Boxes,
+  X,
 } from 'lucide-react';
 import { Bill, BillItem, InventoryBatch, Product } from '../../../types';
 import { useLedger } from '../../../context/LedgerContext';
@@ -33,7 +35,6 @@ import { resolveTaxRegime, noOutputTax } from '../../../tax/appRegime';
 import { ProductProfitPricingModal } from './ProductProfitPricingModal';
 import { NetProfitReport } from './NetProfitReport';
 import { InfoTip } from '../../common/InfoTip';
-import { RegisterCard, Pill } from './mobile/ReportCards';
 import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
 import {
@@ -46,17 +47,8 @@ import {
   ReportStatGrid,
   ReportTitleBar,
 } from './ReportKit';
-import {
-  Chips,
-  HeroCard,
-  LegendDot,
-  MiniStat,
-  PhoneDownloadBar,
-  PhoneHeader,
-  PhoneSearch,
-  SplitBar,
-} from './mobile/PhoneKit';
-import { SubPageBack, SubPageMenu, type SubPageCard } from './mobile/SubPageMenu';
+import { PhoneDownloadBar } from './mobile/PhoneKit';
+import { MobileReportTopBar, useMobileReport } from './mobile/MobileReportContext';
 
 export type MarginSubTab = 'products' | 'customers' | 'days' | 'netProfit';
 export type ProfitViewBasis = 'exGst' | 'inclGst';
@@ -532,11 +524,18 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
   gstTaxSummary,
   purchaseStats,
 }) => {
-  const [subTab, setSubTab] = useState<MarginSubTab>(initialSubTab || 'products');
+  const mobileCtx = useMobileReport();
+  const [subTab, setSubTab] = useState<MarginSubTab>(mobileCtx?.pnlTargetTab || initialSubTab || 'products');
   // Phone: a deep link (e.g. "Net Profit" from the Reports home) opens that page directly; otherwise start on the list.
   const [mobileActiveSubPage, setMobileActiveSubPage] = useState<MarginSubTab | null>(
-    initialSubTab || null,
+    mobileCtx?.pnlTargetTab || initialSubTab || null,
   );
+  useEffect(() => {
+    if (mobileCtx?.pnlTargetTab) {
+      setSubTab(mobileCtx.pnlTargetTab);
+      setMobileActiveSubPage(mobileCtx.pnlTargetTab);
+    }
+  }, [mobileCtx?.pnlTargetTab]);
   const [viewBasis, setViewBasis] = useState<ProfitViewBasis>('exGst');
   const [search, setSearch] = useState('');
   // Composition / unregistered bills carry a taxStamp: stock cost then includes the purchase GST (no ITC).
@@ -984,107 +983,186 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
   const paidPct = pnl.collected > 0 ? `${((pnl.collected / (pnl.billedSalesNet || 1)) * 100).toFixed(0)}% paid` : '0% paid';
   const rs = (n: number) => `₹${money(n)}`;
 
-  const mobileMenuCards: SubPageCard<MarginSubTab>[] = [
-    {
-      id: 'netProfit',
-      title: 'Salary budget and pay',
-      summary: 'Net profit after running costs and pay already given, plus how much can be shared as staff pay',
-      badge: 'Open report',
-      badgeTone: 'green',
-      icon: Wallet,
-      tone: 'emerald',
-    },
-    {
-      id: 'products',
-      title: 'Product Margins and Profit',
-      summary: `${productRows.length} product${productRows.length === 1 ? '' : 's'} · landed cost, average selling price and profit per case for each`,
-      badge: `${productRows.length} item${productRows.length === 1 ? '' : 's'}`,
-      badgeTone: 'blue',
-      icon: Package,
-      tone: 'blue',
-    },
-    {
-      id: 'customers',
-      title: 'Customer Account Margins',
-      summary: `${customerRows.length} customer${customerRows.length === 1 ? '' : 's'} · sales, cost and true profit earned from each party`,
-      badge: `${customerRows.length} buyer${customerRows.length === 1 ? '' : 's'}`,
-      badgeTone: 'purple',
-      icon: Users,
-      tone: 'purple',
-    },
-    {
-      id: 'days',
-      title: 'Daily Sales and Margins',
-      summary: `${dayRows.length} day${dayRows.length === 1 ? '' : 's'} with sales · invoices, billed amount, profit and margin % for each day`,
-      badge: `${dayRows.length} day${dayRows.length === 1 ? '' : 's'}`,
-      badgeTone: 'cyan',
-      icon: TrendingUp,
-      tone: 'cyan',
-    },
-  ];
+  const compactRs = (n: number) => {
+    const abs = Math.abs(n);
+    const sign = n < 0 ? '-' : '';
+    if (abs >= 100000) return `${sign}₹${(abs / 100000).toFixed(1)}L`;
+    if (abs >= 1000) return `${sign}₹${(abs / 1000).toFixed(abs >= 10000 ? 0 : 1)}k`;
+    return `${sign}₹${Math.round(abs)}`;
+  };
+  const initialsOf = (name: string) => {
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return 'P';
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  };
+  const fmtShortDate = (iso: string) => {
+    const d = new Date(`${iso.slice(0, 10)}T12:00:00`);
+    return isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  };
+  const statusPill = (pct: number) => {
+    if (pct < 0) return { label: 'Loss', cls: 'bg-[var(--due-bg)] text-[var(--due)]' };
+    if (pct < 6) return { label: 'Low', cls: 'bg-[var(--soon-bg)] text-[var(--soon)]' };
+    return { label: 'Good', cls: 'bg-[var(--paid-bg)] text-[var(--paid)]' };
+  };
+
+  const activeMobileTabLabel = tabs.find((t) => t.id === (mobileActiveSubPage || subTab))?.label || 'Products';
+  const shareProps = {
+    reportTitle: `Profit & Loss - ${activeMobileTabLabel}`,
+    summaryLines: [
+      { label: 'Sales', value: rs(pnl.activeNetSales) },
+      { label: 'Gross profit', value: rs(pnl.activeGrossProfit) },
+      { label: 'Margin', value: `${pnl.activeMarginPct.toFixed(1)}%` },
+    ],
+    sheets: [
+      {
+        name: 'Products',
+        header: ['Product', 'Cases', 'Sales', 'Profit', 'Margin %'],
+        rows: productRows.map((r) => [r.productName, r.casesSold, r.taxableSales, r.operatingProfit, Number(r.operatingMarginPct.toFixed(2))]),
+      },
+    ],
+    pdfSections: [
+      {
+        title: 'Products',
+        header: ['Product', 'Cases', 'Profit', 'Margin %'],
+        rows: productRows.map((r) => [r.productName, r.casesSold, money(r.operatingProfit), `${r.operatingMarginPct.toFixed(1)}%`]),
+        rightAlign: [1, 2, 3],
+      },
+    ],
+  };
+
+  const barItems = useMemo(() => {
+    if (subTab === 'products') {
+      return productRows.slice(0, 5).map((r) => ({
+        key: String(r.productId),
+        label: r.productName,
+        value: r.operatingProfit,
+        display: compactRs(r.operatingProfit),
+      }));
+    }
+    if (subTab === 'customers') {
+      return customerRows.slice(0, 5).map((r) => ({
+        key: r.customerKey,
+        label: r.customerName,
+        value: r.grossProfit,
+        display: compactRs(r.grossProfit),
+      }));
+    }
+    return dayRows.slice(0, 5).map((r) => ({
+      key: r.date,
+      label: fmtShortDate(r.date),
+      value: r.grossProfit,
+      display: compactRs(r.grossProfit),
+    }));
+  }, [subTab, productRows, customerRows, dayRows]);
+  const maxBarAbs = Math.max(1, ...barItems.map((b) => Math.abs(b.value)));
 
   return (
     <div className="space-y-3 animate-in fade-in duration-200" id="report-sales-margin-pnl">
       {/* ============================ PHONE ============================ */}
       <div className="md:hidden space-y-3">
-        <PhoneHeader title="Sales, margin & P&L" sub="Revenue, gross margin and profitability" />
+        <MobileReportTopBar
+          title={activeMobileTabLabel}
+          sub="Profit & Loss"
+          doubleBack
+          onBack={() => {
+            if (mobileCtx) {
+              mobileCtx.setPnlTargetTab(null);
+            } else {
+              setMobileActiveSubPage(null);
+            }
+          }}
+          showPeriod
+          shareProps={shareProps}
+        />
 
-        {mobileActiveSubPage === null ? (
-          <>
-            {showControls && (
-              <HeroCard tone={profitNeg ? 'red' : 'profit'} label={viewBasis === 'exGst' ? 'Operating profit' : 'Gross margin'} value={rs(pnl.activeGrossProfit)} negative={profitNeg}>
-                <SplitBar
-                  label="Cost versus profit"
-                  parts={[
-                    { value: pnl.cogs, className: 'bg-amber-300' },
-                    { value: Math.max(0, pnl.activeGrossProfit), className: 'bg-emerald-300' },
-                  ]}
-                />
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-white/90">
-                  <LegendDot dot="bg-amber-300">Cost {rs(pnl.cogs)}</LegendDot>
-                  <LegendDot dot="bg-emerald-300">{pnl.activeMarginPct.toFixed(1)}% margin</LegendDot>
-                </div>
-              </HeroCard>
-            )}
-            {showControls && (
-              <div className="grid grid-cols-3 gap-2">
-                <MiniStat label="You got" value={rs(pnl.activeNetSales)} />
-                <MiniStat label="You spent" value={rs(pnl.cogs)} tone="amber" />
-                <MiniStat label="Invoices" value={pnl.invoiceCount} />
-              </div>
-            )}
-            {showControls && (
-              <button type="button" onClick={() => setExplainOpen(true)} className="px-1 text-xs font-semibold text-sky-700 inline-flex items-center gap-1 cursor-pointer min-h-[36px]">
-                <Info size={13} aria-hidden="true" /> How is this calculated?
+        {showControls && (
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+              {([
+                { id: 'profit', label: 'Profit' },
+                { id: 'margin', label: 'Margin %' },
+                { id: 'sales', label: 'Sold' },
+              ] as const).map((opt) => {
+                const active = sortBy === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setSortBy(opt.id)}
+                    className={`shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold border transition-colors cursor-pointer ${
+                      active
+                        ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                        : 'bg-white text-[var(--text)] border-[var(--border)]'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => setViewBasis((b) => (b === 'exGst' ? 'inclGst' : 'exGst'))}
+              className="shrink-0 px-2.5 py-1.5 rounded-full text-[11px] font-bold bg-white border border-[var(--border)] text-[var(--text-2)] cursor-pointer"
+              title="Toggle Ex-GST / Incl-GST"
+            >
+              {viewBasis === 'exGst' ? 'Ex-GST' : 'Incl-GST'}
+            </button>
+          </div>
+        )}
+
+        {showControls && barItems.length > 0 && (
+          <section className="rt-rep-card rt-rep-pad space-y-2.5">
+            <div className="text-[13px] font-bold text-[var(--text)]">
+              {subTab === 'products' ? 'Margin by product' : subTab === 'customers' ? 'Profit by customer' : 'Profit by day'}
+            </div>
+            <div className="space-y-2">
+              {barItems.map((b) => {
+                const isNeg = b.value < 0;
+                const pct = Math.max(8, Math.round((Math.abs(b.value) / maxBarAbs) * 100));
+                return (
+                  <div key={b.key} className="grid grid-cols-[84px_1fr_54px] items-center gap-2.5 text-[11.5px]">
+                    <span className="font-semibold text-[var(--text)] truncate">{b.label}</span>
+                    <div className="rt-hbar-track">
+                      <div
+                        className="rt-hbar-fill"
+                        style={{
+                          width: `${pct}%`,
+                          background: isNeg ? 'var(--due)' : 'var(--primary)',
+                        }}
+                      />
+                    </div>
+                    <span className={`text-right font-bold tabular-nums ${isNeg ? 'text-[var(--due)]' : 'text-[var(--text)]'}`}>
+                      {b.display}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {showSearch && (
+          <div className="rt-search-bar">
+            <Search size={15} className="text-[var(--text-2)] shrink-0" aria-hidden="true" />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={searchHint}
+            />
+            {search.trim() && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                className="text-[var(--text-2)] p-1 cursor-pointer"
+                aria-label="Clear search"
+              >
+                <X size={14} />
               </button>
             )}
-
-            {/* Every section is a full-width card row: full name + full summary, opens as its own page */}
-            <SubPageMenu<MarginSubTab>
-              heading="Sales, margin & P&L sections"
-              cards={mobileMenuCards}
-              onOpen={(id) => {
-                setSubTab(id);
-                setMobileActiveSubPage(id);
-              }}
-            />
-          </>
-        ) : (
-          <>
-            <SubPageBack
-              backLabel="All sales, margin & P&L sections"
-              title={mobileMenuCards.find((c) => c.id === mobileActiveSubPage)?.title || ''}
-              onBack={() => setMobileActiveSubPage(null)}
-            />
-
-            {showControls && <Chips<ProfitViewBasis> label="Profit basis" options={phoneBasisOptions} value={viewBasis} onChange={setViewBasis} />}
-            {showSearch && (
-              <>
-                <PhoneSearch value={search} onChange={setSearch} placeholder={searchHint} />
-                <Chips<typeof sortBy> label="Sort by" options={sortOptions} value={sortBy} onChange={setSortBy} />
-              </>
-            )}
-          </>
+          </div>
         )}
       </div>
 
@@ -1135,8 +1213,8 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
       {/* ===== 2. PRODUCT MARGINS & PRICING TABLE ===== */}
       {subTab === 'products' && (
         <div className="space-y-2">
-          {/* Table Description Note */}
-          <div className="flex items-center justify-between flex-wrap gap-2 text-xs text-slate-500 px-1">
+          {/* Table Description Note (desktop) */}
+          <div className="hidden md:flex items-center justify-between flex-wrap gap-2 text-xs text-slate-500 px-1">
             <div className="flex items-center gap-2">
               <span className="font-semibold text-slate-700">
                 {productRows.length} Product SKUs Sold
@@ -1155,59 +1233,59 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
             </span>
           </div>
 
-          <div className="md:hidden space-y-3" id="margin-product-cards">
+          <div className="md:hidden" id="margin-product-cards">
             {productRows.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-black/10 px-4 py-10 text-center text-sm text-slate-500">
+              <div className="rt-rep-card px-4 py-10 text-center text-[13px] font-semibold text-[var(--text-2)]">
                 No product sales matching this period or filter.
               </div>
             ) : (
-              productRows.map((r) => (
-                <RegisterCard
-                  key={r.productId}
-                  title={r.productName}
-                  pills={
-                    <>
-                      {r.freeCases > 0 && <Pill tone="amber">Scheme</Pill>}
-                      <span className={`inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(r.operatingMarginPct)}`}>
-                        {r.operatingMarginPct.toFixed(1)}%
-                      </span>
-                    </>
-                  }
-                  subtitle={r.category}
-                  heroLabel="Operating profit"
-                  hero={`₹${money(r.operatingProfit)}`}
-                  heroTone={r.operatingProfit >= 0 ? 'green' : 'red'}
-                  segments={[
-                    { value: r.cogs, className: 'bg-amber-500', label: 'COGS' },
-                    { value: Math.max(0, r.operatingProfit), className: 'bg-emerald-600', label: 'Operating profit' },
-                  ]}
-                  stats={[
-                    { label: 'Billed', value: `${r.casesSold} cs` },
-                    { label: 'Free', value: r.freeCases > 0 ? `+${r.freeCases} cs` : '—', tone: r.freeCases > 0 ? 'amber' : 'muted' },
-                    { label: 'Total', value: `${r.totalDispatched} cs`, tone: 'sky' },
-                    { label: 'Avg sell / cs', value: `₹${money(r.avgBilledSellRate)}` },
-                    { label: 'Billed net', value: `₹${money(r.netSales)}`, tone: 'sky' },
-                    { label: 'COGS', value: `₹${money(r.cogs)}`, tone: 'amber' },
-                  ]}
-                  note={
-                    <div className="text-[11px] text-slate-500 font-mono">
-                      Cost ₹{money(r.costPerCase)} / cs · +₹{money(r.profitPerCase)} profit / cs
-                    </div>
-                  }
-                  actions={
+              <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+                {productRows.map((r) => {
+                  const pill = statusPill(r.operatingMarginPct);
+                  const neg = r.operatingProfit < 0;
+                  return (
                     <button
+                      key={r.productId}
                       type="button"
                       onClick={() => {
                         setSelectedProductForModal(r);
                         setIsPricingModalOpen(true);
                       }}
-                      className="flex-1 min-h-[44px] rounded-xl border border-slate-200 bg-slate-50 text-[13px] font-bold text-slate-800 flex items-center justify-center gap-1.5 cursor-pointer"
+                      className="w-full px-3.5 py-3 flex items-center gap-3 text-left active:bg-[#f8fafc] transition-colors cursor-pointer"
                     >
-                      <Calculator className="w-4 h-4" /> Rates &amp; profit guide
+                      <div
+                        className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
+                          neg
+                            ? 'bg-[var(--due-bg)] text-[var(--due)]'
+                            : r.operatingMarginPct < 6
+                              ? 'bg-[var(--soon-bg)] text-[var(--soon)]'
+                              : 'bg-[#eaf3fd] text-[var(--primary)]'
+                        }`}
+                      >
+                        <Package size={16} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug truncate">
+                          {r.productName}
+                        </div>
+                        <div className="text-[11.5px] text-[var(--text-2)] mt-0.5 truncate">
+                          {neg
+                            ? 'Sold below cost'
+                            : `Margin ${r.operatingMarginPct.toFixed(1)}%${r.freeCases > 0 ? ` · +${r.freeCases} free` : ''}`}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className={`text-[13.5px] font-extrabold tabular-nums ${neg ? 'text-[var(--due)]' : 'text-[var(--text)]'}`}>
+                          {neg ? `−₹${money(Math.abs(r.operatingProfit))}` : `₹${money(r.operatingProfit)}`}
+                        </div>
+                        <span className={`inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold ${pill.cls}`}>
+                          {pill.label}
+                        </span>
+                      </div>
                     </button>
-                  }
-                />
-              ))
+                  );
+                })}
+              </section>
             )}
           </div>
           <div className="hidden md:block overflow-x-auto overscroll-x-contain rounded-2xl border border-black/10 bg-white">
@@ -1419,32 +1497,41 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
           </div>
 
           {/* Mobile cards */}
-          <div className="block md:hidden space-y-3" id="margin-customer-cards">
+          <div className="block md:hidden" id="margin-customer-cards">
             {customerRows.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-black/10 px-4 py-10 text-center text-sm text-slate-500">
+              <div className="rt-rep-card px-4 py-10 text-center text-[13px] font-semibold text-[var(--text-2)]">
                 No customer sales matching this period.
               </div>
             ) : (
-              customerRows.map((r) => (
-                <RegisterCard
-                  key={r.customerKey}
-                  title={r.customerName}
-                  pills={<span className={`inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(r.marginPct)}`}>{r.marginPct.toFixed(1)}%</span>}
-                  subtitle={`${r.invoices} invoice${r.invoices === 1 ? '' : 's'} · ${r.casesSold} cs`}
-                  heroLabel="Profit"
-                  hero={`₹${money(r.grossProfit)}`}
-                  heroTone={r.grossProfit >= 0 ? 'green' : 'red'}
-                  segments={[
-                    { value: r.cogs, className: 'bg-amber-500', label: 'You spent' },
-                    { value: Math.max(0, r.grossProfit), className: 'bg-emerald-600', label: 'Profit' },
-                  ]}
-                  stats={[
-                    { label: 'You got', value: `₹${money(viewBasis === 'exGst' ? r.taxableSales : r.netSales)}`, tone: 'sky' },
-                    { label: 'You spent', value: `₹${money(r.cogs)}`, tone: 'amber' },
-                    { label: 'Due', value: `₹${money(r.outstanding)}`, tone: r.outstanding > 0 ? 'red' : 'muted' },
-                  ]}
-                />
-              ))
+              <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+                {customerRows.map((r) => {
+                  const pill = statusPill(r.marginPct);
+                  const neg = r.grossProfit < 0;
+                  return (
+                    <div key={r.customerKey} className="px-3.5 py-3 flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-full bg-[#eaf3fd] text-[var(--primary)] text-[12px] font-extrabold flex items-center justify-center shrink-0">
+                        {initialsOf(r.customerName)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug truncate">
+                          {r.customerName}
+                        </div>
+                        <div className="text-[11.5px] text-[var(--text-2)] mt-0.5 truncate">
+                          {r.invoices} {r.invoices === 1 ? 'bill' : 'bills'} · Margin {r.marginPct.toFixed(1)}%
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className={`text-[13.5px] font-extrabold tabular-nums ${neg ? 'text-[var(--due)]' : 'text-[var(--text)]'}`}>
+                          {neg ? `−₹${money(Math.abs(r.grossProfit))}` : `₹${money(r.grossProfit)}`}
+                        </div>
+                        <span className={`inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold ${pill.cls}`}>
+                          {pill.label}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </section>
             )}
           </div>
         </div>
@@ -1513,31 +1600,41 @@ export const SalesMarginPnLReport: React.FC<SalesMarginPnLReportProps> = ({
           </div>
 
           {/* Mobile cards */}
-          <div className="block md:hidden space-y-3" id="margin-day-cards">
+          <div className="block md:hidden" id="margin-day-cards">
             {dayRows.length === 0 ? (
-              <div className="bg-white rounded-2xl border border-black/10 px-4 py-10 text-center text-sm text-slate-500">
+              <div className="rt-rep-card px-4 py-10 text-center text-[13px] font-semibold text-[var(--text-2)]">
                 No sales days recorded in this period.
               </div>
             ) : (
-              dayRows.map((r) => (
-                <RegisterCard
-                  key={r.date}
-                  title={<span className="font-mono">{r.date}</span>}
-                  pills={<span className={`inline-flex text-[10px] font-black px-2 py-0.5 rounded-md border ${marginBg(r.marginPct)}`}>{r.marginPct.toFixed(1)}%</span>}
-                  subtitle={`${r.invoices} invoice${r.invoices === 1 ? '' : 's'}`}
-                  heroLabel="Profit"
-                  hero={`₹${money(r.grossProfit)}`}
-                  heroTone={r.grossProfit >= 0 ? 'green' : 'red'}
-                  segments={[
-                    { value: r.cogs, className: 'bg-amber-500', label: 'You spent' },
-                    { value: Math.max(0, r.grossProfit), className: 'bg-emerald-600', label: 'Profit' },
-                  ]}
-                  stats={[
-                    { label: 'You got', value: `₹${money(viewBasis === 'exGst' ? r.taxableSales : r.netSales)}`, tone: 'sky' },
-                    { label: 'You spent', value: `₹${money(r.cogs)}`, tone: 'amber' },
-                  ]}
-                />
-              ))
+              <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+                {dayRows.map((r) => {
+                  const pill = statusPill(r.marginPct);
+                  const neg = r.grossProfit < 0;
+                  return (
+                    <div key={r.date} className="px-3.5 py-3 flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-full bg-[#f1f5f9] text-[var(--text-2)] flex items-center justify-center shrink-0">
+                        <Calendar size={16} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug">
+                          {fmtShortDate(r.date)}
+                        </div>
+                        <div className="text-[11.5px] text-[var(--text-2)] mt-0.5">
+                          {r.invoices} {r.invoices === 1 ? 'bill' : 'bills'} · Margin {r.marginPct.toFixed(1)}%
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className={`text-[13.5px] font-extrabold tabular-nums ${neg ? 'text-[var(--due)]' : 'text-[var(--text)]'}`}>
+                          {neg ? `−₹${money(Math.abs(r.grossProfit))}` : `₹${money(r.grossProfit)}`}
+                        </div>
+                        <span className={`inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold ${pill.cls}`}>
+                          {pill.label}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </section>
             )}
           </div>
         </div>

@@ -66,6 +66,27 @@ export interface BeatResolver {
 export function makeBeatResolver(customers: Customer[], beats: BeatLike[]): BeatResolver {
   const byId = new Map<string, Customer>();
   const byName = new Map<string, Customer[]>();
+  const isPrimaryMatch = (c: Customer, k: string) => norm(c.name) === k;
+  const pickCanonical = (list: Customer[], k?: string): Customer => {
+    if (list.length === 1) return list[0];
+    return [...list].sort((a, b) => {
+      const aSynth = String(a.id || '').startsWith('cust_bill_') ? 1 : 0;
+      const bSynth = String(b.id || '').startsWith('cust_bill_') ? 1 : 0;
+      if (aSynth !== bSynth) return aSynth - bSynth;
+      const aBeat = beatOfCustomer(a, beats) ? 1 : 0;
+      const bBeat = beatOfCustomer(b, beats) ? 1 : 0;
+      if (aBeat !== bBeat) return bBeat - aBeat;
+      if (k) {
+        const aPrim = isPrimaryMatch(a, k) ? 1 : 0;
+        const bPrim = isPrimaryMatch(b, k) ? 1 : 0;
+        if (aPrim !== bPrim) return bPrim - aPrim;
+      }
+      const aPhone = last10(a.phone) ? 1 : 0;
+      const bPhone = last10(b.phone) ? 1 : 0;
+      return bPhone - aPhone;
+    })[0];
+  };
+
   for (const c of customers || []) {
     byId.set(c.id, c);
     const k = norm(c.name);
@@ -90,16 +111,31 @@ export function makeBeatResolver(customers: Customer[], beats: BeatLike[]): Beat
       const hit = byId.get(id);
       if (hit) return hit;
     }
-    const list = byName.get(norm(name)) || [];
+    const nk = norm(name);
+    const list = byName.get(nk) || [];
     if (list.length === 1) return list[0];
     const ph = last10(phone);
-    if (list.length > 1 && ph.length === 10) {
-      const m = list.filter((c) => last10(c.phone) === ph || last10(c.altPhone) === ph);
-      if (m.length === 1) return m[0];
+    if (list.length > 1) {
+      if (ph.length === 10) {
+        const m = list.filter((c) => last10(c.phone) === ph || last10(c.altPhone) === ph);
+        if (m.length === 1) return m[0];
+        if (m.length > 1) {
+          const mPhones = new Set(m.map((c) => last10(c.phone)).filter(Boolean));
+          if (mPhones.size <= 1) return pickCanonical(m, nk);
+        }
+      }
+      // If all records in `list` represent copies of the same shop (at most 1 distinct real phone),
+      // return the canonical master copy even when phone is missing or dummy.
+      const distinctPhones = new Set(list.map((c) => last10(c.phone)).filter(Boolean));
+      if (distinctPhones.size <= 1) return pickCanonical(list, nk);
     }
     if (list.length === 0 && ph.length === 10) {
-      const m = (customers || []).filter((c) => last10(c.phone) === ph);
+      const m = (customers || []).filter((c) => last10(c.phone) === ph || last10(c.altPhone) === ph);
       if (m.length === 1) return m[0];
+      if (m.length > 1) {
+        const names = new Set(m.map((c) => norm(c.name)).filter(Boolean));
+        if (names.size <= 1) return pickCanonical(m);
+      }
     }
     return undefined;
   };
@@ -132,6 +168,48 @@ export function makeBeatResolver(customers: Customer[], beats: BeatLike[]): Beat
   return { customerFor, beatIdFor };
 }
 
+interface CanonicalCustomerRef {
+  key: string;
+  name: string;
+  customer?: Customer;
+}
+
+function makeCustomerGrouper(customers: Customer[], resolver: BeatResolver) {
+  const phonesByName = new Map<string, Set<string>>();
+  for (const c of customers || []) {
+    const k = norm(c.name);
+    const p = last10(c.phone);
+    if (k && p) {
+      let s = phonesByName.get(k);
+      if (!s) {
+        s = new Set<string>();
+        phonesByName.set(k, s);
+      }
+      s.add(p);
+    }
+  }
+  const ambiguousNames = new Set<string>();
+  phonesByName.forEach((s, k) => {
+    if (s.size > 1) ambiguousNames.add(k);
+  });
+
+  const resolve = (name?: string, phone?: string, id?: string, fallbackName = 'Customer'): CanonicalCustomerRef => {
+    const c = resolver.customerFor(name, phone, id);
+    if (c) {
+      const kn = norm(c.name);
+      const key = ambiguousNames.has(kn) ? `id:${c.id}` : `name:${kn || c.id}`;
+      return { key, name: c.name || name || fallbackName, customer: c };
+    }
+    const cleanName = (name || '').trim() || fallbackName;
+    const kn = norm(cleanName);
+    const ph = last10(phone);
+    const key = ambiguousNames.has(kn) && ph ? `name:${kn}#${ph}` : `name:${kn || id || cleanName.toLowerCase()}`;
+    return { key, name: cleanName };
+  };
+
+  return { resolve, ambiguousNames };
+}
+
 /* ------------------------------------------------------------------ */
 /* Invoice balances                                                    */
 /* ------------------------------------------------------------------ */
@@ -151,11 +229,22 @@ export function effectiveBillBalances(bills: Bill[], payments: PaymentRecord[]):
   return out;
 }
 
-/** Customer ledger balance today, by normalised name. */
-function dueByName(existing: ExistingCustomer[]): Map<string, { due: number; advance: number }> {
-  const m = new Map<string, { due: number; advance: number }>();
-  for (const e of existing || []) m.set(norm(e.name), { due: Number(e.balanceDue) || 0, advance: Number(e.advance) || 0 });
-  return m;
+/** Customer ledger balance today, keyed by canonical customer key (and id when present). */
+function buildDueLookup(
+  existing: ExistingCustomer[],
+  grouper: ReturnType<typeof makeCustomerGrouper>,
+): { byKey: Map<string, { due: number; advance: number }>; byId: Map<string, { due: number; advance: number }> } {
+  const byKey = new Map<string, { due: number; advance: number }>();
+  const byId = new Map<string, { due: number; advance: number }>();
+  for (const e of existing || []) {
+    const val = { due: Number(e.balanceDue) || 0, advance: Number(e.advance) || 0 };
+    if (e.id) byId.set(e.id, val);
+    const ref = grouper.resolve(e.name, e.phone, e.id);
+    if (!byKey.has(ref.key)) byKey.set(ref.key, val);
+    const rawKey = `name:${norm(e.name)}`;
+    if (!grouper.ambiguousNames.has(norm(e.name)) && !byKey.has(rawKey)) byKey.set(rawKey, val);
+  }
+  return { byKey, byId };
 }
 
 /* ------------------------------------------------------------------ */
@@ -197,15 +286,23 @@ export function collectReceipts(args: {
     const date = day10(p.paymentDate || p.createdAt);
     if (!date) return;
     const bill = p.billId ? billById.get(p.billId) : undefined;
+    // Canonicalize customer from the live bill first (if linked), then master customer,
+    // so renamed or reassigned bills never spawn phantom customer names from stale payment rows.
+    const resolvedCust = bill
+      ? resolver.customerFor(bill.retailer, bill.phone, bill.customerId || p.customerId)
+      : resolver.customerFor(p.customerName, p.customerPhone, p.customerId);
     const beatId = bill
-      ? resolver.beatIdFor(bill.retailer, bill.phone, bill.customerId)
+      ? resolver.beatIdFor(bill.retailer, bill.phone, bill.customerId || p.customerId)
       : resolver.beatIdFor(p.customerName, p.customerPhone, p.customerId);
+    const customerName = bill
+      ? resolvedCust?.name || bill.retailer || p.customerName || 'Customer'
+      : resolvedCust?.name || p.customerName || 'Customer';
     out.push({
       key: `p${p.id || idx}`,
       date,
-      customerName: p.customerName || bill?.retailer || 'Customer',
-      customerPhone: p.customerPhone || bill?.phone,
-      customerId: p.customerId || bill?.customerId,
+      customerName,
+      customerPhone: resolvedCust?.phone || bill?.phone || p.customerPhone,
+      customerId: resolvedCust?.id || bill?.customerId || p.customerId,
       beatId,
       amount: round2(amt),
       mode: p.mode || 'cash',
@@ -224,12 +321,13 @@ export function collectReceipts(args: {
     const mode = b.paymentMode || 'cash';
     const date = day10(b.date);
     if (paid <= 0 || mode === 'credit' || !date) continue;
+    const resolvedCust = resolver.customerFor(b.retailer, b.phone, b.customerId);
     out.push({
       key: `b${b.id}`,
       date,
-      customerName: b.retailer || 'Cash Sale',
-      customerPhone: b.phone,
-      customerId: b.customerId,
+      customerName: resolvedCust?.name || b.retailer || 'Cash Sale',
+      customerPhone: resolvedCust?.phone || b.phone,
+      customerId: resolvedCust?.id || b.customerId,
       beatId: resolver.beatIdFor(b.retailer, b.phone, b.customerId),
       amount: round2(paid),
       mode,
@@ -307,8 +405,9 @@ export function buildReceiptRegister(args: {
   const beatFilter = args.beatFilter || 'all';
   const q = (args.search || '').trim().toLowerCase();
   const resolver = makeBeatResolver(customers, beats);
+  const grouper = makeCustomerGrouper(customers, resolver);
   const beatName = (id: string) => (id === NO_BEAT ? NO_BEAT_LABEL : beats.find((b) => b.id === id)?.name || NO_BEAT_LABEL);
-  const dues = dueByName(existingCustomers);
+  const dues = buildDueLookup(existingCustomers, grouper);
   const balances = effectiveBillBalances(bills, payments);
   const billById = new Map((bills || []).map((b) => [b.id, b]));
 
@@ -324,7 +423,8 @@ export function buildReceiptRegister(args: {
     );
 
   const rows: ReceiptRow[] = events.map((e) => {
-    const d = dues.get(norm(e.customerName));
+    const ref = grouper.resolve(e.customerName, e.customerPhone, e.customerId);
+    const d = (e.customerId && dues.byId.get(e.customerId)) || dues.byKey.get(ref.key);
     const bill = e.billId ? billById.get(e.billId) : undefined;
     return {
       ...e,
@@ -356,14 +456,14 @@ export function buildReceiptRegister(args: {
   // customer-wise
   const custMap = new Map<string, CustomerReceiptSummary>();
   for (const r of rows) {
-    const key = norm(r.customerName);
-    let c = custMap.get(key);
+    const ref = grouper.resolve(r.customerName, r.customerPhone, r.customerId);
+    let c = custMap.get(ref.key);
     if (!c) {
-      const d = dues.get(key);
+      const d = (r.customerId && dues.byId.get(r.customerId)) || dues.byKey.get(ref.key);
       c = {
-        key,
-        name: r.customerName,
-        phone: r.customerPhone,
+        key: ref.key,
+        name: ref.name,
+        phone: r.customerPhone || ref.customer?.phone,
         beatId: r.beatId,
         beatName: r.beatName,
         receipts: 0,
@@ -372,7 +472,7 @@ export function buildReceiptRegister(args: {
         due: d?.due || 0,
         advance: d?.advance || 0,
       };
-      custMap.set(key, c);
+      custMap.set(ref.key, c);
     }
     c.receipts += 1;
     c.received = round2(c.received + r.amount);
@@ -380,15 +480,16 @@ export function buildReceiptRegister(args: {
   }
   if (args.includeUnpaid) {
     for (const e of existingCustomers || []) {
-      const key = norm(e.name);
-      if (custMap.has(key) || !((Number(e.balanceDue) || 0) > 0.004)) continue;
+      if (!((Number(e.balanceDue) || 0) > 0.004)) continue;
+      const ref = grouper.resolve(e.name, e.phone, e.id);
+      if (custMap.has(ref.key)) continue;
       const beatId = resolver.beatIdFor(e.name, e.phone, e.id);
       if (beatFilter !== 'all' && beatId !== beatFilter) continue;
-      if (q && !e.name.toLowerCase().includes(q)) continue;
-      custMap.set(key, {
-        key,
-        name: e.name,
-        phone: e.phone,
+      if (q && !e.name.toLowerCase().includes(q) && !ref.name.toLowerCase().includes(q)) continue;
+      custMap.set(ref.key, {
+        key: ref.key,
+        name: ref.name,
+        phone: e.phone || ref.customer?.phone,
         beatId,
         beatName: beatName(beatId),
         receipts: 0,
@@ -468,6 +569,7 @@ export function buildBeatSummary(args: {
 }): BeatSummary {
   const { bills, payments, customers, existingCustomers, beats, inPeriod, today } = args;
   const resolver = makeBeatResolver(customers, beats);
+  const grouper = makeCustomerGrouper(customers, resolver);
   const rowMap = new Map<string, BeatSummaryRow>();
   const custMaps = new Map<string, Map<string, BeatCustomerRow>>();
 
@@ -502,22 +604,32 @@ export function buildBeatSummary(args: {
 
   // Due remaining: the customer ledger, customer by customer
   for (const e of existingCustomers || []) {
-    const beatId = resolver.beatIdFor(e.name, e.phone, e.id);
+    const ref = grouper.resolve(e.name, e.phone, e.id);
+    const beatId = resolver.beatIdFor(ref.name, e.phone || ref.customer?.phone, e.id || ref.customer?.id);
     const r = ensure(beatId);
     const due = Number(e.balanceDue) || 0;
     const adv = Number(e.advance) || 0;
-    r.customers += 1;
     r.due = round2(r.due + due);
     r.advance = round2(r.advance + adv);
-    const c = cust(beatId, norm(e.name), e.name);
-    c.due = round2(due);
-    c.advance = round2(adv);
+    const c = cust(beatId, ref.key, ref.name);
+    c.due = round2(c.due + due);
+    c.advance = round2(c.advance + adv);
+  }
+
+  // Ensure every registered customer copy (including same-name distinct-phone shops omitted
+  // from existingCustomers) is represented in its beat.
+  for (const c of customers || []) {
+    const ref = grouper.resolve(c.name, c.phone, c.id);
+    const target = ref.customer || c;
+    const beatId = resolver.beatIdFor(target.name, target.phone, target.id);
+    cust(beatId, ref.key, ref.name);
   }
 
   const balances = effectiveBillBalances(bills, payments);
   const overdueByBeat = new Map<string, number>();
   for (const b of bills || []) {
     if (!isLive(b)) continue;
+    const ref = grouper.resolve(b.retailer, b.phone, b.customerId, 'Cash Sale');
     const beatId = resolver.beatIdFor(b.retailer, b.phone, b.customerId);
     const d = day10(b.date);
     if (d && inPeriod(d)) {
@@ -525,7 +637,7 @@ export function buildBeatSummary(args: {
       const net = billNetTotal(b);
       r.bills += 1;
       r.sales = round2(r.sales + net);
-      const c = cust(beatId, norm(b.retailer), b.retailer || 'Cash Sale');
+      const c = cust(beatId, ref.key, ref.name);
       c.bills += 1;
       c.sales = round2(c.sales + net);
     }
@@ -537,9 +649,10 @@ export function buildBeatSummary(args: {
 
   for (const e of collectReceipts({ bills, payments, resolver })) {
     if (!inPeriod(e.date)) continue;
+    const ref = grouper.resolve(e.customerName, e.customerPhone, e.customerId);
     const r = ensure(e.beatId);
     r.received = round2(r.received + e.amount);
-    cust(e.beatId, norm(e.customerName), e.customerName).received += e.amount;
+    cust(e.beatId, ref.key, ref.name).received += e.amount;
   }
 
   const rows: BeatSummaryRow[] = [];
@@ -547,9 +660,9 @@ export function buildBeatSummary(args: {
     r.overdue = Math.min(overdueByBeat.get(id) || 0, r.due); // never more than what is owed
     r.customerRows = Array.from(custMaps.get(id)!.values())
       .map((c) => ({ ...c, received: round2(c.received) }))
-      .filter((c) => c.sales > 0 || c.received > 0 || c.due > 0.004 || c.advance > 0.004)
-      .sort((a, b) => b.due - a.due || b.sales - a.sales || a.name.localeCompare(b.name));
-    const hasData = r.customers > 0 || r.bills > 0 || r.received > 0 || r.due > 0;
+      .sort((a, b) => b.due - a.due || b.sales - a.sales || b.received - a.received || b.advance - a.advance || a.name.localeCompare(b.name));
+    r.customers = r.customerRows.length;
+    const hasData = r.customers > 0 || r.bills > 0 || r.received > 0 || r.due > 0 || r.advance > 0;
     if (id === NO_BEAT ? hasData : r.active || hasData) rows.push(r);
   }
   const order = new Map(beats.map((b, i) => [b.id, i]));
@@ -697,16 +810,18 @@ export function buildCustomerOverall(args: {
   const beatFilter = args.beatFilter || 'all';
   const q = (args.search || '').trim().toLowerCase();
   const resolver = makeBeatResolver(customers, beats);
+  const grouper = makeCustomerGrouper(customers, resolver);
   const beatName = (id: string) => (id === NO_BEAT ? NO_BEAT_LABEL : beats.find((b) => b.id === id)?.name || NO_BEAT_LABEL);
 
   const lastReceipt = new Map<string, string>();
   for (const e of collectReceipts({ bills, payments, resolver })) {
-    const k = norm(e.customerName);
-    if (e.date > (lastReceipt.get(k) || '')) lastReceipt.set(k, e.date);
+    const ref = grouper.resolve(e.customerName, e.customerPhone, e.customerId);
+    if (e.date > (lastReceipt.get(ref.key) || '')) lastReceipt.set(ref.key, e.date);
   }
 
   const rows: CustomerOverallRow[] = [];
   for (const e of existingCustomers || []) {
+    const ref = grouper.resolve(e.name, e.phone, e.id);
     const beatId = resolver.beatIdFor(e.name, e.phone, e.id);
     if (beatFilter !== 'all' && beatId !== beatFilter) continue;
     if (q && !e.name.toLowerCase().includes(q) && !String(e.phone || '').includes(q)) continue;
@@ -714,7 +829,7 @@ export function buildCustomerOverall(args: {
     const advance = round2(Number(e.advance) || 0);
     if (args.onlyDue && due <= 0.004) continue;
     rows.push({
-      key: e.id || norm(e.name),
+      key: e.id || ref.key,
       name: e.name,
       phone: e.phone || '',
       beatId,
@@ -724,7 +839,7 @@ export function buildCustomerOverall(args: {
       paid: round2(Number(e.totalPaid) || 0),
       due,
       advance,
-      lastReceiptDate: lastReceipt.get(norm(e.name)) || '',
+      lastReceiptDate: lastReceipt.get(ref.key) || '',
     });
   }
   rows.sort((a, b) => b.due - a.due || b.billed - a.billed || a.name.localeCompare(b.name));

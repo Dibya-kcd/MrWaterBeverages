@@ -547,6 +547,8 @@ async function startServer() {
   app.use(
     helmet({
       contentSecurityPolicy: false, // the app loads Google Fonts and talks to Supabase; add a tailored CSP later
+      frameguard: false, // allow preview iframe and embedded webview rendering
+      crossOriginOpenerPolicy: false, // avoid blocking cross-origin preview/popup flows
       crossOriginResourcePolicy: false, // the Pages / Android / iOS builds call this API from another origin
       crossOriginEmbedderPolicy: false,
     }),
@@ -1095,7 +1097,7 @@ async function startServer() {
     }
 
     let lastError: any = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       if (!isSupabaseAvailable()) break;
       const payload = isArray ? currentRows : currentRows[0];
       const { error, data: resData } = await withSupabaseTimeout(
@@ -1265,6 +1267,7 @@ async function startServer() {
       vehicle: t.vehicle || "",
       salesman_id: validSalesmanId,
       salesman: t.salesman || "",
+      salesman_phone: t.salesmanPhone || t.salesman_phone || null,
       date: t.date || new Date().toISOString().slice(0, 10),
       warehouse_id: t.warehouseId || t.warehouse_id || null,
       loaded,
@@ -1278,6 +1281,7 @@ async function startServer() {
       status,
       route: t.route || null,
       driver: t.driver || null,
+      driver_phone: t.driverPhone || t.driver_phone || null,
       warehouse_loads: parseJsonObjSafe(t.warehouseLoads ?? t.warehouse_loads),
       shortage_reasons: parseJsonObjSafe(t.shortageReasons ?? t.shortage_reasons),
       // the device's own change time, so every copy can tell which one is newer
@@ -1924,6 +1928,9 @@ async function startServer() {
             cached?.salesmanId ||
             cached?.salesman_id ||
             undefined,
+          salesmanPhone:
+            String(t.salesmanPhone ?? t.salesman_phone ?? cached?.salesmanPhone ?? cached?.salesman_phone ?? "").trim() ||
+            undefined,
           date: t.date || cached?.date || new Date().toISOString().slice(0, 10),
           warehouseId:
             t.warehouse_id || t.warehouseId || cached?.warehouseId || "",
@@ -1934,6 +1941,9 @@ async function startServer() {
           billIds,
           status,
           driver: t.driver || cached?.driver || undefined,
+          driverPhone:
+            String(t.driverPhone ?? t.driver_phone ?? cached?.driverPhone ?? cached?.driver_phone ?? "").trim() ||
+            undefined,
           shortageReasons: t.shortageReasons || t.shortage_reasons || cached?.shortageReasons || cached?.shortage_reasons || undefined,
           updatedAt: t.updatedAt || t.updated_at || cached?.updatedAt || cached?.updated_at || undefined,
           cashShortBooked: Number(t.cashShortBooked ?? t.cash_short_booked ?? cached?.cashShortBooked ?? cached?.cash_short_booked) || undefined,
@@ -3262,20 +3272,142 @@ async function startServer() {
     }
   });
 
+  // Helper: map payment record to public.payments row & best-effort upsert/soft-delete
+  const inferServerPaymentKind = (p: any): string => {
+    if (
+      p?.entryKind === "receipt" ||
+      p?.entryKind === "advance" ||
+      p?.entryKind === "refund" ||
+      p?.entryKind === "advance_adjustment"
+    ) {
+      return p.entryKind;
+    }
+    if (p?.isRefund || (Number(p?.amount) || 0) < 0) return "refund";
+    if (
+      p?.billId &&
+      String(p?.referenceNote || "").startsWith("Advance / credit adjusted")
+    ) {
+      return "advance_adjustment";
+    }
+    if (
+      p?.isAdvance ||
+      (!p?.billId && String(p?.referenceNote || "").includes("Advance / on account"))
+    ) {
+      return "advance";
+    }
+    return "receipt";
+  };
+
+  const mapPaymentToDb = (p: any) => {
+    const createdAt = p?.createdAt || new Date().toISOString();
+    return {
+      id: String(p.id),
+      bill_id: p.billId ? Number(p.billId) : null,
+      customer_id: p.customerId || null,
+      customer_name: p.customerName || "",
+      customer_phone: p.customerPhone || "",
+      salesman_id: p.salesmanId || null,
+      payment_date: p.paymentDate || String(createdAt).slice(0, 10),
+      amount: Number(p.amount) || 0,
+      mode: p.mode || "cash",
+      entry_kind: inferServerPaymentKind(p),
+      is_advance: Boolean(p.isAdvance),
+      is_refund: Boolean(p.isRefund),
+      is_advance_applied: Boolean(p.isAdvanceApplied),
+      applied_amount: Number(p.appliedAmount) || 0,
+      source_payment_id: p.sourcePaymentId || null,
+      source_bill_id: p.sourceBillId ? Number(p.sourceBillId) : null,
+      reference_note: p.referenceNote || "",
+      recorded_by: p.recordedBy || "",
+      deleted_at: null,
+      created_at: createdAt,
+      updated_at: p.updatedAt || createdAt,
+    };
+  };
+
+  const mapDbToPayment = (r: any) => {
+    const createdAt = r.created_at || new Date().toISOString();
+    return {
+      id: String(r.id),
+      ...(r.bill_id !== null && r.bill_id !== undefined ? { billId: Number(r.bill_id) } : {}),
+      ...(r.customer_id ? { customerId: String(r.customer_id) } : {}),
+      customerName: r.customer_name || "",
+      customerPhone: r.customer_phone || "",
+      ...(r.salesman_id ? { salesmanId: String(r.salesman_id) } : {}),
+      paymentDate: r.payment_date || String(createdAt).slice(0, 10),
+      amount: Number(r.amount) || 0,
+      mode: r.mode || "cash",
+      ...(r.entry_kind ? { entryKind: r.entry_kind } : {}),
+      referenceNote: r.reference_note || "",
+      recordedBy: r.recorded_by || "",
+      isAdvance: Boolean(r.is_advance),
+      ...(r.is_advance_applied ? { isAdvanceApplied: true } : {}),
+      ...(Number(r.applied_amount) > 0 ? { appliedAmount: Number(r.applied_amount) } : {}),
+      ...(r.source_payment_id ? { sourcePaymentId: String(r.source_payment_id) } : {}),
+      ...(r.source_bill_id !== null && r.source_bill_id !== undefined ? { sourceBillId: Number(r.source_bill_id) } : {}),
+      ...(r.is_refund ? { isRefund: true } : {}),
+      createdAt,
+      ...(r.updated_at ? { updatedAt: r.updated_at } : {}),
+    };
+  };
+
+  const syncPaymentsTableBestEffort = (rows: any[]) => {
+    if (!isSupabaseAvailable() || !Array.isArray(rows) || rows.length === 0) return;
+    const mapped = rows.filter((r) => r?.id).map(mapPaymentToDb);
+    for (let i = 0; i < mapped.length; i += 500) {
+      withSupabaseTimeout(
+        supabase.from("payments").upsert(mapped.slice(i, i + 500), { onConflict: "id" }),
+        2500,
+      ).catch(() => {});
+    }
+  };
+
   // 2C. PAYMENTS & COLLECTIONS ROUTES
   app.get("/api/payments", async (_req, res) => {
     try {
       const data = await getCollectionData("payments");
       const deadPay = await readDeletedRecordIds("payment");
       const deadBills = await readTombstones("deleted_bill_ids");
-      const list = Array.isArray(data)
-        ? data.filter(
-            (p: any) =>
-              p?.id !== undefined &&
-              !deadPay.has(String(p.id)) &&
-              !(p.billId !== undefined && p.billId !== null && deadBills.has(String(p.billId))),
-          )
-        : [];
+      const byId = new Map<string, any>();
+      const payStamp = (p: any) => Date.parse(p?.updatedAt || p?.createdAt || "") || 0;
+      if (Array.isArray(data)) {
+        for (const p of data) {
+          if (p?.id === undefined) continue;
+          byId.set(String(p.id), p);
+        }
+      }
+      if (isSupabaseAvailable()) {
+        try {
+          const { data: tableRows, error } = await withSupabaseTimeout(
+            supabase.from("payments").select("*").order("payment_date", { ascending: false }).limit(5000),
+            2500,
+          );
+          if (!error && Array.isArray(tableRows)) {
+            for (const r of tableRows) {
+              if (!r?.id) continue;
+              const id = String(r.id);
+              if (r.deleted_at) {
+                deadPay.add(id);
+                byId.delete(id);
+                continue;
+              }
+              const mapped = mapDbToPayment(r);
+              const cur = byId.get(id);
+              if (!cur || payStamp(mapped) >= payStamp(cur)) {
+                byId.set(id, mapped);
+              }
+            }
+          }
+        } catch {
+          // public.payments table may not be migrated yet
+        }
+      }
+      const list = Array.from(byId.values()).filter(
+        (p: any) =>
+          p?.id !== undefined &&
+          !deadPay.has(String(p.id)) &&
+          !(p.billId !== undefined && p.billId !== null && deadBills.has(String(p.billId))),
+      );
       return res.json({ success: true, data: list });
     } catch (err: any) {
       console.error("Error in GET /api/payments:", err);
@@ -3310,6 +3442,7 @@ async function startServer() {
       }
       const updated = [newPayment, ...list.filter((p: any) => p.id !== id)];
       await setCollectionData("payments", updated);
+      syncPaymentsTableBestEffort([newPayment]);
 
       return res.status(201).json({ success: true, data: newPayment });
     } catch (err: any) {
@@ -3347,6 +3480,7 @@ async function startServer() {
         }
         const merged = Array.from(byId.values());
         await setCollectionData("payments", merged);
+        syncPaymentsTableBestEffort(merged);
         return res.json({ success: true, count: merged.length });
       }
 
@@ -3360,6 +3494,7 @@ async function startServer() {
           updated.unshift(payload);
         }
         await setCollectionData("payments", updated);
+        syncPaymentsTableBestEffort([payload]);
         return res.json({ success: true, data: payload });
       }
 
@@ -3379,6 +3514,17 @@ async function startServer() {
       if (Array.isArray(existing)) {
         const filtered = existing.filter((p: any) => p.id !== id);
         await setCollectionData("payments", filtered);
+      }
+      // Soft-delete in public.payments if table exists
+      if (isSupabaseAvailable()) {
+        const now = new Date().toISOString();
+        withSupabaseTimeout(
+          supabase
+            .from("payments")
+            .update({ deleted_at: now, deleted_by: "Admin", updated_at: now })
+            .eq("id", String(id)),
+          2500,
+        ).catch(() => {});
       }
       // remember it, so a device that still has this payment cannot bring it back
       {
@@ -3408,6 +3554,98 @@ async function startServer() {
       return res
         .status(500)
         .json({ error: err.message || "Failed to delete payment" });
+    }
+  });
+
+  // Payment Change History (audit trail)
+  app.get("/api/payment-history", async (_req, res) => {
+    try {
+      const byId = new Map<string, any>();
+      const localList = await getCollectionData("payment_history");
+      if (Array.isArray(localList)) {
+        for (const item of localList) {
+          if (item?.id) byId.set(String(item.id), item);
+        }
+      }
+      if (isSupabaseAvailable()) {
+        try {
+          const { data, error } = await withSupabaseTimeout(
+            supabase
+              .from("payment_history")
+              .select("*")
+              .order("changed_at", { ascending: false })
+              .limit(1000),
+            2500,
+          );
+          if (!error && Array.isArray(data)) {
+            for (const r of data) {
+              if (!r?.id) continue;
+              byId.set(String(r.id), {
+                id: String(r.id),
+                at: r.changed_at,
+                by: r.changed_by || "Admin",
+                action: r.action,
+                ...(r.payment_id ? { paymentId: String(r.payment_id) } : {}),
+                ...(r.bill_id !== null && r.bill_id !== undefined ? { billId: Number(r.bill_id) } : {}),
+                ...(r.customer_name ? { customerName: r.customer_name } : {}),
+                ...(r.amount !== null && r.amount !== undefined ? { amount: Number(r.amount) } : {}),
+                ...(r.note ? { note: r.note } : {}),
+                ...(r.before_data ? { before: r.before_data } : {}),
+                ...(r.after_data ? { after: r.after_data } : {}),
+              });
+            }
+          }
+        } catch {
+          // payment_history table may not be migrated yet
+        }
+      }
+      const list = Array.from(byId.values())
+        .sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))
+        .slice(0, 1000);
+      return res.json({ success: true, data: list });
+    } catch (err: any) {
+      return res
+        .status(500)
+        .json({ error: err.message || "Failed to fetch payment history", data: [] });
+    }
+  });
+
+  app.post("/api/payment-history", async (req, res) => {
+    try {
+      const entry = req.body;
+      if (!entry || !entry.id || !entry.action) {
+        return res.status(400).json({ error: "Invalid payment history entry" });
+      }
+      const existing = await getCollectionData("payment_history");
+      const list = Array.isArray(existing) ? existing : [];
+      const next = [entry, ...list.filter((e: any) => e?.id !== entry.id)].slice(0, 1000);
+      await setCollectionData("payment_history", next);
+      if (isSupabaseAvailable()) {
+        withSupabaseTimeout(
+          supabase.from("payment_history").upsert(
+            {
+              id: String(entry.id),
+              payment_id: entry.paymentId || null,
+              bill_id: entry.billId ? Number(entry.billId) : null,
+              customer_name: entry.customerName || "",
+              action: entry.action,
+              amount: entry.amount !== undefined && entry.amount !== null ? Number(entry.amount) : null,
+              note: entry.note || "",
+              changed_by: entry.by || "Admin",
+              before_data: entry.before ?? null,
+              after_data: entry.after ?? null,
+              changed_at: entry.at || new Date().toISOString(),
+            },
+            { onConflict: "id" },
+          ),
+          2500,
+        ).catch(() => {});
+      }
+      return res.status(201).json({ success: true, data: entry });
+    } catch (err: any) {
+      return res
+        .status(500)
+        .json({ error: err.message || "Failed to save payment history" });
     }
   });
 

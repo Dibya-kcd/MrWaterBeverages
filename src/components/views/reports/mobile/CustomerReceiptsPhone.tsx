@@ -1,48 +1,29 @@
-import React, { useState } from 'react';
-import { Smartphone, Check, SlidersHorizontal, ArrowLeft } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Check, Search, SlidersHorizontal, X } from 'lucide-react';
 import type { ReceiptRegister } from '../../../../utils/beatReports';
 import type { BeatRoute } from '../../../../constants/beats';
-import {
-  BigSwitch,
-  DayHeading,
-  EmptyNote,
-  HeroCard,
-  IconTile,
-  LegendDot,
-  PhoneDownloadBar,
-  RowCard,
-  SplitBar,
-  UnifiedPhoneFilterBar,
-  PhoneFilterBottomSheet,
-  fmtDayShort,
-  rs,
-} from './PhoneKit';
-
-const MODE: Record<string, string> = { 
-  cash: 'Cash', 
-  upi: 'UPI', 
-  bank: 'Bank', 
-  cheque: 'Cheque', 
-  other: 'Other' 
-};
+import { money } from '../../../../utils/billing';
+import { todayISO } from '../../../../utils/dateLocal';
+import { MobileReportTopBar, useMobileReport } from './MobileReportContext';
+import { PhoneDownloadBar, PhoneFilterBottomSheet, rs } from './PhoneKit';
 
 const fmtShort = (d: string) => {
   if (!d) return '—';
   const dt = new Date(`${d}T12:00:00`);
-  return isNaN(dt.getTime()) ? d : dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  return isNaN(dt.getTime()) ? d : dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 };
 
-/** Customer's balance in plain words, with colour. */
-const DueNote: React.FC<{ due: number; advance: number }> = ({ due, advance }) => {
-  if (due > 0.004) return <div className="text-[12px] font-bold text-rose-700 tabular-nums">{rs(due)} due</div>;
-  if (advance > 0.004) return <div className="text-[12px] font-bold text-sky-700 tabular-nums">{rs(advance)} advance</div>;
-  return <div className="text-[12px] font-bold text-emerald-700">Settled ✓</div>;
+const getInitials = (name: string): string => {
+  const parts = (name || '?').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
 };
+
+type SortMode = 'received' | 'due' | 'today';
 
 export interface CustomerReceiptsPhoneProps {
-  /** Collections view: only the by-customer list (the day-by-day list is the Day book). */
   onlyCustomer?: boolean;
-  /** The Day book / By customer switch, shown at the top. */
   topExtra?: React.ReactNode;
   reg: ReceiptRegister;
   periodLabel: string;
@@ -59,14 +40,8 @@ export interface CustomerReceiptsPhoneProps {
   onPdf: () => Promise<void> | void;
 }
 
-/** Phone layout of "Customer receipts": big received figure, by day / by customer, unified filter sheet, Excel + PDF at the bottom. */
 export const CustomerReceiptsPhone: React.FC<CustomerReceiptsPhoneProps> = ({
-  onlyCustomer,
-  topExtra,
   reg,
-  periodLabel,
-  view,
-  onView,
   beat,
   onBeat,
   activeBeats,
@@ -77,7 +52,10 @@ export const CustomerReceiptsPhone: React.FC<CustomerReceiptsPhoneProps> = ({
   onExcel,
   onPdf,
 }) => {
+  const mobileCtx = useMobileReport();
+  const [sortMode, setSortMode] = useState<SortMode>('received');
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
+
   const hasBeats = activeBeats.length > 0;
   const beatOptions = [
     { id: 'all', label: 'All beats' },
@@ -85,63 +63,208 @@ export const CustomerReceiptsPhone: React.FC<CustomerReceiptsPhoneProps> = ({
     { id: 'none', label: 'No beat yet' },
   ];
 
+  const today = useMemo(() => todayISO(), []);
   const activeFilterCount = (beat !== 'all' ? 1 : 0) + (includeUnpaid ? 1 : 0);
 
+  const displayedCustomers = useMemo(() => {
+    const base =
+      sortMode === 'today'
+        ? reg.customers.filter((c) => c.lastReceiptDate?.slice(0, 10) === today)
+        : reg.customers.slice();
+
+    return base.sort((a, b) => {
+      if (sortMode === 'due') {
+        const d = b.due - a.due;
+        return d !== 0 ? d : b.received - a.received;
+      }
+      const r = b.received - a.received;
+      return r !== 0 ? r : b.due - a.due;
+    });
+  }, [reg.customers, sortMode, today]);
+
+  const shareProps = {
+    reportTitle: 'Customer receipts',
+    summaryMetrics: [
+      { label: 'Received', value: rs(reg.total) },
+      { label: 'Receipts', value: String(reg.count) },
+      { label: 'Due remaining', value: rs(reg.dueRemaining) },
+    ],
+    sheets: [
+      {
+        name: 'Customer-wise',
+        header: ['Customer', 'Beat', 'Receipts', 'Received', 'Last receipt', 'Due remaining', 'Advance held'],
+        rows: reg.customers.map((c) => [c.name, c.beatName, c.receipts, c.received, c.lastReceiptDate, c.due, c.advance]),
+      },
+    ],
+    pdfSections: [
+      {
+        title: 'Customer receipts',
+        header: ['Customer', 'Receipts', 'Received (Rs.)', 'Last receipt', 'Due remaining (Rs.)'],
+        rows: reg.customers.map((c) => [c.name, c.receipts, money(c.received), c.lastReceiptDate || '-', money(c.due)]),
+        rightAlign: [1, 2, 4],
+      },
+    ],
+  };
+
   return (
-    <div className="md:hidden space-y-3.5" id="report-customer-receipts-phone">
-      {topExtra}
+    <div className="md:hidden space-y-3" id="report-customer-receipts-phone">
+      <MobileReportTopBar
+        title="Collections"
+        sub="Customer receipts"
+        showPeriod
+        shareProps={shareProps}
+      />
 
-      {/* Title Header */}
-      <div className="px-0.5">
-        <h2 className="text-lg font-extrabold text-slate-900 tracking-tight leading-tight">
-          {onlyCustomer ? 'Collections by customer' : 'Customer Receipts'}
-        </h2>
-        <p className="text-xs text-slate-500 font-medium">Due remaining is as of today</p>
-      </div>
-
-      {/* Hero Card with Emerald/Forest Green gradient */}
-      <HeroCard tone="green" label="Received this period" value={rs(reg.total)}>
-        <SplitBar
-          label="Cash versus UPI and bank"
-          parts={[
-            { value: reg.cash, className: 'bg-[#10B981]' },
-            { value: reg.other, className: 'bg-[#00E5FF]' },
-          ]}
-        />
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-white/95">
-          <LegendDot dot="bg-[#10B981]">Cash {rs(reg.cash)}</LegendDot>
-          <LegendDot dot="bg-[#00E5FF]">UPI / bank {rs(reg.other)}</LegendDot>
-          <span className="text-white/70">
-            {reg.count} receipt{reg.count === 1 ? '' : 's'}
-          </span>
+      {/* Same 3-Chip Switcher: Day-wise summary | Transactions | Customer receipts */}
+      {mobileCtx && (
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+          <button
+            type="button"
+            onClick={() => {
+              mobileCtx.setCollectionsSubTab('daywise');
+              mobileCtx.navigateReport('daybook');
+            }}
+            className="shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold border bg-white text-[var(--text)] border-[var(--border)] cursor-pointer"
+          >
+            Day-wise summary
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              mobileCtx.setCollectionsSubTab('transactions');
+              mobileCtx.navigateReport('daybook');
+            }}
+            className="shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold border bg-white text-[var(--text)] border-[var(--border)] cursor-pointer"
+          >
+            Transactions
+          </button>
+          <button
+            type="button"
+            className="shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold border bg-[var(--text)] text-white border-[var(--text)] cursor-pointer"
+          >
+            Customer receipts
+          </button>
         </div>
-        <div className="text-xs text-white/80 pt-2 border-t border-white/10 mt-2">
-          Still due from {view === 'day' ? 'these customers' : 'customers listed'}:{' '}
-          <strong className="text-white tabular-nums font-bold">{rs(reg.dueRemaining)}</strong>
-        </div>
-      </HeroCard>
-
-      {/* Grouping switch: By day vs By customer */}
-      {!onlyCustomer && (
-        <BigSwitch
-          label="Group receipts"
-          value={view}
-          onChange={onView}
-          options={[
-            { id: 'day', label: 'By day' },
-            { id: 'customer', label: 'By customer' },
-          ]}
-        />
       )}
 
-      {/* Unified Search and Filter Bar (replaces separate labels and separate chips) */}
-      <UnifiedPhoneFilterBar
-        search={search}
-        onSearch={onSearch}
-        placeholder="Search customer or receipt…"
-        onOpenFilter={() => setIsFilterSheetOpen(true)}
-        activeFilterCount={activeFilterCount}
-      />
+      {/* Search bar */}
+      <div className="flex items-center gap-2">
+        <div className="rt-search-bar flex-1">
+          <Search size={16} className="text-[var(--text-2)] shrink-0" />
+          <input
+            type="text"
+            enterKeyHint="search"
+            value={search}
+            onChange={(e) => onSearch(e.target.value)}
+            placeholder="Search customer"
+          />
+          {search && (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => onSearch('')}
+              className="text-[var(--text-2)] p-0.5 cursor-pointer shrink-0"
+            >
+              <X size={15} />
+            </button>
+          )}
+        </div>
+        {(hasBeats || activeFilterCount > 0) && (
+          <button
+            type="button"
+            onClick={() => setIsFilterSheetOpen(true)}
+            aria-label="Filter by beat or options"
+            className={`h-[40px] w-[40px] rounded-[10px] border flex items-center justify-center shrink-0 cursor-pointer relative ${
+              activeFilterCount > 0
+                ? 'bg-[#eaf3fd] border-[var(--primary)] text-[var(--primary)]'
+                : 'bg-white border-[var(--border)] text-[var(--text)]'
+            }`}
+          >
+            <SlidersHorizontal size={16} />
+            {activeFilterCount > 0 && (
+              <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-[var(--primary)] text-white text-[9px] font-bold flex items-center justify-center">
+                {activeFilterCount}
+              </span>
+            )}
+          </button>
+        )}
+      </div>
+
+      {/* Sort Chips: Most received | Highest due | Today */}
+      <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+        {([
+          { id: 'received', label: 'Most received' },
+          { id: 'due', label: 'Highest due' },
+          { id: 'today', label: 'Today' },
+        ] as { id: SortMode; label: string }[]).map((chip) => {
+          const active = sortMode === chip.id;
+          return (
+            <button
+              key={chip.id}
+              type="button"
+              onClick={() => setSortMode(chip.id)}
+              className={`shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold border transition-colors cursor-pointer ${
+                active
+                  ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                  : 'bg-white text-[var(--text)] border-[var(--border)]'
+              }`}
+            >
+              {chip.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Customer receipts grouped list */}
+      {displayedCustomers.length === 0 ? (
+        <div className="rt-rep-card py-10 px-4 text-center text-[13px] font-semibold text-[var(--text-2)]">
+          No customers to show
+        </div>
+      ) : (
+        <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+          {displayedCustomers.map((c) => {
+            const hasDue = c.due > 0.004;
+            const hasAdv = !hasDue && c.advance > 0.004;
+            return (
+              <div key={c.key} className="px-3.5 py-3 flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full bg-[#eaf3fd] text-[var(--primary)] font-extrabold text-[12px] flex items-center justify-center shrink-0">
+                  {getInitials(c.name)}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug break-words">
+                    {c.name}
+                  </div>
+                  <div className="text-[11.5px] text-[var(--text-2)] mt-0.5 leading-snug">
+                    {c.receipts > 0
+                      ? `${c.receipts} receipt${c.receipts === 1 ? '' : 's'} · last ${fmtShort(c.lastReceiptDate)}`
+                      : 'No receipt in this period'}
+                  </div>
+                </div>
+
+                <div className="text-right shrink-0 flex flex-col items-end">
+                  <div className="text-[13.5px] font-extrabold text-[var(--text)] tabular-nums leading-tight">
+                    {c.received > 0 ? rs(c.received) : '—'}
+                  </div>
+                  {hasDue ? (
+                    <div className="text-[11px] font-bold text-[var(--due)] tabular-nums mt-0.5 leading-tight">
+                      due {rs(c.due)}
+                    </div>
+                  ) : hasAdv ? (
+                    <div className="text-[11px] font-bold text-[var(--primary)] tabular-nums mt-0.5 leading-tight">
+                      adv {rs(c.advance)}
+                    </div>
+                  ) : (
+                    <span className="mt-1 inline-flex items-center px-2 py-0.5 rounded-full bg-[var(--paid-bg)] text-[var(--paid)] text-[10px] font-bold leading-tight">
+                      Clear
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      )}
 
       {/* Filter Bottom Sheet Modal */}
       <PhoneFilterBottomSheet
@@ -154,7 +277,6 @@ export const CustomerReceiptsPhone: React.FC<CustomerReceiptsPhoneProps> = ({
           onIncludeUnpaid(false);
         }}
       >
-        {/* Section 1: Beat Route */}
         {hasBeats && (
           <div className="space-y-2">
             <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
@@ -168,10 +290,10 @@ export const CustomerReceiptsPhone: React.FC<CustomerReceiptsPhoneProps> = ({
                     key={opt.id}
                     type="button"
                     onClick={() => onBeat(opt.id)}
-                    className={`px-3 py-2.5 rounded-xl text-xs font-bold border transition-colors text-center ${
+                    className={`px-3 py-2.5 rounded-xl text-xs font-bold border transition-colors text-center cursor-pointer ${
                       isCurrent
-                        ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs'
-                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                        ? 'bg-[var(--primary)] text-white border-[var(--primary)]'
+                        : 'bg-white text-[var(--text)] border-[var(--border)]'
                     }`}
                   >
                     {opt.label}
@@ -182,7 +304,6 @@ export const CustomerReceiptsPhone: React.FC<CustomerReceiptsPhoneProps> = ({
           </div>
         )}
 
-        {/* Section 2: Customer Options */}
         <div className="space-y-2 pt-2 border-t border-slate-100">
           <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
             Customer Options
@@ -190,17 +311,17 @@ export const CustomerReceiptsPhone: React.FC<CustomerReceiptsPhoneProps> = ({
           <button
             type="button"
             onClick={() => onIncludeUnpaid(!includeUnpaid)}
-            className={`w-full flex items-center justify-between p-3 rounded-xl border text-xs font-bold transition-all text-left ${
+            className={`w-full flex items-center justify-between p-3 rounded-xl border text-xs font-bold transition-all text-left cursor-pointer ${
               includeUnpaid
-                ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
-                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                ? 'bg-[#eaf3fd] text-[var(--text)] border-[var(--primary)]'
+                : 'bg-white text-[var(--text)] border-[var(--border)]'
             }`}
           >
             <span>Also show customers who owe but paid nothing</span>
             <div
               className={`w-5 h-5 rounded-md flex items-center justify-center border transition-colors ${
                 includeUnpaid
-                  ? 'bg-emerald-600 border-emerald-600 text-white'
+                  ? 'bg-[var(--primary)] border-[var(--primary)] text-white'
                   : 'border-slate-300 bg-white'
               }`}
             >
@@ -210,103 +331,10 @@ export const CustomerReceiptsPhone: React.FC<CustomerReceiptsPhoneProps> = ({
         </div>
       </PhoneFilterBottomSheet>
 
-      {/* Receipts List: By Day */}
-      {view === 'day' && (
-        <div className="space-y-3">
-          {reg.days.length === 0 && <EmptyNote>No receipts in this period</EmptyNote>}
-          {reg.days.map((g) => (
-            <section key={g.date} className="space-y-2">
-              <DayHeading 
-                left={fmtDayShort(g.date)} 
-                right={`${rs(g.total)} · ${g.rows.length} receipt${g.rows.length === 1 ? '' : 's'}`} 
-              />
-              <div className="space-y-2">
-                {g.rows.map((r) => {
-                  const isCash = r.mode === 'cash';
-                  const what = r.kind === 'advance' ? 'On account' : r.invoiceLabel || '';
-                  return (
-                    <div 
-                      key={r.key} 
-                      className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-3.5 flex items-center gap-3"
-                    >
-                      <div
-                        className={`size-11 shrink-0 rounded-2xl flex items-center justify-center text-lg font-bold ${
-                          isCash ? 'bg-emerald-50 text-emerald-700' : 'bg-sky-50 text-sky-700'
-                        }`}
-                      >
-                        {isCash ? '₹' : <Smartphone size={20} />}
-                      </div>
-
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[14px] sm:text-[15px] font-bold text-slate-900 leading-snug break-words">
-                          {r.customerName}
-                        </div>
-                        <div className="text-xs text-slate-500 leading-snug break-words mt-0.5">
-                          {r.receiptNo} · {MODE[r.mode] || r.mode}
-                          {what && ` · ${what}`}
-                        </div>
-                        {hasBeats && beat === 'all' && (
-                          <div className="text-[11px] text-slate-400 mt-0.5">{r.beatName}</div>
-                        )}
-                      </div>
-
-                      <div className="text-right shrink-0">
-                        <div className="text-[16px] sm:text-[17px] font-extrabold text-emerald-700 tabular-nums leading-tight">
-                          {rs(r.amount)}
-                        </div>
-                        <DueNote due={r.customerDue} advance={r.customerAdvance} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          ))}
-        </div>
-      )}
-
-      {/* Receipts List: By Customer */}
-      {view === 'customer' && (
-        <div className="space-y-2">
-          {reg.customers.length === 0 && <EmptyNote>No customers to show</EmptyNote>}
-          {reg.customers.map((c) => (
-            <div 
-              key={c.key} 
-              className="bg-white rounded-2xl border border-slate-200/80 shadow-xs p-3.5 flex items-center gap-3"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="text-[14px] sm:text-[15px] font-bold text-slate-900 leading-snug break-words">
-                  {c.name}
-                </div>
-                <div className="text-xs text-slate-500 mt-0.5">
-                  {c.receipts > 0
-                    ? `${c.receipts} receipt${c.receipts === 1 ? '' : 's'} · last ${fmtShort(c.lastReceiptDate)}`
-                    : 'No receipt in this period'}
-                </div>
-                {hasBeats && beat === 'all' && (
-                  <div className="text-[11px] text-slate-400 mt-0.5">{c.beatName}</div>
-                )}
-              </div>
-              <div className="text-right shrink-0">
-                <div 
-                  className={`text-[16px] sm:text-[17px] font-extrabold tabular-nums leading-tight ${
-                    c.received > 0 ? 'text-emerald-700' : 'text-slate-300'
-                  }`}
-                >
-                  {c.received > 0 ? rs(c.received) : '—'}
-                </div>
-                <DueNote due={c.due} advance={c.advance} />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Excel and PDF Download Bar */}
-      <PhoneDownloadBar 
-        onExcel={onExcel} 
-        onPdf={onPdf} 
-        disabled={reg.count === 0 && reg.customers.length === 0} 
+      <PhoneDownloadBar
+        onExcel={onExcel}
+        onPdf={onPdf}
+        disabled={reg.count === 0 && reg.customers.length === 0}
       />
     </div>
   );

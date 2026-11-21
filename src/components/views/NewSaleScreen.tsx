@@ -4,6 +4,7 @@ import { notify } from "../../utils/toast";
 import { sizeTheme, packTheme, compareProductsInSequence } from "../../utils/sizeColor";
 import { PackIcon, packTextColor } from "../common/PackIcon";
 import {
+  AlertCircle,
   ArrowLeft,
   Banknote,
   Building2,
@@ -53,12 +54,14 @@ import { SchemeCustomPriceModal } from '../modals/SchemeCustomPriceModal';
 import { CustomerPredictiveSearch, RichCustomerOption } from '../billing/CustomerPredictiveSearch';
 import { CustomerStep } from '../billing/CustomerStep';
 import { NewCustomerSheet } from '../billing/NewCustomerSheet';
+import { InvoiceSuccessCard } from '../billing/InvoiceSuccessCard';
 import { todayISO } from "../../utils/dateLocal";
 import { OrderContextBar, formatSaleDate, SaleSource } from '../billing/OrderContextBar';
-import { useIsCompactLayout } from '../../hooks/useIsMobile';
+import { useIsCompactLayout, useIsMobile } from '../../hooks/useIsMobile';
 import { FlowInlineHeader } from '../common/FlowKit';
 import { validatePhone } from '../../utils/validation';
 import { tripPrimaryWarehouseId } from '../../utils/tripLoads';
+import { shortCategoryLabel } from '../../utils/categoryLabel';
 
 // Helper: extract default catalog price for product (never hardcoded 0 unless catalog has 0)
 const getProductDefaultPrice = (p: Product): number => {
@@ -66,6 +69,22 @@ const getProductDefaultPrice = (p: Product): number => {
   if (typeof p.wholesale === 'number' && !isNaN(p.wholesale) && p.wholesale > 0) return p.wholesale;
   if (typeof (p as any).price === 'number' && !isNaN((p as any).price) && (p as any).price > 0) return (p as any).price;
   return 0;
+};
+
+const ProductCardMedia: React.FC<{ product: Product }> = ({ product }) => {
+  const imgSrc = (product as any).imageUrl || (product as any).image;
+  const [failed, setFailed] = useState(false);
+  if (imgSrc && !failed) {
+    return (
+      <img
+        src={imgSrc}
+        alt={product.name}
+        className="rt-prod-media__img"
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+  return <PackIcon pack={product.pack} name={product.name} />;
 };
 
 interface NewSaleScreenProps {
@@ -77,9 +96,10 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   onBack,
   onOpenInvoiceModal,
 }) => {
-  const { t } = useLanguage();
+  const { t, isOdia } = useLanguage();
   // Phone + tablet (< 1024px) get the compact order screens; desktop keeps its existing layout.
   const isCompact = useIsCompactLayout();
+  const isPhone = useIsMobile(767);
   const [editSetup, setEditSetup] = useState(false); // phone/tablet: edit van + date in place on the order page
   const {
     products,
@@ -141,10 +161,19 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
 
   // Stock from (Warehouse or active Trip)
   const defaultWarehouseId = defaultWarehouse?.id || warehouses[0]?.id || '';
-  // Default to the first active trip when one is out (sell from the van), otherwise the warehouse.
-  const [stockSource, setStockSource] = useState<string>(() =>
-    activeTripsForUser.length > 0 ? `trip_${activeTripsForUser[0].id}` : defaultWarehouseId,
-  );
+  // Default to a trip linked from Trip Detail ("Record sale") if active, else first active trip, else warehouse.
+  const [stockSource, setStockSource] = useState<string>(() => {
+    try {
+      const prefillId = Number(sessionStorage.getItem('mrwater_prefill_trip_id'));
+      sessionStorage.removeItem('mrwater_prefill_trip_id');
+      if (prefillId && activeTripsForUser.some((t) => Number(t.id) === prefillId)) {
+        return `trip_${prefillId}`;
+      }
+    } catch {
+      /* sessionStorage unavailable */
+    }
+    return activeTripsForUser.length > 0 ? `trip_${activeTripsForUser[0].id}` : defaultWarehouseId;
+  });
   // Derived views of stockSource, so the existing warehouse-id / `trip_<id>` handling stays untouched.
   const saleSource: SaleSource = stockSource.startsWith('trip_') ? 'trip' : 'warehouse';
   const selectedTripId: number | undefined = stockSource.startsWith('trip_')
@@ -231,6 +260,11 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   const [newCustGstin, setNewCustGstin] = useState('');
   const [newCustAddress, setNewCustAddress] = useState('');
   const [newCustBeat, setNewCustBeat] = useState('');
+  const [newCustPrefilled, setNewCustPrefilled] = useState<{
+    name?: boolean;
+    phone?: boolean;
+    gstin?: boolean;
+  }>({});
 
   // Sale Page Beat filter (beats are configured in Settings only)
   const [selectedBeatFilter, setSelectedBeatFilter] = useState<string>('all');
@@ -244,6 +278,8 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   const [selectedPackFilter, setSelectedPackFilter] = useState<'all' | 'can' | 'pet' | 'glass' | 'tetra'>('all');
   // Size filter (All / each size you actually stock / Soda): view-only filter, nothing is saved.
   const [selectedSize, setSelectedSize] = useState<string>('all');
+  const [schemesOnly, setSchemesOnly] = useState<boolean>(false);
+  const [inCartOnly, setInCartOnly] = useState<boolean>(false);
   const [catalogFilterOpen, setCatalogFilterOpen] = useState<boolean>(false);
   const catalogFilterRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -274,6 +310,16 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
 
   // Success message after save
   const [savedBill, setSavedBill] = useState<Bill | null>(null);
+  const [phoneReviewStage, setPhoneReviewStage] = useState<'cart' | 'checkout'>('cart');
+
+  useEffect(() => {
+    const onNewBill = () => {
+      setSavedBill(null);
+      setPhoneReviewStage('cart');
+    };
+    window.addEventListener('app-new-bill', onNewBill);
+    return () => window.removeEventListener('app-new-bill', onNewBill);
+  }, []);
 
   // Cancel & Reset flow: completely clears all cart items, discounts, customer selections and closes modals
   const handleResetSale = useCallback(() => {
@@ -304,8 +350,15 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
     });
     setShowProductSelector(false);
     setCatalogFilterOpen(false);
+    setSelectedCategory('all');
+    setSchemesOnly(false);
+    setInCartOnly(false);
     setShowCartReview(false);
+    setPhoneReviewStage('cart');
+    setShowCancelSaleConfirm(false);
   }, [defaultWarehouseId, setCart, stockSource, trips]);
+
+  const [showCancelSaleConfirm, setShowCancelSaleConfirm] = useState<boolean>(false);
 
   // All available customers combined
   const customerOptions = useMemo(() => {
@@ -368,6 +421,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
   // When customer dropdown changes
   const handleCustomerChange = (val: string) => {
     if (val === '__new__') {
+      setNewCustPrefilled({});
       setShowNewCustomerModal(true);
       return;
     }
@@ -590,20 +644,65 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
       .sort(compareProductsInSequence);
   }, [availableProducts, beverageSearch, selectedPackFilter, selectedSize]);
 
+  const hasActiveSchemeForProduct = useCallback(
+    (prod: Product): boolean => {
+      const userChoice = customSchemes[prod.id];
+      if (userChoice !== undefined) return Boolean(userChoice);
+      if (
+        schemeMode === 'none' ||
+        billingSettings?.schemesEnabled === false ||
+        billingSettings?.autoApplyPromotions === false
+      ) {
+        return false;
+      }
+      return Boolean(activePromoFor ? activePromoFor(prod.id) : null);
+    },
+    [
+      customSchemes,
+      schemeMode,
+      billingSettings?.schemesEnabled,
+      billingSettings?.autoApplyPromotions,
+      activePromoFor,
+    ],
+  );
+
+  const schemeMatchCount = useMemo(
+    () => baseFilteredProducts.filter((p) => hasActiveSchemeForProduct(p)).length,
+    [baseFilteredProducts, hasActiveSchemeForProduct],
+  );
+
+  const cartMatchCount = useMemo(
+    () => baseFilteredProducts.filter((p) => (selectedItems[p.id] || 0) > 0).length,
+    [baseFilteredProducts, selectedItems],
+  );
+
+  useEffect(() => {
+    if (inCartOnly && cartMatchCount === 0) setInCartOnly(false);
+  }, [inCartOnly, cartMatchCount]);
+
+  const quickFilteredProducts = useMemo(() => {
+    if (!schemesOnly && !inCartOnly) return baseFilteredProducts;
+    return baseFilteredProducts.filter((p) => {
+      if (schemesOnly && !hasActiveSchemeForProduct(p)) return false;
+      if (inCartOnly && (selectedItems[p.id] || 0) <= 0) return false;
+      return true;
+    });
+  }, [baseFilteredProducts, schemesOnly, inCartOnly, hasActiveSchemeForProduct, selectedItems]);
+
   const categoryCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const p of baseFilteredProducts) {
+    for (const p of quickFilteredProducts) {
       const catKey = p.category || 'other';
       counts.set(catKey, (counts.get(catKey) || 0) + 1);
     }
     return counts;
-  }, [baseFilteredProducts]);
+  }, [quickFilteredProducts]);
 
   // Filtered products inside "Select Beverages & Crates"
   const filteredProducts = useMemo(() => {
-    if (selectedCategory === 'all') return baseFilteredProducts;
-    return baseFilteredProducts.filter((p) => (p.category || 'other') === selectedCategory);
-  }, [baseFilteredProducts, selectedCategory]);
+    if (selectedCategory === 'all') return quickFilteredProducts;
+    return quickFilteredProducts.filter((p) => (p.category || 'other') === selectedCategory);
+  }, [quickFilteredProducts, selectedCategory]);
 
   // Group filtered products category-wise in canonical category order
   const categorySections = useMemo(() => {
@@ -864,6 +963,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
       setPaymentNote('');
       setPayChoice('credit');
       setShowCartReview(false);
+      setPhoneReviewStage('cart');
     };
 
     if (cartTaxStatus.hasMixedTax) {
@@ -901,7 +1001,9 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
           }
           setSavedBill(first);
           resetCheckoutUi();
-          onOpenInvoiceModal(first, firstIsGst && first.isGstInvoice ? 'gst' : 'non_gst');
+          if (!isPhone) {
+            onOpenInvoiceModal(first, firstIsGst && first.isGstInvoice ? 'gst' : 'non_gst');
+          }
         }
       }
       return;
@@ -965,7 +1067,9 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
 
       setSavedBill(newlyCreated);
       resetCheckoutUi();
-      onOpenInvoiceModal(newlyCreated, isGst ? 'gst' : 'non_gst');
+      if (!isPhone) {
+        onOpenInvoiceModal(newlyCreated, isGst ? 'gst' : 'non_gst');
+      }
     }
   };
 
@@ -1109,10 +1213,93 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
       beat={newCustBeat}
       onBeatChange={setNewCustBeat}
       activeBeats={activeBeats}
+      prefilledFields={newCustPrefilled}
       onSave={handleSaveNewCustomer}
-      onClose={() => setShowNewCustomerModal(false)}
+      onClose={() => {
+        setNewCustPrefilled({});
+        setShowNewCustomerModal(false);
+      }}
     />
   ) : null;
+
+  const requestCancelSale = () => {
+    if (totalCartQty > 0) {
+      setShowCancelSaleConfirm(true);
+    } else {
+      handleResetSale();
+    }
+  };
+
+  const cancelSaleConfirmModal = showCancelSaleConfirm ? (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={t('salesman.cancelCurrentSale')}
+      className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+    >
+      <div className="rt-card w-full max-w-sm space-y-4 shadow-2xl">
+        <div className="flex items-center gap-2 text-[var(--due)] font-bold text-base">
+          <AlertCircle className="w-5 h-5 shrink-0" aria-hidden="true" />
+          <span>{t('salesman.cancelCurrentSale')}</span>
+        </div>
+        <p className="text-sm text-[var(--text-2)] leading-relaxed">
+          You have <strong className="text-[var(--text)]">{totalCartQty} {totalCartQty === 1 ? 'case' : 'cases'}</strong> in this cart. Cancelling will clear the cart and start fresh.
+        </p>
+        <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border)]">
+          <button
+            type="button"
+            onClick={() => setShowCancelSaleConfirm(false)}
+            className="rt-btn-outline min-h-[44px]"
+          >
+            Keep Cart
+          </button>
+          <button
+            type="button"
+            onClick={handleResetSale}
+            className="rt-btn min-h-[44px] bg-[var(--due)]! border-[var(--due)]!"
+          >
+            {t('salesman.cancelSale')}
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  // STAGE 4 (Phone): Bill saved success screen before returning to Step 1
+  if (isPhone && savedBill) {
+    return (
+      <div className="hh-view w-full min-w-0 overflow-x-hidden">
+        <div
+          data-esc-close
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('sell.billSavedTitle')}
+          className="rt-sale-sheet"
+        >
+          <header className="rt-sale-header">
+            <div className="rt-sale-header__row">
+              <h2 className="rt-sale-header__title">{t('sell.billSavedTitle')}</h2>
+            </div>
+          </header>
+          <div className="rt-sale-body !pt-3">
+            <InvoiceSuccessCard
+              bill={savedBill}
+              onOpenInvoiceModal={onOpenInvoiceModal}
+              onCreateNextBill={() => {
+                setSavedBill(null);
+                setPhoneReviewStage('cart');
+              }}
+              onOpenHistory={() => {
+                setSavedBill(null);
+                setPhoneReviewStage('cart');
+                onBack();
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // STEP 1: no customer chosen yet. Picking one (or saving a new one) sets selectedCustomerId, which
   // moves on to the order form below. Reset / finishing a bill clears it and brings Step 1 back.
@@ -1131,6 +1318,14 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
           onBack={onBack}
           todayRoutes={todayRoutes}
           tripLabel={saleSource === 'trip' && selectedTripId !== undefined ? `Trip: #TRP-${selectedTripId}` : undefined}
+          cartItemCount={totalCartQty}
+          onCancelSale={requestCancelSale}
+          stockSummary={{
+            source: saleSource,
+            label: saleSource === 'trip' ? `Van: ${selectedStockLabel}` : selectedStockLabel,
+            dateLabel: formattedSaleDate,
+            isBackDated: saleDate < todayStr,
+          }}
           contextBar={
             <OrderContextBar
               saleSource={saleSource}
@@ -1148,6 +1343,8 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
           }
           // Same handlers as the inline customer search in the order form (kept identical on purpose).
           onSelectCustomer={(c: RichCustomerOption) => {
+            setSavedBill(null);
+            setPhoneReviewStage('cart');
             setSelectedCustomerId(c.id);
             setCustomerName(c.name);
             setCustomerPhone(c.phone || '');
@@ -1156,6 +1353,8 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
             checkAndPromptProducts(c.name, stockSource);
           }}
           onSelectSpotSale={() => {
+            setSavedBill(null);
+            setPhoneReviewStage('cart');
             setSelectedCustomerId('__walkin__');
             setCustomerName('Apt / Walk-in sale');
             setCustomerPhone('');
@@ -1168,10 +1367,16 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
             setNewCustPhone(prefill.phone || '');
             setNewCustGstin(prefill.gstin || '');
             setNewCustBeat(selectedBeatFilter !== 'all' ? selectedBeatFilter : '');
+            setNewCustPrefilled({
+              name: Boolean(prefill.name),
+              phone: Boolean(prefill.phone),
+              gstin: Boolean(prefill.gstin),
+            });
             setShowNewCustomerModal(true);
           }}
         />
         {newCustomerSheet}
+        {cancelSaleConfirmModal}
       </div>
     );
   }
@@ -1182,14 +1387,13 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
         isCompact ? 'space-y-3' : 'space-y-4'
       }`}
     >
-      {/* Top Header Bar */}
-      {isCompact ? (
+      {/* Top Header Bar (tablet & desktop only; phone uses AppHeader + New Sale/History tabs) */}
+      {isCompact && !isPhone ? (
         <FlowInlineHeader
           title="Order Details"
           onBack={goBackToStep1}
           backLabel="Back to retailers"
           right={
-            <>
             <button
               type="button"
               id="btn-floating-cart"
@@ -1210,10 +1414,9 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                 <span className="tabular-nums">0</span>
               )}
             </button>
-            </>
           }
         />
-      ) : (
+      ) : !isCompact ? (
         <div className="flex items-center justify-between gap-3 sticky top-0 bg-[var(--canvas)] z-30 py-2.5 -my-2 border-b border-slate-200/60">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="min-w-0">
@@ -1231,12 +1434,12 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
               <button
                 type="button"
                 id="btn-reset-new-customer"
-                onClick={handleResetSale}
+                onClick={requestCancelSale}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold transition-all cursor-pointer shadow-2xs"
-                title="Reset order & select a new customer"
+                title="Cancel sale & clear current order"
               >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Reset</span>
+                <X className="w-3.5 h-3.5" />
+                <span>{t('salesman.cancelSale')}</span>
               </button>
             )}
 
@@ -1268,12 +1471,187 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
             </button>
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* Main Configuration Card */}
-      {isCompact ? (
+      {isPhone ? (
         <section
-          className="rounded-2xl bg-white/95 border border-[#DCE5F2] shadow-[0_10px_28px_-8px_rgba(10,31,68,0.1)] p-4 space-y-3.5"
+          className="rt-card hh-order-setup-card space-y-3.5"
+          aria-label={t('sell.orderSetup')}
+        >
+          {/* Retailer Summary Header */}
+          <div className="flex items-start justify-between gap-2.5">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--text-2)]">
+                  {t('sell.customer')}
+                </p>
+                <span className={`rt-tag ${creditInfo.due > 0.004 ? 'rt-tag--due' : 'rt-tag--paid'}`}>
+                  {creditInfo.due > 0.004 ? `${t('home.dueLabel')} ${inr(creditInfo.due)}` : t('sell.paid')}
+                </span>
+              </div>
+              <h3 className="mt-1 text-[17px] font-extrabold text-[var(--text)] leading-snug break-words">
+                {customerName || 'Walk-in sale'}
+              </h3>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={goBackToStep1}
+                className="rt-btn-outline min-h-[44px] px-3 text-xs font-bold"
+              >
+                {t('sell.change')}
+              </button>
+              <button
+                type="button"
+                id="btn-reset-new-customer"
+                onClick={requestCancelSale}
+                aria-label={t('salesman.cancelSale')}
+                title="Cancel order & select a new customer"
+                className="min-h-[44px] px-3 rounded-full border border-[var(--due)]/30 bg-[var(--due-bg)] text-[var(--due)] text-xs font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              >
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{t('common.cancel')}</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="relative">
+            <Phone className="w-4 h-4 text-[var(--primary)] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="tel"
+              inputMode="tel"
+              value={customerPhone}
+              onChange={(e) => setCustomerPhone(e.target.value)}
+              placeholder="Customer phone / WhatsApp (optional)"
+              aria-label="Customer phone number"
+              className={`w-full min-h-[44px] pl-10 pr-3.5 rounded-full border bg-[var(--bg)] text-sm font-medium text-[var(--text)] focus:outline-none focus:bg-[var(--surface)] ${
+                customerPhoneError
+                  ? 'border-[var(--due)]'
+                  : 'border-[var(--border)] focus:border-[var(--primary)]'
+              }`}
+            />
+          </div>
+          {customerGstin && (
+            <span className="inline-block text-[11px] font-mono font-semibold text-[var(--text-2)]">
+              GSTIN: {customerGstin}
+            </span>
+          )}
+          {customerPhoneError && (
+            <p className="text-[11px] font-medium text-[var(--due)]">{customerPhoneError}</p>
+          )}
+
+          {/* Stock Source & Bill Date Strip */}
+          <div className="rounded-[var(--r-card)] bg-[var(--bg)] border border-[var(--border)] p-3 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 space-y-1">
+                <p className="text-[10.5px] font-bold uppercase tracking-wider text-[var(--text-2)] m-0">
+                  {t('sell.stockSource')}
+                </p>
+                <div className="flex items-start gap-1.5 text-[13px] font-bold text-[var(--text)] min-w-0">
+                  {saleSource === 'trip' ? (
+                    <Truck className="w-4 h-4 text-[var(--primary)] shrink-0 mt-0.5" />
+                  ) : (
+                    <Building2 className="w-4 h-4 text-[var(--primary)] shrink-0 mt-0.5" />
+                  )}
+                  <span className="leading-snug break-words">
+                    {saleSource === 'trip' ? `Van: ${selectedStockLabel}` : selectedStockLabel}
+                  </span>
+                </div>
+                <div
+                  className={`flex items-center gap-1.5 text-xs font-semibold tabular-nums ${
+                    saleDate < todayStr ? 'text-[var(--soon-text)]' : 'text-[var(--text-2)]'
+                  }`}
+                >
+                  <Calendar className="w-3.5 h-3.5 shrink-0" />
+                  <span>{formattedSaleDate}</span>
+                  {saleDate < todayStr && (
+                    <span className="rt-tag rt-tag--soon">Back-dated</span>
+                  )}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setEditSetup((v) => !v)}
+                aria-expanded={editSetup}
+                className={`min-h-[44px] px-3.5 rounded-full border text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer shrink-0 transition-colors ${
+                  editSetup
+                    ? 'bg-[var(--text)] border-[var(--text)] text-[var(--surface)]'
+                    : 'bg-[var(--surface)] border-[var(--border)] text-[var(--text)]'
+                }`}
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                <span>{editSetup ? t('sell.done') : 'Edit'}</span>
+              </button>
+            </div>
+
+            {editSetup && (
+              <div className="pt-2 border-t border-[var(--border)]">
+                <OrderContextBar
+                  saleSource={saleSource}
+                  onSaleSourceChange={handleSaleSourceChange}
+                  trips={tripOptions}
+                  selectedTripId={selectedTripId}
+                  onTripChange={(id) => setStockSource(`trip_${id}`)}
+                  warehouses={warehouseOptions}
+                  selectedWarehouseId={!stockSource.startsWith('trip_') ? stockSource : defaultWarehouseId}
+                  onWarehouseChange={(id) => setStockSource(id)}
+                  saleDate={saleDate}
+                  onSaleDateChange={setSaleDate}
+                  todayIso={todayStr}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Bill Type */}
+          <div>
+            <label htmlFor="select-bill-type" className="block text-[11px] font-bold uppercase tracking-wider text-[var(--text-2)] mb-1.5">
+              Bill Type
+            </label>
+            <div className="relative">
+              <select
+                id="select-bill-type"
+                value={billType}
+                onChange={(e) => setBillType(e.target.value as any)}
+                className="w-full min-h-[44px] appearance-none px-4 rounded-full border border-[var(--border)] bg-[var(--surface)] text-sm text-[var(--text)] font-semibold focus:outline-none focus:border-[var(--primary)] pr-10 cursor-pointer"
+              >
+                <option value="tax_invoice" disabled={compositionLocked || cartTaxStatus.allNonGst}>
+                  Tax invoice (GST inclusive)
+                  {compositionLocked
+                    ? ' - not allowed for composition'
+                    : cartTaxStatus.allNonGst
+                      ? ' - disabled (all items Non-GST)'
+                      : ''}
+                </option>
+                <option value="bill_of_supply">Bill of supply (non-GST)</option>
+                <option value="estimate">Estimate / quotation</option>
+              </select>
+              <ChevronDown className="w-4 h-4 text-[var(--text-2)] absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
+            {compositionLocked && (
+              <p className="mt-1.5 text-[11px] text-[var(--text-2)]">
+                Composition taxpayer: a Bill of Supply is issued and no GST is charged to the customer.
+              </p>
+            )}
+            {cartTaxStatus.allNonGst && (
+              <p className="mt-2 rt-notice rt-notice--soon">
+                All items are Non-GST / Trading — issues a separate Cash Memo (NG-...) excluded from GST filings.
+              </p>
+            )}
+            {cartTaxStatus.hasMixedTax && (
+              <p className="mt-2 rt-notice rt-notice--soon">
+                Mixed cart: checkout will auto-split into 1 GST Invoice ({billingSettings?.invoicePrefix || 'INV'}-...) + 1 Non-GST Cash Memo (NG-...).
+              </p>
+            )}
+          </div>
+        </section>
+      ) : isCompact ? (
+        <section
+          data-card-tone="sales"
+          className="rounded-2xl border shadow-sm p-4 space-y-3.5"
           aria-label="Order setup"
         >
           {/* Retailer Summary Header */}
@@ -1335,18 +1713,19 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
               <button
                 type="button"
                 id="btn-reset-new-customer"
-                onClick={handleResetSale}
-                aria-label="Reset order"
-                title="Reset order & select a new customer"
-                className="size-9 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-600 flex items-center justify-center cursor-pointer transition-colors"
+                onClick={requestCancelSale}
+                aria-label={t('salesman.cancelSale')}
+                title="Cancel order & select a new customer"
+                className="min-h-[36px] px-2.5 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors whitespace-nowrap"
               >
-                <RotateCcw className="w-4 h-4" />
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{t('common.cancel')}</span>
               </button>
             </div>
           </div>
 
           {/* Stock Source & Bill Date Strip */}
-          <div className="rounded-xl bg-[#F5F8FD] border border-[#DCE5F2] p-3 space-y-2.5">
+          <div className="rounded-xl bg-white/80 border border-black/5 p-3 space-y-2.5">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0 space-y-1">
                 <div className="flex items-start gap-1.5 text-[13px] font-bold text-[#0A1F44] min-w-0">
@@ -1519,6 +1898,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
               setNewCustPhone(prefill.phone || '');
               setNewCustGstin(prefill.gstin || '');
               setNewCustBeat(selectedBeatFilter !== 'all' ? selectedBeatFilter : '');
+              setNewCustPrefilled({});
               setShowNewCustomerModal(true);
             }}
           />
@@ -1669,15 +2049,21 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
           id="btn-add-product"
           onClick={() => setShowProductSelector(true)}
           className={`w-full flex items-center justify-between px-4 min-h-[52px] rounded-full font-bold text-[14.5px] transition-all cursor-pointer group ${
-            isCompact
-              ? 'bg-gradient-to-r from-[#19A84B] to-[#0D8A38] hover:from-[#159642] hover:to-[#0A752E] text-white shadow-sm'
-              : 'bg-gradient-to-r from-emerald-50/70 via-white to-slate-50 hover:from-emerald-100/70 hover:to-emerald-50/30 rounded-2xl border-2 border-emerald-600/30 hover:border-emerald-600 shadow-2xs text-slate-800 py-3.5'
+            isPhone
+              ? 'hh-order-select-cta'
+              : isCompact
+                ? 'bg-gradient-to-r from-[#19A84B] to-[#0D8A38] hover:from-[#159642] hover:to-[#0A752E] text-white shadow-sm'
+                : 'bg-gradient-to-r from-emerald-50/70 via-white to-slate-50 hover:from-emerald-100/70 hover:to-emerald-50/30 rounded-2xl border-2 border-emerald-600/30 hover:border-emerald-600 shadow-2xs text-slate-800 py-3.5'
           }`}
         >
           <span className="flex items-center gap-2.5">
             <span
               className={`size-7 rounded-full flex items-center justify-center shrink-0 transition-transform group-hover:scale-105 ${
-                isCompact ? 'bg-white text-[#0D8A38]' : 'bg-emerald-700 text-white rounded-lg'
+                isPhone
+                  ? 'bg-white/20 text-white'
+                  : isCompact
+                    ? 'bg-white text-[#0D8A38]'
+                    : 'bg-emerald-700 text-white rounded-lg'
               }`}
             >
               <Plus className="w-4 h-4 stroke-[3]" />
@@ -1689,8 +2075,533 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
           />
         </button>
 
-      {/* STEP 2 — Beverage Catalog (full-screen on phones, 8/4 split with live mini-cart on tablets) */}
-      {showProductSelector && (
+        {isPhone && totalCartQty > 0 && (
+          <button
+            type="button"
+            id="btn-floating-cart"
+            onClick={() => setShowCartReview(true)}
+            className="rt-btn w-full justify-between"
+          >
+            <span className="tabular-nums">
+              {t('sell.itemsCount', { n: totalCartQty })} · {inr(grandTotal)}
+            </span>
+            <span>{t('sell.checkout')} →</span>
+          </button>
+        )}
+
+      {/* STEP 2 — Beverage Catalog (phone restyled sheet on <768px; 8/4 split modal on tablet+) */}
+      {showProductSelector && (isPhone ? (() => {
+        const isWalkIn = selectedCustomerId === '__walkin__';
+        const activeFilterCount =
+          (selectedPackFilter !== 'all' ? 1 : 0) +
+          (selectedSize !== 'all' ? 1 : 0) +
+          (schemesOnly ? 1 : 0) +
+          (inCartOnly ? 1 : 0);
+        const packChoices: { id: 'all' | 'pet' | 'can' | 'glass' | 'tetra'; label: string; shortLabel: string }[] = [
+          { id: 'all', label: 'All packs', shortLabel: 'All' },
+          { id: 'pet', label: 'PET Bottle', shortLabel: 'PET' },
+          { id: 'can', label: 'Can / Tin', shortLabel: 'Can' },
+          { id: 'glass', label: 'Glass RGB', shortLabel: 'Glass' },
+          { id: 'tetra', label: 'Tetra / Pouch', shortLabel: 'Tetra' },
+        ];
+        const activePackShort = packChoices.find((pk) => pk.id === selectedPackFilter)?.shortLabel;
+        const activeSizeLabel =
+          selectedSize === 'soda'
+            ? t('sell.sizeSoda') || 'Soda'
+            : sizeOptions.find((sz) => sz.id === selectedSize)?.label;
+        const orderedPhoneProducts = categorySections.flatMap((s) => s.items);
+
+        const toggleSchemesOnly = () => {
+          setSchemesOnly((prev) => {
+            const next = !prev;
+            if (next && selectedCategory !== 'all') {
+              const catHasScheme = baseFilteredProducts.some(
+                (p) => (p.category || 'other') === selectedCategory && hasActiveSchemeForProduct(p),
+              );
+              if (!catHasScheme) setSelectedCategory('all');
+            }
+            return next;
+          });
+        };
+
+        const toggleInCartOnly = () => {
+          setInCartOnly((prev) => {
+            const next = !prev;
+            if (next && selectedCategory !== 'all') {
+              const catHasCart = baseFilteredProducts.some(
+                (p) => (p.category || 'other') === selectedCategory && (selectedItems[p.id] || 0) > 0,
+              );
+              if (!catHasCart) setSelectedCategory('all');
+            }
+            return next;
+          });
+        };
+
+        return (
+          <div
+            data-esc-close
+            role="dialog"
+            aria-modal="true"
+            aria-label="Beverage Catalog"
+            className="rt-sale-sheet"
+          >
+            {/* 1. Header (--primary): back + customer/walk-in, right = due/no-customer tag, 4-bar progress, search */}
+            <header className="rt-sale-header">
+              <div className="rt-sale-header__row">
+                <button
+                  type="button"
+                  onClick={goBackToStep1}
+                  aria-label="Back to customer selection"
+                  className="rt-sale-header__back"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="rt-sale-header__title">
+                  {isWalkIn ? t('sell.walkInSale') : (customerName || t('sell.walkInSale'))}
+                </h2>
+                <div className="rt-sale-header__right">
+                  {isWalkIn ? (
+                    <span className="rt-tag rt-tag--ghost">{t('sell.noCustomer')}</span>
+                  ) : (
+                    <span className={`rt-tag ${creditInfo.due > 0.004 ? 'rt-tag--soon' : 'rt-tag--paid'}`}>
+                      {creditInfo.due > 0.004 ? `${t('sell.currentDue')} ${inr(creditInfo.due)}` : t('sell.paid')}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={requestCancelSale}
+                    aria-label={t('salesman.cancelSale')}
+                    className="rt-sale-header__cancel"
+                  >
+                    <X className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{t('common.cancel')}</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="rt-seg" aria-hidden="true">
+                <span className="rt-seg__bar rt-seg__bar--on" />
+                <span className="rt-seg__bar rt-seg__bar--on" />
+                <span className="rt-seg__bar" />
+                <span className="rt-seg__bar" />
+              </div>
+              <p className="rt-stp">{t('sell.step2PickProducts')}</p>
+
+              <div ref={catalogFilterRef} className="relative">
+                <div className="rt-sale-search">
+                  <Search className="w-4 h-4 rt-sale-search__icon" />
+                  <input
+                    type="text"
+                    enterKeyHint="search"
+                    placeholder={t('sell.searchProducts')}
+                    aria-label={t('sell.searchProducts')}
+                    value={beverageSearch}
+                    onChange={(e) => setBeverageSearch(e.target.value)}
+                    className="rt-sale-search__input"
+                  />
+                  {beverageSearch && (
+                    <button
+                      type="button"
+                      onClick={() => setBeverageSearch('')}
+                      aria-label="Clear search"
+                      className="rt-sale-search__btn"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setCatalogFilterOpen((v) => !v)}
+                    aria-label="Filter beverages"
+                    aria-expanded={catalogFilterOpen}
+                    className={`rt-sale-search__btn ${activeFilterCount > 0 || catalogFilterOpen ? 'rt-sale-search__btn--active' : ''}`}
+                  >
+                    <SlidersHorizontal className="w-4 h-4" />
+                    {activeFilterCount > 0 && (
+                      <span className="rt-sale-search__badge">{activeFilterCount}</span>
+                    )}
+                  </button>
+                </div>
+
+                {catalogFilterOpen && (
+                  <div
+                    role="dialog"
+                    aria-label="Beverage filters"
+                    className="rt-card absolute left-0 right-0 top-full mt-2 z-50 space-y-3 max-h-[60vh] overflow-y-auto"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[12px] font-bold text-[var(--text-2)]">
+                        {t('sell.sizeFilter')}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        {activeFilterCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedPackFilter('all');
+                              setSelectedSize('all');
+                              setSchemesOnly(false);
+                              setInCartOnly(false);
+                            }}
+                            className="text-xs font-bold text-[var(--primary)] cursor-pointer"
+                          >
+                            Reset
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setCatalogFilterOpen(false)}
+                          className="rt-tag cursor-pointer"
+                        >
+                          {t('sell.done')}
+                        </button>
+                      </div>
+                    </div>
+
+                    {(schemeMatchCount > 0 || schemesOnly || cartMatchCount > 0 || inCartOnly) && (
+                      <div className="space-y-1.5">
+                        <div className="text-[11px] font-semibold text-[var(--text-2)]">Quick Filters</div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {(schemeMatchCount > 0 || schemesOnly) && (
+                            <button
+                              type="button"
+                              aria-pressed={schemesOnly}
+                              onClick={toggleSchemesOnly}
+                              className="rt-chip rt-chip--offer"
+                            >
+                              <Tag className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>Offers</span>
+                              <span className="rt-chip__count">{schemeMatchCount}</span>
+                            </button>
+                          )}
+                          {(cartMatchCount > 0 || inCartOnly) && (
+                            <button
+                              type="button"
+                              aria-pressed={inCartOnly}
+                              onClick={toggleInCartOnly}
+                              className="rt-chip"
+                            >
+                              <ShoppingCart className="w-3.5 h-3.5" aria-hidden="true" />
+                              <span>In cart</span>
+                              <span className="rt-chip__count">{cartMatchCount}</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className={`space-y-1.5 ${(schemeMatchCount > 0 || cartMatchCount > 0) ? 'pt-2 border-t border-[var(--border)]' : ''}`}>
+                      <div className="text-[11px] font-semibold text-[var(--text-2)]">Pack Type</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {packChoices.map((pk) => (
+                          <button
+                            key={pk.id}
+                            type="button"
+                            aria-pressed={selectedPackFilter === pk.id}
+                            onClick={() => setSelectedPackFilter(pk.id)}
+                            className="rt-chip"
+                          >
+                            {pk.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5 pt-2 border-t border-[var(--border)]">
+                      <div className="text-[11px] font-semibold text-[var(--text-2)]">Size</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {[
+                          { id: 'all', label: t('sell.sizeAll') || 'All' },
+                          ...sizeOptions,
+                          { id: 'soda', label: t('sell.sizeSoda') || 'Soda' },
+                        ].map((sz) => (
+                          <button
+                            key={sz.id}
+                            type="button"
+                            aria-pressed={selectedSize === sz.id}
+                            onClick={() => setSelectedSize(sz.id)}
+                            className="rt-chip"
+                          >
+                            {sz.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </header>
+
+            {/* 2. Smart filter chips row (All, active pack/size tags, Offers, In cart, crisp short categories) */}
+            <div className="rt-chips" role="group" aria-label="Product filters">
+              <button
+                type="button"
+                aria-pressed={selectedCategory === 'all' && !schemesOnly && !inCartOnly}
+                onClick={() => {
+                  setSelectedCategory('all');
+                  setSchemesOnly(false);
+                  setInCartOnly(false);
+                }}
+                className="rt-chip"
+              >
+                <span>{t('sell.categoryAll')}</span>
+                <span className="rt-chip__count">{baseFilteredProducts.length}</span>
+              </button>
+
+              {activePackShort && (
+                <button
+                  type="button"
+                  aria-pressed="true"
+                  onClick={() => setSelectedPackFilter('all')}
+                  aria-label={`Remove ${activePackShort} pack filter`}
+                  className="rt-chip"
+                >
+                  <span>{activePackShort}</span>
+                  <X className="w-3.5 h-3.5 opacity-80" aria-hidden="true" />
+                </button>
+              )}
+
+              {activeSizeLabel && (
+                <button
+                  type="button"
+                  aria-pressed="true"
+                  onClick={() => setSelectedSize('all')}
+                  aria-label={`Remove ${activeSizeLabel} size filter`}
+                  className="rt-chip"
+                >
+                  <span>{activeSizeLabel}</span>
+                  <X className="w-3.5 h-3.5 opacity-80" aria-hidden="true" />
+                </button>
+              )}
+
+              {(schemeMatchCount > 0 || schemesOnly) && (
+                <button
+                  type="button"
+                  aria-pressed={schemesOnly}
+                  onClick={toggleSchemesOnly}
+                  className="rt-chip rt-chip--offer"
+                >
+                  <Tag className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>Offers</span>
+                  <span className="rt-chip__count">{schemeMatchCount}</span>
+                </button>
+              )}
+
+              {(cartMatchCount > 0 || inCartOnly) && (
+                <button
+                  type="button"
+                  aria-pressed={inCartOnly}
+                  onClick={toggleInCartOnly}
+                  className="rt-chip"
+                >
+                  <ShoppingCart className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>In cart</span>
+                  <span className="rt-chip__count">{cartMatchCount}</span>
+                </button>
+              )}
+
+              {categories
+                .filter((cat) => cat !== 'all')
+                .map((cat, idx) => {
+                  const count = categoryCounts.get(cat) || 0;
+                  if (count === 0 && selectedCategory !== cat) return null;
+                  const label = shortCategoryLabel(cat);
+                  return (
+                    <button
+                      key={cat || `cat_${idx}`}
+                      type="button"
+                      aria-pressed={selectedCategory === cat}
+                      onClick={() =>
+                        setSelectedCategory((prev) => (prev === cat ? 'all' : cat))
+                      }
+                      className="rt-chip"
+                    >
+                      <span>{label}</span>
+                      <span className="rt-chip__count">{count}</span>
+                    </button>
+                  );
+                })}
+            </div>
+
+            {/* 3 & 4. Scrollable product grid + Walk-in notice + Offer banner */}
+            <div className="rt-sale-body">
+              {isWalkIn && (
+                <div className="rt-noti" role="status">
+                  <Zap className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+                  <span>{t('sell.walkInNotice')}</span>
+                </div>
+              )}
+
+              {(totalDiscount > 0 || totalFreeQty > 0) && (
+                <div className="rt-offer-banner" role="status">
+                  <Tag className="w-4 h-4 shrink-0" />
+                  <span className="rt-offer-banner__text">
+                    {t('sell.offerApplied')}
+                    {totalDiscount > 0 ? ` · −${inr(totalDiscount)}` : ''}
+                    {totalFreeQty > 0 ? ` · +${t('sell.freeCases', { n: totalFreeQty })}` : ''}
+                  </span>
+                  <span className="rt-tag rt-tag--soon shrink-0">{t('sell.applied')}</span>
+                </div>
+              )}
+
+              {orderedPhoneProducts.length === 0 ? (
+                <div className="rt-card text-center space-y-3 py-8">
+                  <Package className="w-8 h-8 mx-auto text-[var(--text-2)]" />
+                  <p className="text-sm font-semibold text-[var(--text)]">
+                    {inStockCount === 0
+                      ? `No beverages with stock available in ${selectedStockLabel}`
+                      : `No beverages match your filters in ${selectedStockLabel}`}
+                  </p>
+                  {(selectedCategory !== 'all' || selectedPackFilter !== 'all' || selectedSize !== 'all' || schemesOnly || inCartOnly || beverageSearch.trim() !== '') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedCategory('all');
+                        setSelectedPackFilter('all');
+                        setSelectedSize('all');
+                        setSchemesOnly(false);
+                        setInCartOnly(false);
+                        setBeverageSearch('');
+                      }}
+                      className="rt-btn-outline"
+                    >
+                      Reset Filters
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="rt-prod-grid">
+                  {orderedPhoneProducts.map((prod, idx) => {
+                    const available = getProductStock(prod.id);
+                    const inCartQty = selectedItems[prod.id] || 0;
+                    const defaultRate = getProductDefaultPrice(prod);
+                    const customRate = customRates[prod.id];
+                    const currentRate = customRate !== undefined ? customRate : defaultRate;
+                    const sTheme = sizeTheme(prod.volume, prod.name);
+                    const pTheme = packTheme(prod.pack, prod.name);
+
+                    const userChoice = customSchemes[prod.id];
+                    let activePromo: Promotion | null = null;
+                    if (userChoice !== undefined) {
+                      activePromo = userChoice;
+                    } else if (schemeMode === 'none' || billingSettings?.schemesEnabled === false || billingSettings?.autoApplyPromotions === false) {
+                      activePromo = null;
+                    } else {
+                      activePromo = activePromoFor ? activePromoFor(prod.id) : null;
+                    }
+                    const promoLabel = activePromo ? schemeLabel(activePromo, products) : null;
+                    const isOos = available <= 0;
+                    const packParts = [
+                      prod.unitsPerCrate ? t('sell.packInfo', { pcs: prod.unitsPerCrate }) : (sTheme.label || pTheme.label),
+                      isOos ? t('sell.outOfStock') : t('sell.leftCount', { n: available }),
+                    ].filter(Boolean);
+
+                    return (
+                      <div
+                        key={prod.id !== undefined ? `prod_${prod.id}` : `prod_idx_${idx}`}
+                        className={`rt-card rt-prod-card ${inCartQty > 0 ? 'rt-prod-card--in-cart' : ''} ${isOos ? 'rt-prod-card--oos' : ''}`}
+                      >
+                        <div className="rt-prod-media">
+                          {promoLabel && (
+                            <span className="rt-prod-scheme" title={promoLabel}>
+                              {t('sell.scheme')}
+                            </span>
+                          )}
+                          <ProductCardMedia product={prod} />
+                        </div>
+
+                        <div className="rt-prod-info">
+                          <h3 className="rt-prod-name">
+                            {prod.name}
+                            {isOdia && prod.nameOr ? (
+                              <span className="block text-[11px] font-semibold font-odia text-[var(--text-2)] mt-0.5">
+                                {prod.nameOr}
+                              </span>
+                            ) : null}
+                          </h3>
+                          {packParts.length > 0 && (
+                            <p className="rt-prod-pack">{packParts.join(' · ')}</p>
+                          )}
+                          <p className="rt-prod-price">
+                            {currentRate === 0 ? '₹0' : `₹${currentRate.toLocaleString('en-IN')}`}
+                          </p>
+                        </div>
+
+                        {isOos && inCartQty === 0 ? (
+                          <button type="button" disabled className="rt-prod-oos">
+                            {t('sell.unavailable')}
+                          </button>
+                        ) : inCartQty === 0 ? (
+                          <button
+                            type="button"
+                            id={`btn-add-beverage-${prod.id}`}
+                            onClick={() => setItemQty(prod.id, 1)}
+                            className="rt-prod-add"
+                          >
+                            <Plus className="w-4 h-4" />
+                            <span>{t('sell.add')}</span>
+                          </button>
+                        ) : (
+                          <div className="rt-prod-stepper">
+                            <button
+                              type="button"
+                              onClick={() => setItemQty(prod.id, inCartQty - 1)}
+                              aria-label={`Decrease ${prod.name}`}
+                              className="rt-prod-stepper__btn"
+                            >
+                              <Minus className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openQuickEntry(prod)}
+                              title="Tap to edit qty, rate or scheme"
+                              className="rt-prod-stepper__qty"
+                            >
+                              {inCartQty}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setItemQty(prod.id, inCartQty + 1)}
+                              aria-label={`Increase ${prod.name}`}
+                              className="rt-prod-stepper__btn"
+                            >
+                              <Plus className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* 5. Sticky cart bar 12px above bottom nav (hide when empty) */}
+            {totalCartQty > 0 && (
+              <div className="rt-cartbar" role="region" aria-label={t('sell.yourBill')}>
+                <div className="rt-cartbar__info">
+                  <span className="rt-cartbar__count">
+                    {totalCartQty === 1 ? t('sell.caseSingle') : t('sell.casesCount', { n: totalCartQty })}
+                    {totalFreeQty > 0 ? ` · +${totalFreeQty}` : ''}
+                  </span>
+                  <span className="rt-cartbar__total">{inr(grandTotal)}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPhoneReviewStage('cart');
+                    setShowProductSelector(false);
+                    setShowCartReview(true);
+                  }}
+                  className="rt-cartbar__cta"
+                >
+                  <span>{isWalkIn ? t('sell.reviewOrder') : t('sell.viewCart')}</span>
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })() : (
         <div
           data-esc-close
           role="dialog"
@@ -1713,11 +2624,12 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
             </h2>
             <button
               type="button"
-              onClick={handleResetSale}
-              className="min-h-[44px] px-3 rounded-xl text-xs font-semibold text-white/90 hover:bg-white/10 inline-flex items-center gap-1.5 cursor-pointer shrink-0 transition-colors"
-              title="Reset order & select a new customer"
+              onClick={requestCancelSale}
+              className="min-h-[44px] px-3 rounded-xl border border-white/25 bg-white/10 hover:bg-white/20 text-xs font-bold text-white inline-flex items-center gap-1.5 cursor-pointer shrink-0 transition-colors"
+              title="Cancel order & select a new customer"
             >
-              <RotateCcw className="w-3.5 h-3.5" /> Reset
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>{t('salesman.cancelSale')}</span>
             </button>
           </header>
 
@@ -2018,7 +2930,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                 )}
 
                 {filteredProducts.length === 0 ? (
-                  <div className="bg-white rounded-xl border border-gray-200 p-6 text-center space-y-3">
+                  <div data-card-tone="neutral" className="rounded-2xl border p-6 text-center space-y-3">
                     <Package className="w-8 h-8 text-gray-300 mx-auto" />
                     <p className="text-sm font-semibold text-[#0A1F44]">
                       {inStockCount === 0
@@ -2086,17 +2998,25 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
                                 ? { text: 'Low Stock', cls: 'bg-amber-100 text-amber-800' }
                                 : { text: 'In Stock', cls: 'bg-[#ECFDF5] text-[#1B8A5A]' };
 
+                          const cardTone =
+                            inCartQty > 0
+                              ? 'received'
+                              : available <= 0
+                                ? 'due'
+                                : available <= lowStockLimit
+                                  ? 'warning'
+                                  : 'sales';
+
                           return (
                             <div
                               key={prod.id !== undefined ? `prod_${prod.id}` : `prod_idx_${idx}`}
-                              className={`rounded-xl border p-3.5 bg-white flex flex-col gap-3 ${
-                                inCartQty > 0 ? 'border-2 border-[#1B8A5A] p-[13px]' : 'border-gray-200'
+                              data-card-tone={cardTone}
+                              className={`rounded-2xl border p-3.5 shadow-xs flex flex-col gap-3 transition-all ${
+                                inCartQty > 0 ? 'ring-2 ring-emerald-500/40 shadow-sm' : ''
                               }`}
                             >
                               <div className="flex items-start gap-3">
-                                <div className="w-12 h-12 rounded-xl bg-[#F8F9FA] border border-gray-200 flex items-center justify-center shrink-0">
-                                  <PackIcon pack={prod.pack} name={prod.name} />
-                                </div>
+                                <PackIcon pack={prod.pack} name={prod.name} className="mt-0.5" />
                                 <div className="min-w-0 flex-1">
                                   <p className="font-bold text-[#0A1F44] text-sm leading-snug break-words">
                                     {prod.name}
@@ -2260,10 +3180,441 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
             </div>
           )}
         </div>
-      )}
+      ))}
 
-      {/* STEP 4 — Order Review & Checkout */}
-      {showCartReview && (
+      {/* STEP 3 & STEP 4 — Cart & Schemes → Review & Checkout (phone restyled; desktop/tablet untouched) */}
+      {showCartReview && (isPhone ? (() => {
+        const isWalkIn = selectedCustomerId === '__walkin__';
+        const activePhonePay: 'cash' | 'upi' | 'credit' =
+          payChoice === 'credit' || (payChoice === 'partial' && (Number(paymentAmount) || 0) <= 0)
+            ? 'credit'
+            : paymentMode === 'upi'
+              ? 'upi'
+              : 'cash';
+
+        if (phoneReviewStage === 'cart') {
+          return (
+            <div
+              data-esc-close
+              role="dialog"
+              aria-modal="true"
+              aria-label={t('sell.cart')}
+              className="rt-sale-sheet"
+            >
+              <header className="rt-sale-header">
+                <div className="rt-sale-header__row">
+                  <button
+                    type="button"
+                    aria-label="Back to catalog"
+                    onClick={() => {
+                      setShowCartReview(false);
+                      setShowProductSelector(true);
+                    }}
+                    className="rt-sale-header__back"
+                  >
+                    <ArrowLeft className="w-5 h-5" />
+                  </button>
+                  <h2 className="rt-sale-header__title">{t('sell.cart')}</h2>
+                  <div className="rt-sale-header__right">
+                    <span className="rt-tag rt-tag--ghost">
+                      {totalCartQty === 1 ? t('sell.caseSingle') : t('sell.casesCount', { n: totalCartQty })}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={requestCancelSale}
+                      aria-label={t('salesman.cancelSale')}
+                      className="rt-sale-header__cancel"
+                    >
+                      <X className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>{t('common.cancel')}</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="rt-seg" aria-hidden="true">
+                  <span className="rt-seg__bar rt-seg__bar--on" />
+                  <span className="rt-seg__bar rt-seg__bar--on" />
+                  <span className="rt-seg__bar rt-seg__bar--on" />
+                  <span className="rt-seg__bar" />
+                </div>
+                <p className="rt-stp">{t('sell.step3QuantitiesOffers')}</p>
+              </header>
+
+              <div className="rt-sale-body !pt-3">
+                {lineItems.length === 0 ? (
+                  <div className="rt-card py-6 text-center space-y-2.5">
+                    <p className="text-sm font-semibold text-[var(--text-2)]">{t('sell.emptyBill')}</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCartReview(false);
+                        setShowProductSelector(true);
+                      }}
+                      className="rt-btn-outline rt-btn-outline--primary"
+                    >
+                      {t('sell.add')}
+                    </button>
+                  </div>
+                ) : (
+                  <section className="rt-card !py-1 !px-3.5">
+                    {lineItems.map((item, idx) => {
+                      const prod = products.find((p) => p.id === item.productId);
+                      return (
+                        <div key={item.key || `cart_item_${item.productId}_${idx}`} className="rt-cartrow">
+                          <div className="rt-cartrow__thumb">
+                            {prod ? (
+                              <ProductCardMedia product={prod} />
+                            ) : (
+                              <PackIcon pack={prod?.pack} name={item.productName} />
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[12.5px] font-bold text-[var(--text)] leading-snug break-words m-0">
+                              {item.productName}
+                            </p>
+                            <p className="text-[11.5px] font-semibold text-[var(--text-2)] tabular-nums mt-0.5 m-0">
+                              {item.rate === 0 ? 'Free' : `₹${Number(item.rate).toLocaleString('en-IN')} × ${item.qty}`}
+                              {item.freeQty > 0 && (
+                                <span className="text-[var(--paid)] font-bold"> · +{item.freeQty} free</span>
+                              )}
+                            </p>
+                          </div>
+                          {!item.isBundleFreeItem ? (
+                            <div className="rt-st2">
+                              <button
+                                type="button"
+                                aria-label={`Decrease ${item.productName}`}
+                                onClick={() => setItemQty(item.productId, item.qty - 1)}
+                                className="rt-st2__btn"
+                              >
+                                <Minus className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => prod && openQuickEntry(prod)}
+                                title="Tap to edit qty, rate or scheme"
+                                className="rt-st2__qty"
+                              >
+                                {item.qty}
+                              </button>
+                              <button
+                                type="button"
+                                aria-label={`Increase ${item.productName}`}
+                                onClick={() => setItemQty(item.productId, item.qty + 1)}
+                                className="rt-st2__btn"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="rt-tag rt-tag--paid shrink-0">+{item.qty} free</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </section>
+                )}
+
+                {(totalDiscount > 0 || totalFreeQty > 0) && (
+                  <div className="rt-noti !justify-between !items-center" role="status">
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <Gift className="w-4 h-4 shrink-0" aria-hidden="true" />
+                      <span className="font-bold text-[var(--text)] break-words">
+                        {t('sell.offerApplied')}
+                        {totalFreeQty > 0 ? ` · +${t('sell.freeCases', { n: totalFreeQty })}` : ''}
+                        {totalDiscount > 0 ? ` · −${inr(totalDiscount)}` : ''}
+                      </span>
+                    </span>
+                    <span className="rt-tag rt-tag--paid shrink-0">{t('sell.applied')}</span>
+                  </div>
+                )}
+
+              </div>
+
+              {totalCartQty > 0 && (
+                <div className="rt-cartbar" role="region" aria-label={t('sell.total')}>
+                  <div className="rt-cartbar__info">
+                    <span className="rt-cartbar__count">{t('sell.total')}</span>
+                    <span className="rt-cartbar__total">{inr(grandTotal)}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isWalkIn && payChoice === 'credit') {
+                        selectPayChoice('cash');
+                      }
+                      setPhoneReviewStage('checkout');
+                    }}
+                    className="rt-cartbar__cta"
+                  >
+                    <span>{t('sell.reviewOrder')}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        const combinedTotal = isWalkIn
+          ? grandTotal
+          : Math.round((grandTotal + creditInfo.due) * 100) / 100;
+        const balanceAfterBill = Math.max(
+          0,
+          Math.round((combinedTotal - collectedAmountPreview) * 100) / 100,
+        );
+
+        return (
+          <div
+            data-esc-close
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('sell.reviewOrder')}
+            className="rt-sale-checkout-sheet"
+          >
+            <header className="rt-sale-header">
+              <div className="rt-sale-header__row">
+                <button
+                  type="button"
+                  aria-label="Back to cart"
+                  onClick={() => setPhoneReviewStage('cart')}
+                  className="rt-sale-header__back"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="rt-sale-header__title">{t('sell.reviewOrder')}</h2>
+                <div className="rt-sale-header__right">
+                  <button
+                    type="button"
+                    onClick={requestCancelSale}
+                    aria-label={t('salesman.cancelSale')}
+                    className="rt-sale-header__cancel"
+                  >
+                    <X className="w-3.5 h-3.5" aria-hidden="true" />
+                    <span>{t('common.cancel')}</span>
+                  </button>
+                </div>
+              </div>
+              <div className="rt-seg" aria-hidden="true">
+                <span className="rt-seg__bar rt-seg__bar--on" />
+                <span className="rt-seg__bar rt-seg__bar--on" />
+                <span className="rt-seg__bar rt-seg__bar--on" />
+                <span className="rt-seg__bar rt-seg__bar--on" />
+              </div>
+              <p className="rt-stp">{t('sell.step4Checkout')}</p>
+            </header>
+
+            <div className="rt-checkout-body">
+              {customerPhoneError && (
+                <div role="alert" className="rt-notice rt-notice--due">
+                  {customerPhoneError}
+                </div>
+              )}
+              {creditExceeded && (payChoice === 'credit' || payChoice === 'partial') && (
+                <div role="alert" className="rt-notice rt-notice--due">
+                  This order ({inr(grandTotal)}) is more than the available credit ({inr(creditInfo.available ?? 0)}). Collect part of it now or pick another method.
+                </div>
+              )}
+              {creditInfo.available !== null && balanceDuePreview > creditInfo.available && (
+                <div role="alert" className="rt-notice rt-notice--due">
+                  Remaining {inr(balanceDuePreview)} is above available credit {inr(creditInfo.available)}.
+                </div>
+              )}
+              {cartTaxStatus.hasMixedTax && (
+                <div role="status" className="rt-notice rt-notice--soon">
+                  Mixed cart: auto-splits into 1 GST Invoice + 1 Non-GST Cash Memo (NG-...).
+                </div>
+              )}
+
+              {/* Card 1: Bill to & Totals */}
+              <section className="rt-card space-y-1">
+                <div className="flex items-start justify-between gap-2 pb-1">
+                  <div className="min-w-0">
+                    <div className="text-[11.5px] font-semibold text-[var(--text-2)]">{t('sell.billTo')}</div>
+                    <div className="text-[14px] font-extrabold text-[var(--text)] break-words">
+                      {isWalkIn ? t('sell.walkInSale') : (customerName || t('sell.walkInSale'))}
+                    </div>
+                  </div>
+                  {isWalkIn ? (
+                    <span className="rt-tag rt-tag--ghost shrink-0">{t('sell.counter')}</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={goBackToStep1}
+                      className="text-xs font-bold text-[var(--primary)] cursor-pointer shrink-0 min-h-[44px] inline-flex items-center px-1"
+                    >
+                      {t('common.edit')}
+                    </button>
+                  )}
+                </div>
+
+                {!isWalkIn ? (
+                  <>
+                    <div className="rt-ln">
+                      <span className="text-[var(--text-2)] font-semibold">
+                        {t('sell.items')} ({totalCartQty}
+                        {totalFreeQty > 0 ? ` + ${totalFreeQty} free` : ''})
+                      </span>
+                      <b className="tabular-nums">{inr(grandTotal)}</b>
+                    </div>
+                    <div className="rt-ln">
+                      <span className="text-[var(--text-2)] font-semibold">{t('sell.previousDue')}</span>
+                      <b className={`tabular-nums ${creditInfo.due > 0.004 ? 'text-[var(--due)]' : 'text-[var(--text)]'}`}>
+                        {inr(creditInfo.due)}
+                      </b>
+                    </div>
+                    <div className="rt-ln rt-ln--total">
+                      <span>{t('sell.grandTotal')}</span>
+                      <span className="tabular-nums">{inr(combinedTotal)}</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="rt-ln rt-ln--total">
+                    <span>{t('sell.grandTotal')}</span>
+                    <span className="tabular-nums">{inr(grandTotal)}</span>
+                  </div>
+                )}
+              </section>
+
+              {/* Card 2: Payment method + large Amount received + Balance after bill */}
+              <section className="rt-card space-y-2.5">
+                <div className="text-[11.5px] font-semibold text-[var(--text-2)]">{t('sell.payment')}</div>
+
+                <div className="rt-pay-pills" role="group" aria-label={t('sell.payment')}>
+                  <button
+                    type="button"
+                    aria-pressed={activePhonePay === 'cash'}
+                    onClick={() => selectPayChoice('cash')}
+                    className="rt-pay-pill"
+                  >
+                    <span>{t('sell.cash')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={activePhonePay === 'upi'}
+                    onClick={() => selectPayChoice('upi')}
+                    className="rt-pay-pill"
+                  >
+                    <span>{t('sell.upi')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={!isWalkIn && activePhonePay === 'credit'}
+                    disabled={isWalkIn}
+                    onClick={() => {
+                      if (!isWalkIn) selectPayChoice('credit');
+                    }}
+                    className={`rt-pay-pill ${isWalkIn ? 'opacity-40 cursor-not-allowed' : ''}`}
+                  >
+                    <span>{t('sell.credit')}</span>
+                  </button>
+                </div>
+
+                <div className="rt-fld">
+                  <label htmlFor="partial-amount" className="rt-fld__label">
+                    {t('sell.amountCollected')}
+                  </label>
+                  <div className="rt-fld__row">
+                    <span className="rt-fld__curr">₹</span>
+                    <input
+                      id="partial-amount"
+                      type="number"
+                      inputMode="decimal"
+                      step="any"
+                      min="0"
+                      placeholder="0"
+                      value={paymentAmount}
+                      onChange={(e) => {
+                        setPayChoice('partial');
+                        if (paymentMode === 'credit') setPaymentMode('cash');
+                        setPaymentAmount(e.target.value);
+                      }}
+                      className="rt-fld__input"
+                    />
+                  </div>
+                </div>
+
+                {payChoice === 'partial' && collectedAmountPreview > 0 && (
+                  <div className="flex items-center gap-1.5">
+                    {(['cash', 'upi'] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        aria-pressed={paymentMode === m}
+                        onClick={() => setPaymentMode(m)}
+                        className="rt-chip min-h-[34px]! px-3!"
+                      >
+                        {m === 'cash' ? t('sell.cash') : t('sell.upi')}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <div className="rt-ln !pt-0.5">
+                  <span className="text-[var(--text-2)] font-semibold">
+                    {isWalkIn ? t('sell.balance') : t('sell.balanceAfterBill')}
+                  </span>
+                  <b className={`tabular-nums ${balanceAfterBill > 0.005 ? 'text-[var(--due)]' : 'text-[var(--paid)]'}`}>
+                    {inr(balanceAfterBill)}
+                  </b>
+                </div>
+              </section>
+
+              {/* Collapsible Phone & Bill Type details */}
+              <details className="rt-card">
+                <summary className="list-none flex items-center justify-between gap-2 cursor-pointer text-[12px] font-bold text-[var(--text-2)]">
+                  <span>{t('sell.orderSetup')} · {formattedSaleDate}</span>
+                  <ChevronDown className="w-4 h-4 shrink-0" aria-hidden="true" />
+                </summary>
+                <div className="mt-3 space-y-2.5">
+                  <div className="relative">
+                    <Phone className="w-3.5 h-3.5 text-[var(--text-2)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="tel"
+                      inputMode="tel"
+                      value={customerPhone}
+                      onChange={(e) => setCustomerPhone(e.target.value)}
+                      placeholder="Phone / WhatsApp (optional)"
+                      aria-label="Retailer phone number"
+                      className="w-full min-h-[44px] pl-9 pr-3 rounded-[var(--r-control)] border border-[var(--border)] bg-[var(--bg)] text-sm font-medium text-[var(--text)] focus:outline-none focus:bg-[var(--surface)] focus:border-[var(--primary)]"
+                    />
+                  </div>
+                  <select
+                    id="review-bill-type"
+                    value={billType}
+                    onChange={(e) => setBillType(e.target.value as 'tax_invoice' | 'bill_of_supply' | 'estimate')}
+                    aria-label="Bill type"
+                    className="w-full min-h-[44px] px-3 rounded-[var(--r-control)] border border-[var(--border)] bg-[var(--surface)] text-sm font-semibold text-[var(--text)] focus:outline-none focus:border-[var(--primary)]"
+                  >
+                    <option value="tax_invoice" disabled={compositionLocked || cartTaxStatus.allNonGst}>
+                      Tax invoice (GST inclusive)
+                      {compositionLocked
+                        ? ' - not allowed for composition'
+                        : cartTaxStatus.allNonGst
+                          ? ' - disabled (all items Non-GST)'
+                          : ''}
+                    </option>
+                    <option value="bill_of_supply">Bill of supply (non-GST)</option>
+                    <option value="estimate">Estimate / quotation</option>
+                  </select>
+                </div>
+              </details>
+            </div>
+
+            <div className="rt-checkout-footer">
+              <button
+                type="button"
+                id="btn-finalize-save-bill-mobile"
+                onClick={handleSaveBill}
+                disabled={lineItems.length === 0}
+                className="rt-btn rt-btn--accent w-full"
+              >
+                {cartTaxStatus.hasMixedTax
+                  ? `${t('sell.confirmGenerateBill')} (2)`
+                  : t('sell.confirmGenerateBill')}
+              </button>
+            </div>
+          </div>
+        );
+      })() : (
         <div
           data-esc-close
           role="dialog"
@@ -2287,9 +3638,19 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
               <h2 className="text-[17px] sm:text-lg font-extrabold text-white leading-none truncate">
                 Order Review
               </h2>
-              <span className="text-xs font-bold text-white/85 whitespace-nowrap">
-                {totalCartQty} cs{totalFreeQty > 0 ? ` · ${totalFreeQty} free` : ''}
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-xs font-bold text-white/85 whitespace-nowrap">
+                  {totalCartQty} cs{totalFreeQty > 0 ? ` · ${totalFreeQty} free` : ''}
+                </span>
+                <button
+                  type="button"
+                  onClick={requestCancelSale}
+                  className="min-h-[38px] px-3 rounded-xl border border-white/25 bg-white/10 hover:bg-white/20 text-xs font-bold text-white inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                >
+                  <X className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>{t('salesman.cancelSale')}</span>
+                </button>
+              </div>
             </div>
           </header>
 
@@ -2725,7 +4086,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
             </button>
           </div>
         </div>
-      )}
+      ))}
 
       {/* QUICK ENTRY POPUP: Quantity, Rate & Scheme (UI lives in SchemeCustomPriceModal) */}
       {quickEntryProduct && (() => {
@@ -2817,6 +4178,7 @@ export const NewSaleScreen: React.FC<NewSaleScreenProps> = ({
 
       {/* MODAL: Add New Customer */}
       {newCustomerSheet}
+      {cancelSaleConfirmModal}
 
       {/* New van trip: the full load-sheet screen (products + quantities), so the van has stock to sell */}
       {showNewTripModal && (

@@ -218,3 +218,21 @@ export function resolveTripGodownDisplay(params: {
   };
 }
 
+/**
+ * Formats a trip date into mobile History group labels: TODAY, YESTERDAY, or DD MMM YYYY.
+ */
+export function formatTripGroupDay(
+  dateStr: string | undefined,
+  refTodayISO: string,
+  refYesterdayISO: string,
+): string {
+  if (!dateStr) return 'UNDATED';
+  const dayStr = dateStr.slice(0, 10);
+  if (dayStr === refTodayISO) return 'TODAY';
+  if (dayStr === refYesterdayISO) return 'YESTERDAY';
+  const dt = new Date(dateStr.length === 10 ? `${dateStr}T12:00:00` : dateStr);
+  return isNaN(dt.getTime())
+    ? dateStr.toUpperCase()
+    : dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase();
+}
+

@@ -2,16 +2,22 @@ import React, { useState, useMemo, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowLeft,
+  ArrowLeftRight,
+  Banknote,
   Calendar,
+  Check,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   CreditCard,
   Edit2,
   FileText,
+  History,
   MessageCircle,
   Phone,
   Printer,
   Receipt,
+  RotateCcw,
   Search,
   Trash2,
   User,
@@ -27,7 +33,9 @@ import {
   PaymentRecord,
 } from "../../types";
 import { useLanguage } from "../../i18n/LanguageContext";
-import { SegmentedPeriod } from "../ui/HomeKit";
+import { useIsMobile } from "../../hooks/useIsMobile";
+import { useBeats } from "../../hooks/useBeats";
+import { SegmentedPeriod, getInitials } from "../ui/HomeKit";
 import { money, whatsappLink } from "../../utils/billing";
 import { RecordPaymentModal } from "../common/RecordPaymentModal";
 import { InvoicePicker } from "../common/InvoicePicker";
@@ -89,18 +97,45 @@ function formatInputDateDisplay(dateStr: string): string {
   return `${d.padStart(2, "0")}-${monthStr}-${y}`;
 }
 
+/** Formats ISO date/timestamp for "20 Nov 2026" display */
+function formatDateLongDisplay(dateStr?: string): string {
+  const iso = toStandardIsoDate(dateStr);
+  const d = new Date(`${iso}T12:00:00`);
+  if (isNaN(d.getTime())) return iso;
+  return `${d.getDate()} ${d.toLocaleString("en-US", { month: "short" })} ${d.getFullYear()}`;
+}
+
+/** Formats Today's time for Recent receipts (e.g. "Today 11:20 am" or "20 Nov") */
+function formatRecentDateMeta(p: PaymentRecord, todayStr: string): string {
+  const datePart = String(p.paymentDate || p.createdAt || "").slice(0, 10);
+  if (datePart === todayStr && p.createdAt) {
+    const dt = new Date(p.createdAt);
+    if (!isNaN(dt.getTime())) {
+      const timeStr = dt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }).toLowerCase();
+      return `Today ${timeStr}`;
+    }
+    return "Today";
+  }
+  return formatItemDate(p.paymentDate || p.createdAt);
+}
+
 /** Default sample preset payments to match user screenshots if no history exists */
 
 export const PaymentsView: React.FC = () => {
   const { t } = useLanguage();
+  const isPhone = useIsMobile(767);
+  const { customerBeat } = useBeats();
   const {
     payments,
     recordCustomerPayment,
+    recordCustomerRefund,
+    getCustomerCreditSummary,
     paymentAudit,
     updatePayment,
     deletePayment,
     ghostPayments,
     removeGhostPayments,
+    customers,
     existingCustomers,
     getCustomerLedger,
     bills,
@@ -140,8 +175,20 @@ export const PaymentsView: React.FC = () => {
 
   // Tabs: Recent (today), Due invoices, History (older receipts), Reports (downloadable)
   const [activeTab, setActiveTab] = useState<"recent" | "due" | "history" | "reports">("recent");
+  const [historyModeFilter, setHistoryModeFilter] = useState<"all" | PaymentMode | "refund">("all");
   const HISTORY_PAGE = 50;
   const [historyVisible, setHistoryVisible] = useState<number>(HISTORY_PAGE);
+
+  // Phone sub-flows: Record Payment (3 steps), Detail Bottom Sheet, Refund Screen
+  const [phonePayStep, setPhonePayStep] = useState<"account" | "details" | "receipt" | null>(null);
+  const [phoneAccountQuery, setPhoneAccountQuery] = useState("");
+  const [savedPhonePayment, setSavedPhonePayment] = useState<PaymentRecord | null>(null);
+  const [phoneSheetPayment, setPhoneSheetPayment] = useState<PaymentRecord | null>(null);
+  const [phoneRefundPayment, setPhoneRefundPayment] = useState<PaymentRecord | null>(null);
+  const [refundAmount, setRefundAmount] = useState("");
+  const [refundMode, setRefundMode] = useState<PaymentMode>("cash");
+  const [refundNote, setRefundNote] = useState("");
+  const [refundError, setRefundError] = useState<string | null>(null);
 
   // Selection state for Item Detail View (user requested: clicking on the items should open the detail view)
   const [selectedPaymentForDetails, setSelectedPaymentForDetails] = useState<PaymentRecord | null>(null);
@@ -342,6 +389,140 @@ export const PaymentsView: React.FC = () => {
     });
   }, [dueBills, searchTerm]);
 
+  const phoneRecentCustomerNames = useMemo(() => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const p of allPayments) {
+      const n = (p.customerName || "").trim();
+      if (!n || seen.has(n.toLowerCase())) continue;
+      seen.add(n.toLowerCase());
+      out.push(n);
+      if (out.length >= 4) break;
+    }
+    return out;
+  }, [allPayments]);
+
+  const matchingPhoneParties = useMemo(() => {
+    const q = phoneAccountQuery.trim().toLowerCase();
+    if (!q) return partyOptions.slice(0, 6);
+    return partyOptions
+      .filter(
+        (o) =>
+          o.name.toLowerCase().includes(q) ||
+          (o.phone || "").toLowerCase().includes(q),
+      )
+      .slice(0, 12);
+  }, [partyOptions, phoneAccountQuery]);
+
+  const phoneFilteredHistory = useMemo(() => {
+    if (historyModeFilter === "all") return filteredHistory;
+    if (historyModeFilter === "refund") {
+      return filteredHistory.filter((p) => Boolean(p.isRefund || p.amount < 0));
+    }
+    return filteredHistory.filter(
+      (p) => !p.isRefund && p.amount >= 0 && String(p.mode || "cash").toLowerCase() === historyModeFilter,
+    );
+  }, [filteredHistory, historyModeFilter]);
+
+  const openPhoneRecordFlow = (presetParty?: string, presetBillId?: number, presetAmount?: string) => {
+    setFormFeedback(null);
+    if (presetParty) {
+      setIsCustomParty(false);
+      setCustomPartyName("");
+      setSelectedParty(presetParty);
+      setSelectedBillId(presetBillId);
+      setAmount(presetAmount ?? "");
+      setPhonePayStep("details");
+    } else {
+      setIsCustomParty(false);
+      setCustomPartyName("");
+      setSelectedBillId(undefined);
+      setPhoneAccountQuery("");
+      setPhonePayStep("account");
+    }
+  };
+
+  const handlePhoneSaveReceipt = (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormFeedback(null);
+
+    const partyToUse = isCustomParty ? customPartyName.trim() : selectedParty.trim();
+    if (!partyToUse) {
+      setFormFeedback({ type: "error", text: "Please choose or enter a party name" });
+      return;
+    }
+    const amtNum = parseFloat(amount);
+    if (isNaN(amtNum) || amtNum <= 0) {
+      setFormFeedback({ type: "error", text: "Please enter a valid payment amount" });
+      return;
+    }
+
+    try {
+      const billToPay = !isCustomParty ? selectedBillId : undefined;
+      const saved = recordCustomerPayment(
+        partyToUse,
+        amtNum,
+        receiptDate || todayStr,
+        paymentMode,
+        referenceNote.trim() || undefined,
+        billToPay,
+        !isCustomParty ? selectedOpt?.customerId : undefined,
+      );
+      if (!saved) {
+        setFormFeedback({
+          type: "error",
+          text: "This receipt was not saved again because an identical one was just recorded.",
+        });
+        return;
+      }
+
+      setSavedPhonePayment({
+        id: `pay_${Date.now().toString(36)}`,
+        billId: billToPay,
+        customerName: partyToUse,
+        customerId: !isCustomParty ? selectedOpt?.customerId : undefined,
+        customerPhone: !isCustomParty ? selectedOpt?.phone : undefined,
+        paymentDate: receiptDate || todayStr,
+        amount: amtNum,
+        mode: paymentMode,
+        referenceNote: referenceNote.trim() || undefined,
+        recordedBy: loggedInUserName,
+        salesmanId: currentUser?.role === "salesman" ? currentUser.id : undefined,
+        createdAt: new Date().toISOString(),
+      });
+      setSelectedParty("");
+      setSelectedBillId(undefined);
+      setCustomPartyName("");
+      setIsCustomParty(false);
+      setAmount("");
+      setReferenceNote("");
+      setPaymentMode("cash");
+      setReceiptDate(todayStr);
+      setPhonePayStep("receipt");
+    } catch (err: any) {
+      setFormFeedback({
+        type: "error",
+        text: err?.message || "Failed to record payment receipt",
+      });
+    }
+  };
+
+  const modeLabelText = (mode: PaymentMode, isRefund?: boolean) => {
+    if (isRefund) return t("pay.refundTag");
+    switch (mode) {
+      case "upi":
+        return t("pay.modeUpi");
+      case "cheque":
+        return t("pay.modeCheque");
+      case "bank":
+        return t("pay.modeBank");
+      case "other":
+        return t("pay.modeOther");
+      default:
+        return t("pay.modeCash");
+    }
+  };
+
   // Handle Record Receipt submission
   const handleRecordReceipt = (e: React.FormEvent) => {
     e.preventDefault();
@@ -427,7 +608,10 @@ export const PaymentsView: React.FC = () => {
   const renderPaymentList = (rows: PaymentRecord[], emptyText: string) => {
     if (rows.length === 0) {
       return emptyText ? (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-xs py-8 text-center text-xs text-slate-400 italic">
+        <div
+          data-card-tone="neutral"
+          className="rounded-2xl border shadow-xs py-8 text-center text-xs text-slate-500 font-medium"
+        >
           {emptyText}
         </div>
       ) : null;
@@ -467,27 +651,44 @@ export const PaymentsView: React.FC = () => {
           </table>
         </div>
 
-        <div className="block md:hidden bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden divide-y divide-slate-100">
-          {rows.map((p, idx) => (
-            <div
-              key={p.id || idx}
-              onClick={() => setSelectedPaymentForDetails(p)}
-              className="px-4 py-3 flex items-start justify-between gap-3 hover:bg-slate-50 active:bg-slate-100 cursor-pointer transition-colors"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="font-bold text-slate-800 text-sm min-w-0 break-words lg:truncate">{p.customerName}</div>
-                <div className="text-slate-500 text-xs mt-0.5 min-w-0 break-words lg:truncate">
-                  {formatPaymentId(p.id, idx)} · {formatItemDate(p.paymentDate || p.createdAt)} · {String(p.mode || "").toUpperCase()}
+        <div className="block md:hidden space-y-2.5">
+          {rows.map((p, idx) => {
+            const isRefund = Boolean(p.isRefund || p.amount < 0);
+            return (
+              <div
+                key={p.id || idx}
+                data-card-tone={isRefund ? "due" : "received"}
+                onClick={() => setSelectedPaymentForDetails(p)}
+                className="rounded-2xl border px-3.5 py-3 shadow-xs flex items-center justify-between gap-3 active:scale-[0.99] cursor-pointer transition-all"
+              >
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <span className={`hh-avatar hh-avatar--sm shrink-0 ${isRefund ? "hh-avatar--rose" : "hh-avatar--green"}`}>
+                    {getInitials(p.customerName || "C", "C")}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-extrabold text-slate-900 text-sm min-w-0 break-words lg:truncate">{p.customerName}</div>
+                    <div className="text-slate-600 text-xs mt-0.5 min-w-0 break-words lg:truncate font-medium">
+                      {formatPaymentId(p.id, idx)} · {formatItemDate(p.paymentDate || p.createdAt)} · {String(p.mode || "").toUpperCase()}
+                    </div>
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className={`font-black text-[15px] tabular-nums ${isRefund ? "text-rose-700" : "text-emerald-800"}`}>
+                    {p.amount < 0 ? "−" : "+"}₹{money(Math.abs(p.amount))}
+                  </div>
+                  <span
+                    className={`inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${
+                      isRefund
+                        ? "bg-rose-100/90 text-rose-800"
+                        : "bg-emerald-100/90 text-emerald-800"
+                    }`}
+                  >
+                    {p.isRefund ? "Refunded" : "Received"}
+                  </span>
                 </div>
               </div>
-              <div className="text-right shrink-0">
-                <div className={`font-extrabold text-sm tabular-nums ${p.amount < 0 ? "text-rose-700" : "text-slate-900"}`}>
-                  {p.amount < 0 ? "−" : ""}₹{money(Math.abs(p.amount))}
-                </div>
-                <div className="text-teal-600 font-medium text-[11px]">{p.isRefund ? "Refunded" : "Received"}</div>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </>
     );
@@ -500,7 +701,681 @@ export const PaymentsView: React.FC = () => {
         If an item is clicked, render the clean Detail View.
         Otherwise, render the Main Payments screen matching the screenshots.
       */}
-      {selectedPaymentForDetails ? (
+      {isPhone && phoneRefundPayment ? (
+        (() => {
+          const orig = phoneRefundPayment;
+          const credit = getCustomerCreditSummary(orig.customerName);
+          const alreadyRefunded = allPayments
+            .filter(
+              (x) =>
+                x.isRefund &&
+                (x.customerName || "").trim().toLowerCase() === (orig.customerName || "").trim().toLowerCase(),
+            )
+            .reduce((s, x) => s + Math.abs(Number(x.amount) || 0), 0);
+          const maxRefundable = Math.max(0, credit.refundable);
+
+          return (
+            <div id="view-payments" className="rt-flow-phone">
+              <div className="hh-sales-top">
+                <div className="hh-sales-top__row">
+                  <div className="flex items-center gap-1 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhoneRefundPayment(null);
+                        setRefundError(null);
+                      }}
+                      className="hh-sales-top__iconbtn"
+                      aria-label={t("common.back")}
+                    >
+                      <ChevronLeft size={24} strokeWidth={2.2} />
+                    </button>
+                    <h1 className="hh-sales-top__title">{t("pay.refund")}</h1>
+                  </div>
+                  <span className="hh-sales-top__pill shrink-0">{orig.customerName}</span>
+                </div>
+              </div>
+
+              <div className="rt-flow-phone__body space-y-3">
+                <div className="rt-card rt-card--divided">
+                  <div className="rt-ln">
+                    <span style={{ color: "var(--text-2)" }}>{t("pay.originalPayment")}</span>
+                    <span className="font-bold tabular-nums" style={{ color: "var(--text)" }}>
+                      ₹{money(Math.abs(orig.amount))} · {modeLabelText(orig.mode)}
+                    </span>
+                  </div>
+                  <div className="rt-ln">
+                    <span style={{ color: "var(--text-2)" }}>{t("pay.alreadyRefunded")}</span>
+                    <span className="font-bold tabular-nums" style={{ color: "var(--text)" }}>
+                      ₹{money(alreadyRefunded)}
+                    </span>
+                  </div>
+                </div>
+
+                <label className="rt-fld block">
+                  <span className="rt-fld__label">{t("pay.refundAmount")}</span>
+                  <div className="rt-fld__row">
+                    <span className="rt-fld__curr">₹</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step="any"
+                      min="0"
+                      value={refundAmount}
+                      onChange={(e) => {
+                        setRefundAmount(e.target.value);
+                        setRefundError(null);
+                      }}
+                      placeholder="0"
+                      className="rt-fld__input"
+                    />
+                  </div>
+                </label>
+
+                <div>
+                  <div className="text-[12px] font-semibold mb-1.5" style={{ color: "var(--text-2)" }}>
+                    {t("pay.refundMethod")}
+                  </div>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {(["cash", "upi", "cheque", "bank", "other"] as PaymentMode[]).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        aria-pressed={refundMode === m}
+                        onClick={() => setRefundMode(m)}
+                        className="rt-pay-pill text-[11.5px] font-bold cursor-pointer bg-white"
+                      >
+                        {modeLabelText(m)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="rt-in">
+                  <span className="rt-in__label uppercase">{t("pay.note")}</span>
+                  <input
+                    type="text"
+                    value={refundNote}
+                    onChange={(e) => setRefundNote(e.target.value)}
+                    placeholder={t("pay.reasonForRefund")}
+                    className="rt-in__control"
+                  />
+                </label>
+
+                <div className="rt-noti">
+                  <span>
+                    {maxRefundable <= 0.004
+                      ? t("pay.noAdvanceRefundNotice")
+                      : t("pay.refundNotice")}
+                  </span>
+                </div>
+
+                {refundError && (
+                  <div className="hh-hist-card hh-hist-card--due text-[12.5px] font-semibold" style={{ color: "var(--due)" }}>
+                    {refundError}
+                  </div>
+                )}
+              </div>
+
+              <div className="rt-flow-phone__footer">
+                <button
+                  type="button"
+                  disabled={maxRefundable <= 0.004}
+                  onClick={() => {
+                    const num = parseFloat(refundAmount);
+                    if (isNaN(num) || num <= 0) {
+                      setRefundError("Enter a valid refund amount");
+                      return;
+                    }
+                    if (num > maxRefundable + 0.01) {
+                      setRefundError(`Cannot exceed refundable advance ₹${money(maxRefundable)}`);
+                      return;
+                    }
+                    const ok = recordCustomerRefund(
+                      orig.customerName,
+                      num,
+                      todayStr,
+                      refundMode,
+                      refundNote.trim() || undefined,
+                    );
+                    if (!ok) {
+                      setRefundError("Refund could not be recorded");
+                      return;
+                    }
+                    setPhoneRefundPayment(null);
+                    setRefundAmount("");
+                    setRefundNote("");
+                    setRefundError(null);
+                  }}
+                  className="rt-btn rt-btn--due w-full"
+                >
+                  {t("pay.recordRefund")}
+                </button>
+              </div>
+            </div>
+          );
+        })()
+      ) : isPhone && phonePayStep !== null ? (
+        (() => {
+          if (phonePayStep === "receipt" && savedPhonePayment) {
+            const sp = savedPhonePayment;
+            const matchedCust = existingCustomers.find(
+              (c) => c.name.trim().toLowerCase() === (sp.customerName || "").trim().toLowerCase(),
+            );
+            const phone = sp.customerPhone || matchedCust?.phone || "";
+            const waText = `*Payment Receipt - ${orgProfile?.name || "MrWater Distribution"}*\nCustomer: ${sp.customerName}\nAmount Received: ₹${money(sp.amount)}\nMode: ${sp.mode.toUpperCase()}\nDate: ${sp.paymentDate || sp.createdAt?.slice(0, 10)}\n${sp.referenceNote ? `Ref Note: ${sp.referenceNote}\n` : ""}Thank you for your payment!`;
+
+            return (
+              <div id="view-payments" className="rt-flow-phone">
+                <div className="hh-sales-top">
+                  <div className="hh-sales-top__row">
+                    <h1 className="hh-sales-top__title">{t("pay.paymentSaved")}</h1>
+                    <span
+                      className="size-8 rounded-full inline-flex items-center justify-center shrink-0"
+                      style={{ background: "var(--paid-bg)", color: "var(--paid)" }}
+                    >
+                      <Check size={17} strokeWidth={2.8} />
+                    </span>
+                  </div>
+                </div>
+
+                <div className="rt-flow-phone__body space-y-3">
+                  <div className="hh-paper space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[13px] font-bold" style={{ color: "var(--text)" }}>
+                        {t("pay.officialReceipt")}
+                      </span>
+                      <span className="font-mono text-[11px] font-semibold" style={{ color: "var(--text-2)" }}>
+                        #{formatPaymentId(sp.id)}
+                      </span>
+                    </div>
+                    <hr className="hh-paper__hr" />
+                    <div className="rt-ln">
+                      <span style={{ color: "var(--text-2)" }}>Customer</span>
+                      <span className="font-bold text-right break-words" style={{ color: "var(--text)" }}>
+                        {sp.customerName}
+                      </span>
+                    </div>
+                    <div className="rt-ln">
+                      <span style={{ color: "var(--text-2)" }}>{t("pay.paymentDate")}</span>
+                      <span className="font-bold" style={{ color: "var(--text)" }}>
+                        {formatItemDate(sp.paymentDate || sp.createdAt)} {String(sp.paymentDate || todayStr).slice(0, 4)}
+                      </span>
+                    </div>
+                    <div className="rt-ln">
+                      <span style={{ color: "var(--text-2)" }}>{t("pay.paymentMode")}</span>
+                      <span className="font-bold" style={{ color: "var(--text)" }}>
+                        {modeLabelText(sp.mode)}
+                      </span>
+                    </div>
+                    <div className="rt-ln">
+                      <span style={{ color: "var(--text-2)" }}>{t("pay.recordedBy")}</span>
+                      <span className="font-bold" style={{ color: "var(--text)" }}>
+                        {sp.recordedBy || loggedInUserName}
+                      </span>
+                    </div>
+                    <div className="rt-ln">
+                      <span style={{ color: "var(--text-2)" }}>{t("pay.refNoteLabel")}</span>
+                      <span className="font-bold" style={{ color: "var(--text)" }}>
+                        {sp.referenceNote || "—"}
+                      </span>
+                    </div>
+                    <hr className="hh-paper__hr" />
+                    <div className="flex items-baseline justify-between gap-2 py-1">
+                      <span className="text-[15px] font-extrabold" style={{ color: "var(--text)" }}>
+                        {t("pay.amount")}
+                      </span>
+                      <span className="text-[18px] font-extrabold tabular-nums" style={{ color: "var(--text)" }}>
+                        ₹{money(sp.amount)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between pt-2 text-[11px]" style={{ color: "var(--text-2)" }}>
+                      <span>{t("pay.customerSignature")}</span>
+                      <span>{t("pay.authorizedSignatory")}</span>
+                    </div>
+                  </div>
+
+                  {phone ? (
+                    <a
+                      href={whatsappLink(phone, waText)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="rt-btn rt-btn--wa w-full no-underline"
+                    >
+                      {t("pay.sendWaReceipt")}
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWhatsAppPromptPayment(sp);
+                        setPromptPhoneInput("");
+                      }}
+                      className="rt-btn rt-btn--wa w-full"
+                    >
+                      {t("pay.sendWaReceipt")}
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setReceiptPayment(sp)}
+                    className="rt-btn-outline rt-btn-outline--primary w-full"
+                  >
+                    {t("common.print")}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPhonePayStep(null);
+                      setSavedPhonePayment(null);
+                    }}
+                    className="rt-link-btn w-full"
+                  >
+                    {t("pay.backToPayments")}
+                  </button>
+                </div>
+              </div>
+            );
+          }
+
+          if (phonePayStep === "account") {
+            const activePartyName = isCustomParty ? customPartyName.trim() : selectedParty.trim();
+            const custRow = selectedOpt
+              ? existingCustomers.find((c) => c.id === selectedOpt.customerId || c.name.trim().toLowerCase() === selectedOpt.name.trim().toLowerCase())
+              : undefined;
+            const fullCustRow = selectedOpt
+              ? (selectedOpt.customerId ? (customers || []).find((c) => c.id === selectedOpt.customerId) : undefined) ||
+                (customers || []).find((c) => c.name.trim().toLowerCase() === selectedOpt.name.trim().toLowerCase())
+              : undefined;
+            const beatSubtitle = (fullCustRow && customerBeat(fullCustRow)?.name) || fullCustRow?.route || custRow?.city || "";
+            const acctBillsCount = selectedOpt
+              ? partyBills.filter((b) => billBalance(b) > 0.004).length
+              : 0;
+            const qTrim = phoneAccountQuery.trim();
+            const exactFound = partyOptions.some((o) => o.name.toLowerCase() === qTrim.toLowerCase());
+
+            return (
+              <div id="view-payments" className="rt-flow-phone">
+                <div className="hh-sales-top">
+                  <div className="hh-sales-top__row">
+                    <div className="flex items-center gap-1 min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => setPhonePayStep(null)}
+                        className="hh-sales-top__iconbtn"
+                        aria-label={t("common.back")}
+                      >
+                        <ChevronLeft size={24} strokeWidth={2.2} />
+                      </button>
+                      <h1 className="hh-sales-top__title">{t("pay.recordPayment")}</h1>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rt-flow-phone__body space-y-3">
+                  <div className="rt-search-bar">
+                    <Search size={16} style={{ color: "var(--text-2)", flexShrink: 0 }} />
+                    <input
+                      type="text"
+                      value={phoneAccountQuery}
+                      onChange={(e) => setPhoneAccountQuery(e.target.value)}
+                      placeholder={t("pay.enterPartyPlaceholder")}
+                    />
+                    {phoneAccountQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setPhoneAccountQuery("")}
+                        aria-label="Clear"
+                        className="p-1 bg-transparent border-0 cursor-pointer"
+                        style={{ color: "var(--text-2)" }}
+                      >
+                        <X size={15} />
+                      </button>
+                    )}
+                  </div>
+
+                  {activePartyName && (
+                    <div className="hh-hist-card hh-hist-card--primary space-y-2.5">
+                      <div>
+                        <div className="text-[11px] font-semibold" style={{ color: "var(--text-2)" }}>
+                          {t("pay.selectedAccount")}
+                        </div>
+                        <div className="text-[16px] font-extrabold break-words mt-0.5" style={{ color: "var(--text)" }}>
+                          {activePartyName}
+                        </div>
+                        {(beatSubtitle || selectedOpt?.phone) && (
+                          <div className="text-[12px] mt-0.5" style={{ color: "var(--text-2)" }}>
+                            {[beatSubtitle, selectedOpt?.phone].filter(Boolean).join(" · ")}
+                          </div>
+                        )}
+                      </div>
+                      <div className="rt-three">
+                        <div className="rt-three__col">
+                          <span className="rt-three__label">{t("pay.totalDue")}</span>
+                          <span className="rt-three__val" style={{ color: (selectedOpt?.due || 0) > 0.004 ? "var(--due)" : "var(--text)" }}>
+                            ₹{money(Math.max(0, selectedOpt?.due || 0))}
+                          </span>
+                        </div>
+                        <div className="rt-three__col">
+                          <span className="rt-three__label">{t("pay.openInvoices")}</span>
+                          <span className="rt-three__val">{acctBillsCount}</span>
+                        </div>
+                        <div className="rt-three__col">
+                          <span className="rt-three__label">{t("pay.advance")}</span>
+                          <span className="rt-three__val" style={{ color: (selectedOpt?.advance || 0) > 0.004 ? "var(--paid)" : "var(--text)" }}>
+                            ₹{money(selectedOpt?.advance || 0)}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {phoneRecentCustomerNames.length > 0 && !qTrim && (
+                    <div className="text-[12px] leading-relaxed px-0.5" style={{ color: "var(--text-2)" }}>
+                      <span>{t("pay.recentPrefix")} </span>
+                      {phoneRecentCustomerNames.map((n, i) => (
+                        <React.Fragment key={n}>
+                          {i > 0 && ", "}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsCustomParty(false);
+                              setCustomPartyName("");
+                              setSelectedParty(n);
+                              setSelectedBillId(undefined);
+                            }}
+                            className="bg-transparent border-0 p-0 font-semibold cursor-pointer underline-offset-2 hover:underline"
+                            style={{ color: "var(--text-2)", minHeight: "24px" }}
+                          >
+                            {n}
+                          </button>
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  )}
+
+                  {(qTrim || !activePartyName) && (
+                    <div className="rt-card">
+                      {matchingPhoneParties.map((opt) => (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          onClick={() => {
+                            setIsCustomParty(false);
+                            setCustomPartyName("");
+                            setSelectedParty(opt.name);
+                            setSelectedBillId(undefined);
+                            setPhoneAccountQuery("");
+                          }}
+                          className="rt-rowi"
+                        >
+                          <span className="rt-ico shrink-0">{getInitials(opt.name, "C")}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-[13.5px] font-bold break-words" style={{ color: "var(--text)" }}>
+                              {opt.name}
+                            </span>
+                            {opt.phone && (
+                              <span className="block text-[11.5px]" style={{ color: "var(--text-2)" }}>
+                                {opt.phone}
+                              </span>
+                            )}
+                          </span>
+                          <span className="rt-amt text-[13px]" style={{ color: opt.due > 0.004 ? "var(--due)" : "var(--paid)" }}>
+                            ₹{money(Math.max(0, opt.due))}
+                          </span>
+                        </button>
+                      ))}
+                      {qTrim && !exactFound && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsCustomParty(true);
+                            setCustomPartyName(qTrim);
+                            setSelectedParty("");
+                            setSelectedBillId(undefined);
+                            setPhoneAccountQuery("");
+                          }}
+                          className="rt-rowi"
+                        >
+                          <span className="rt-ico rt-ico--primary shrink-0">+</span>
+                          <span className="text-[13px] font-bold" style={{ color: "var(--primary)" }}>
+                            {qTrim}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rt-flow-phone__footer">
+                  <button
+                    type="button"
+                    disabled={!activePartyName}
+                    onClick={() => {
+                      if (selectedOpt && selectedOpt.due > 0 && !amount) {
+                        setAmount(String(Math.round(selectedOpt.due * 100) / 100));
+                      }
+                      setPhonePayStep("details");
+                    }}
+                    className="rt-btn w-full"
+                  >
+                    {t("common.next")}
+                  </button>
+                </div>
+              </div>
+            );
+          }
+
+          // phonePayStep === 'details'
+          const activePartyName = isCustomParty ? customPartyName.trim() : selectedParty.trim();
+          const unpaidBills = partyBills
+            .filter((b) => billBalance(b) > 0.004)
+            .sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")) || Number(a.id) - Number(b.id));
+          const amtVal = isNaN(numericAmount) ? 0 : Math.max(0, numericAmount);
+          const allocSplit = allocateReceipt(amtVal, partyBills, !isCustomParty ? selectedBillId : undefined);
+          const allocMap = new Map<number, number>();
+          allocSplit.allocations.forEach((a) => allocMap.set(a.billId, a.amount));
+          const totalPartyDue = selectedOpt ? Math.max(0, selectedOpt.due) : 0;
+          const remainingAfter = Math.max(0, totalPartyDue - amtVal);
+
+          return (
+            <form id="view-payments" onSubmit={handlePhoneSaveReceipt} className="rt-flow-phone">
+              <div className="hh-sales-top">
+                <div className="hh-sales-top__row">
+                  <div className="flex items-center gap-1 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => setPhonePayStep("account")}
+                      className="hh-sales-top__iconbtn"
+                      aria-label={t("common.back")}
+                    >
+                      <ChevronLeft size={24} strokeWidth={2.2} />
+                    </button>
+                    <h1 className="hh-sales-top__title">{t("pay.recordPayment")}</h1>
+                  </div>
+                  <span className="hh-sales-top__pill shrink-0">{activePartyName}</span>
+                </div>
+              </div>
+
+              <div className="rt-flow-phone__body space-y-3">
+                {formFeedback && formFeedback.type === "error" && (
+                  <div className="hh-hist-card hh-hist-card--due text-[12.5px] font-semibold" style={{ color: "var(--due)" }}>
+                    {formFeedback.text}
+                  </div>
+                )}
+
+                <div>
+                  <div className="text-[12px] font-semibold mb-1.5" style={{ color: "var(--text-2)" }}>
+                    {t("pay.paymentMethod")}
+                  </div>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {(["cash", "upi", "cheque", "bank", "other"] as PaymentMode[]).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        aria-pressed={paymentMode === m}
+                        onClick={() => setPaymentMode(m)}
+                        className="rt-pay-pill text-[11.5px] font-bold cursor-pointer bg-white"
+                      >
+                        {modeLabelText(m)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="rt-fld block">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="rt-fld__label">{t("pay.amount")}</span>
+                    {totalPartyDue > 0.004 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedBillId(undefined);
+                          setAmount(String(totalPartyDue));
+                        }}
+                        className="text-[11px] font-bold bg-transparent border-0 p-0 cursor-pointer"
+                        style={{ color: "var(--primary)", minHeight: "22px" }}
+                      >
+                        {t("collect.payFull")} ₹{money(totalPartyDue)}
+                      </button>
+                    )}
+                  </div>
+                  <div className="rt-fld__row">
+                    <span className="rt-fld__curr">₹</span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step="any"
+                      min="0"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      placeholder="0"
+                      className="rt-fld__input"
+                    />
+                  </div>
+                </label>
+
+                <label className="rt-in">
+                  <span className="rt-in__label uppercase">{t("pay.refUtr")}</span>
+                  <input
+                    type="text"
+                    value={referenceNote}
+                    onChange={(e) => setReferenceNote(e.target.value)}
+                    placeholder={t("pay.refPlaceholder")}
+                    className="rt-in__control"
+                  />
+                </label>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="rt-in cursor-pointer">
+                    <span className="rt-in__label uppercase">{t("pay.date")}</span>
+                    <div className="rt-in__control flex items-center">
+                      {formatDateLongDisplay(receiptDate)}
+                    </div>
+                    <input
+                      type="date"
+                      required
+                      aria-label={t("pay.date")}
+                      value={toStandardIsoDate(receiptDate)}
+                      onChange={(e) => setReceiptDate(e.target.value)}
+                      className="rt-trip-field__date-overlay"
+                    />
+                  </label>
+                  <div className="rt-in">
+                    <span className="rt-in__label uppercase">{t("pay.recordedBy")}</span>
+                    <div className="rt-in__control flex items-center">{loggedInUserName}</div>
+                  </div>
+                </div>
+
+                <div className="rt-card space-y-1.5">
+                  <div className="flex items-center justify-between gap-2 pb-1">
+                    <span className="text-[13.5px] font-bold" style={{ color: "var(--text)" }}>
+                      {t("pay.allocateInvoices")}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedBillId(undefined)}
+                      className="text-[12px] font-bold bg-transparent border-0 p-0 cursor-pointer"
+                      style={{ color: "var(--primary)", minHeight: "32px" }}
+                    >
+                      {t("pay.oldestFirst")}
+                    </button>
+                  </div>
+
+                  {unpaidBills.length === 0 ? (
+                    <p className="text-[12px] m-0 py-1" style={{ color: "var(--text-2)" }}>
+                      No unpaid invoice for this party. Payment will be credited as an advance.
+                    </p>
+                  ) : (
+                    <div>
+                      {unpaidBills.map((b) => {
+                        const due = billBalance(b);
+                        const allocated = allocMap.get(b.id) || 0;
+                        const active = selectedBillId === b.id || allocated > 0.004;
+                        return (
+                          <button
+                            key={b.id}
+                            type="button"
+                            onClick={() => {
+                              if (selectedBillId === b.id) {
+                                setSelectedBillId(undefined);
+                              } else {
+                                setSelectedBillId(b.id);
+                                setAmount(String(Math.round(due * 100) / 100));
+                              }
+                            }}
+                            className="rt-rowi"
+                          >
+                            <span
+                              className="size-5 rounded-md border flex items-center justify-center shrink-0"
+                              style={{
+                                background: active ? "var(--primary)" : "var(--surface)",
+                                borderColor: active ? "var(--primary)" : "var(--border)",
+                                color: "var(--surface)",
+                              }}
+                            >
+                              {active && <Check size={13} strokeWidth={3} />}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[13px] font-bold" style={{ color: "var(--text)" }}>
+                                {formatBillNumber(b, billingSettings)}
+                              </span>
+                              <span className="block text-[11.5px]" style={{ color: "var(--text-2)" }}>
+                                {t("status.due")} ₹{money(due)}
+                              </span>
+                            </span>
+                            <span className="text-[13px] font-extrabold tabular-nums shrink-0" style={{ color: "var(--text)" }}>
+                              ₹{money(allocated)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="rt-flow-phone__footer space-y-2">
+                {totalPartyDue > 0.004 && (
+                  <div className="flex items-center justify-between gap-2 px-1 text-[13px]">
+                    <span className="font-semibold" style={{ color: "var(--text-2)" }}>
+                      {t("pay.remainingDueAfter")}
+                    </span>
+                    <span className="font-extrabold tabular-nums" style={{ color: remainingAfter > 0.004 ? "var(--due)" : "var(--paid)" }}>
+                      ₹{money(remainingAfter)}
+                    </span>
+                  </div>
+                )}
+                <button type="submit" className="rt-btn w-full">
+                  {t("pay.savePayment")}
+                </button>
+              </div>
+            </form>
+          );
+        })()
+      ) : selectedPaymentForDetails ? (
         /* =========================================================================
            DETAIL VIEW
            - Billing items inline with payment +/- sign
@@ -565,15 +1440,18 @@ export const PaymentsView: React.FC = () => {
               </div>
 
               {/* Payment Amount Card with Billing Items Inline */}
-              <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-6 shadow-xs space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div
+                data-card-tone={p.amount < 0 ? "due" : "received"}
+                className="rounded-2xl border p-4 sm:p-6 shadow-xs space-y-3"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-black/5 pb-3">
                   <div className="flex flex-wrap items-baseline gap-3">
-                    <h1 className={`text-3xl sm:text-4xl font-black tracking-tight font-mono ${p.amount < 0 ? "text-rose-700" : "text-emerald-700"}`}>
+                    <h1 className={`text-3xl sm:text-4xl font-black tracking-tight font-mono tabular-nums ${p.amount < 0 ? "text-rose-700" : "text-emerald-800"}`}>
                       {p.amount < 0 ? "−" : "+"}₹{money(Math.abs(p.amount))}
                     </h1>
                     {/* Billing items inline with payment +/- sign */}
                     {linkedBill && linkedBill.items && linkedBill.items.length > 0 ? (
-                      <div className="inline-flex items-center gap-1.5 flex-wrap text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200">
+                      <div className="inline-flex items-center gap-1.5 flex-wrap text-xs sm:text-sm font-medium text-slate-700 bg-white/80 px-3 py-1.5 rounded-xl border border-black/5">
                         <span className="font-bold text-slate-900">Invoice #{linkedBill.id}:</span>
                         <div className="inline-flex items-center gap-1.5 flex-wrap">
                           {linkedBill.items.map((it, idx) => (
@@ -587,7 +1465,7 @@ export const PaymentsView: React.FC = () => {
                         </div>
                       </div>
                     ) : p.billId ? (
-                      <span className="text-xs sm:text-sm font-semibold text-slate-600 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+                      <span className="text-xs sm:text-sm font-semibold text-slate-700 bg-white/80 px-2.5 py-1 rounded-lg border border-black/5">
                         Invoice #{p.billId}
                       </span>
                     ) : null}
@@ -617,38 +1495,43 @@ export const PaymentsView: React.FC = () => {
               {/* 2-Column Info Grid - No collection or credit stats */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Party Card */}
-                <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
-                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                      <User className="w-4 h-4 text-emerald-600" />
+                <div data-card-tone="sales" className="rounded-2xl border p-4 sm:p-5 shadow-xs space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-black/5">
+                    <span className="text-xs font-bold text-blue-900 uppercase tracking-wider flex items-center gap-1.5">
+                      <User className="w-4 h-4 text-blue-600" />
                       Customer Party
                     </span>
                   </div>
 
-                  <div className="space-y-1">
-                    <h3 className="text-base font-extrabold text-slate-900">
-                      {p.customerName}
-                    </h3>
-                    {p.customerPhone || matchedCustomer?.phone ? (
-                      <div className="flex items-center gap-3 pt-1">
-                        <a
-                          href={`tel:${p.customerPhone || matchedCustomer?.phone}`}
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-emerald-700"
-                        >
-                          <Phone className="w-3.5 h-3.5 text-slate-400" />
-                          <span>{p.customerPhone || matchedCustomer?.phone}</span>
-                        </a>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-slate-400 italic">No phone registered</span>
-                    )}
+                  <div className="flex items-center gap-3">
+                    <span className="hh-avatar hh-avatar--sm hh-avatar--blue shrink-0">
+                      {getInitials(p.customerName || "C", "C")}
+                    </span>
+                    <div className="space-y-0.5 min-w-0">
+                      <h3 className="text-base font-extrabold text-slate-900 break-words">
+                        {p.customerName}
+                      </h3>
+                      {p.customerPhone || matchedCustomer?.phone ? (
+                        <div className="flex items-center gap-3">
+                          <a
+                            href={`tel:${p.customerPhone || matchedCustomer?.phone}`}
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-blue-700"
+                          >
+                            <Phone className="w-3.5 h-3.5 text-blue-500" />
+                            <span>{p.customerPhone || matchedCustomer?.phone}</span>
+                          </a>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-500 italic">No phone registered</span>
+                      )}
+                    </div>
                   </div>
                 </div>
 
                 {/* Payment Details Card - System ID removed */}
-                <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
-                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                <div data-card-tone="neutral" className="rounded-2xl border p-4 sm:p-5 shadow-xs space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-black/5">
+                    <span className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
                       <CreditCard className="w-4 h-4 text-slate-600" />
                       Payment Details
                     </span>
@@ -657,19 +1540,19 @@ export const PaymentsView: React.FC = () => {
 
                   <div className="space-y-2.5 text-xs">
                     <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <span className="text-slate-400 text-[10px] block font-semibold uppercase">Payment Method</span>
-                        <span className="font-bold text-slate-800 uppercase">{p.mode}</span>
+                      <div className="rounded-xl bg-white/80 border border-black/5 px-2.5 py-2">
+                        <span className="text-slate-500 text-[10px] block font-semibold uppercase">Payment Method</span>
+                        <span className="font-bold text-slate-900 uppercase">{p.mode}</span>
                       </div>
-                      <div>
-                        <span className="text-slate-400 text-[10px] block font-semibold uppercase">Recorded By</span>
-                        <span className="font-bold text-slate-800">{p.recordedBy || loggedInUserName}</span>
+                      <div className="rounded-xl bg-white/80 border border-black/5 px-2.5 py-2">
+                        <span className="text-slate-500 text-[10px] block font-semibold uppercase">Recorded By</span>
+                        <span className="font-bold text-slate-900">{p.recordedBy || loggedInUserName}</span>
                       </div>
                     </div>
 
                     {p.referenceNote && (
-                      <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100">
-                        <span className="text-slate-400 text-[10px] block uppercase font-bold">Reference / UTR</span>
+                      <div className="p-2.5 rounded-xl bg-white/80 border border-black/5">
+                        <span className="text-slate-500 text-[10px] block uppercase font-bold">Reference / UTR</span>
                         <span className="font-mono text-slate-800 font-semibold text-xs mt-0.5 block">
                           {p.referenceNote}
                         </span>
@@ -677,10 +1560,10 @@ export const PaymentsView: React.FC = () => {
                     )}
 
                     {(p.billId || linkedBill) && (
-                      <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-between">
+                      <div className="p-2.5 rounded-xl bg-white/80 border border-black/5 flex items-center justify-between">
                         <div>
-                          <span className="text-slate-400 text-[10px] block uppercase font-bold">Allocated Invoice</span>
-                          <span className="font-mono text-slate-700 font-bold text-xs mt-0.5 block">
+                          <span className="text-slate-500 text-[10px] block uppercase font-bold">Allocated Invoice</span>
+                          <span className="font-mono text-slate-800 font-bold text-xs mt-0.5 block">
                             Invoice #{p.billId || linkedBill?.id}
                           </span>
                         </div>
@@ -700,7 +1583,7 @@ export const PaymentsView: React.FC = () => {
               </div>
 
               {/* Bottom Action Bar: Icon-only buttons (Delete, WhatsApp, Print Receipt, Invoice) */}
-              <div className="bg-white rounded-2xl border border-slate-200 p-3 sm:p-4 shadow-xs flex items-center justify-between gap-3">
+              <div data-card-tone="neutral" className="rounded-2xl border p-3 sm:p-4 shadow-xs flex items-center justify-between gap-3">
                 {/* Delete button (icon only) */}
                 <button
                   type="button"
@@ -770,6 +1653,436 @@ export const PaymentsView: React.FC = () => {
             </div>
           );
         })()
+      ) : isPhone ? (
+        <div id="view-payments" className="hh-view mw-workspace w-full space-y-3 pb-28">
+          <div className="hh-sales-top hh-sales-top--flush">
+            <div className="hh-sales-top__row">
+              <h1 className="hh-sales-top__title">{t("pay.title")}</h1>
+              <div className="flex items-center gap-1 shrink-0">
+                {ghostPayments.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowGhostPaymentsModal(true)}
+                    className="rt-tag rt-tag--soon cursor-pointer"
+                    aria-label="Ghost payments"
+                  >
+                    {ghostPayments.length}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowAuditLog(true)}
+                  className="hh-sales-top__iconbtn"
+                  style={{ color: "rgba(255, 255, 255, 0.85)" }}
+                  aria-label="Audit log"
+                >
+                  <History size={18} />
+                </button>
+              </div>
+            </div>
+            <div className="rt-utabs" role="tablist" aria-label="Payment views">
+              {([
+                { id: "recent" as const, label: t("pay.recentN", { n: recentAll.length }) },
+                { id: "due" as const, label: t("pay.dueN", { n: dueBills.length }) },
+                { id: "history" as const, label: t("pay.historyN", { n: historyAll.length }) },
+                { id: "reports" as const, label: t("pay.reports") },
+              ]).map((tb) => (
+                <button
+                  key={tb.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === tb.id}
+                  onClick={() => setActiveTab(tb.id)}
+                  className="rt-utab"
+                >
+                  {tb.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {showAuditLog && (
+            <PaymentAuditModal entries={paymentAudit} onClose={() => setShowAuditLog(false)} />
+          )}
+          {showGhostPaymentsModal && (
+            <GhostPaymentsModal
+              candidates={ghostPayments}
+              onRemoveSelected={(ids, reason) => removeGhostPayments(ids, reason)}
+              onClose={() => setShowGhostPaymentsModal(false)}
+            />
+          )}
+
+          {activeTab !== "reports" && (
+            <>
+              {activeTab === "recent" && (
+                <div className="rt-kv-grid">
+                  <div className="rt-kv">
+                    <div className="rt-kv__label">{t("pay.cashInBox")}</div>
+                    <div className="rt-kv__val">₹{money(realtimeCashInBox)}</div>
+                  </div>
+                  <div className="rt-kv">
+                    <div className="rt-kv__label">{t("pay.marketCreditDue")}</div>
+                    <div className="rt-kv__val" style={{ color: "var(--due)" }}>₹{money(totalMarketDue)}</div>
+                  </div>
+                  <div className="rt-kv">
+                    <div className="rt-kv__label">{t("pay.totalInwardSpend")}</div>
+                    <div className="rt-kv__val">₹{money(totalInwardSpend)}</div>
+                  </div>
+                  <div className="rt-kv">
+                    <div className="rt-kv__label">{t("pay.totalBilledSales")}</div>
+                    <div className="rt-kv__val">₹{money(totalBilledSales)}</div>
+                  </div>
+                </div>
+              )}
+
+              <div className="rt-search-bar">
+                <Search size={16} style={{ color: "var(--text-2)", flexShrink: 0 }} />
+                <input
+                  enterKeyHint="search"
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => {
+                    setSearchTerm(e.target.value);
+                    setHistoryVisible(HISTORY_PAGE);
+                  }}
+                  placeholder={activeTab === "due" ? t("pay.searchCustomerOrInv") : t("pay.searchPayments")}
+                />
+                {searchTerm && (
+                  <button
+                    aria-label="Clear search"
+                    type="button"
+                    onClick={() => setSearchTerm("")}
+                    className="p-1 bg-transparent border-0 cursor-pointer"
+                    style={{ color: "var(--text-2)" }}
+                  >
+                    <X size={15} />
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {activeTab === "recent" && (
+            <>
+              {filteredRecent.length === 0 ? (
+                <div className="rt-card px-5 py-10 text-center text-[13px]" style={{ color: "var(--text-2)" }}>
+                  {recentAll.length === 0 ? "No receipts today yet. Older ones are in History." : "No payment receipts match your search"}
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {filteredRecent.map((p, idx) => {
+                    const isRefund = Boolean(p.isRefund || p.amount < 0);
+                    return (
+                      <button
+                        key={p.id || idx}
+                        type="button"
+                        onClick={() => setPhoneSheetPayment(p)}
+                        className={`hh-hist-card ${isRefund ? "hh-hist-card--due" : "hh-hist-card--paid"} w-full text-left flex items-center gap-3 cursor-pointer`}
+                      >
+                        <span className={`rt-ico shrink-0 ${isRefund ? "rt-ico--neutral" : "rt-ico--paid"}`}>
+                          {isRefund ? <ArrowLeftRight size={16} /> : <Banknote size={17} />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[14px] font-bold break-words" style={{ color: "var(--text)" }}>
+                            {p.customerName}
+                          </span>
+                          <span className="block text-[11.5px] mt-0.5" style={{ color: "var(--text-2)" }}>
+                            {formatRecentDateMeta(p, todayStr)} · {isRefund ? "refund" : p.billId ? `INV-${p.billId}` : formatPaymentId(p.id, idx)}
+                          </span>
+                        </span>
+                        <span className="text-right shrink-0">
+                          <span
+                            className="block text-[15px] font-extrabold tabular-nums"
+                            style={{ color: "var(--text)" }}
+                          >
+                            {isRefund ? "−" : ""}₹{money(Math.abs(p.amount))}
+                          </span>
+                          <span className="rt-tag rt-tag--mode mt-0.5">
+                            {modeLabelText(p.mode, isRefund)}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="rt-fab-cta">
+                <button
+                  type="button"
+                  onClick={() => openPhoneRecordFlow()}
+                  className="rt-btn"
+                >
+                  + {t("pay.recordPayment")}
+                </button>
+              </div>
+            </>
+          )}
+
+          {activeTab === "due" && (
+            <div className="space-y-2.5">
+              {filteredDueBills.length === 0 ? (
+                <div className="rt-card px-5 py-10 text-center text-[13px] font-semibold" style={{ color: "var(--paid)" }}>
+                  All customer invoices are settled!
+                </div>
+              ) : (
+                <div className="rt-card">
+                  {filteredDueBills.map((b) => {
+                    const due = getEffectiveBillBalance(b);
+                    const daysOld = b.date
+                      ? Math.max(0, Math.floor((Date.now() - new Date(b.date.length === 10 ? `${b.date}T12:00:00` : b.date).getTime()) / 86400000))
+                      : 0;
+                    const urgent = daysOld > 10;
+                    return (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() =>
+                          openPhoneRecordFlow(
+                            b.retailer || "",
+                            b.id,
+                            String(Math.round(due * 100) / 100),
+                          )
+                        }
+                        className="rt-rowi"
+                      >
+                        <span className="rt-ico shrink-0">{getInitials(b.retailer || "C", "C")}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[13.5px] font-bold break-words" style={{ color: "var(--text)" }}>
+                            {b.retailer || "Cash Sale"}
+                          </span>
+                          <span className="block text-[11.5px] mt-0.5" style={{ color: "var(--text-2)" }}>
+                            {formatBillNumber(b, billingSettings)}
+                            {daysOld > 0 ? ` · ${t("pay.daysLate", { n: daysOld })}` : ""}
+                          </span>
+                        </span>
+                        <span className="text-right shrink-0">
+                          <span className="block text-[14px] font-extrabold tabular-nums" style={{ color: "var(--text)" }}>
+                            ₹{money(due)}
+                          </span>
+                          <span className={`rt-tag mt-0.5 ${urgent ? "rt-tag--due" : "rt-tag--soon"}`}>
+                            {t("pay.collect")}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <p className="rt-stp rt-stp--muted px-1">{t("pay.tapDueHint")}</p>
+            </div>
+          )}
+
+          {activeTab === "history" && (
+            <div className="space-y-2.5">
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+                {([
+                  { id: "all" as const, label: t("common.all") },
+                  { id: "cash" as const, label: t("pay.modeCash") },
+                  { id: "upi" as const, label: t("pay.modeUpi") },
+                  { id: "cheque" as const, label: t("pay.modeCheque") },
+                  { id: "bank" as const, label: t("pay.modeBank") },
+                  { id: "other" as const, label: t("pay.modeOther") },
+                  { id: "refund" as const, label: t("pay.refundTag") },
+                ]).map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    aria-pressed={historyModeFilter === chip.id}
+                    onClick={() => {
+                      setHistoryModeFilter(chip.id);
+                      setHistoryVisible(HISTORY_PAGE);
+                    }}
+                    className="rt-chip shrink-0"
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+
+              {phoneFilteredHistory.length === 0 ? (
+                <div className="rt-card px-5 py-10 text-center text-[13px]" style={{ color: "var(--text-2)" }}>
+                  {historyAll.length === 0 ? "No older receipts yet." : "No payment receipts match your search"}
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {phoneFilteredHistory.slice(0, historyVisible).map((p, idx) => {
+                    const isRefund = Boolean(p.isRefund || p.amount < 0);
+                    return (
+                      <button
+                        key={p.id || idx}
+                        type="button"
+                        onClick={() => setPhoneSheetPayment(p)}
+                        className={`hh-hist-card ${isRefund ? "hh-hist-card--due" : "hh-hist-card--paid"} w-full text-left flex items-center gap-3 cursor-pointer`}
+                      >
+                        <span className={`rt-ico shrink-0 ${isRefund ? "rt-ico--neutral" : "rt-ico--paid"}`}>
+                          {isRefund ? <ArrowLeftRight size={16} /> : <Banknote size={17} />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-[14px] font-bold break-words" style={{ color: "var(--text)" }}>
+                            {p.customerName}
+                          </span>
+                          <span className="block text-[11.5px] mt-0.5" style={{ color: "var(--text-2)" }}>
+                            {formatItemDate(p.paymentDate || p.createdAt)} · {isRefund ? "refund" : p.billId ? `INV-${p.billId}` : formatPaymentId(p.id, idx)}
+                          </span>
+                        </span>
+                        <span className="text-right shrink-0">
+                          <span
+                            className="block text-[15px] font-extrabold tabular-nums"
+                            style={{ color: "var(--text)" }}
+                          >
+                            {isRefund ? "−" : ""}₹{money(Math.abs(p.amount))}
+                          </span>
+                          <span className="rt-tag rt-tag--mode mt-0.5">
+                            {modeLabelText(p.mode, isRefund)}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                  {phoneFilteredHistory.length > historyVisible && (
+                    <button
+                      type="button"
+                      onClick={() => setHistoryVisible((v) => v + HISTORY_PAGE)}
+                      className="rt-btn-outline w-full"
+                    >
+                      Show more ({phoneFilteredHistory.length - historyVisible} left)
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === "reports" && <PaymentReportsPanel />}
+
+          {phoneSheetPayment &&
+            createPortal(
+              <div
+                className="rt-bsheet-scrim"
+                onClick={() => setPhoneSheetPayment(null)}
+                role="dialog"
+                aria-modal="true"
+              >
+                <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+                  <div className="hh-grab" />
+                  {(() => {
+                    const p = phoneSheetPayment;
+                    const isRefund = Boolean(p.isRefund || p.amount < 0);
+                    const matchedCustomer = existingCustomers.find(
+                      (c) => c.name.trim().toLowerCase() === (p.customerName || "").trim().toLowerCase(),
+                    );
+                    const phone = p.customerPhone || matchedCustomer?.phone || "";
+                    const waText = `*Payment Receipt - ${orgProfile?.name || "MrWater Distribution"}*\nCustomer: ${p.customerName}\nAmount Received: ₹${money(Math.abs(p.amount))}\nMode: ${p.mode.toUpperCase()}\nDate: ${p.paymentDate || p.createdAt?.slice(0, 10)}\n${p.referenceNote ? `Ref Note: ${p.referenceNote}\n` : ""}Thank you for your payment!`;
+
+                    return (
+                      <>
+                        <div className="flex items-start justify-between gap-2">
+                          <h2 className="text-[17px] font-extrabold m-0 break-words" style={{ color: "var(--text)" }}>
+                            {isRefund ? "−" : ""}₹{money(Math.abs(p.amount))} · {p.customerName}
+                          </h2>
+                          <span className={`rt-tag shrink-0 ${isRefund ? "rt-tag--due" : "rt-tag--paid"}`}>
+                            {modeLabelText(p.mode, isRefund)}
+                          </span>
+                        </div>
+
+                        <div className="rt-card rt-card--divided">
+                          <div className="rt-ln">
+                            <span style={{ color: "var(--text-2)" }}>{t("pay.paymentMethod")}</span>
+                            <span className="font-bold" style={{ color: "var(--text)" }}>
+                              {p.mode === "upi" ? "UPI / QR" : p.mode === "bank" ? "Bank / NEFT" : modeLabelText(p.mode)}
+                            </span>
+                          </div>
+                          <div className="rt-ln">
+                            <span style={{ color: "var(--text-2)" }}>{t("pay.refUtr")}</span>
+                            <span className="font-bold font-mono" style={{ color: "var(--text)" }}>
+                              {p.referenceNote || "—"}
+                            </span>
+                          </div>
+                          <div className="rt-ln">
+                            <span style={{ color: "var(--text-2)" }}>{t("pay.allocatedInvoice")}</span>
+                            <span className="font-bold" style={{ color: "var(--text)" }}>
+                              {p.billId ? `INV-${p.billId}` : "On account"}
+                            </span>
+                          </div>
+                          <div className="rt-ln">
+                            <span style={{ color: "var(--text-2)" }}>{t("pay.recordedBy")}</span>
+                            <span className="font-bold" style={{ color: "var(--text)" }}>
+                              {p.recordedBy || loggedInUserName}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReceiptPayment(p);
+                              setPhoneSheetPayment(null);
+                            }}
+                            className="rt-btn-outline rt-btn-outline--primary"
+                          >
+                            {t("common.print")}
+                          </button>
+
+                          {phone ? (
+                            <a
+                              href={whatsappLink(phone, waText)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={() => setPhoneSheetPayment(null)}
+                              className="rt-btn-outline rt-btn-outline--primary flex items-center justify-center no-underline"
+                            >
+                              WhatsApp
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setWhatsAppPromptPayment(p);
+                                setPromptPhoneInput("");
+                                setPhoneSheetPayment(null);
+                              }}
+                              className="rt-btn-outline rt-btn-outline--primary"
+                            >
+                              WhatsApp
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPhoneRefundPayment(p);
+                              setRefundAmount("");
+                              setRefundMode(p.mode || "cash");
+                              setRefundNote("");
+                              setRefundError(null);
+                              setPhoneSheetPayment(null);
+                            }}
+                            className="rt-btn-outline rt-btn-outline--primary"
+                          >
+                            {t("pay.refund")}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPaymentToDelete(p);
+                              setPhoneSheetPayment(null);
+                            }}
+                            className="rt-btn-outline rt-btn-outline--due"
+                          >
+                            {t("common.delete")}
+                          </button>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>,
+              document.body,
+            )}
+        </div>
       ) : (
         /* =========================================================================
            MAIN PAYMENTS VIEW (EXACT MATCH TO ATTACHED SCREENSHOTS)
@@ -817,64 +2130,64 @@ export const PaymentsView: React.FC = () => {
             />
           )}
 
-          {/* Realtime Cash in Box & Financial Summary Cards (Synchronized Layout & Typography) */}
+          {/* Realtime Cash in Box & Financial Summary Cards (Option A Soft-Tinted Fintech Cards) */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
-              <div className="flex items-center justify-between text-xs font-semibold text-emerald-800 uppercase tracking-wider mb-1">
-                <span>Cash in Box (Till)</span>
-                <div className="w-7 h-7 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
+            <div data-card-tone="received" className="border rounded-2xl p-3.5 sm:p-4 shadow-xs">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-[11px] font-bold text-emerald-900 uppercase tracking-wider leading-tight">Cash in Box (Till)</span>
+                <div className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--green shrink-0">
                   <Wallet className="w-4 h-4" />
                 </div>
               </div>
-              <div className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-slate-900 mt-1">
+              <div className="text-xl sm:text-2xl font-black font-mono tabular-nums text-emerald-950 mt-1">
                 ₹{money(realtimeCashInBox)}
               </div>
-              <p className="text-[11px] text-slate-500 mt-1">
+              <p className="text-[11px] text-emerald-800/80 font-medium mt-1">
                 {cashExpenses > 0 ? `Net drawer cash (less ₹${money(cashExpenses)} paid)` : "Realtime drawer cash"}
               </p>
             </div>
 
-            <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
-              <div className="flex items-center justify-between text-xs font-semibold text-rose-800 uppercase tracking-wider mb-1">
-                <span>Market Credit Due</span>
-                <div className="w-7 h-7 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center">
+            <div data-card-tone="due" className="border rounded-2xl p-3.5 sm:p-4 shadow-xs">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-[11px] font-bold text-rose-900 uppercase tracking-wider leading-tight">Market Credit Due</span>
+                <div className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--rose shrink-0">
                   <IndianRupee className="w-4 h-4" />
                 </div>
               </div>
-              <div className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-rose-600 mt-1">
+              <div className="text-xl sm:text-2xl font-black font-mono tabular-nums text-rose-700 mt-1">
                 ₹{money(totalMarketDue)}
               </div>
-              <p className="text-[11px] text-slate-500 mt-1">
+              <p className="text-[11px] text-rose-800/80 font-medium mt-1">
                 Pending customer dues (after returns)
               </p>
             </div>
 
-            <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
-              <div className="flex items-center justify-between text-xs font-semibold text-blue-800 uppercase tracking-wider mb-1">
-                <span>Total Inward Spend</span>
-                <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center">
+            <div data-card-tone="sales" className="border rounded-2xl p-3.5 sm:p-4 shadow-xs">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-[11px] font-bold text-blue-900 uppercase tracking-wider leading-tight">Total Inward Spend</span>
+                <div className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--blue shrink-0">
                   <Package className="w-4 h-4" />
                 </div>
               </div>
-              <div className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-slate-900 mt-1">
+              <div className="text-xl sm:text-2xl font-black font-mono tabular-nums text-slate-900 mt-1">
                 ₹{money(totalInwardSpend)}
               </div>
-              <p className="text-[11px] text-slate-500 mt-1">
+              <p className="text-[11px] text-blue-900/75 font-medium mt-1">
                 Total purchase spend (GRNs)
               </p>
             </div>
 
-            <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs">
-              <div className="flex items-center justify-between text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                <span>Total Billed Sales</span>
-                <div className="w-7 h-7 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center">
+            <div data-card-tone="profit" className="border rounded-2xl p-3.5 sm:p-4 shadow-xs">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-[11px] font-bold text-purple-900 uppercase tracking-wider leading-tight">Total Billed Sales</span>
+                <div className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--purple shrink-0">
                   <CreditCard className="w-4 h-4" />
                 </div>
               </div>
-              <div className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-slate-900 mt-1">
+              <div className="text-xl sm:text-2xl font-black font-mono tabular-nums text-slate-900 mt-1">
                 ₹{money(totalBilledSales)}
               </div>
-              <p className="text-[11px] text-slate-500 mt-1">
+              <p className="text-[11px] text-purple-900/75 font-medium mt-1">
                 Collected: ₹{money(totalCollectedAmount)}
               </p>
             </div>
@@ -908,14 +2221,19 @@ export const PaymentsView: React.FC = () => {
           )}
 
           {/* 2. Record Receipt Form Card (Clean, Symmetrical 2-Column Grid) */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-5 sm:p-6">
-            <div className="pb-4 mb-5 border-b border-slate-100 flex items-center justify-between">
-              <div>
-                <h2 className="text-base font-bold text-slate-900">Record Payment Receipt</h2>
-                <p className="text-xs text-slate-500">Collect dues, allocate against invoices, and record payments</p>
+          <div data-card-tone="received" className="rounded-2xl border shadow-xs p-4 sm:p-6">
+            <div className="pb-4 mb-5 border-b border-black/5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="hh-icon-badge hh-icon-badge--green shrink-0">
+                  <Receipt className="w-5 h-5" />
+                </span>
+                <div className="min-w-0">
+                  <h2 className="text-base font-extrabold text-slate-900">Record Payment Receipt</h2>
+                  <p className="text-xs text-slate-600">Collect dues, allocate against invoices, and record payments</p>
+                </div>
               </div>
-              <span className="text-xs font-medium text-slate-500">
-                Staff: <strong className="text-slate-800">{loggedInUserName}</strong>
+              <span className="text-xs font-medium text-slate-600 bg-white/80 border border-black/5 px-2.5 py-1 rounded-full shrink-0">
+                Staff: <strong className="text-slate-900">{loggedInUserName}</strong>
               </span>
             </div>
 
@@ -964,7 +2282,7 @@ export const PaymentsView: React.FC = () => {
 
                 {/* Selected Party Due Highlight Card */}
                 {selectedOpt && (
-                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
+                  <div className="p-3.5 rounded-xl bg-white/85 border border-black/5 flex items-center justify-between">
                     <div>
                       <span className="text-[11px] text-slate-500 font-medium block">Selected Account</span>
                       <p className="text-sm font-bold text-slate-900 min-w-0 break-words lg:truncate">{selectedParty}</p>
@@ -1307,58 +2625,69 @@ export const PaymentsView: React.FC = () => {
                 </table>
               </div>
 
-              <div className="block md:hidden bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-                <div className="bg-slate-50/70 border-b border-slate-200/90 px-4 py-2.5 flex items-center justify-between">
-                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                    ITEM
-                  </span>
-                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                    STATUS
-                  </span>
-                </div>
-                <div className="divide-y divide-slate-100">
-                  {filteredDueBills.length === 0 ? (
-                    <div className="py-8 text-center text-xs text-slate-400 italic">
-                      All customer invoices are settled!
-                    </div>
-                  ) : (
-                    filteredDueBills.map((b) => {
-                      const due = getEffectiveBillBalance(b);
-                      const daysOld = b.date
-                        ? Math.floor((Date.now() - new Date(b.date).getTime()) / (1000 * 60 * 60 * 24))
-                        : 0;
-                      return (
-                        <div
-                          key={b.id}
-                          onClick={() => {
-                            setSelectedParty(b.retailer || "");
-                            setAmount(String(due));
-                            window.scrollTo({ top: 0, behavior: "smooth" });
-                          }}
-                          className="px-4 py-3 flex items-start justify-between gap-3 hover:bg-slate-50 active:bg-slate-100 cursor-pointer transition-colors"
-                          title="Click to populate Record Receipt form"
-                        >
+              <div className="block md:hidden space-y-2.5">
+                {filteredDueBills.length === 0 ? (
+                  <div
+                    data-card-tone="received"
+                    className="rounded-2xl border py-8 text-center text-xs text-emerald-800 font-semibold shadow-xs"
+                  >
+                    All customer invoices are settled!
+                  </div>
+                ) : (
+                  filteredDueBills.map((b) => {
+                    const due = getEffectiveBillBalance(b);
+                    const daysOld = b.date
+                      ? Math.floor((Date.now() - new Date(b.date).getTime()) / (1000 * 60 * 60 * 24))
+                      : 0;
+                    const overdue = daysOld > 7;
+                    return (
+                      <div
+                        key={b.id}
+                        data-card-tone={overdue ? "due" : "warning"}
+                        onClick={() => {
+                          setSelectedParty(b.retailer || "");
+                          setAmount(String(due));
+                          window.scrollTo({ top: 0, behavior: "smooth" });
+                        }}
+                        className="rounded-2xl border px-3.5 py-3 shadow-xs flex items-center justify-between gap-3 active:scale-[0.99] cursor-pointer transition-all"
+                        title="Click to populate Record Receipt form"
+                      >
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <span className={`hh-avatar hh-avatar--sm shrink-0 ${overdue ? "hh-avatar--rose" : "hh-avatar--amber"}`}>
+                            {getInitials(b.retailer || "Cash Sale", "C")}
+                          </span>
                           <div className="min-w-0 flex-1">
-                            <div className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                            <div className="font-extrabold text-slate-900 text-sm break-words leading-snug">
+                              {b.retailer || "Cash Sale"}
+                            </div>
+                            <div className="text-slate-600 text-xs mt-0.5 flex items-center gap-1.5 flex-wrap font-medium">
                               <span>{formatBillNumber(b, billingSettings)}</span>
+                              <span>·</span>
+                              <span>{formatItemDate(b.date || "")}</span>
                               {isGstExcludedBill(b, products) && (
                                 <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-teal-50 text-teal-800 border border-teal-200 uppercase">
                                   Non-GST
                                 </span>
                               )}
                             </div>
-                            <div className="text-slate-500 text-xs mt-0.5 min-w-0 break-words lg:truncate">
-                              {b.retailer || "Cash Sale"} · {formatItemDate(b.date || "")} · ₹{money(due)}
-                            </div>
-                          </div>
-                          <div className={`font-medium text-xs whitespace-nowrap pt-0.5 ${daysOld > 7 ? "text-rose-600" : "text-amber-700"}`}>
-                            {daysOld > 7 ? "Overdue" : "Due"}
                           </div>
                         </div>
-                      );
-                    })
-                  )}
-                </div>
+                        <div className="text-right shrink-0">
+                          <div className={`font-black text-[15px] tabular-nums ${overdue ? "text-rose-700" : "text-amber-900"}`}>
+                            ₹{money(due)}
+                          </div>
+                          <span
+                            className={`inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${
+                              overdue ? "bg-rose-100/90 text-rose-800" : "bg-amber-100/90 text-amber-800"
+                            }`}
+                          >
+                            {overdue ? `Overdue ${daysOld}d` : "Due"}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           )}

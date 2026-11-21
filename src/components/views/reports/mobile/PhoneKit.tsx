@@ -72,11 +72,11 @@ export const PhoneHeader: React.FC<{
 /* ---------- hero card ---------- */
 
 const HERO_TONE = {
-  green: 'bg-gradient-to-br from-[var(--primary)] via-[var(--primary)] to-[var(--primary-hover)] text-white shadow-xl shadow-emerald-950/20',
-  navy: 'bg-gradient-to-br from-[#0B1E48] via-[#08183A] to-[#040E24] text-white shadow-xl shadow-blue-950/20',
-  red: 'bg-gradient-to-br from-[#7F1D1D] via-[#601212] to-[#3B0707] text-white shadow-xl shadow-rose-950/20',
-  /** Profit = purple, matching `MetricCard tone="profit"` */
-  profit: 'bg-gradient-to-br from-[#4C2A9A] via-[#3B2078] to-[#26134F] text-white shadow-xl shadow-violet-950/20',
+  green: 'bg-gradient-to-br from-[#0b224b] via-[#133b86] to-[#1d51b8] text-white shadow-xl shadow-blue-950/25 border border-blue-300/20',
+  navy: 'bg-gradient-to-br from-[#0b224b] via-[#143a85] to-[#1d51b8] text-white shadow-xl shadow-blue-950/25 border border-blue-300/20',
+  red: 'bg-gradient-to-br from-[#9f1239] via-[#be123c] to-[#881337] text-white shadow-xl shadow-rose-950/25 border border-rose-300/20',
+  /** Profit = royal violet, matching `MetricCard tone="profit"` */
+  profit: 'bg-gradient-to-br from-[#5b21b6] via-[#6d28d9] to-[#4c1d95] text-white shadow-xl shadow-violet-950/25 border border-violet-300/20',
 } as const;
 
 export const HeroCard: React.FC<{
@@ -294,45 +294,56 @@ export const Tag: React.FC<{ tone?: keyof typeof TAG; children: React.ReactNode 
 );
 
 const TILE = {
-  green: 'bg-emerald-50 text-emerald-700',
-  blue: 'bg-sky-50 text-sky-700',
-  red: 'bg-rose-50 text-rose-700',
-  grey: 'bg-slate-100 text-slate-600',
+  green: 'hh-icon-badge hh-icon-badge--green',
+  blue: 'hh-icon-badge hh-icon-badge--blue',
+  red: 'hh-icon-badge hh-icon-badge--rose',
+  grey: 'hh-icon-badge hh-icon-badge--slate',
 } as const;
 
-/** Rounded icon square at the left of a row. */
+/** Vivid solid squircle icon badge at the left of a report row. */
 export const IconTile: React.FC<{ tone: keyof typeof TILE; children: React.ReactNode }> = ({ tone, children }) => (
   <div className={`size-11 shrink-0 rounded-2xl flex items-center justify-center text-lg font-bold ${TILE[tone]}`} aria-hidden="true">
     {children}
   </div>
 );
 
-/** Small grey tile with a label and a figure (Sales / Received / Collected...). */
+/** Clean frosted mini stat tile inside a tinted report card. */
 export const MiniStat: React.FC<{ label: string; value: React.ReactNode; tone?: 'ink' | 'green' | 'red' | 'amber' | 'profit' }> = ({
   label,
   value,
   tone = 'ink',
 }) => {
   const c = { ink: 'text-slate-900', green: 'text-emerald-700', red: 'text-rose-700', amber: 'text-amber-700', profit: 'text-violet-700' }[tone];
+  const bg = {
+    ink: 'bg-white/75 border-slate-200/70',
+    green: 'bg-emerald-50/90 border-emerald-200/70',
+    red: 'bg-rose-50/90 border-rose-200/70',
+    amber: 'bg-amber-50/90 border-amber-200/70',
+    profit: 'bg-violet-50/90 border-violet-200/70',
+  }[tone];
   return (
-    <div className={`rounded-xl px-2.5 py-2 min-w-0 ${tone === 'profit' ? 'bg-violet-50' : 'bg-slate-50'}`}>
-      <div className="text-[10.5px] font-semibold text-slate-500 leading-tight">{label}</div>
+    <div className={`rounded-xl px-2.5 py-2 min-w-0 border ${bg}`}>
+      <div className="text-[10.5px] font-semibold text-slate-600 leading-tight">{label}</div>
       <div className={`text-[15px] font-extrabold tabular-nums leading-tight mt-0.5 ${c}`}>{value}</div>
     </div>
   );
 };
 
-/** A white list card used for one row / one group of rows. */
+/** Option A Soft Tinted Fintech list card (replaces plain white + harsh left edge stripe). */
 export const RowCard: React.FC<{
   children: React.ReactNode;
-  /** Coloured left edge: green / amber / red */
+  /** Semantic tint: green (paid/received), amber (partial/warning), red (due/loss), default cool sky tint */
   edge?: 'green' | 'amber' | 'red';
+  tone?: 'sales' | 'received' | 'due' | 'warning' | 'profit' | 'neutral';
   className?: string;
-}> = ({ children, edge, className = '' }) => {
-  const stripe = edge ? { green: 'bg-emerald-600', amber: 'bg-amber-500', red: 'bg-rose-600' }[edge] : '';
+}> = ({ children, edge, tone, className = '' }) => {
+  const cardTone =
+    tone ?? (edge === 'green' ? 'received' : edge === 'amber' ? 'warning' : edge === 'red' ? 'due' : 'sales');
   return (
-    <div className={`relative overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm ${className}`}>
-      {edge && <span className={`absolute inset-y-0 left-0 w-1.5 ${stripe}`} aria-hidden="true" />}
+    <div
+      data-card-tone={cardTone}
+      className={`relative overflow-hidden rounded-2xl shadow-sm ${className}`}
+    >
       {children}
     </div>
   );
@@ -346,7 +357,7 @@ export const DayHeading: React.FC<{ left: string; right?: string }> = ({ left, r
 );
 
 export const EmptyNote: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <div className="rounded-2xl border border-slate-200 bg-white py-10 px-4 text-center text-sm text-slate-500">{children}</div>
+  <div data-card-tone="neutral" className="rounded-2xl py-10 px-4 text-center text-sm text-slate-600 font-medium">{children}</div>
 );
 
 /** "Wed, 4 Nov" */
@@ -385,7 +396,7 @@ export const PhoneDownloadBar: React.FC<{
   return (
     <>
       <div className="h-32" aria-hidden="true" />
-      <div className="fixed inset-x-0 z-40 bottom-[calc(5.75rem+env(safe-area-inset-bottom,0px))] px-3 py-2.5 bg-white/95 backdrop-blur-md border-t border-slate-200/80 shadow-[0_-4px_16px_rgba(0,0,0,0.08)]">
+      <div className="hh-phone-dlbar fixed inset-x-0 z-40 bottom-[calc(5.75rem+env(safe-area-inset-bottom,0px))] px-3 py-2.5 bg-white/95 backdrop-blur-md border-t border-slate-200/80 shadow-[0_-4px_16px_rgba(0,0,0,0.08)]">
         {err && <div className="text-[11px] text-rose-700 text-center pb-1">{err}</div>}
         <div className="flex gap-2.5">
           <button
@@ -395,7 +406,7 @@ export const PhoneDownloadBar: React.FC<{
             aria-label="Download Excel"
             className="flex-1 min-h-[50px] rounded-2xl border-2 border-[var(--primary)] bg-white text-[var(--primary)] text-[15px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer active:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {busy === 'xlsx' ? <Loader2 size={18} className="animate-spin" /> : <FileSpreadsheet size={18} />}
+            {busy === 'xlsx' ? <Loader2 size={18} className="animate-spin" /> : <FileSpreadsheet size={18} className="hh-dl-static-icon" />}
             Excel
           </button>
           <button
@@ -405,7 +416,7 @@ export const PhoneDownloadBar: React.FC<{
             aria-label="Download PDF"
             className="flex-1 min-h-[50px] rounded-2xl border-2 border-[var(--primary)] bg-[var(--primary)] text-white text-[15px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer active:bg-[#093d2e] disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {busy === 'pdf' ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
+            {busy === 'pdf' ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} className="hh-dl-static-icon" />}
             PDF
           </button>
         </div>

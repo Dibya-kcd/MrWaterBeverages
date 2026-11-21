@@ -201,7 +201,21 @@ export const SalesmanDemo: React.FC<{ onClose: () => void }> = ({ onClose }) => 
   const [collect, setCollect] = useState('');
   const [note, setNote] = useState<string | null>(null);
   const [pin, setPin] = useState('4821');
+  const [isPhone, setIsPhone] = useState<boolean>(() =>
+    typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(max-width: 767px)').matches : false,
+  );
   const closeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mql = window.matchMedia('(max-width: 767px)');
+    const onChange = () => setIsPhone(mql.matches);
+    onChange();
+    mql.addEventListener ? mql.addEventListener('change', onChange) : mql.addListener(onChange);
+    return () => {
+      mql.removeEventListener ? mql.removeEventListener('change', onChange) : mql.removeListener(onChange);
+    };
+  }, []);
 
   const shop = SHOPS.find((s) => s.id === shopId) || SHOPS[0];
   const total = useMemo(() => PRODUCTS.reduce((sum, p) => sum + (cart[p.id] || 0) * p.price, 0), [cart]);
@@ -697,6 +711,171 @@ export const SalesmanDemo: React.FC<{ onClose: () => void }> = ({ onClose }) => 
   })();
 
   const activeTab = info.tab;
+
+  /* ------------------------------------------------------------------------------------------- phone layout */
+  if (isPhone) {
+    const stepVisual = (() => {
+      switch (step) {
+        case 0:
+        case 3:
+        case 10:
+          return (
+            <svg viewBox="0 0 96 64" className="w-20 h-14" aria-hidden="true">
+              <rect x="6" y="14" width="52" height="32" rx="5" fill="#dc2626" />
+              <path d="M58 24h18l10 11v11H58V24z" fill="#f59e0b" />
+              <path d="M62 27h11l6 7H62v-7z" fill="#dbeafe" />
+              <rect x="4" y="44" width="84" height="5" rx="2.5" fill="#1e293b" />
+              <circle cx="24" cy="50" r="8" fill="#111827" />
+              <circle cx="24" cy="50" r="3.5" fill="#e2e8f0" />
+              <circle cx="72" cy="50" r="8" fill="#111827" />
+              <circle cx="72" cy="50" r="3.5" fill="#e2e8f0" />
+            </svg>
+          );
+        case 1:
+          return (
+            <div className="w-16 h-16 rounded-2xl bg-[var(--primary)] text-white flex items-center justify-center shadow-sm">
+              <Delete size={28} aria-hidden="true" />
+            </div>
+          );
+        case 2:
+          return (
+            <div className="w-16 h-16 rounded-2xl bg-[var(--primary)] text-white flex items-center justify-center shadow-sm">
+              <LayoutGrid size={28} aria-hidden="true" />
+            </div>
+          );
+        case 4:
+          return (
+            <div className="w-16 h-16 rounded-2xl bg-[var(--primary)] text-white flex items-center justify-center shadow-sm">
+              <Search size={28} aria-hidden="true" />
+            </div>
+          );
+        case 5:
+          return (
+            <div className="w-16 h-16 rounded-2xl bg-[var(--primary)] text-white flex items-center justify-center shadow-sm">
+              <ShoppingCart size={28} aria-hidden="true" />
+            </div>
+          );
+        case 6:
+        case 8:
+          return (
+            <div className="w-16 h-16 rounded-2xl bg-[#16a34a] text-white flex items-center justify-center shadow-sm">
+              <IndianRupee size={28} aria-hidden="true" />
+            </div>
+          );
+        case 7:
+          return (
+            <div className="w-16 h-16 rounded-2xl bg-[#16a34a] text-white flex items-center justify-center shadow-sm">
+              <FileText size={28} aria-hidden="true" />
+            </div>
+          );
+        case 9:
+          return (
+            <div className="w-16 h-16 rounded-2xl bg-[var(--primary)] text-white flex items-center justify-center shadow-sm">
+              <Package size={28} aria-hidden="true" />
+            </div>
+          );
+        default:
+          return (
+            <div className="w-16 h-16 rounded-2xl bg-[#16a34a] text-white flex items-center justify-center shadow-sm">
+              <CheckCircle2 size={30} aria-hidden="true" />
+            </div>
+          );
+      }
+    })();
+
+    const trailStart = Math.max(0, Math.min(STEPS.length - 6, step - 2));
+    const trailSteps = STEPS.slice(trailStart, trailStart + 6);
+
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="How the salesman app works"
+        className="hh-demo-phone"
+      >
+        <div className="hh-demo-phone__top">
+          <div className="hh-demo-phone__head">
+            <h2 className="hh-demo-phone__title">How the salesman app works</h2>
+            <button
+              ref={closeRef}
+              type="button"
+              onClick={onClose}
+              className="hh-demo-phone__close"
+              aria-label="Close demo"
+            >
+              <X size={20} />
+            </button>
+          </div>
+          <div className="hh-demo-phone__bars" aria-hidden="true">
+            {STEPS.map((s, idx) => (
+              <span
+                key={s.title}
+                className={`hh-demo-phone__bar ${idx <= step ? 'hh-demo-phone__bar--on' : ''}`}
+              />
+            ))}
+          </div>
+          <div className="hh-demo-phone__step">
+            Step {step + 1} of {STEPS.length} · {info.title}
+          </div>
+        </div>
+
+        <div className="hh-demo-phone__body">
+          <div className="hh-demo-phone__card">
+            <div className="hh-demo-phone__visual">{stepVisual}</div>
+            <h3 className="hh-demo-phone__cardtitle">{info.title}</h3>
+            <p className="hh-demo-phone__carddesc">{info.what}</p>
+            {info.tips && info.tips.length > 0 && (
+              <p className="mt-2.5 text-xs text-[var(--text-2)] leading-snug">
+                {info.tips[0]}
+              </p>
+            )}
+          </div>
+
+          <p className="hh-demo-phone__trail" aria-label="Tour steps">
+            {trailStart > 0 && <span>… · </span>}
+            {trailSteps.map((s, idx) => {
+              const absIdx = trailStart + idx;
+              return (
+                <React.Fragment key={s.title}>
+                  {idx > 0 && <span> · </span>}
+                  {absIdx === step ? <strong>{s.title}</strong> : <span>{s.title}</span>}
+                </React.Fragment>
+              );
+            })}
+            {trailStart + trailSteps.length < STEPS.length && <span> · …</span>}
+          </p>
+        </div>
+
+        <div className="hh-demo-phone__foot">
+          <button
+            type="button"
+            onClick={() => go(step - 1)}
+            disabled={step === 0}
+            className="hh-demo-phone__back"
+          >
+            Back
+          </button>
+          {step < last ? (
+            <button
+              type="button"
+              onClick={coachNext}
+              className="hh-demo-phone__next"
+            >
+              {step === 0 ? 'Start' : 'Next'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onClose}
+              className="hh-demo-phone__next"
+            >
+              Close demo
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   /* ------------------------------------------------------------------------------------------------ layout */
   return (

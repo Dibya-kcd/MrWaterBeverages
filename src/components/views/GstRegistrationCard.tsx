@@ -43,7 +43,7 @@ export default function GstRegistrationCard() {
   };
 
   return (
-    <div className="col-span-full rounded-2xl border border-amber-200 bg-amber-50/60 p-3.5 sm:p-4 space-y-3">
+    <div data-card-tone="warning" className="col-span-full rounded-2xl border shadow-xs p-3.5 sm:p-4 space-y-3">
       <div>
         <p className="text-[11px] font-bold uppercase tracking-wider text-amber-900">GST registration (tax engine)</p>
         <p className="text-xs text-amber-900/80 mt-0.5">

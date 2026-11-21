@@ -13,8 +13,8 @@ export interface StatCardProps {
   };
   badge?: string;
   variant?: 'default' | 'accent' | 'success' | 'warning' | 'danger';
-  /** Phone-only pastel colour. Defaults from `variant` (success = received, danger = due, accent = sales). */
-  tone?: 'sales' | 'profit' | 'received' | 'due' | 'neutral';
+  /** Semantic Option A pastel tint. Defaults from `variant` (success = received, danger = due, accent = sales, warning = warning). */
+  tone?: 'sales' | 'profit' | 'received' | 'due' | 'warning' | 'neutral';
   className?: string;
 }
 
@@ -30,7 +30,11 @@ export const StatCard: React.FC<StatCardProps> = ({
   className = '',
 }) => {
   const phoneTone =
-    tone ?? ({ success: 'received', danger: 'due', accent: 'sales' } as const)[variant as 'success' | 'danger' | 'accent'] ?? 'neutral';
+    tone ??
+    ({ success: 'received', danger: 'due', accent: 'sales', warning: 'warning' } as const)[
+      variant as 'success' | 'danger' | 'accent' | 'warning'
+    ] ??
+    'neutral';
   const iconVariantStyles = {
     default: 'bg-[var(--canvas)] text-[var(--ink)]',
     accent: 'bg-[rgba(61,143,160,0.12)] text-[var(--teal)]',

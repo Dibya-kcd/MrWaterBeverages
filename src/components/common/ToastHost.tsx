@@ -8,10 +8,10 @@ interface Toast {
   kind: ToastKind;
 }
 
-const STYLE: Record<ToastKind, { box: string; Icon: React.ElementType }> = {
-  error: { box: 'bg-rose-50 border-rose-300 text-rose-900', Icon: AlertCircle },
-  success: { box: 'bg-emerald-50 border-emerald-300 text-emerald-900', Icon: CheckCircle2 },
-  info: { box: 'bg-sky-50 border-sky-300 text-sky-900', Icon: Info },
+const STYLE: Record<ToastKind, { box: string; rt: string; Icon: React.ElementType }> = {
+  error: { box: 'bg-rose-50 border-rose-300 text-rose-900', rt: 'rt-toast--error', Icon: AlertCircle },
+  success: { box: 'bg-emerald-50 border-emerald-300 text-emerald-900', rt: 'rt-toast--success', Icon: CheckCircle2 },
+  info: { box: 'bg-sky-50 border-sky-300 text-sky-900', rt: 'rt-toast--info', Icon: Info },
 };
 
 /** Replaces the browser's blocking alert() box with a message that fits the app and the phone. */
@@ -41,13 +41,13 @@ export const ToastHost: React.FC = () => {
       aria-live="assertive"
     >
       {toasts.map((t) => {
-        const { box, Icon } = STYLE[t.kind];
+        const { box, rt, Icon } = STYLE[t.kind];
         return (
           <div
             key={t.id}
-            className={`pointer-events-auto w-full max-w-md flex items-start gap-2.5 rounded-2xl border-2 px-3.5 py-3 shadow-xl text-sm font-semibold whitespace-pre-line ${box}`}
+            className={`pointer-events-auto w-full max-w-md flex items-start gap-2.5 rounded-2xl border-2 px-3.5 py-3 shadow-xl text-sm font-semibold whitespace-pre-line rt-toast ${rt} ${box}`}
           >
-            <Icon size={18} className="shrink-0 mt-0.5" />
+            <Icon size={18} className="shrink-0 mt-0.5 rt-toast__icon" />
             <div className="flex-1 min-w-0 break-words">{t.message}</div>
             <button
               type="button"

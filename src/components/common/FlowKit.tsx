@@ -29,7 +29,7 @@ export interface FlowHeaderProps {
 }
 
 export const FlowHeader: React.FC<FlowHeaderProps> = ({ title, subtitle, onBack, backLabel = 'Back', right, progress }) => (
-  <header className="shrink-0 w-full bg-[var(--flow-header)] text-white pt-[env(safe-area-inset-top,0px)]">
+  <header className="rt-flow-header shrink-0 w-full bg-[var(--flow-header)] text-white pt-[env(safe-area-inset-top,0px)]">
     <div className="mx-auto w-full max-w-6xl px-3 py-2.5 flex items-center gap-3">
       {onBack && (
         <button
@@ -68,7 +68,7 @@ export const FlowInlineHeader: React.FC<{
   backLabel?: string;
   right?: React.ReactNode;
 }> = ({ title, subtitle, onBack, backLabel = 'Back', right }) => (
-  <header className="w-full min-w-0 rounded-2xl bg-[#0A2558] bg-gradient-to-r from-[#0A2558] via-[#0B2D69] to-[#081E4A] text-white px-2.5 sm:px-3 py-2 flex items-center gap-2 shadow-sm">
+  <header className="rt-flow-inline-header w-full min-w-0 rounded-2xl bg-[#0A2558] bg-gradient-to-r from-[#0A2558] via-[#0B2D69] to-[#081E4A] text-white px-2.5 sm:px-3 py-2 flex items-center gap-2 shadow-sm">
     {onBack && (
       <button
         type="button"
@@ -96,7 +96,7 @@ export const FlowBadge: React.FC<{ children: React.ReactNode }> = ({ children })
 /* Footer: the main action on its own full-width row on phones          */
 /* ------------------------------------------------------------------ */
 export const FlowFooter: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <footer className="shrink-0 w-full bg-white border-t border-gray-200 pb-[env(safe-area-inset-bottom,0px)]">
+  <footer className="rt-flow-footer shrink-0 w-full bg-white border-t border-gray-200 pb-[env(safe-area-inset-bottom,0px)]">
     <div className="mx-auto w-full max-w-6xl p-3 flex flex-wrap items-stretch gap-2">{children}</div>
   </footer>
 );
@@ -104,9 +104,9 @@ export const FlowFooter: React.FC<{ children: React.ReactNode }> = ({ children }
 /** Same height, radius and type for every footer button. */
 export const flowBtn = {
   primary:
-    'min-h-[48px] min-w-0 px-4 rounded-xl bg-[var(--flow-accent)] hover:bg-[var(--flow-accent-hover)] text-white text-[15px] font-black inline-flex items-center justify-center gap-2 cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+    'rt-flow-btn-primary min-h-[48px] min-w-0 px-4 rounded-xl bg-[var(--flow-accent)] hover:bg-[var(--flow-accent-hover)] text-white text-[15px] font-black inline-flex items-center justify-center gap-2 cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
   secondary:
-    'min-h-[48px] min-w-0 px-4 rounded-xl border border-gray-300 bg-white text-slate-700 text-sm font-black inline-flex items-center justify-center gap-2 cursor-pointer transition-colors hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed',
+    'rt-flow-btn-secondary min-h-[48px] min-w-0 px-4 rounded-xl border border-gray-300 bg-white text-slate-700 text-sm font-black inline-flex items-center justify-center gap-2 cursor-pointer transition-colors hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed',
 };
 /** Layout helpers for a footer row: primary is full width on phones, then shares the row from 640px up. */
 export const flowFooterPrimary = 'order-first basis-full sm:order-last sm:basis-0 sm:flex-1';

@@ -26,7 +26,6 @@ import {
   Store,
   Zap,
   ChevronDown,
-  MoreVertical,
 } from 'lucide-react';
 import { Bill, BillItem, PriceType, Product, Trip, ExistingCustomer } from '../../types';
 import { money } from '../../utils/billing';
@@ -37,6 +36,7 @@ import { useLedger } from '../../context/LedgerContext';
 import { sendBillOnWhatsApp, whatsAppResultMessage } from '../../utils/whatsappBill';
 import { preloadInvoicePdf } from '../../utils/invoicePdfLazy';
 import { notify } from '../../utils/toast';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 interface SalesmanCartModalProps {
   isOpen: boolean;
@@ -122,7 +122,8 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
   const { orgProfile, billingSettings } = useLedger();
   const hasWhatsAppBill = Boolean(lastFinalizedWhatsApp);
   useEffect(() => { if (hasWhatsAppBill) preloadInvoicePdf().catch(() => {}); }, [hasWhatsAppBill]);
-  const { isOdia } = useLanguage();
+  const { isOdia, t } = useLanguage();
+  const isPhone = useIsMobile(767);
 
   // Beverage browsing mode state (allows adding beverages without leaving modal)
   const [isBrowsingBeverages, setIsBrowsingBeverages] = useState<boolean>(false);
@@ -133,7 +134,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
   // Compact-cart UI state: bill discount panel, payment mode, overflow menu
   const [showDiscount, setShowDiscount] = useState<boolean>(false);
   const [payMode, setPayMode] = useState<'credit' | 'partial' | 'full'>('credit');
-  const [showMenu, setShowMenu] = useState<boolean>(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState<boolean>(false);
 
   const nameCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -156,7 +157,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
     if (!isOpen) {
       setIsBrowsingBeverages(false);
       setBeverageSearchQuery('');
-      setShowMenu(false);
+      setShowCancelConfirm(false);
       setShowDiscount(false);
       setPayMode('credit');
       setEditingItemKey(null);
@@ -289,6 +290,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
   if (!isOpen) return null;
 
   const lv = isLowVision;
+  const phoneRestyle = isPhone && !lv;
   const mode: 'credit' | 'partial' | 'full' = payMode === 'partial' ? 'partial' : isFull ? 'full' : isCredit ? 'credit' : 'partial';
 
   return (
@@ -302,9 +304,13 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
       <div
         id="salesman-cart-modal-container"
         className={`w-full sm:max-w-3xl sm:rounded-xl shadow-2xl flex flex-col sm:my-auto h-[100dvh] sm:h-auto sm:max-h-[92dvh] overflow-hidden sm:border-3 ${
-          lv ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-slate-100 text-slate-900 border-slate-700'
+          lv
+            ? 'bg-black text-yellow-300 border-yellow-400'
+            : phoneRestyle
+              ? 'bg-[var(--bg)] text-[var(--text)] border-0 shadow-none'
+              : 'bg-slate-100 text-slate-900 border-slate-700'
         }`}
-        style={!lv ? { borderColor: palette.navy } : {}}
+        style={!lv && !phoneRestyle ? { borderColor: palette.navy } : {}}
       >
         {/* Header: one line — back / title, always-visible total, menu, close */}
         <div
@@ -342,34 +348,27 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
             >
               ₹{money(finalCartTotal)}
             </span>
-            {!isBrowsingBeverages && onCancelSale && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setShowMenu((v) => !v)}
-                  className={`w-9 h-10 rounded-lg flex items-center justify-center cursor-pointer ${lv ? 'bg-black text-yellow-300' : 'hover:bg-white/10 text-white'}`}
-                  aria-label="More actions"
-                  aria-expanded={showMenu}
-                >
-                  <MoreVertical size={20} />
-                </button>
-                {showMenu && (
-                  <div className="absolute right-0 top-full mt-1 z-20 w-44 rounded-xl bg-white text-slate-900 shadow-xl border border-slate-200 overflow-hidden">
-                    <button
-                      type="button"
-                      id="btn-modal-cancel-sale"
-                      onClick={() => {
-                        setShowMenu(false);
-                        onCancelSale();
-                        onClose();
-                      }}
-                      className="w-full text-left px-4 py-3 text-sm font-extrabold text-rose-700 hover:bg-rose-50 cursor-pointer flex items-center gap-2"
-                    >
-                      <Trash2 size={16} /> Cancel sale
-                    </button>
-                  </div>
-                )}
-              </>
+            {onCancelSale && (
+              <button
+                type="button"
+                id="btn-modal-cancel-sale"
+                onClick={() => {
+                  if (cart.items.length > 0) {
+                    setShowCancelConfirm(true);
+                  } else {
+                    onCancelSale();
+                    onClose();
+                  }
+                }}
+                className={`min-h-[38px] px-3 rounded-full text-xs font-bold inline-flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap border ${
+                  lv
+                    ? 'bg-red-600 text-white border-black'
+                    : 'bg-white/15 hover:bg-white/25 text-white border-white/30'
+                }`}
+              >
+                <X size={14} strokeWidth={2.5} aria-hidden="true" />
+                <span>{t('common.cancel')}</span>
+              </button>
             )}
           </div>
         </div>
@@ -1002,37 +1001,43 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
 
             {/* Bill discount panel — collapsed by default */}
             {cart.items.length > 0 && showDiscount && (
-              <div className={`p-3 rounded-xl border-[1.5px] space-y-2.5 ${lv ? 'bg-gray-900 border-yellow-400 text-yellow-300' : 'bg-amber-50 border-amber-300 text-slate-900'}`}>
-                <div className="flex items-center justify-between text-[11px] font-extrabold tracking-wide text-amber-900">
+              <div
+                className={
+                  phoneRestyle
+                    ? 'rt-card space-y-2.5'
+                    : `p-3 rounded-xl border-[1.5px] space-y-2.5 ${lv ? 'bg-gray-900 border-yellow-400 text-yellow-300' : 'bg-amber-50 border-amber-300 text-slate-900'}`
+                }
+              >
+                <div className={`flex items-center justify-between text-[11px] font-extrabold tracking-wide ${phoneRestyle ? 'text-[var(--text-2)]' : 'text-amber-900'}`}>
                   <span>BILL DISCOUNT</span>
                   {appliedDiscount > 0 && (
-                    <button type="button" onClick={() => handleDiscountChange('0')} className="text-rose-600 text-xs font-black cursor-pointer min-h-[32px]">Reset</button>
+                    <button type="button" onClick={() => handleDiscountChange('0')} className="text-[var(--due)] text-xs font-black cursor-pointer min-h-[32px]">Reset</button>
                   )}
                 </div>
                 <div className="grid grid-cols-4 gap-1.5">
                   {[50, 100, 200].map((amt) => (
                     <button key={amt} type="button" onClick={() => applyQuickDiscount(amt, false)}
-                      className={`min-h-[40px] text-[13px] font-black rounded-xl border-[1.5px] cursor-pointer ${lv ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-white border-amber-300 text-amber-900'}`}>
+                      className={phoneRestyle ? 'rt-chip min-h-[40px]! justify-center' : `min-h-[40px] text-[13px] font-black rounded-xl border-[1.5px] cursor-pointer ${lv ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-white border-amber-300 text-amber-900'}`}>
                       −₹{amt}
                     </button>
                   ))}
                   <button type="button" onClick={() => applyQuickDiscount(5, true)}
-                    className={`min-h-[40px] text-[13px] font-black rounded-xl border-[1.5px] cursor-pointer ${lv ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-white border-amber-300 text-amber-900'}`}>
+                    className={phoneRestyle ? 'rt-chip min-h-[40px]! justify-center' : `min-h-[40px] text-[13px] font-black rounded-xl border-[1.5px] cursor-pointer ${lv ? 'bg-yellow-400 text-black border-yellow-400' : 'bg-white border-amber-300 text-amber-900'}`}>
                     −5%
                   </button>
                 </div>
                 <div className="grid grid-cols-2 gap-2.5">
                   <div>
-                    <label htmlFor="cart-special-discount-amt" className="block text-[10.5px] font-extrabold tracking-wide text-slate-500 mb-1">DISCOUNT (₹)</label>
+                    <label htmlFor="cart-special-discount-amt" className="block text-[10.5px] font-extrabold tracking-wide text-[var(--text-2)] mb-1">DISCOUNT (₹)</label>
                     <input id="cart-special-discount-amt" type="number" inputMode="numeric" min={0}
                       value={invoiceDiscountDraft} onChange={(e) => handleDiscountChange(e.target.value)} placeholder="₹0"
-                      className={`w-full h-11 px-3 text-base font-black rounded-xl border-2 ${lv ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white border-amber-400 text-slate-900'}`} />
+                      className={`w-full h-11 px-3 text-base font-black rounded-xl border ${lv ? 'bg-black text-yellow-300 border-yellow-400' : phoneRestyle ? 'bg-[var(--bg)] border-[var(--border)] text-[var(--text)]' : 'bg-white border-amber-400 text-slate-900'}`} />
                   </div>
                   <div>
-                    <label htmlFor="cart-settled-total-amt" className="block text-[10.5px] font-extrabold tracking-wide text-slate-500 mb-1">FINAL TOTAL (₹)</label>
+                    <label htmlFor="cart-settled-total-amt" className="block text-[10.5px] font-extrabold tracking-wide text-[var(--text-2)] mb-1">FINAL TOTAL (₹)</label>
                     <input id="cart-settled-total-amt" type="number" inputMode="decimal" min={0}
                       value={settledTotalDraft} onChange={(e) => handleSettledTotalChange(e.target.value)} placeholder={`₹${rawCartTotal}`}
-                      className={`w-full h-11 px-3 text-base font-black rounded-xl border-2 ${lv ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white border-amber-400 text-slate-900'}`} />
+                      className={`w-full h-11 px-3 text-base font-black rounded-xl border ${lv ? 'bg-black text-yellow-300 border-yellow-400' : phoneRestyle ? 'bg-[var(--bg)] border-[var(--border)] text-[var(--text)]' : 'bg-white border-amber-400 text-slate-900'}`} />
                   </div>
                 </div>
               </div>
@@ -1040,71 +1045,93 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
 
             {/* Payment + WhatsApp */}
             {cart.items.length > 0 && (
-              <div className={`p-3 rounded-xl border ${lv ? 'bg-gray-900 border-yellow-400 text-yellow-300' : 'bg-white border-slate-200'}`}>
-                <div className="text-[11px] font-extrabold tracking-wide text-slate-500 mb-2">PAYMENT TODAY</div>
-                <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="Payment today">
+              <div className={phoneRestyle ? 'rt-card space-y-3' : `p-3 rounded-xl border ${lv ? 'bg-gray-900 border-yellow-400 text-yellow-300' : 'bg-white border-slate-200'}`}>
+                <div className={`text-[12px] font-bold tracking-wide ${phoneRestyle ? 'text-[var(--text)] text-[16px]!' : 'text-slate-500 text-[11px] mb-2'}`}>
+                  {phoneRestyle ? t('sell.payment') : 'PAYMENT TODAY'}
+                </div>
+                <div className={phoneRestyle ? 'rt-pay-pills' : 'grid grid-cols-3 gap-1.5'} role="radiogroup" aria-label="Payment today">
                   <button
-                    type="button" role="radio" aria-checked={mode === 'credit'}
+                    type="button" role="radio" aria-checked={mode === 'credit'} aria-pressed={mode === 'credit'}
                     id="btn-payment-option-credit"
                     onClick={() => {
                       setPayMode('credit');
                       setAmountPaidDraft('0');
                       if (lv) speakAssistiveText(`Selected Credit. 0 rupees paid today. Rupees ${finalCartTotal} due to pay.`);
                     }}
-                    className={`min-h-[44px] rounded-xl font-black text-[13px] border-[1.5px] flex items-center justify-center gap-1 cursor-pointer ${
-                      mode === 'credit' ? (lv ? 'bg-yellow-400 text-black border-yellow-500 ring-2 ring-yellow-400' : 'bg-amber-600 text-white border-amber-600 ring-2 ring-amber-200') : lv ? 'bg-black text-yellow-300 border-yellow-400/50' : 'bg-white text-slate-700 border-slate-300'
-                    }`}
+                    className={
+                      phoneRestyle
+                        ? 'rt-pay-pill'
+                        : `min-h-[44px] rounded-xl font-black text-[13px] border-[1.5px] flex items-center justify-center gap-1 cursor-pointer ${
+                            mode === 'credit' ? (lv ? 'bg-yellow-400 text-black border-yellow-500 ring-2 ring-yellow-400' : 'bg-amber-600 text-white border-amber-600 ring-2 ring-amber-200') : lv ? 'bg-black text-yellow-300 border-yellow-400/50' : 'bg-white text-slate-700 border-slate-300'
+                          }`
+                    }
                   >
-                    <Clock size={15} /> Credit
+                    <Clock size={15} /> {t('sell.credit')}
                   </button>
                   <button
-                    type="button" role="radio" aria-checked={mode === 'partial'}
+                    type="button" role="radio" aria-checked={mode === 'partial'} aria-pressed={mode === 'partial'}
                     id="btn-payment-option-partial"
                     onClick={() => {
                       setPayMode('partial');
                       if (isFull || isCredit) setAmountPaidDraft('');
                     }}
-                    className={`min-h-[44px] rounded-xl font-black text-[13px] border-[1.5px] flex items-center justify-center cursor-pointer ${
-                      mode === 'partial' ? (lv ? 'bg-yellow-400 text-black border-yellow-500 ring-2 ring-yellow-400' : 'bg-sky-600 text-white border-sky-600 ring-2 ring-sky-200') : lv ? 'bg-black text-yellow-300 border-yellow-400/50' : 'bg-white text-slate-700 border-slate-300'
-                    }`}
+                    className={
+                      phoneRestyle
+                        ? 'rt-pay-pill'
+                        : `min-h-[44px] rounded-xl font-black text-[13px] border-[1.5px] flex items-center justify-center cursor-pointer ${
+                            mode === 'partial' ? (lv ? 'bg-yellow-400 text-black border-yellow-500 ring-2 ring-yellow-400' : 'bg-sky-600 text-white border-sky-600 ring-2 ring-sky-200') : lv ? 'bg-black text-yellow-300 border-yellow-400/50' : 'bg-white text-slate-700 border-slate-300'
+                          }`
+                    }
                   >
                     Partial
                   </button>
                   <button
-                    type="button" role="radio" aria-checked={mode === 'full'}
+                    type="button" role="radio" aria-checked={mode === 'full'} aria-pressed={mode === 'full'}
                     id="btn-payment-option-full"
                     onClick={() => {
                       setPayMode('full');
                       setAmountPaidDraft(String(finalCartTotal));
                       if (lv) speakAssistiveText(`Selected Full Cash. Rupees ${finalCartTotal} paid today. 0 due.`);
                     }}
-                    className={`min-h-[44px] rounded-xl font-black text-[13px] border-[1.5px] flex items-center justify-center gap-1 cursor-pointer ${
-                      mode === 'full' ? (lv ? 'bg-yellow-400 text-black border-yellow-500 ring-2 ring-yellow-400' : 'bg-emerald-600 text-white border-emerald-600 ring-2 ring-emerald-200') : lv ? 'bg-black text-yellow-300 border-yellow-400/50' : 'bg-white text-slate-700 border-slate-300'
-                    }`}
+                    className={
+                      phoneRestyle
+                        ? 'rt-pay-pill'
+                        : `min-h-[44px] rounded-xl font-black text-[13px] border-[1.5px] flex items-center justify-center gap-1 cursor-pointer ${
+                            mode === 'full' ? (lv ? 'bg-yellow-400 text-black border-yellow-500 ring-2 ring-yellow-400' : 'bg-emerald-600 text-white border-emerald-600 ring-2 ring-emerald-200') : lv ? 'bg-black text-yellow-300 border-yellow-400/50' : 'bg-white text-slate-700 border-slate-300'
+                          }`
+                    }
                   >
-                    <CheckCircle2 size={15} /> Full cash
+                    <CheckCircle2 size={15} /> {t('sell.cash')}
                   </button>
                 </div>
 
                 {mode === 'partial' && (
-                  <div className="flex gap-2.5 mt-2.5 items-end">
+                  <div className={phoneRestyle ? 'space-y-2' : 'flex gap-2.5 mt-2.5 items-end'}>
                     <div className="flex-1 min-w-0">
-                      <label htmlFor="cart-amount-paid-today" className="block text-[10.5px] font-extrabold tracking-wide text-slate-500 mb-1">AMOUNT RECEIVED (₹)</label>
-                      <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 font-black opacity-60">₹</span>
+                      <label htmlFor="cart-amount-paid-today" className="block text-[11px] font-bold tracking-wide text-[var(--text-2)] mb-1">
+                        {t('sell.amountCollected')}
+                      </label>
+                      <div className={phoneRestyle ? 'rt-amt-field' : 'relative'}>
+                        <span className={phoneRestyle ? 'rt-amt-field__prefix' : 'absolute left-3 top-1/2 -translate-y-1/2 font-black opacity-60'}>
+                          {phoneRestyle ? 'Rs' : '₹'}
+                        </span>
                         <input
                           id="cart-amount-paid-today"
                           type="number" inputMode="decimal" min={0} step="any" autoFocus
                           value={amountPaidDraft}
                           onChange={(e) => setAmountPaidDraft(e.target.value)}
                           placeholder="0"
-                          className={`w-full h-11 pl-7 pr-3 text-base font-black rounded-xl border-2 ${lv ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white border-sky-500 text-slate-900'}`}
+                          className={
+                            phoneRestyle
+                              ? 'rt-amt-field__input'
+                              : `w-full h-11 pl-7 pr-3 text-base font-black rounded-xl border-2 ${lv ? 'bg-black text-yellow-300 border-yellow-400' : 'bg-white border-sky-500 text-slate-900'}`
+                          }
                         />
                       </div>
                     </div>
-                    <div className={`flex-1 rounded-xl border-[1.5px] px-2.5 py-1 h-11 ${balanceDue > 0 ? 'bg-amber-50 border-amber-300' : 'bg-emerald-50 border-emerald-300'}`}>
-                      <div className="text-[9.5px] font-extrabold text-amber-900">BALANCE DUE</div>
-                      <div className={`text-base font-black leading-tight ${balanceDue > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>₹{money(balanceDue)}</div>
+                    <div className={phoneRestyle ? 'flex items-center justify-between text-xs font-semibold' : `flex-1 rounded-xl border-[1.5px] px-2.5 py-1 h-11 ${balanceDue > 0 ? 'bg-amber-50 border-amber-300' : 'bg-emerald-50 border-emerald-300'}`}>
+                      <div className={phoneRestyle ? 'text-[var(--text-2)]' : 'text-[9.5px] font-extrabold text-amber-900'}>BALANCE DUE</div>
+                      <div className={phoneRestyle ? `font-bold ${balanceDue > 0 ? 'text-[var(--due)]' : 'text-[var(--paid)]'}` : `text-base font-black leading-tight ${balanceDue > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>₹{money(balanceDue)}</div>
                     </div>
                   </div>
                 )}
@@ -1115,7 +1142,7 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                     onClick={() => setAutoSendWhatsApp(!autoSendWhatsApp)}
                     className="text-[13px] font-bold flex items-center gap-1.5 cursor-pointer select-none"
                   >
-                    <MessageCircle size={16} className="text-emerald-600" /> Send bill on WhatsApp
+                    <MessageCircle size={16} className={phoneRestyle ? 'text-[var(--paid)]' : 'text-emerald-600'} /> Send bill on WhatsApp
                   </span>
                   <ToggleSwitch
                     checked={autoSendWhatsApp}
@@ -1133,8 +1160,14 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
 
         {/* Footer: sticky — totals + due + one big Finalize button */}
         <div
-          className={`shrink-0 px-3 pt-2.5 border-t ${lv ? 'bg-gray-950 border-yellow-400' : 'bg-white border-slate-300 shadow-[0_-6px_18px_rgba(15,23,42,0.10)]'}`}
-          style={{ paddingBottom: 'max(0.75rem, calc(env(safe-area-inset-bottom, 0px) + 0.5rem))' }}
+          className={`shrink-0 px-3 pt-2.5 border-t ${
+            lv
+              ? 'bg-gray-950 border-yellow-400'
+              : phoneRestyle
+                ? 'rt-checkout-footer'
+                : 'bg-white border-slate-300 shadow-[0_-6px_18px_rgba(15,23,42,0.10)]'
+          }`}
+          style={!phoneRestyle ? { paddingBottom: 'max(0.75rem, calc(env(safe-area-inset-bottom, 0px) + 0.5rem))' } : undefined}
         >
           {isBrowsingBeverages ? (
             <div className="flex flex-col sm:flex-row items-center justify-between gap-3 w-full">
@@ -1155,11 +1188,15 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                     setIsBrowsingBeverages(false);
                     if (isLowVision) speakAssistiveText(`Returning to invoice review. ${cart.items.length} beverages in cart.`);
                   }}
-                  className={`w-full sm:w-auto min-h-[44px] px-6 py-2.5 rounded-xl font-black text-sm sm:text-base border-2 cursor-pointer shadow-lg flex items-center justify-center gap-2 transition-all ${
-                    isLowVision
-                      ? 'bg-yellow-400 text-black border-yellow-500 hover:bg-yellow-300'
-                      : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
-                  }`}
+                  className={
+                    phoneRestyle
+                      ? 'rt-btn w-full'
+                      : `w-full sm:w-auto min-h-[44px] px-6 py-2.5 rounded-xl font-black text-sm sm:text-base border-2 cursor-pointer shadow-lg flex items-center justify-center gap-2 transition-all ${
+                          isLowVision
+                            ? 'bg-yellow-400 text-black border-yellow-500 hover:bg-yellow-300'
+                            : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+                        }`
+                  }
                 >
                   <CheckCircle2 size={18} />
                   <span>Done Adding → Review Invoice (₹{money(finalCartTotal)})</span>
@@ -1169,13 +1206,13 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
           ) : (
             <>
               <div className="flex items-center justify-between gap-2 text-[12.5px] font-bold mb-2">
-                <span className={lv ? '' : 'text-slate-600'}>
+                <span className={lv ? '' : 'text-[var(--text-2)]'}>
                   Items ₹{money(rawCartTotal)}
-                  {appliedDiscount > 0 && <> · Discount <b className="text-rose-600">−₹{money(appliedDiscount)}</b></>}
+                  {appliedDiscount > 0 && <> · Discount <b className="text-[var(--due)]">−₹{money(appliedDiscount)}</b></>}
                 </span>
                 {cart.items.length > 0 && (
-                  <span className={`font-extrabold ${balanceDue > 0 ? (lv ? '' : 'text-amber-700') : 'text-emerald-700'}`}>
-                    {balanceDue > 0 ? `₹${money(balanceDue)} ${isCredit ? 'on credit' : 'due'}` : 'Paid in full'}
+                  <span className={`font-extrabold ${balanceDue > 0 ? (lv ? '' : 'text-[var(--due)]') : 'text-[var(--paid)]'}`}>
+                    {balanceDue > 0 ? `₹${money(balanceDue)} ${isCredit ? 'on credit' : 'due'}` : t('salesman.paidInFull')}
                   </span>
                 )}
               </div>
@@ -1184,9 +1221,13 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
                 id="btn-finalize-from-cart-modal"
                 disabled={cart.items.length === 0 || !selectedRetailer.trim()}
                 onClick={() => { onFinalize(); }}
-                className={`w-full min-h-[54px] rounded-xl font-black text-[16.5px] shadow-lg cursor-pointer flex items-center justify-center gap-2 transition-all active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed ${
-                  lv ? 'bg-yellow-400 text-black hover:bg-yellow-500' : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                }`}
+                className={
+                  phoneRestyle
+                    ? 'rt-btn w-full'
+                    : `w-full min-h-[54px] rounded-xl font-black text-[16.5px] shadow-lg cursor-pointer flex items-center justify-center gap-2 transition-all active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed ${
+                        lv ? 'bg-yellow-400 text-black hover:bg-yellow-500' : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                      }`
+                }
               >
                 <CheckCircle2 size={22} strokeWidth={2.6} />
                 <span>Finalize sale · ₹{money(finalCartTotal)}</span>
@@ -1195,6 +1236,44 @@ export const SalesmanCartModal: React.FC<SalesmanCartModalProps> = ({
           )}
         </div>
       </div>
+
+      {showCancelConfirm && onCancelSale && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-[60] bg-black/65 flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl space-y-4">
+            <div className="flex items-center gap-2 text-rose-600 font-extrabold text-base">
+              <AlertCircle size={20} aria-hidden="true" />
+              <span>{t('salesman.cancelCurrentSale')}</span>
+            </div>
+            <p className="text-sm font-medium text-slate-600">
+              You have <strong className="text-slate-900">{cart.items.length} item{cart.items.length !== 1 ? 's' : ''}</strong> ({totalCases} cases) in this cart. Cancelling will discard them.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowCancelConfirm(false)}
+                className="min-h-[44px] px-4 rounded-full border border-slate-300 text-sm font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
+              >
+                Keep Cart
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCancelConfirm(false);
+                  onCancelSale();
+                  onClose();
+                }}
+                className="min-h-[44px] px-4 rounded-full bg-rose-600 hover:bg-rose-700 text-white text-sm font-bold cursor-pointer"
+              >
+                {t('salesman.cancelSale')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

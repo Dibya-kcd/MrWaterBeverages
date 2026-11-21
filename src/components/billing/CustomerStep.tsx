@@ -2,6 +2,9 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   BadgeCheck,
+  Building2,
+  Calendar,
+  ChevronDown,
   ChevronRight,
   LayoutGrid,
   Mail,
@@ -12,6 +15,7 @@ import {
   Search,
   Star,
   Store,
+  Truck,
   Users,
   X,
   Zap,
@@ -23,7 +27,9 @@ import { normCustName } from '../../context/ledgerHelpers';
 import { effectiveBillBalances, OVERDUE_AFTER_DAYS } from '../../utils/beatReports';
 import { todayISO } from '../../utils/dateLocal';
 import { useIsMobile } from '../../hooks/useIsMobile';
+import { useLanguage } from '../../i18n/LanguageContext';
 import { buildRichCustomerOptions, extractCustomerPrefill, RichCustomerOption } from './CustomerPredictiveSearch';
+import { getInitials } from '../ui/HomeKit';
 
 /**
  * New Sale — pick (or add) the retailer.
@@ -52,9 +58,20 @@ export interface CustomerStepProps {
   todayRoutes?: string[];
   /** Trip the order will be sold from, shown on the tablet "Start Order" button, e.g. "#TRP-104". */
   tripLabel?: string;
+  /** Compact summary of the active stock source & bill date for the Step 1 Order setup card. */
+  stockSummary?: {
+    source: 'trip' | 'warehouse';
+    label: string;
+    dateLabel: string;
+    isBackDated?: boolean;
+  };
+  /** Active cart case count when user returns to Step 1 mid-order. */
+  cartItemCount?: number;
+  /** Cancels the entire current order & clears cart/customer selections. */
+  onCancelSale?: () => void;
 }
 
-type QuickFilter = 'all' | 'today_route' | 'overdue' | 'favorites';
+type QuickFilter = 'all' | 'today_route' | 'overdue' | 'recent' | 'favorites';
 
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/i;
 const MAX_ROWS = 100;
@@ -96,11 +113,11 @@ interface Row {
 
 const DueText: React.FC<{ due: number }> = ({ due }) =>
   due > 0.004 ? (
-    <span className="bg-red-50 text-red-700 font-bold rounded-lg px-2 py-0.5 text-xs whitespace-nowrap tabular-nums">
+    <span className="hh-customer-due bg-red-50 text-red-700 font-bold rounded-lg px-2 py-0.5 text-xs whitespace-nowrap tabular-nums">
       Due ₹{due.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
     </span>
   ) : (
-    <span className="text-[#15803D] font-bold text-xs whitespace-nowrap tabular-nums">
+    <span className="hh-customer-due--paid text-[#15803D] font-bold text-xs whitespace-nowrap tabular-nums">
       Due ₹0
     </span>
   );
@@ -128,12 +145,17 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
   contextBar,
   todayRoutes = [],
   tripLabel,
+  stockSummary,
+  cartItemCount = 0,
+  onCancelSale,
 }) => {
   const isMobile = useIsMobile(767); // < 768px
+  const { t } = useLanguage();
   const [query, setQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState<QuickFilter>('all');
   const [previewId, setPreviewId] = useState<string>('');
   const [favoriteKeys, setFavoriteKeys] = useState<string[]>(() => loadFavoriteKeys());
+  const [showSetup, setShowSetup] = useState(false);
 
   const favoriteSet = useMemo(() => new Set(favoriteKeys), [favoriteKeys]);
 
@@ -183,11 +205,32 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
     });
   }, [customers, existingCustomers, beats, overdueKeys]);
 
+  const lastBillDateMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const b of bills || []) {
+      if (!isLive(b)) continue;
+      const d = String(b.date || '').slice(0, 10);
+      if (!d) continue;
+      if (b.customerId) {
+        const prev = map.get(`id:${b.customerId}`);
+        if (!prev || d > prev) map.set(`id:${b.customerId}`, d);
+      }
+      const nk = `n:${normCustName(b.retailer)}`;
+      const prevN = map.get(nk);
+      if (!prevN || d > prevN) map.set(nk, d);
+    }
+    return map;
+  }, [bills]);
+
+  const lastDateOf = (o: RichCustomerOption): string =>
+    lastBillDateMap.get(`id:${o.id}`) || lastBillDateMap.get(`n:${normCustName(o.name)}`) || '';
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const digits = q.replace(/\D/g, '');
-    return rows.filter((r) => {
-      if (activeFilter === 'overdue' && !r.overdue) return false;
+    const list = rows.filter((r) => {
+      if (activeFilter === 'overdue' && !r.overdue && r.due <= 0.004) return false;
+      if (activeFilter === 'recent' && !lastDateOf(r.o)) return false;
       if (activeFilter === 'favorites' && !favoriteSet.has(favKeyOf(r.o))) return false;
       if (activeFilter === 'today_route') {
         const b = r.beat.trim().toLowerCase();
@@ -210,7 +253,11 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
           ((o.phone || '').replace(/\D/g, '').includes(digits) || (o.altPhone || '').replace(/\D/g, '').includes(digits)))
       );
     });
-  }, [rows, query, activeFilter, favoriteSet, todayRoutes]);
+    if (activeFilter === 'recent') {
+      return [...list].sort((a, b) => lastDateOf(b.o).localeCompare(lastDateOf(a.o)));
+    }
+    return list;
+  }, [rows, query, activeFilter, favoriteSet, todayRoutes, lastBillDateMap]);
 
   const shown = filtered.slice(0, MAX_ROWS);
   const preview = useMemo(() => rows.find((r) => r.o.id === previewId) || null, [rows, previewId]);
@@ -242,7 +289,7 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
 
   const filterCardCls = (on: boolean, activeTone: 'green' | 'blue' | 'orange' | 'navy') => {
     if (!on) {
-      return 'min-h-[68px] sm:min-h-[76px] px-1 py-2 rounded-2xl bg-white border border-[#DCE5F2] text-[#0A1F44] hover:bg-[#F5F8FD] shadow-2xs flex flex-col items-center justify-center gap-1 cursor-pointer transition-all';
+      return 'hh-customer-filter min-h-[68px] sm:min-h-[76px] px-1 py-2 rounded-2xl bg-white border border-[#DCE5F2] text-[#0A1F44] hover:bg-[#F5F8FD] shadow-2xs flex flex-col items-center justify-center gap-1 cursor-pointer transition-all';
     }
     const tones = {
       green: 'bg-gradient-to-b from-[#1DB050] to-[#0E8636] border-[#129640] shadow-md shadow-emerald-700/20',
@@ -250,14 +297,299 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
       orange: 'bg-gradient-to-b from-[#F97316] to-[#DC5807] border-[#EA580C] shadow-md shadow-orange-700/20',
       navy: 'bg-gradient-to-b from-[#0D3984] to-[#082458] border-[#0A2C6B] shadow-md shadow-slate-900/20',
     };
-    return `min-h-[68px] sm:min-h-[76px] px-1 py-2 rounded-2xl border text-white! flex flex-col items-center justify-center gap-1 cursor-pointer transition-all ${tones[activeTone]}`;
+    return `hh-customer-filter min-h-[68px] sm:min-h-[76px] px-1 py-2 rounded-2xl border text-white! flex flex-col items-center justify-center gap-1 cursor-pointer transition-all ${tones[activeTone]}`;
   };
 
+  const formatVisitAgo = (dateIso?: string): string => {
+    if (!dateIso) return '';
+    const diff = daysBetween(dateIso, todayISO());
+    if (diff <= 0) return t('sell.today').toLowerCase();
+    if (diff === 1) return t('sell.dayAgo');
+    if (diff < 30) return t('sell.daysAgo', { n: diff });
+    return shortDate(dateIso);
+  };
+
+  if (isMobile) {
+    const qTrim = query.trim();
+    const filterItems: { id: QuickFilter; label: string }[] = [
+      { id: 'all', label: t('sell.sizeAll') },
+      { id: 'overdue', label: t('sell.dueFilter') },
+      { id: 'recent', label: t('sell.recentFilter') },
+      { id: 'today_route', label: t('sell.routeFilter') },
+    ];
+    return (
+      <div className="space-y-2.5 pt-1 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+        {/* 4-bar light progress + Step label */}
+        <div className="space-y-1.5">
+          <div className="rt-seg rt-seg--light" aria-hidden="true">
+            <div className="rt-seg__bar rt-seg__bar--on" />
+            <div className="rt-seg__bar" />
+            <div className="rt-seg__bar" />
+            <div className="rt-seg__bar" />
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="rt-stp rt-stp--muted">{t('sell.step1SelectCustomer')}</div>
+            {cartItemCount > 0 && onCancelSale && (
+              <button
+                type="button"
+                onClick={onCancelSale}
+                className="min-h-[36px] px-3 rounded-full border border-[var(--due)]/30 bg-[var(--due-bg)] text-[var(--due)] text-xs font-bold inline-flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
+              >
+                <X size={13} strokeWidth={2.5} aria-hidden="true" />
+                <span>{t('salesman.cancelSale')}</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Step 1 Order setup & Stock source card */}
+        {contextBar && (
+          <section
+            className="rt-card !p-3 space-y-2.5"
+            aria-label={t('sell.orderSetup')}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <div className="flex items-center gap-1.5 text-[10.5px] font-bold uppercase tracking-wider text-[var(--text-2)]">
+                  <span>{t('sell.orderSetup')}</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{t('sell.stockSource')}</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-[13px] font-bold text-[var(--text)] min-w-0">
+                  {stockSummary?.source === 'trip' ? (
+                    <Truck size={15} className="text-[var(--primary)] shrink-0" aria-hidden="true" />
+                  ) : (
+                    <Building2 size={15} className="text-[var(--primary)] shrink-0" aria-hidden="true" />
+                  )}
+                  <span className="truncate">
+                    {stockSummary?.label || tripLabel || t('sell.godown')}
+                  </span>
+                </div>
+                {stockSummary?.dateLabel && (
+                  <div
+                    className={`flex items-center gap-1.5 text-[11.5px] font-semibold tabular-nums ${
+                      stockSummary.isBackDated ? 'text-[var(--soon-text)]' : 'text-[var(--text-2)]'
+                    }`}
+                  >
+                    <Calendar size={12} className="shrink-0" aria-hidden="true" />
+                    <span>{stockSummary.dateLabel}</span>
+                    {stockSummary.isBackDated && (
+                      <span className="rt-tag rt-tag--soon">Back-dated</span>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowSetup((v) => !v)}
+                aria-expanded={showSetup}
+                className={`min-h-[44px] px-3 rounded-full border text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer shrink-0 transition-colors ${
+                  showSetup
+                    ? 'bg-[var(--text)] border-[var(--text)] text-[var(--surface)]'
+                    : 'bg-[var(--bg)] border-[var(--border)] text-[var(--primary)]'
+                }`}
+              >
+                <span>{showSetup ? t('sell.done') : t('sell.change')}</span>
+                <ChevronDown
+                  size={14}
+                  className={`transition-transform ${showSetup ? 'rotate-180' : ''}`}
+                  aria-hidden="true"
+                />
+              </button>
+            </div>
+
+            {showSetup && (
+              <div className="pt-2.5 border-t border-[var(--border)]">{contextBar}</div>
+            )}
+          </section>
+        )}
+
+        {/* Search pill */}
+        <div className={`rt-sale-search border border-[var(--border)] ${qTrim ? 'rt-customer-search-active' : ''}`}>
+          <Search size={16} className="rt-sale-search__icon" aria-hidden="true" />
+          <input
+            id="step1-search"
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('sell.namePhoneGstin')}
+            autoComplete="off"
+            className="rt-sale-search__input"
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              aria-label="Clear search"
+              className="rt-sale-search__btn"
+            >
+              <X size={16} />
+            </button>
+          )}
+        </div>
+
+        {/* + Add new customer  |  ⚡ Walk-in sale */}
+        <div className="rt-acts">
+          <button
+            type="button"
+            onClick={() => onOpenCreateCustomer(extractCustomerPrefill(query))}
+            className="rt-btn rt-acts__primary"
+          >
+            <Plus size={15} strokeWidth={2.75} className="shrink-0" />
+            <span className="text-center leading-tight">{t('sell.addNewCustomer')}</span>
+          </button>
+          <button
+            type="button"
+            onClick={onSelectSpotSale}
+            className="rt-btn-outline rt-acts__secondary"
+          >
+            <Zap size={14} className="shrink-0" />
+            <span className="text-center leading-tight">{t('sell.walkInSale')}</span>
+          </button>
+        </div>
+
+        {/* Horizontal filter chips */}
+        <div className="rt-chips !px-0 !py-0" role="group" aria-label="Customer filters">
+          {filterItems.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              aria-pressed={activeFilter === f.id}
+              onClick={() => selectFilter(f.id)}
+              className="rt-chip"
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Customer List / Search Empty Dropdown */}
+        {filtered.length === 0 ? (
+          qTrim ? (
+            <div className="rt-card !py-1.5 !px-3">
+              <div className="rt-rowi !cursor-default">
+                <span className="rt-ico" aria-hidden="true">
+                  <Search size={16} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-bold text-[var(--text)]">
+                    {t('sell.noCustomerFound')}
+                  </div>
+                  <div className="text-[11.5px] text-[var(--text-2)] break-words">
+                    {t('sell.nothingMatches', { q: qTrim })}
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onOpenCreateCustomer(extractCustomerPrefill(query))}
+                className="rt-rowi"
+              >
+                <span className="rt-ico rt-ico--primary" aria-hidden="true">
+                  <Plus size={17} strokeWidth={2.75} />
+                </span>
+                <span className="text-[13px] font-bold text-[var(--primary)] break-words flex-1 min-w-0">
+                  {t('sell.addAsNewCustomer', { q: qTrim })}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={onSelectSpotSale}
+                className="rt-rowi"
+              >
+                <span className="rt-ico" aria-hidden="true">
+                  <Zap size={16} />
+                </span>
+                <span className="text-[13px] font-bold text-[var(--text)] break-words flex-1 min-w-0">
+                  {t('sell.continueWalkIn')}
+                </span>
+              </button>
+            </div>
+          ) : (
+            <div className="rt-card text-center py-6 space-y-3">
+              <p className="text-sm font-semibold text-[var(--text)]">
+                {activeFilter === 'today_route' && todayRoutes.length === 0
+                  ? t('sell.noRouteCustomers')
+                  : activeFilter === 'recent'
+                    ? t('sell.noRecentCustomers')
+                    : activeFilter === 'overdue'
+                      ? t('sell.noDueCustomers')
+                      : activeFilter === 'favorites'
+                        ? t('sell.noFavCustomers')
+                        : t('sell.noMatchingCustomers')}
+              </p>
+              <button
+                type="button"
+                onClick={clearAll}
+                className="rt-btn-outline"
+              >
+                {t('sell.showAllRetailers')}
+              </button>
+            </div>
+          )
+        ) : (
+          <div className="rt-card !py-1 !px-3.5">
+            {shown.map((r) => {
+              const lastIso = lastDateOf(r.o);
+              const visitLabel = formatVisitAgo(lastIso);
+              const sub = [r.beat || r.o.city, visitLabel || r.o.address].filter(Boolean).join(' · ');
+              return (
+                <button
+                  key={r.o.id}
+                  type="button"
+                  onClick={() => handleCard(r)}
+                  className="rt-rowi !py-2.5"
+                >
+                  <span className="rt-ico" aria-hidden="true">
+                    {getInitials(r.o.name, 'R')}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug break-words">
+                      {r.o.name}
+                    </div>
+                    {sub && (
+                      <div className="text-[11.5px] text-[var(--text-2)] leading-snug break-words mt-0.5">
+                        {sub}
+                      </div>
+                    )}
+                  </div>
+                  <span
+                    className={`rt-amt text-[13.5px] ${
+                      r.due > 0.004 ? 'text-[var(--due)]' : 'text-[var(--text)]'
+                    }`}
+                  >
+                    ₹{Math.round(r.due).toLocaleString('en-IN')}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className="pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+    <div className="hh-customer-step pb-[max(1.5rem,env(safe-area-inset-bottom))]">
       {/* Unified Controls & Filter Card */}
       <div>
-        <div className="rounded-2xl bg-white/95 border border-[#DCE5F2] shadow-[0_10px_28px_-8px_rgba(10,31,68,0.1)] p-2.5 sm:p-3.5 space-y-2.5 sm:space-y-3">
+        <div data-card-tone="sales" className="rounded-2xl border shadow-sm p-2.5 sm:p-3.5 space-y-2.5 sm:space-y-3">
+          {cartItemCount > 0 && onCancelSale && (
+            <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200/70">
+              <span className="text-xs font-bold text-[#0A1F44]">
+                Active cart ({cartItemCount} {cartItemCount === 1 ? 'case' : 'cases'})
+              </span>
+              <button
+                type="button"
+                onClick={onCancelSale}
+                className="min-h-[36px] px-3 rounded-full border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold inline-flex items-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
+              >
+                <X className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>{t('salesman.cancelSale')}</span>
+              </button>
+            </div>
+          )}
           {contextBar}
 
           {/* Search box */}
@@ -270,7 +602,7 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search name, phone, beat or GSTIN"
               autoComplete="off"
-              className="w-full min-h-[46px] pl-10 pr-11 rounded-2xl border border-[#DCE5F2] bg-white text-[14.5px] text-[#0A1F44] placeholder:text-[#6B7F9E] focus:outline-none focus:border-[#1A63DB] focus:ring-2 focus:ring-[#1A63DB]/15 shadow-2xs"
+              className="hh-customer-search w-full min-h-[46px] pl-10 pr-11 rounded-2xl border border-[#DCE5F2] bg-white text-[14.5px] text-[#0A1F44] placeholder:text-[#6B7F9E] focus:outline-none focus:border-[#1A63DB] focus:ring-2 focus:ring-[#1A63DB]/15 shadow-2xs"
             />
             {query && (
               <button
@@ -289,7 +621,7 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
             <button
               type="button"
               onClick={() => onOpenCreateCustomer(extractCustomerPrefill(query))}
-              className="flex-1 min-h-[42px] sm:min-h-[46px] px-2.5 sm:px-3.5 rounded-full bg-gradient-to-r from-[#19A84B] to-[#0D8A38] hover:from-[#159642] hover:to-[#0A752E] text-white! font-bold text-[11.5px] sm:text-[13.5px] inline-flex items-center justify-between gap-1 sm:gap-2 shadow-sm cursor-pointer transition-all active:scale-[0.99]"
+              className="hh-customer-add-btn flex-1 min-h-[42px] sm:min-h-[46px] px-2.5 sm:px-3.5 rounded-full bg-gradient-to-r from-[#19A84B] to-[#0D8A38] hover:from-[#159642] hover:to-[#0A752E] text-white! font-bold text-[11.5px] sm:text-[13.5px] inline-flex items-center justify-between gap-1 sm:gap-2 shadow-sm cursor-pointer transition-all active:scale-[0.99]"
             >
               <span className="inline-flex items-center gap-1.5 sm:gap-2 whitespace-nowrap">
                 <span className="size-5 sm:size-6 rounded-full bg-white text-[#0D8A38] flex items-center justify-center shrink-0">
@@ -303,7 +635,7 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
             <button
               type="button"
               onClick={onSelectSpotSale}
-              className="min-h-[42px] sm:min-h-[46px] px-2.5 sm:px-3.5 rounded-full border border-[#DCE5F2] bg-white hover:bg-[#F5F8FD] text-[11.5px] sm:text-[13.5px] font-bold text-[#0A1F44] inline-flex items-center justify-center gap-1 sm:gap-1.5 shadow-2xs cursor-pointer shrink-0 transition-colors"
+              className="hh-customer-walkin-btn min-h-[42px] sm:min-h-[46px] px-2.5 sm:px-3.5 rounded-full border border-[#DCE5F2] bg-white hover:bg-[#F5F8FD] text-[11.5px] sm:text-[13.5px] font-bold text-[#0A1F44] inline-flex items-center justify-center gap-1 sm:gap-1.5 shadow-2xs cursor-pointer shrink-0 transition-colors"
             >
               <Zap className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-[#0A1F44] shrink-0" />
               <span className="whitespace-nowrap">Walk-in sale</span>
@@ -311,8 +643,8 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
             </button>
           </div>
 
-          {/* 4 Square Filter Cards (No Beat pills) */}
-          <div className="grid grid-cols-4 gap-1.5 sm:gap-2" role="group" aria-label="Customer filters">
+          {/* 4 Square Filter Cards (horizontal pill chips on phone) */}
+          <div className="hh-customer-filters grid grid-cols-4 gap-1.5 sm:gap-2" role="group" aria-label="Customer filters">
             <button
               type="button"
               onClick={() => selectFilter('all')}
@@ -328,7 +660,7 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
                 All
               </span>
               {activeFilter === 'all' && (
-                <span className="w-5 h-[2.5px] rounded-full bg-white/95" aria-hidden="true" />
+                <span className="hh-customer-filter-bar w-5 h-[2.5px] rounded-full bg-white/95" aria-hidden="true" />
               )}
             </button>
 
@@ -343,11 +675,11 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
                   activeFilter === 'today_route' ? 'text-white' : 'text-[#1A63DB]'
                 }`}
               />
-              <span className="text-[10px] sm:text-[11.5px] font-bold leading-tight text-center">
+              <span className="text-[10px] sm:text-[11.5px] font-bold leading-tight text-center whitespace-nowrap">
                 Today&apos;s Route
               </span>
               {activeFilter === 'today_route' && (
-                <span className="w-5 h-[2.5px] rounded-full bg-white/95" aria-hidden="true" />
+                <span className="hh-customer-filter-bar w-5 h-[2.5px] rounded-full bg-white/95" aria-hidden="true" />
               )}
             </button>
 
@@ -366,7 +698,7 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
                 Overdue
               </span>
               {activeFilter === 'overdue' && (
-                <span className="w-5 h-[2.5px] rounded-full bg-white/95" aria-hidden="true" />
+                <span className="hh-customer-filter-bar w-5 h-[2.5px] rounded-full bg-white/95" aria-hidden="true" />
               )}
             </button>
 
@@ -385,7 +717,7 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
                 Favorites
               </span>
               {activeFilter === 'favorites' && (
-                <span className="w-5 h-[2.5px] rounded-full bg-white/95" aria-hidden="true" />
+                <span className="hh-customer-filter-bar w-5 h-[2.5px] rounded-full bg-white/95" aria-hidden="true" />
               )}
             </button>
           </div>
@@ -406,7 +738,7 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
           </div>
 
           {filtered.length === 0 ? (
-            <div className="bg-white rounded-2xl border border-[#DCE5F2] p-6 text-center shadow-2xs">
+            <div data-card-tone="neutral" className="rounded-2xl border p-6 text-center shadow-2xs">
               <Users className="w-8 h-8 text-slate-300 mx-auto mb-2" />
               {query.trim() ? (
                 <>
@@ -445,13 +777,22 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
               {shown.map((r) => {
                 const active = !isMobile && previewId === r.o.id;
                 const isFav = favoriteSet.has(favKeyOf(r.o));
+                const cardTone = active
+                  ? 'received'
+                  : r.overdue || r.due > 0.004
+                    ? 'due'
+                    : 'sales';
+                const avatarTone = active
+                  ? 'green'
+                  : r.overdue || r.due > 0.004
+                    ? 'rose'
+                    : 'blue';
                 return (
                   <li key={r.o.id}>
                     <div
-                      className={`w-full rounded-2xl shadow-2xs transition-colors flex items-stretch overflow-hidden ${
-                        active
-                          ? 'border-2 border-[#15803D] bg-[#ECFDF5]'
-                          : 'border border-[#DCE5F2] bg-white hover:border-[#B6C8E4]'
+                      data-card-tone={cardTone}
+                      className={`hh-customer-card w-full rounded-2xl border shadow-xs transition-all flex items-stretch overflow-hidden ${
+                        active ? 'ring-2 ring-emerald-500/40' : ''
                       }`}
                     >
                       <button
@@ -460,30 +801,37 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
                         aria-pressed={active}
                         className="flex-1 min-w-0 min-h-[44px] text-left p-3.5 pr-2 cursor-pointer"
                       >
-                        <div className="flex items-start justify-between gap-2.5">
-                          <div className="min-w-0">
-                            <p className="font-bold text-[#0A1F44] leading-snug break-words">{r.o.name}</p>
-                            {(r.beat || r.o.address) && (
-                              <p className="mt-0.5 text-xs text-[#5A7198] flex items-start gap-1">
-                                <MapPin className="w-3.5 h-3.5 mt-px shrink-0" />
-                                <span className="break-words">
-                                  {[r.beat, r.o.address].filter(Boolean).join(' · ')}
-                                </span>
-                              </p>
-                            )}
-                          </div>
-                          <div className="flex flex-col items-end gap-1 shrink-0">
-                            <DueText due={r.due} />
-                            {r.overdue && (
-                              <span className="text-[11px] font-bold text-red-700">Overdue</span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-                          {r.gst && <GstBadge />}
-                          <span className="text-xs text-[#5A7198] tabular-nums">
-                            {r.limit > 0 ? `Credit Limit: ₹${r.limit.toLocaleString('en-IN')}` : 'No credit limit'}
+                        <div className="flex items-start gap-2.5">
+                          <span className={`hh-avatar hh-avatar--sm hh-avatar--${avatarTone} mt-0.5`}>
+                            {getInitials(r.o.name, 'R')}
                           </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="font-bold text-[#0A1F44] leading-snug break-words">{r.o.name}</p>
+                                {(r.beat || r.o.address) && (
+                                  <p className="mt-0.5 text-xs text-[#4A638D] flex items-start gap-1">
+                                    <MapPin className="w-3.5 h-3.5 mt-px shrink-0" />
+                                    <span className="break-words">
+                                      {[r.beat, r.o.address].filter(Boolean).join(' · ')}
+                                    </span>
+                                  </p>
+                                )}
+                              </div>
+                              <div className="flex flex-col items-end gap-1 shrink-0">
+                                <DueText due={r.due} />
+                                {r.overdue && (
+                                  <span className="text-[11px] font-bold text-rose-700">Overdue</span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                              {r.gst && <GstBadge />}
+                              <span className="text-xs text-[#4A638D] tabular-nums">
+                                {r.limit > 0 ? `Credit Limit: ₹${r.limit.toLocaleString('en-IN')}` : 'No credit limit'}
+                              </span>
+                            </div>
+                          </div>
                         </div>
                       </button>
 
@@ -492,11 +840,11 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
                         onClick={() => toggleFavorite(r.o)}
                         aria-label={isFav ? `Remove ${r.o.name} from favorites` : `Add ${r.o.name} to favorites`}
                         aria-pressed={isFav}
-                        className="w-11 shrink-0 flex items-center justify-center border-l border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors"
+                        className="w-11 shrink-0 flex items-center justify-center border-l border-black/5 hover:bg-white/50 cursor-pointer transition-colors"
                       >
                         <Star
                           className={`w-4 h-4 ${
-                            isFav ? 'text-amber-500 fill-amber-400' : 'text-slate-300 hover:text-amber-400'
+                            isFav ? 'text-amber-500 fill-amber-400' : 'text-slate-400 hover:text-amber-400'
                           }`}
                         />
                       </button>
@@ -510,7 +858,7 @@ export const CustomerStep: React.FC<CustomerStepProps> = ({
 
         {/* Tablet / Desktop preview panel */}
         <aside className="hidden md:block md:col-span-7 min-w-0">
-          <div className="sticky top-6 bg-white rounded-2xl border border-[#DCE5F2] p-6 max-h-[calc(100vh-10rem)] overflow-y-auto flex flex-col shadow-2xs">
+          <div data-card-tone="neutral" className="sticky top-6 rounded-2xl border p-6 max-h-[calc(100vh-10rem)] overflow-y-auto flex flex-col shadow-2xs">
             {!preview ? (
               <div className="py-16 text-center text-[#5A7198]">
                 <Store className="w-10 h-10 text-slate-300 mx-auto mb-3" />

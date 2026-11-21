@@ -119,10 +119,14 @@ export const CustomerReturnsList: React.FC = () => {
   );
 
   return (
-    <section className="rounded-2xl border border-[#DCE5F2] bg-white shadow-sm p-3.5 sm:p-4 space-y-3" aria-label="Customer returns">
+    <section
+      data-card-tone="neutral"
+      className="rounded-2xl border shadow-xs p-3.5 sm:p-4 space-y-3"
+      aria-label="Customer returns"
+    >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex items-start gap-2.5">
-          <div className="size-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+          <div className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--amber shrink-0">
             <Undo2 className="w-4 h-4" />
           </div>
           <div>
@@ -152,12 +156,12 @@ export const CustomerReturnsList: React.FC = () => {
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {[
-              { k: 'Returns', v: String(totals.n), cls: 'bg-slate-50 border-[#DCE5F2] text-[#0A1F44]' },
-              { k: 'Credit given', v: `₹${money(totals.credit)}`, cls: 'bg-rose-50/70 border-rose-200 text-rose-900' },
-              { k: 'Back in stock', v: `${totals.restock} cs`, cls: 'bg-emerald-50/70 border-emerald-200 text-emerald-900' },
-              { k: 'Scrapped', v: `${totals.scrap} cs`, cls: 'bg-amber-50/70 border-amber-200 text-amber-900' },
+              { k: 'Returns', v: String(totals.n), tone: 'sales', cls: 'text-[#0A1F44]' },
+              { k: 'Credit given', v: `₹${money(totals.credit)}`, tone: 'due', cls: 'text-rose-900' },
+              { k: 'Back in stock', v: `${totals.restock} cs`, tone: 'received', cls: 'text-emerald-900' },
+              { k: 'Scrapped', v: `${totals.scrap} cs`, tone: 'warning', cls: 'text-amber-900' },
             ].map((stat) => (
-              <div key={stat.k} className={`rounded-xl border px-3 py-2 ${stat.cls}`}>
+              <div key={stat.k} data-card-tone={stat.tone} className={`rounded-xl border px-3 py-2.5 shadow-2xs ${stat.cls}`}>
                 <div className="text-xs font-semibold opacity-75">{stat.k}</div>
                 <div className="text-base sm:text-lg font-extrabold tabular-nums mt-0.5">{stat.v}</div>
               </div>
@@ -191,7 +195,11 @@ export const CustomerReturnsList: React.FC = () => {
           ) : (
             <ul className="space-y-2">
               {shown.map((r) => (
-                <li key={r.key} className="rounded-2xl border border-[#DCE5F2] bg-white p-3.5 space-y-2">
+                <li
+                  key={r.key}
+                  data-card-tone={r.scrap > 0 && r.restock === 0 ? 'warning' : 'sales'}
+                  className="rounded-2xl border shadow-xs p-3.5 space-y-2"
+                >
                   <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
                     <span className="text-sm font-bold text-[#0A1F44] break-words">
                       {r.customer} · <span className="font-mono text-xs text-slate-600">{r.creditNoteNo}</span>

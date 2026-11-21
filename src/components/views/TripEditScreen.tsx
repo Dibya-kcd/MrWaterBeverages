@@ -3,7 +3,11 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronUp,
   FileCheck,
+  Phone,
   Plus,
   Receipt,
   RotateCcw,
@@ -22,11 +26,15 @@ import {
   fieldLabel,
 } from './trips/LoadSheetParts';
 import { FlowBadge, FlowHeader } from '../common/FlowKit';
+import { PackIcon } from '../common/PackIcon';
+import { OdiaName } from '../common/OdiaName';
 import { Bill, Product, Trip, TripStatus, Warehouse, Salesman } from '../../types';
 import { rebalanceWarehouseLoads, tripPrimaryWarehouseId } from '../../utils/tripLoads';
 import { money, billBelongsToTrip, attachableBillsForTrip } from '../../utils/billing';
 import { todayISO, toLocalISODate } from "../../utils/dateLocal";
 import { compareProductsInSequence } from '../../utils/sizeColor';
+import { validatePhone } from '../../utils/validation';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 interface TripEditScreenProps {
   trip: Trip;
@@ -105,11 +113,17 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
   onReopenTripNow,
   readOnly = false,
 }) => {
+  const isPhone = useIsMobile(767);
   const [vehicle, setVehicle] = useState(trip.vehicle || '');
   const [warehouseId, setWarehouseId] = useState(tripPrimaryWarehouseId(trip) || (warehouses[0]?.id ?? ''));
   const [date, setDate] = useState(() => toStandardIsoDate(trip.date));
   const [autoAttachBills, setAutoAttachBills] = useState(true);
   const [salesmanId, setSalesmanId] = useState(trip.salesmanId || '');
+  const [salesmanPhone, setSalesmanPhone] = useState(
+    trip.salesmanPhone || salesmen.find((s) => s.id === trip.salesmanId)?.phone || '',
+  );
+  const [driver, setDriver] = useState(trip.driver || '');
+  const [driverPhone, setDriverPhone] = useState(trip.driverPhone || '');
   const [status, setStatus] = useState<TripStatus>(trip.status || 'out');
   const [loaded, setLoaded] = useState<Record<number, string>>({});
   const [returned, setReturned] = useState<Record<number, string>>({});
@@ -119,10 +133,32 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
   const [showAdd, setShowAdd] = useState(false);
   const [reviewTrip, setReviewTrip] = useState<Trip | null>(null);
   const [askDiscard, setAskDiscard] = useState(false);
+  const [showMoreDetails, setShowMoreDetails] = useState(false);
+  const [editingProdId, setEditingProdId] = useState<number | null>(null);
 
   // What the screen looked like when it opened, to know whether Cancel needs a "lose changes?" question.
-  const snapshot = (v: string, w: string, d: string, sm: string, st: string, l: Record<number, string>) =>
-    JSON.stringify([v.trim(), w, d, sm, st, Object.entries(l).filter(([, q]) => Number(q) > 0).sort(([a], [b]) => Number(a) - Number(b)).map(([k, q]) => [k, Number(q)])]);
+  const snapshot = (
+    v: string,
+    w: string,
+    d: string,
+    sm: string,
+    smp: string,
+    dr: string,
+    drp: string,
+    st: string,
+    l: Record<number, string>,
+  ) =>
+    JSON.stringify([
+      v.trim(),
+      w,
+      d,
+      sm,
+      smp.trim(),
+      dr.trim(),
+      drp.trim(),
+      st,
+      Object.entries(l).filter(([, q]) => Number(q) > 0).sort(([a], [b]) => Number(a) - Number(b)).map(([k, q]) => [k, Number(q)]),
+    ]);
   const baseSnap = useRef<string>('');
 
   // Initialize from trip props ONLY when a different trip is opened.
@@ -135,10 +171,16 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
     initializedTripId.current = trip.id;
     const wh = tripPrimaryWarehouseId(trip) || (warehouses[0]?.id ?? '');
     const dt = toStandardIsoDate(trip.date);
+    const initSmPhone = trip.salesmanPhone || salesmen.find((s) => s.id === trip.salesmanId)?.phone || '';
+    const initDriver = trip.driver || '';
+    const initDriverPhone = trip.driverPhone || '';
     setVehicle(trip.vehicle || '');
     setWarehouseId(wh);
     setDate(dt);
     setSalesmanId(trip.salesmanId || '');
+    setSalesmanPhone(initSmPhone);
+    setDriver(initDriver);
+    setDriverPhone(initDriverPhone);
     setStatus(trip.status || 'out');
 
     const initLoaded: Record<number, string> = {};
@@ -153,7 +195,17 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
     }
     setReturned(initReturned);
     setError(null);
-    baseSnap.current = snapshot(trip.vehicle || '', wh, dt, trip.salesmanId || '', trip.status || 'out', initLoaded);
+    baseSnap.current = snapshot(
+      trip.vehicle || '',
+      wh,
+      dt,
+      trip.salesmanId || '',
+      initSmPhone,
+      initDriver,
+      initDriverPhone,
+      trip.status || 'out',
+      initLoaded,
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trip.id]);
 
@@ -162,7 +214,10 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
     if (!warehouseId && warehouses[0]?.id) setWarehouseId(warehouses[0].id);
   }, [warehouses, warehouseId]);
 
-  const dirty = !readOnly && baseSnap.current !== '' && snapshot(vehicle, warehouseId, date, salesmanId, status, loaded) !== baseSnap.current;
+  const dirty =
+    !readOnly &&
+    baseSnap.current !== '' &&
+    snapshot(vehicle, warehouseId, date, salesmanId, salesmanPhone, driver, driverPhone, status, loaded) !== baseSnap.current;
 
   // Bills that will be attached when this edit is saved (same date / salesman / van, not on any
   // other trip). Computed once so the Billed column, the load check and the save all agree.
@@ -348,6 +403,14 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
       return { error: 'To complete this trip use “Day-end settlement” on the Trips list. It records the returned crates and the cash handed over.' };
     }
     if (!date) return { error: 'Please select a valid trip date.' };
+    if (salesmanPhone.trim()) {
+      const spErr = validatePhone(salesmanPhone, { label: 'Salesman phone' });
+      if (spErr) return { error: spErr };
+    }
+    if (driverPhone.trim()) {
+      const dpErr = validatePhone(driverPhone, { label: 'Driver phone' });
+      if (dpErr) return { error: dpErr };
+    }
 
     const cleanLoaded: Record<number, number> = {};
     for (const [pid, val] of Object.entries(loaded)) {
@@ -401,6 +464,9 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
         status,
         salesmanId: salesmanId || undefined,
         salesman: matchedSalesman ? matchedSalesman.name : trip.salesman,
+        salesmanPhone: salesmanPhone.trim() || undefined,
+        driver: driver.trim() || undefined,
+        driverPhone: driverPhone.trim() || undefined,
         warehouseId: warehouseId || undefined,
         warehouseLoads: newSplit,
         loaded: cleanLoaded,
@@ -478,6 +544,355 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
         )
     : [];
 
+  const isCompletedEdit = reopensOnSave || status === 'closed' || trip.status === 'closed';
+
+  const sharedModals = (
+    <>
+      {showAdd && !readOnly && (
+        <AddProductsSheet
+          products={products}
+          added={Object.fromEntries(Object.entries(loaded).filter(([, v]) => Number(v) > 0).map(([k, v]) => [Number(k), Number(v)]))}
+          stockOf={(pid) => stockAll(pid)}
+          stockText={(pid) => {
+            const here = stockHere(pid);
+            const other = stockAll(pid) - here;
+            return `${here} cs in ${selectedWarehouse?.name || 'godown'}${other > 0 ? ` (+${other} other)` : ''}`;
+          }}
+          onConfirm={handleAddPicks}
+          onCancel={() => setShowAdd(false)}
+        />
+      )}
+
+      {reviewTrip && (
+        <ReviewSheet
+          title={`Review trip #${trip.id}`}
+          facts={[
+            { label: 'Vehicle', value: reviewTrip.vehicle },
+            { label: 'Date', value: reviewTrip.date },
+            { label: 'Salesman', value: [salesmanName, reviewTrip.salesmanPhone].filter(Boolean).join(' · ') || 'Unassigned' },
+            ...(reviewTrip.driver || reviewTrip.driverPhone
+              ? [{ label: 'Driver', value: [reviewTrip.driver, reviewTrip.driverPhone].filter(Boolean).join(' · ') }]
+              : []),
+            { label: 'Godown', value: selectedWarehouse?.name || 'Main Godown' },
+            { label: 'Bills attaching', value: pendingBills.length > 0 ? `${pendingBills.length} new` : 'none new' },
+            { label: 'Status', value: status === 'closed' ? 'Completed' : 'Active' },
+          ]}
+          rows={reviewRows}
+          totalCases={Object.values(reviewTrip.loaded || {}).reduce((s, n) => s + n, 0)}
+          confirmLabel={isCompletedEdit ? 'Save and reopen' : 'Confirm & Save'}
+          onBack={() => setReviewTrip(null)}
+          onCancel={() => {
+            setReviewTrip(null);
+            handleCancel();
+          }}
+          onConfirm={() => onSave(reviewTrip)}
+        />
+      )}
+
+      {askDiscard && <DiscardSheet onKeep={() => setAskDiscard(false)} onDiscard={onBack} />}
+    </>
+  );
+
+  if (isPhone && !readOnly && isCompletedEdit) {
+    const mobileSortedIds = [...activeProductIds].sort((a, b) =>
+      compareProductsInSequence(
+        products.find((p) => p.id === a) || { name: nameOf(a) },
+        products.find((p) => p.id === b) || { name: nameOf(b) },
+      ),
+    );
+
+    return (
+      <div className="rt-flow-phone" id="trip-edit-screen">
+        <div className="hh-sales-top">
+          <div className="hh-sales-top__row">
+            <div className="flex items-center gap-1 min-w-0">
+              <button
+                type="button"
+                onClick={handleCancel}
+                className="hh-sales-top__iconbtn"
+                aria-label="Back"
+              >
+                <ChevronLeft size={24} strokeWidth={2.2} />
+              </button>
+              <h1 className="hh-sales-top__title truncate">Edit trip #{trip.id}</h1>
+            </div>
+            <span className="rt-trip-badge-completed shrink-0">Completed</span>
+          </div>
+        </div>
+
+        <div id="trip-edit-scroll" className="rt-flow-phone__body space-y-2.5">
+          <div className="rounded-2xl border border-amber-300 bg-amber-50 px-3.5 py-2.5 text-[12.5px] font-medium text-amber-950 leading-snug">
+            This trip is completed. Saving your changes reopens it so you can settle it again.
+          </div>
+
+          {error && (
+            <div role="alert" className="flex items-start gap-2 p-3 rounded-2xl border border-rose-200 bg-rose-50 text-rose-800 text-[13px] font-bold">
+              <AlertTriangle size={17} className="shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <label className="rt-in" style={{ borderRadius: '16px' }}>
+            <span className="rt-in__label uppercase">Vehicle</span>
+            <input
+              id="edit-vehicle"
+              type="text"
+              value={vehicle}
+              onChange={(e) => setVehicle(e.target.value)}
+              placeholder="e.g. OD-02-AB-4471"
+              className="rt-in__control font-extrabold"
+            />
+          </label>
+
+          <label className="rt-in" style={{ borderRadius: '16px' }}>
+            <span className="rt-in__label uppercase">Salesman</span>
+            <div className="rt-in__select-wrap">
+              <select
+                id="edit-salesman"
+                value={salesmanId}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  setSalesmanId(nextId);
+                  const sm = salesmen.find((s) => s.id === nextId);
+                  if (sm?.phone) setSalesmanPhone(sm.phone);
+                }}
+                className="rt-in__control font-extrabold"
+              >
+                <option value="">{salesmanName && !salesmanId ? salesmanName : 'Choose…'}</option>
+                {salesmen.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown size={16} className="rt-in__select-chev" aria-hidden="true" />
+            </div>
+          </label>
+
+          <div className="space-y-1">
+            <label className="rt-in" style={{ borderRadius: '16px' }}>
+              <span className="rt-in__label uppercase">Loaded from</span>
+              <div className="rt-in__select-wrap">
+                <select
+                  id="edit-warehouse"
+                  value={warehouseId}
+                  onChange={(e) => handleGodownChange(e.target.value)}
+                  className="rt-in__control font-extrabold"
+                >
+                  {warehouses.length === 0 && <option value="">Main Godown</option>}
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={16} className="rt-in__select-chev" aria-hidden="true" />
+              </div>
+            </label>
+            {godownMoveHint && <p className="px-1 text-[11.5px] m-0" style={{ color: 'var(--text-2)' }}>{godownMoveHint}</p>}
+          </div>
+
+          <div className="rt-card space-y-2">
+            {mobileSortedIds.length === 0 ? (
+              <button
+                type="button"
+                onClick={() => setShowAdd(true)}
+                className="w-full py-4 text-center text-[13px] font-bold bg-transparent border-0 cursor-pointer"
+                style={{ color: 'var(--primary)' }}
+              >
+                + Add products to load
+              </button>
+            ) : (
+              <div className="divide-y" style={{ borderColor: 'var(--divider)' }}>
+                {mobileSortedIds.map((pid) => {
+                  const prod = products.find((p) => p.id === pid);
+                  const curQty = Number(loaded[pid]) || 0;
+                  const sold = soldByProduct[pid] || 0;
+                  const pending = pendingByProduct[pid] || 0;
+                  const tooLow = sold + pending > curQty;
+                  const here = stockHere(pid);
+                  const other = stockAll(pid) - here;
+                  const isEditingThis = editingProdId === pid;
+
+                  return (
+                    <div key={pid} className="py-2 first:pt-0.5 last:pb-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setEditingProdId((cur) => (cur === pid ? null : pid))}
+                        aria-expanded={isEditingThis}
+                        className="w-full flex items-center justify-between gap-2.5 text-left bg-transparent border-0 p-0 cursor-pointer min-h-[36px]"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <PackIcon size="sm" pack={prod?.pack} name={nameOf(pid)} />
+                          <span className="text-[13.5px] font-bold truncate" style={{ color: 'var(--text)' }}>
+                            <OdiaName name={nameOf(pid)} />
+                          </span>
+                        </div>
+                        <span
+                          className="shrink-0 text-[13.5px] font-extrabold tabular-nums whitespace-nowrap"
+                          style={{ color: tooLow ? 'var(--due)' : 'var(--text)' }}
+                        >
+                          {curQty} cs
+                        </span>
+                      </button>
+
+                      {isEditingThis && (
+                        <div className="pt-2.5">
+                          <LoadLineCard
+                            product={prod}
+                            fallbackName={`Product #${pid}`}
+                            qty={loaded[pid] ?? ''}
+                            onQty={(v) => handleSetQtyDirect(pid, v)}
+                            onMinus={() => handleUpdateQty(pid, -1)}
+                            onPlus={() => handleUpdateQty(pid, 1)}
+                            onRemove={() => handleRemoveProduct(pid)}
+                            problem={tooLow}
+                            facts={[
+                              { label: 'Godown', value: `${here} cs${other > 0 ? ` (+${other} other)` : ''}` },
+                              { label: 'Billed', value: `${sold + pending} cs`, bad: tooLow },
+                            ]}
+                            warning={tooLow ? 'Load is less than billed' : undefined}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="pt-1.5 border-t flex items-center justify-between gap-2" style={{ borderColor: 'var(--divider)' }}>
+              <button
+                type="button"
+                onClick={() => setShowAdd(true)}
+                className="inline-flex items-center gap-1 text-[12.5px] font-bold bg-transparent border-0 cursor-pointer px-1"
+                style={{ color: 'var(--primary)', minHeight: '36px' }}
+              >
+                <Plus size={14} /> Add product
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowMoreDetails((v) => !v)}
+                aria-expanded={showMoreDetails}
+                className="inline-flex items-center gap-1 text-[12px] font-semibold bg-transparent border-0 cursor-pointer px-1"
+                style={{ color: 'var(--text-2)', minHeight: '36px' }}
+              >
+                Date, crew &amp; bills {showMoreDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              </button>
+            </div>
+          </div>
+
+          {showMoreDetails && (
+            <div className="rt-card space-y-2.5">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label htmlFor="edit-trip-date" className={fieldLabel}>Trip date *</label>
+                  <input
+                    id="edit-trip-date"
+                    type="date"
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
+                    className={fieldBox}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="edit-salesman-phone" className={fieldLabel}>Salesman phone</label>
+                  <input
+                    id="edit-salesman-phone"
+                    type="tel"
+                    inputMode="tel"
+                    value={salesmanPhone}
+                    onChange={(e) => setSalesmanPhone(e.target.value)}
+                    placeholder="10-digit mobile"
+                    className={fieldBox}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="edit-driver" className={fieldLabel}>Driver</label>
+                  <input
+                    id="edit-driver"
+                    type="text"
+                    value={driver}
+                    onChange={(e) => setDriver(e.target.value)}
+                    placeholder="Driver name"
+                    className={fieldBox}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="edit-driver-phone" className={fieldLabel}>Driver phone</label>
+                  <input
+                    id="edit-driver-phone"
+                    type="tel"
+                    inputMode="tel"
+                    value={driverPhone}
+                    onChange={(e) => setDriverPhone(e.target.value)}
+                    placeholder="10-digit mobile"
+                    className={fieldBox}
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-center gap-2.5 text-[12.5px] font-semibold cursor-pointer" style={{ color: 'var(--text)' }}>
+                <input
+                  type="checkbox"
+                  checked={autoAttachBills}
+                  onChange={(e) => setAutoAttachBills(e.target.checked)}
+                  className="size-4 rounded"
+                />
+                <span>Attach bills of this date</span>
+                {pendingBills.length > 0 && (
+                  <span className="text-[11px] font-bold px-2 py-0.5 rounded-full" style={{ background: 'var(--primary-soft)', color: 'var(--primary)' }}>
+                    {pendingBills.length} ready
+                  </span>
+                )}
+              </label>
+            </div>
+          )}
+
+          <p className="text-[12px] font-medium px-0.5 m-0" style={{ color: 'var(--text-2)' }}>
+            Or use &lsquo;Reopen now&rsquo; to move it back without editing.
+          </p>
+        </div>
+
+        <div className="rt-flow-phone__footer">
+          <div className="grid grid-cols-2 gap-2.5">
+            {onReopenTripNow ? (
+              <button
+                type="button"
+                id="btn-instant-reopen-trip-screen"
+                onClick={() => {
+                  onReopenTripNow(Number(trip.id));
+                  onBack();
+                }}
+                className="rt-btn-outline rt-btn-outline--primary"
+              >
+                Reopen now
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleCancel}
+                className="rt-btn-outline rt-btn-outline--primary"
+              >
+                Cancel
+              </button>
+            )}
+            <button
+              type="button"
+              id="btn-trip-edit-review"
+              onClick={openReview}
+              className="rt-btn"
+            >
+              Save and reopen
+            </button>
+          </div>
+        </div>
+
+        {sharedModals}
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-[var(--flow-canvas)] animate-in fade-in duration-150" id="trip-edit-screen">
       <FlowHeader
@@ -554,7 +969,18 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
               </div>
               <div>
                 <label htmlFor="edit-salesman" className={fieldLabel}>Salesman</label>
-                <select id="edit-salesman" value={salesmanId} disabled={readOnly} onChange={(e) => setSalesmanId(e.target.value)} className={fieldBox}>
+                <select
+                  id="edit-salesman"
+                  value={salesmanId}
+                  disabled={readOnly}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    setSalesmanId(nextId);
+                    const sm = salesmen.find((s) => s.id === nextId);
+                    if (sm?.phone) setSalesmanPhone(sm.phone);
+                  }}
+                  className={fieldBox}
+                >
                   <option value="">{salesmanName && !salesmanId ? salesmanName : 'Choose…'}</option>
                   {salesmen.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -564,6 +990,66 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
                 </select>
               </div>
               <div>
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="edit-salesman-phone" className={fieldLabel}>Salesman phone</label>
+                  {salesmanPhone.trim() && (
+                    <a
+                      href={`tel:${salesmanPhone.trim().replace(/\s+/g, '')}`}
+                      className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 mb-1 no-underline"
+                    >
+                      <Phone size={11} /> Call
+                    </a>
+                  )}
+                </div>
+                <input
+                  id="edit-salesman-phone"
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  value={salesmanPhone}
+                  disabled={readOnly}
+                  onChange={(e) => setSalesmanPhone(e.target.value)}
+                  placeholder="10-digit mobile"
+                  className={fieldBox}
+                />
+              </div>
+              <div>
+                <label htmlFor="edit-driver" className={fieldLabel}>Driver</label>
+                <input
+                  id="edit-driver"
+                  type="text"
+                  value={driver}
+                  disabled={readOnly}
+                  onChange={(e) => setDriver(e.target.value)}
+                  placeholder="Driver name"
+                  className={fieldBox}
+                />
+              </div>
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor="edit-driver-phone" className={fieldLabel}>Driver phone</label>
+                  {driverPhone.trim() && (
+                    <a
+                      href={`tel:${driverPhone.trim().replace(/\s+/g, '')}`}
+                      className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 mb-1 no-underline"
+                    >
+                      <Phone size={11} /> Call
+                    </a>
+                  )}
+                </div>
+                <input
+                  id="edit-driver-phone"
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  value={driverPhone}
+                  disabled={readOnly}
+                  onChange={(e) => setDriverPhone(e.target.value)}
+                  placeholder="10-digit mobile"
+                  className={fieldBox}
+                />
+              </div>
+              <div className="col-span-2">
                 <label htmlFor="edit-warehouse" className={fieldLabel}>Source godown *</label>
                 <select id="edit-warehouse" value={warehouseId} disabled={readOnly} onChange={(e) => handleGodownChange(e.target.value)} className={fieldBox}>
                   {warehouses.length === 0 && <option value="">Main Godown</option>}
@@ -783,45 +1269,7 @@ export const TripEditScreen: React.FC<TripEditScreenProps> = ({
         />
       )}
 
-      {showAdd && !readOnly && (
-        <AddProductsSheet
-          products={products}
-          added={Object.fromEntries(Object.entries(loaded).filter(([, v]) => Number(v) > 0).map(([k, v]) => [Number(k), Number(v)]))}
-          stockOf={(pid) => stockAll(pid)}
-          stockText={(pid) => {
-            const here = stockHere(pid);
-            const other = stockAll(pid) - here;
-            return `${here} cs in ${selectedWarehouse?.name || 'godown'}${other > 0 ? ` (+${other} other)` : ''}`;
-          }}
-          onConfirm={handleAddPicks}
-          onCancel={() => setShowAdd(false)}
-        />
-      )}
-
-      {reviewTrip && (
-        <ReviewSheet
-          title={`Review trip #${trip.id}`}
-          facts={[
-            { label: 'Vehicle', value: reviewTrip.vehicle },
-            { label: 'Date', value: reviewTrip.date },
-            { label: 'Salesman', value: salesmanName },
-            { label: 'Godown', value: selectedWarehouse?.name || 'Main Godown' },
-            { label: 'Bills attaching', value: pendingBills.length > 0 ? `${pendingBills.length} new` : 'none new' },
-            { label: 'Status', value: status === 'closed' ? 'Completed' : 'Active' },
-          ]}
-          rows={reviewRows}
-          totalCases={Object.values(reviewTrip.loaded || {}).reduce((s, n) => s + n, 0)}
-          confirmLabel="Confirm & Save"
-          onBack={() => setReviewTrip(null)}
-          onCancel={() => {
-            setReviewTrip(null);
-            handleCancel();
-          }}
-          onConfirm={() => onSave(reviewTrip)}
-        />
-      )}
-
-      {askDiscard && <DiscardSheet onKeep={() => setAskDiscard(false)} onDiscard={onBack} />}
+      {sharedModals}
     </div>
   );
 };

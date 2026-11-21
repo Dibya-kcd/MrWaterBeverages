@@ -3,6 +3,7 @@ import type { Bill, GRN, OrganizationProfile } from '../../../types';
 import {
   buildCmp08, buildGstr4Working, cmp08Csv, gstr4Csv, financialYear,
 } from '../../../tax';
+import { MobileReportTopBar } from './mobile/MobileReportContext';
 
 const inr = (n: number) =>
   `₹${(Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -59,6 +60,9 @@ export const CompositionReport: React.FC<Props> = ({ bills, grns, orgProfile, on
 
   return (
     <div className="space-y-4">
+      <div className="md:hidden">
+        <MobileReportTopBar title="GST" sub="Composition" showPeriod={false} />
+      </div>
       <div className="rounded-2xl border border-indigo-200 bg-indigo-50/70 p-4">
         <p className="text-sm font-bold text-indigo-950">Composition taxpayer: CMP-08 and GSTR-4 workings</p>
         <p className="text-xs text-indigo-900/80 mt-1">

@@ -10,11 +10,11 @@ export const PACK_TEXT_COLOR: Record<PackGroupKey, string> = {
 };
 
 const PACK_TILE_CLASS: Record<PackGroupKey, string> = {
-  Can: 'bg-blue-50 text-blue-700 border-blue-200/90',
-  PET: 'bg-rose-50 text-rose-700 border-rose-200/90',
-  Glass: 'bg-emerald-50 text-emerald-700 border-emerald-200/90',
-  Tetra: 'bg-amber-50 text-amber-700 border-amber-200/90',
-  Other: 'bg-slate-100 text-slate-600 border-slate-200',
+  Can: 'hh-icon-badge hh-icon-badge--blue border-transparent text-white',
+  PET: 'hh-icon-badge hh-icon-badge--rose border-transparent text-white',
+  Glass: 'hh-icon-badge hh-icon-badge--green border-transparent text-white',
+  Tetra: 'hh-icon-badge hh-icon-badge--amber border-transparent text-white',
+  Other: 'hh-icon-badge hh-icon-badge--slate border-transparent text-white',
 };
 
 export function packTextColor(pack?: string | null, name?: string | null): string {

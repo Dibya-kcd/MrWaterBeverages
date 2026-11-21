@@ -3,8 +3,9 @@ import { ChevronDown } from 'lucide-react';
 import { EmptyState } from '../../common/EmptyState';
 import { useLedger } from '../../../context/LedgerContext';
 import { money } from '../../../utils/billing';
-import { billBalance, billNetTotal, round2 } from '../../../utils/salesReturns';
+import { billBalance, billNetTotal, returnedCreditByProduct, returnedQtyByProduct, round2 } from '../../../utils/salesReturns';
 import { isAdvanceAdjustmentRow } from '../../../utils/paymentAllocation';
+import { summarizeCollections } from '../../../utils/collectionSummary';
 import { todayISO, toLocalISODate } from '../../../utils/dateLocal';
 import { PaymentRecord, PaymentMode } from '../../../types';
 import { ReportShareMenu } from './ReportShareMenu';
@@ -128,51 +129,12 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
     }
   }, [selectedPeriod, followsTop, periodLabel]);
 
-  // 1. REAL METRIC: Received in selected period
-  const receivedInPeriod = useMemo(() => {
-    let sum = 0;
-    const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
-    const billPaymentsMap = new Map<number, PaymentRecord[]>();
-    (payments || []).forEach((p) => {
-      if (!p.billId || p.isRefund) return;
-      const list = billPaymentsMap.get(p.billId) || [];
-      list.push(p);
-      billPaymentsMap.set(p.billId, list);
-    });
-
-    // Upfront paid on bills within period
-    liveBills.forEach((b) => {
-      const bDate = String(b.date || '').slice(0, 10);
-      if (!matchesPeriod(bDate)) return;
-      const net = billNetTotal(b);
-      const rows = billPaymentsMap.get(b.id) || [];
-      if (rows.length === 0) {
-        if (b.paymentMode !== 'credit') {
-          sum += Math.min(net, Number(b.amountPaid) || 0);
-        }
-      } else {
-        rows
-          .filter((p) => matchesPeriod(String(p.paymentDate || p.createdAt || '').slice(0, 10)) && p.mode !== 'credit')
-          .forEach((p) => {
-            if (!isAdvanceAdjustmentRow(p)) {
-              sum += Number(p.amount) || 0;
-            }
-          });
-      }
-    });
-
-    // Later collections received in period
-    (payments || []).forEach((p) => {
-      const pDate = String(p.paymentDate || p.createdAt || '').slice(0, 10);
-      if (!matchesPeriod(pDate) || p.mode === 'credit' || p.isRefund) return;
-      const b = p.billId ? liveBills.find((bill) => bill.id === p.billId) : undefined;
-      const bDate = b ? String(b.date || '').slice(0, 10) : '';
-      if (b && pDate <= bDate) return;
-      sum += Number(p.amount) || 0;
-    });
-
-    return round2(sum);
-  }, [bills, payments, matchesPeriod]);
+  // 1. REAL METRIC: Received in selected period (same shared calculation as Home & Daily Collection)
+  const collectionSummary = useMemo(
+    () => summarizeCollections({ bills, payments, inPeriod: matchesPeriod }),
+    [bills, payments, matchesPeriod],
+  );
+  const receivedInPeriod = collectionSummary.total;
 
   // 2. REAL METRIC: Total Due across all bills
   // One definition of due for every screen: the customer ledger total (see utils/dueSummary.ts).
@@ -226,10 +188,11 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
     }
 
     const txs: TxItem[] = [];
-    const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
+    // Map positive non-refund payments by bill ID
+    const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled && !b.cancellation);
     const billPaymentsMap = new Map<number, PaymentRecord[]>();
     (payments || []).forEach((p) => {
-      if (!p.billId || p.isRefund) return;
+      if (!p.billId || p.isRefund || (Number(p.amount) || 0) <= 0) return;
       const list = billPaymentsMap.get(p.billId) || [];
       list.push(p);
       billPaymentsMap.set(p.billId, list);
@@ -243,7 +206,7 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
       const net = billNetTotal(b);
       const rows = billPaymentsMap.get(b.id) || [];
       const sameDayRows = rows.filter(
-        (p) => String(p.paymentDate || p.createdAt || '').slice(0, 10) <= bDate && p.mode !== 'credit'
+        (p) => String(p.paymentDate || p.createdAt || '').slice(0, 10) === bDate && p.mode !== 'credit'
       );
 
       let paid = 0;
@@ -252,11 +215,13 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
       let modeStr = '';
 
       if (rows.length === 0) {
-        paid = Math.min(net, Number(b.amountPaid) || 0);
-        const m = b.paymentMode || 'cash';
-        if (m === 'cash') billCash = paid;
-        else billDigital = paid;
-        modeStr = MODE_LABEL[m] || m;
+        if (b.paymentMode !== 'credit') {
+          paid = Math.min(net, Math.max(0, Number(b.amountPaid) || 0));
+          const m = b.paymentMode || 'cash';
+          if (m === 'cash') billCash = paid;
+          else billDigital = paid;
+          modeStr = MODE_LABEL[m] || m;
+        }
       } else {
         sameDayRows.forEach((p) => {
           const a = Number(p.amount) || 0;
@@ -310,10 +275,12 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
         return;
       }
 
-      // Skip upfront payments on bills inside period (already counted on the bill)
+      if (isAdvanceAdjustmentRow(p)) return;
+
+      // Skip same-day payments on bills inside period (already shown on the bill row)
       const b = p.billId ? liveBills.find((bill) => bill.id === p.billId) : undefined;
       const bDate = b ? String(b.date || '').slice(0, 10) : '';
-      if (b && matchesPeriod(bDate) && pDate <= bDate) return;
+      if (b && matchesPeriod(bDate) && pDate === bDate) return;
 
       if (p.mode === 'cash') cash += amt;
       else digital += amt;
@@ -346,18 +313,20 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
       });
     });
 
-    const inHand = cash + digital - out;
+    const cashTotal = collectionSummary.cash;
+    const digitalTotal = collectionSummary.nonCash;
+    const inHand = round2(collectionSummary.total - out);
 
     return {
       periodMoneyInHand: inHand,
-      periodCashIn: cash,
-      periodDigitalIn: digital,
+      periodCashIn: cashTotal,
+      periodDigitalIn: digitalTotal,
       periodNewDue: due,
       periodTransactions: txs.slice(0, 15),
     };
-  }, [bills, payments, expenses, matchesPeriod]);
+  }, [bills, payments, expenses, matchesPeriod, collectionSummary]);
 
-  const totalCollected = periodCashIn + periodDigitalIn;
+  const totalCollected = collectionSummary.total;
   const recordedExpensesInPeriod = useMemo(() => {
     return (expenses || [])
       .filter((e) => matchesPeriod(String(e.date || '').slice(0, 10)))
@@ -415,33 +384,78 @@ export const ReportsOverview: React.FC<ReportsOverviewProps> = ({
       const bDate = String(b.date || '').slice(0, 10);
       if (!matchesPeriod(bDate)) return;
 
+      const retQty = returnedQtyByProduct(b);
+      const retCredit = returnedCreditByProduct(b);
+      const perProduct = new Map<
+        number,
+        { name: string; qty: number; rawAmount: number; weightedCost: number }
+      >();
+
       b.items.forEach((item) => {
         const prod = prodMap.get(item.productId);
         const name = item.productName || prod?.name || `Product #${item.productId}`;
         const unitCost = item.costExGst || prod?.effectiveCost || prod?.cost || 0;
-        const totalItemCost = item.qty * unitCost;
-        const gross = item.gross || item.qty * item.rate;
+        const qty = Number(item.qty) || 0;
+        const gross = item.gross || qty * item.rate;
         const disc = item.discount || 0;
-        const netRev = item.amount || gross - disc;
+        const lineAmt = item.amount || gross - disc;
 
-        const existing = itemMap.get(item.productId) || {
+        const cur = perProduct.get(item.productId) || {
           name,
+          qty: 0,
+          rawAmount: 0,
+          weightedCost: 0,
+        };
+        cur.qty += qty;
+        cur.rawAmount += lineAmt;
+        cur.weightedCost += qty * unitCost;
+        perProduct.set(item.productId, cur);
+      });
+
+      const billNet = billNetTotal(b);
+      const entries: { pid: number; name: string; netCost: number; rawNetRev: number }[] = [];
+      perProduct.forEach((p, pid) => {
+        const returnedCount = retQty[pid] || 0;
+        const netQty = Math.max(0, p.qty - returnedCount);
+        const avgUnitCost = p.qty > 0 ? p.weightedCost / p.qty : 0;
+        const netCost = netQty * avgUnitCost;
+        const rawNetRev = Math.max(0, p.rawAmount - (retCredit[pid] || 0));
+        entries.push({ pid, name: p.name, netCost, rawNetRev });
+      });
+
+      const rawSum = entries.reduce((s, e) => s + e.rawNetRev, 0);
+      const lastPosIdx = entries.reduce((last, e, idx) => (e.rawNetRev > 0 ? idx : last), -1);
+      let remainingNet = billNet;
+
+      entries.forEach((e, idx) => {
+        let netRev = 0;
+        if (rawSum > 0 && e.rawNetRev > 0) {
+          if (idx === lastPosIdx) {
+            netRev = Math.max(0, round2(remainingNet));
+          } else {
+            netRev = round2((billNet * e.rawNetRev) / rawSum);
+            remainingNet = round2(remainingNet - netRev);
+          }
+        }
+        const existing = itemMap.get(e.pid) || {
+          name: e.name,
           revenue: 0,
           cost: 0,
           profit: 0,
         };
-
         existing.revenue += netRev;
-        existing.cost += totalItemCost;
-        existing.profit += netRev - totalItemCost;
-
-        itemMap.set(item.productId, existing);
+        existing.cost += e.netCost;
+        existing.profit += netRev - e.netCost;
+        itemMap.set(e.pid, existing);
       });
     });
 
     return Array.from(itemMap.values())
       .map((p) => ({
         ...p,
+        revenue: round2(p.revenue),
+        cost: round2(p.cost),
+        profit: round2(p.profit),
         marginPct: p.revenue > 0 ? (p.profit / p.revenue) * 100 : 0,
       }))
       .sort((a, b) => b.profit - a.profit)

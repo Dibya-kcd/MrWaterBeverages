@@ -102,6 +102,7 @@ export const ProfileAvatarMenu: React.FC<ProfileAvatarMenuProps> = ({ className 
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
+        data-profile-trigger="true"
         className="flex items-center gap-1.5 p-0 sm:px-1.5 sm:py-1 rounded-xl bg-transparent border-0 shadow-none hover:opacity-85 transition-all cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-600/30"
         aria-expanded={isOpen}
         aria-haspopup="true"

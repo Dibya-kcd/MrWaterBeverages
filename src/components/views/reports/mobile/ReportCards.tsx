@@ -94,6 +94,8 @@ export interface RegisterCardProps {
   heroLabel?: string;
   hero?: React.ReactNode;
   heroTone?: Tone;
+  /** Explicit Option A card tint override; defaults automatically from heroTone. */
+  cardTone?: 'sales' | 'received' | 'due' | 'warning' | 'profit' | 'neutral';
   /** Green / red bar, e.g. money in hand vs due. Hidden when both are 0. */
   split?: { a: number; b: number; label?: string };
   /** Multi-colour bar (e.g. aging buckets). `className` is a Tailwind background class. */
@@ -121,6 +123,7 @@ export const RegisterCard: React.FC<RegisterCardProps> = ({
   heroLabel,
   hero,
   heroTone = 'ink',
+  cardTone,
   split,
   segments,
   stats,
@@ -130,8 +133,19 @@ export const RegisterCard: React.FC<RegisterCardProps> = ({
 }) => {
   const total = split ? Math.max(0, split.a) + Math.max(0, split.b) : 0;
   const aPct = split && total > 0 ? Math.round((Math.max(0, split.a) * 100) / total) : 0;
+  const resolvedTone =
+    cardTone ??
+    (heroTone === 'green'
+      ? 'received'
+      : heroTone === 'red'
+        ? 'due'
+        : heroTone === 'amber'
+          ? 'warning'
+          : heroTone === 'muted'
+            ? 'neutral'
+            : 'sales');
   return (
-    <div id={id} className="rounded-2xl border border-slate-200 bg-white shadow-sm p-3.5 flex flex-col gap-3 overflow-hidden">
+    <div id={id} data-card-tone={resolvedTone} className="rounded-2xl shadow-sm p-3.5 flex flex-col gap-3 overflow-hidden">
       <div className="flex items-start justify-between gap-2 sm:gap-3 min-w-0">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
@@ -239,15 +253,15 @@ export const DetailRow: React.FC<{
   </div>
 );
 
-/** Replaces a table footer on phones: a dark totals strip with a few labelled figures. */
+/** Replaces a table footer on phones: a deep midnight-navy fintech totals card. */
 export const TotalsCard: React.FC<{ title: string; items: CardStat[] }> = ({ title, items }) => (
-  <div className="rounded-2xl bg-slate-900 text-white p-3.5">
-    <div className="text-[11px] font-bold uppercase tracking-wide text-slate-300">{title}</div>
-    <div className="mt-2 grid grid-cols-3 gap-x-3 gap-y-2">
+  <div data-card-tone="navy" className="rounded-2xl text-white p-4">
+    <div className="text-[11px] font-bold uppercase tracking-wide text-blue-200">{title}</div>
+    <div className="mt-2.5 grid grid-cols-3 gap-x-3 gap-y-2">
       {items.map((s) => (
         <div key={s.label} className="min-w-0">
-          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{s.label}</div>
-          <div className="text-[15px] font-extrabold tabular-nums leading-tight">{s.value}</div>
+          <div className="text-[10px] font-bold uppercase tracking-wide text-blue-200/80">{s.label}</div>
+          <div className="text-[15px] font-extrabold tabular-nums leading-tight text-white">{s.value}</div>
         </div>
       ))}
     </div>

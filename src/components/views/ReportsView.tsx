@@ -1,11 +1,8 @@
 import React, { useMemo, useState } from "react";
 import {
-  ArrowLeft,
   ChevronRight,
   ChevronDown,
-  X,
-  Calendar,
-  Check,
+  Share,
 } from "lucide-react";
 import { useLedger } from "../../context/LedgerContext";
 import { useBeats } from "../../hooks/useBeats";
@@ -51,6 +48,12 @@ import { ReportsMobileHome } from "./reports/ReportsMobileHome";
 import { DailyCollectionStreamlined } from "./reports/DailyCollectionStreamlined";
 import { ReportShareMenu } from "./reports/ReportShareMenu";
 import { ReportCatalogGrid } from "./reports/ReportCatalogGrid";
+import {
+  MobileReportProvider,
+  formatShortPeriodLabel,
+  type CollectionsMobileSubTab,
+  type PnlDetailTabId,
+} from "./reports/mobile/MobileReportContext";
 
 export type { ReportSection } from "./reports/ReportSectionTabs";
 export type { ReportPeriod } from "./reports/reportPeriod";
@@ -103,6 +106,8 @@ export const ReportsView: React.FC = () => {
 
   const [periodDropdownOpen, setPeriodDropdownOpen] = useState(false);
   const [mobilePeriodOpen, setMobilePeriodOpen] = useState(false);
+  const [collectionsSubTab, setCollectionsSubTab] = useState<CollectionsMobileSubTab>("daywise");
+  const [pnlTargetTab, setPnlTargetTab] = useState<PnlDetailTabId | null>(null);
 
   const [selectedDate, setSelectedDate] = useState<string>(() => {
     const saved = sessionStorage.getItem("reports_selected_date");
@@ -137,14 +142,15 @@ export const ReportsView: React.FC = () => {
   }, []);
   const sevenDaysAgoStr = useMemo(() => {
     const d = new Date();
-    d.setDate(d.getDate() - 7);
+    d.setDate(d.getDate() - 6);
     return toLocalISODate(d);
   }, []);
   const currentYearMonth = useMemo(() => todayStr.slice(0, 7), [todayStr]);
   const lastYearMonth = useMemo(() => {
     const d = new Date();
+    d.setDate(1);
     d.setMonth(d.getMonth() - 1);
-    return d.toISOString().slice(0, 7);
+    return toLocalISODate(d).slice(0, 7);
   }, []);
 
   const reportInPeriod = (d: string) => {
@@ -482,8 +488,54 @@ export const ReportsView: React.FC = () => {
     },
   };
 
-  // Stock and party credit are "as on today" snapshots: a date period does not apply to them.
-  const isSnapshotReport = activeReport === "inventory" || activeReport === "receivables";
+  const shortPeriodLabel = useMemo(
+    () => formatShortPeriodLabel(period, selectedDate),
+    [period, selectedDate]
+  );
+
+  const mobileContextValue = useMemo(
+    () => ({
+      period,
+      setPeriod,
+      shortPeriodLabel,
+      periodLabel,
+      openPeriodSheet: () => setMobilePeriodOpen(true),
+      onBackToHome: () => {
+        setPnlTargetTab(null);
+        setActiveReport("overview");
+      },
+      navigateReport: (section: ReportSection) => {
+        if (section !== "margin" && section !== "netProfit") {
+          setPnlTargetTab(null);
+        }
+        setActiveReport(section);
+      },
+      collectionsSubTab,
+      setCollectionsSubTab,
+      pnlTargetTab,
+      setPnlTargetTab,
+      orgName: orgProfile?.name || "Hydrate Hub",
+    }),
+    [period, shortPeriodLabel, periodLabel, collectionsSubTab, pnlTargetTab, orgProfile?.name]
+  );
+
+  const handleSharePeriodSummary = () => {
+    setMobilePeriodOpen(false);
+    const liveBills = periodBills.filter((b) => b.status !== "cancelled" && !(b as any).cancelled);
+    const totalSales = liveBills.reduce((s, b) => s + billNetTotal(b), 0);
+    const totalDueNow = ledgerTotalDue(existingCustomers)?.total ?? debtorsLedger.reduce((s, d) => s + d.balance, 0);
+    const text =
+      `📊 *${orgProfile?.name || "Hydrate Hub"} · Reports (${periodLabel})*\n` +
+      `• Sales: ₹${money(totalSales)}\n` +
+      `• Total Due: ₹${money(totalDueNow)}\n` +
+      `• Net GST Payable: ₹${money(gstTaxSummary.netGstPayable)}`;
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
+    try {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch {
+      navigator.clipboard?.writeText(text);
+    }
+  };
 
   // Render report content based on activeReport
   const renderActiveReportContent = () => {
@@ -638,6 +690,7 @@ export const ReportsView: React.FC = () => {
           period={period}
           periodControl={periodControl}
           periodLabel={periodLabel}
+          dateInPeriod={reportInPeriod}
           warehouses={warehouses}
           onNavigateTrips={() => setTab("trips")}
         />
@@ -667,7 +720,7 @@ export const ReportsView: React.FC = () => {
           <button
             type="button"
             onClick={() => setShowRegularGst(false)}
-            className="mb-3 text-xs font-semibold underline text-indigo-800"
+            className="mb-2 px-1 text-xs font-semibold underline text-indigo-800 cursor-pointer"
           >
             ← Back to composition workings (CMP-08 / GSTR-4)
           </button>
@@ -709,162 +762,122 @@ export const ReportsView: React.FC = () => {
   return (
     <div className="min-h-[calc(100vh-4rem)] bg-slate-50/60 text-slate-900 pb-12">
       {/* ========================================================== */}
-      {/* 1. MOBILE VIEW (md:hidden) — Matches Mobile_1x_d887850d.png */}
+      {/* 1. MOBILE VIEW (md:hidden) — Flat blue header + white cards */}
       {/* ========================================================== */}
-      <div className="md:hidden px-4 py-5">
-        {activeReport === "overview" ? (
-          // Exact Mobile Home Screen with colorful mock matching attached image
-          <div className="-mx-4 -my-5">
+      <MobileReportProvider value={mobileContextValue}>
+        <div
+          id="view-reports"
+          className="md:hidden px-[var(--page-pad)] bg-[var(--bg)] min-h-screen pb-28 text-[var(--text)]"
+        >
+          {activeReport === "overview" ? (
             <ReportsMobileHome
-              onSelectReport={(id) => setActiveReport(id as ReportSection)}
+              onSelectReport={(id) => {
+                setPnlTargetTab(null);
+                setActiveReport(id as ReportSection);
+              }}
+              inPeriod={reportInPeriod}
+              periodLabel={periodLabel}
             />
-          </div>
-        ) : activeReport === "daybook" ? (
-          // Daily Collection streamlined phone view matching attached screenshot
-          <div className="-mx-4 -my-5">
-            {renderActiveReportContent()}
-          </div>
-        ) : (
-          // Sub-report screen matching Daily Collection UI & theme
-          <div className="-mx-4 -my-5 min-h-screen bg-gradient-to-b from-[#EBF2FE] via-[#F3F6FD] to-[#F8FAFC] px-4 pt-4 pb-24 space-y-3.5 text-slate-900">
-            {/* Top Navigation Row: Back pill on left, sleek period pill on right */}
-            <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveReport("overview")}
-                className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/90 border border-blue-100/90 text-slate-800 font-bold text-xs shadow-xs hover:bg-white active:scale-95 transition-all cursor-pointer"
-              >
-                <ArrowLeft size={15} className="text-slate-700" />
-                <span>Reports</span>
-              </button>
+          ) : (
+            renderActiveReportContent()
+          )}
 
-              {/* Date period pill button opening the Filter Bottom Sheet modal.
-                  Stock and party credit are "as on today", so they show a fixed label instead. */}
-              {isSnapshotReport ? (
-                <span className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/70 border border-blue-100/90 text-slate-600 font-bold text-xs">
-                  <Calendar size={14} className="text-slate-400" />
-                  <span>As on today</span>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setMobilePeriodOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-white/90 border border-blue-100/90 text-slate-800 font-bold text-xs shadow-xs hover:bg-white active:scale-95 transition-all cursor-pointer"
-                >
-                  <Calendar size={14} className="text-blue-600" />
-                  <span className="truncate max-w-[140px]">{periodLabel}</span>
-                  <ChevronDown size={14} className="text-slate-400 shrink-0" />
-                </button>
-              )}
-            </div>
+          {/* Bottom Period Picker + Share Summary Sheet (Mockup 1 Screen 3) */}
+          {mobilePeriodOpen && (
+            <div
+              data-esc-close
+              className="rt-bsheet-scrim"
+              onClick={() => setMobilePeriodOpen(false)}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Period"
+            >
+              <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+                <div className="w-9 h-1 rounded-full bg-slate-300 mx-auto mb-0.5" aria-hidden="true" />
+                <h3 className="text-[17px] font-extrabold text-[var(--text)] tracking-tight m-0">
+                  Period
+                </h3>
 
-            {/* Active sub-report content */}
-            {renderActiveReportContent()}
-
-            {/* Modern Period Filter Bottom Sheet Modal (matching Daily Collection) */}
-            {mobilePeriodOpen && (
-              <div data-esc-close
-                className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200"
-                onClick={() => setMobilePeriodOpen(false)}
-                role="dialog"
-                aria-modal="true"
-                aria-label="Filter Date Period"
-              >
-                <div
-                  className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl p-5 space-y-4 max-h-[85vh] overflow-y-auto animate-in slide-in-from-bottom duration-300 text-slate-900"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {/* Sheet Header */}
-                  <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                    <div className="flex items-center gap-2">
-                      <Calendar size={18} className="text-blue-600" />
-                      <h3 className="text-base font-extrabold text-slate-900">Date Period</h3>
-                    </div>
-                    <button
-                      type="button"
-                      aria-label="Close"
-                      onClick={() => setMobilePeriodOpen(false)}
-                      className="size-8 rounded-full bg-slate-100 text-slate-500 hover:text-slate-800 flex items-center justify-center cursor-pointer"
-                    >
-                      <X size={16} />
-                    </button>
-                  </div>
-
-                  {/* Preset Options */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {STANDARD_PERIOD_OPTIONS.map((opt) => (
+                <div className="rt-rep-card divide-y divide-[var(--divider)]">
+                  {[
+                    { id: "today" as ReportPeriod, label: "Today" },
+                    { id: "yesterday" as ReportPeriod, label: "Yesterday" },
+                    { id: "last7" as ReportPeriod, label: "7 days" },
+                    { id: "thisMonth" as ReportPeriod, label: "Month" },
+                    { id: "all" as ReportPeriod, label: "All time" },
+                    { id: "customRange" as ReportPeriod, label: "Custom range" },
+                  ].map((opt) => {
+                    const checked = period === opt.id;
+                    return (
                       <button
                         key={opt.id}
                         type="button"
+                        role="radio"
+                        aria-checked={checked}
                         onClick={() => {
                           setPeriod(opt.id);
-                          setMobilePeriodOpen(false);
+                          if (opt.id !== "customRange") {
+                            setMobilePeriodOpen(false);
+                          }
                         }}
-                        className={`px-3 py-2.5 rounded-xl text-xs font-bold border transition-colors text-center ${
-                          period === opt.id
-                            ? "bg-blue-600 text-white border-blue-600 shadow-xs"
-                            : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
-                        }`}
+                        className="w-full flex items-center justify-between px-4 py-3.5 text-left text-[14.5px] font-semibold text-[var(--text)] bg-[var(--surface)] active:bg-slate-50 cursor-pointer"
                       >
-                        {opt.label}
+                        <span>{opt.label}</span>
+                        <span className="rt-period-radio" data-checked={checked ? "true" : "false"} />
                       </button>
-                    ))}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPeriod("customRange");
-                      }}
-                      className={`px-3 py-2.5 rounded-xl text-xs font-bold border transition-colors text-center ${
-                        period === "customRange"
-                          ? "bg-blue-600 text-white border-blue-600 shadow-xs"
-                          : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
-                      }`}
-                    >
-                      Custom range
-                    </button>
-                  </div>
+                    );
+                  })}
+                </div>
 
-                  {/* Custom Range Pickers */}
-                  {period === "customRange" && (
-                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100">
+                {period === "customRange" && (
+                  <div className="rt-rep-card p-3.5 space-y-2.5">
+                    <div className="grid grid-cols-2 gap-2.5">
                       <div>
-                        <label className="text-[11px] font-semibold text-slate-500 block mb-1">From Date</label>
+                        <label className="text-[11px] font-bold text-[var(--text-2)] block mb-1">
+                          From
+                        </label>
                         <input
                           type="date"
                           value={startDate}
                           onChange={(e) => setStartDate(e.target.value)}
-                          className="w-full text-xs font-bold p-2 border border-slate-200 rounded-xl bg-slate-50 text-slate-800"
+                          className="w-full text-xs font-bold p-2.5 border border-[var(--border)] rounded-xl bg-[var(--bg)] text-[var(--text)]"
                         />
                       </div>
                       <div>
-                        <label className="text-[11px] font-semibold text-slate-500 block mb-1">To Date</label>
+                        <label className="text-[11px] font-bold text-[var(--text-2)] block mb-1">
+                          To
+                        </label>
                         <input
                           type="date"
                           value={endDate}
                           onChange={(e) => setEndDate(e.target.value)}
-                          className="w-full text-xs font-bold p-2 border border-slate-200 rounded-xl bg-slate-50 text-slate-800"
+                          className="w-full text-xs font-bold p-2.5 border border-[var(--border)] rounded-xl bg-[var(--bg)] text-[var(--text)]"
                         />
                       </div>
                     </div>
-                  )}
-
-                  {/* Apply Button */}
-                  <div className="pt-2">
                     <button
                       type="button"
                       onClick={() => setMobilePeriodOpen(false)}
-                      className="w-full py-3 px-4 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm shadow-md shadow-blue-600/25 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                      className="w-full min-h-[42px] rounded-full bg-[var(--primary)] text-white text-[13.5px] font-bold cursor-pointer"
                     >
-                      <Check size={18} />
-                      <span>Apply Period</span>
+                      Apply range
                     </button>
                   </div>
-                </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleSharePeriodSummary}
+                  className="w-full min-h-[44px] rounded-full border-[1.5px] border-[var(--primary)] bg-[var(--surface)] text-[var(--primary)] text-[14px] font-bold inline-flex items-center justify-center gap-2 cursor-pointer active:bg-blue-50"
+                >
+                  <Share size={16} strokeWidth={2.2} aria-hidden="true" />
+                  <span>Share summary</span>
+                </button>
               </div>
-            )}
-          </div>
-        )}
-      </div>
+            </div>
+          )}
+        </div>
+      </MobileReportProvider>
 
       {/* ========================================================== */}
       {/* 2. TABLET & DESKTOP — full-width hub (no second sidebar)  */}

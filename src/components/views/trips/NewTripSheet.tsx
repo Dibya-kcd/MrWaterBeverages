@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Copy, Minus, Plus, Search, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, Copy, Minus, Plus, Search, X } from 'lucide-react';
 import { FlowBadge, FlowHeader } from '../../common/FlowKit';
 import { Bill, Product, Salesman, Warehouse } from '../../../types';
 import { useLedger } from '../../../context/LedgerContext';
+import { useIsMobile } from '../../../hooks/useIsMobile';
+import { useLanguage } from '../../../i18n/LanguageContext';
 import { todayISO } from '../../../utils/dateLocal';
 import { compareProductsInSequence } from '../../../utils/sizeColor';
 import { confirmDialog } from '../../../utils/dialogs';
@@ -25,8 +27,12 @@ export interface NewTripPayload {
   autoAttachBills: boolean;
   /** name to store when the salesman is not in the loaded salesmen list (signed-in salesman) */
   salesmanName?: string;
+  /** salesman contact phone for this trip */
+  salesmanPhone?: string;
   /** driver of the van (free text) */
   driver?: string;
+  /** driver contact phone for this trip */
+  driverPhone?: string;
   lines: { productId: number; warehouseId: string; qty: number }[];
 }
 
@@ -79,6 +85,22 @@ const caseRate = (p: Product): number => {
   return 0;
 };
 
+const formatTripDateDisplay = (iso: string): string => {
+  if (!iso) return '—';
+  const d = new Date(`${iso}T12:00:00Z`);
+  if (Number.isNaN(d.getTime())) return iso;
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'UTC',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    }).format(d);
+  } catch {
+    return iso;
+  }
+};
+
 const input =
   'w-full min-h-[44px] px-3 rounded-xl border border-gray-300 bg-white text-[15px] font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-[var(--flow-accent)]/40 focus:border-[var(--flow-accent)] disabled:bg-gray-100 disabled:text-gray-500';
 const label = 'block text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-1';
@@ -105,6 +127,8 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
   initialVehicle = '',
 }) => {
   const { trips, remainingStock, getVehicleStock } = useLedger();
+  const isPhone = useIsMobile(767);
+  const { t } = useLanguage();
 
   const [step, setStep] = useState<'A' | 'B'>('A');
   const [date, setDate] = useState(todayISO());
@@ -143,6 +167,23 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
   const maxCapacity = Number(capacityText) > 0 ? Number(capacityText) : 0;
 
   const vehicleChoices = vehicles.slice(0, 8);
+  const driverChoices = useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    const sorted = [...trips].sort(
+      (a, b) => String(b.date).localeCompare(String(a.date)) || Number(b.id) - Number(a.id),
+    );
+    for (const tr of sorted) {
+      const d = (tr.driver || '').trim();
+      if (!d) continue;
+      const k = d.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      list.push(d);
+      if (list.length >= 10) break;
+    }
+    return list;
+  }, [trips]);
   const salesmanName = lockedSalesman?.name || salesmen.find((s) => s.id === salesmanId)?.name || '';
 
   /* ---------- stock rules (same as useCreateTrip, so the stepper can never promise what Confirm refuses) ---------- */
@@ -183,8 +224,9 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
       : sellable;
   }, [sellable, search]);
 
-  const setLoad = (pid: number, next: number) => {
-    const clamped = Math.max(0, Math.min(Math.floor(next) || 0, maxLoad(pid)));
+  const setLoad = (pid: number, next: number, allowOverCap = false) => {
+    const clean = Math.max(0, Math.floor(next) || 0);
+    const clamped = allowOverCap ? clean : Math.min(clean, maxLoad(pid));
     setQty((prev) => {
       const copy = { ...prev };
       if (clamped > 0) copy[pid] = clamped;
@@ -193,6 +235,14 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
     });
     setError(null);
   };
+
+  const overStockItems = useMemo(
+    () =>
+      sellable
+        .map((p) => ({ p, n: qty[p.id] || 0, cap: maxLoad(p.id) }))
+        .filter((x) => x.n > x.cap),
+    [sellable, qty, godownId, trips, billedByProduct, warehouseStock, remainingStock, getVehicleStock],
+  );
 
   const loadedCases = Object.values(qty).reduce((s, n) => s + n, 0);
   const loadValue = Object.entries(qty).reduce((s, [pid, n]) => {
@@ -252,6 +302,12 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
       setError('Load at least one case before starting the trip.');
       return;
     }
+    if (overStockItems.length > 0) {
+      const first = overStockItems[0];
+      setError(`${first.p.name}: only ${first.cap} in godown. Reduce by ${first.n - first.cap} cases to continue.`);
+      return;
+    }
+    const smPhone = salesmen.find((x) => x.id === salesmanId)?.phone?.trim();
     const msg = onSubmit({
       vehicle: vehicle.trim(),
       route: route.trim(),
@@ -259,6 +315,7 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
       salesmanId,
       autoAttachBills: autoAttach,
       salesmanName: lockedSalesman?.name,
+      salesmanPhone: smPhone || undefined,
       driver: driver.trim() || undefined,
       lines: Object.entries(qty)
         .filter(([, n]) => n > 0)
@@ -316,6 +373,449 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
       </div>
     </div>
   );
+
+  /* ================================ PHONE LAYOUTS ================================ */
+  const vehicleOpenConflict = useMemo(() => {
+    const v = vehicle.trim().toLowerCase();
+    if (!v) return false;
+    return trips.some((tr) => tr.status !== 'closed' && (tr.vehicle || '').trim().toLowerCase() === v);
+  }, [trips, vehicle]);
+  const selectedGodownName = warehouses.find((w) => w.id === godownId)?.name || t('nav.godownDefault');
+  const phoneSheetCls = `rt-flow-phone${lockedSalesman ? ' rt-flow-phone--full' : ''}`;
+
+  if (isPhone && step === 'A') {
+    return (
+      <div
+        className={phoneSheetCls}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('trips.newTrip')}
+        id="form-new-trip"
+      >
+        <div className="hh-sales-top">
+          <div className="hh-sales-top__row">
+            <div className="flex items-center gap-1 min-w-0">
+              <button
+                type="button"
+                onClick={handleClose}
+                className="hh-sales-top__iconbtn"
+                aria-label={t('common.close')}
+              >
+                <ChevronLeft size={24} strokeWidth={2.2} />
+              </button>
+              <h1 className="hh-sales-top__title truncate">{t('trips.newTrip')}</h1>
+            </div>
+            <span className="hh-sales-top__pill">#TRP-{nextTripNo}</span>
+          </div>
+          <div className="rt-seg" aria-hidden="true">
+            <span className="rt-seg__bar rt-seg__bar--on" />
+            <span className="rt-seg__bar" />
+          </div>
+          <p className="rt-stp m-0">{t('trips.step1Sub')}</p>
+        </div>
+
+        <div className="rt-flow-phone__body space-y-2">
+          <div className="rt-trip-field">
+            <div className="rt-trip-field__main">
+              <label htmlFor="trip-vehicle" className="rt-trip-field__label">
+                {t('trips.vehicle')}
+              </label>
+              <input
+                id="trip-vehicle"
+                type="text"
+                value={vehicle}
+                onChange={(e) => setVehicle(e.target.value)}
+                placeholder="OD-02-AB-4471"
+                autoComplete="off"
+                autoCapitalize="characters"
+                className="rt-trip-field__control"
+              />
+            </div>
+            {vehicleChoices.length > 0 && (
+              <div className="rt-trip-field__picker-btn">
+                <ChevronDown size={16} aria-hidden="true" />
+                <select
+                  aria-label="Choose vehicle"
+                  value={
+                    vehicleChoices.find((v) => v.trim().toLowerCase() === vehicle.trim().toLowerCase()) || ''
+                  }
+                  onChange={(e) => {
+                    if (e.target.value) setVehicle(e.target.value);
+                  }}
+                  className="rt-trip-field__picker-select"
+                >
+                  <option value="">{t('trips.vehicle')}</option>
+                  {vehicleChoices.map((v) => (
+                    <option key={v} value={v}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          <label className="rt-trip-field" htmlFor={lockedSalesman ? undefined : 'trip-salesman'}>
+            <div className="rt-trip-field__main">
+              <span className="rt-trip-field__label">{t('trips.salesman')}</span>
+              {lockedSalesman ? (
+                <div className="rt-trip-field__value">{lockedSalesman.name}</div>
+              ) : (
+                <select
+                  id="trip-salesman"
+                  value={salesmanId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setSalesmanId(id);
+                    const sm = salesmen.find((x) => x.id === id);
+                    if (sm?.defaultVehicle && !vehicle.trim()) setVehicle(sm.defaultVehicle);
+                  }}
+                  className="rt-trip-field__control"
+                >
+                  <option value="">{t('trips.allSalesmen')}</option>
+                  {salesmen
+                    .filter((x) => x.active !== false)
+                    .map((x) => (
+                      <option key={x.id} value={x.id}>
+                        {x.name}
+                      </option>
+                    ))}
+                </select>
+              )}
+            </div>
+            {!lockedSalesman && <ChevronDown size={16} className="rt-trip-field__chev" aria-hidden="true" />}
+          </label>
+
+          <div className="rt-trip-field">
+            <div className="rt-trip-field__main">
+              <label htmlFor="trip-driver" className="rt-trip-field__label">
+                {t('trips.driver')}
+              </label>
+              <input
+                id="trip-driver"
+                type="text"
+                value={driver}
+                onChange={(e) => setDriver(e.target.value)}
+                placeholder={t('trips.driver')}
+                autoComplete="off"
+                className="rt-trip-field__control"
+              />
+            </div>
+            {driverChoices.length > 0 && (
+              <div className="rt-trip-field__picker-btn">
+                <ChevronDown size={16} aria-hidden="true" />
+                <select
+                  aria-label="Choose driver"
+                  value={
+                    driverChoices.find((d) => d.trim().toLowerCase() === driver.trim().toLowerCase()) || ''
+                  }
+                  onChange={(e) => {
+                    if (e.target.value) setDriver(e.target.value);
+                  }}
+                  className="rt-trip-field__picker-select"
+                >
+                  <option value="">{t('trips.driver')}</option>
+                  {driverChoices.map((d) => (
+                    <option key={d} value={d}>
+                      {d}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          <label className="rt-trip-field" htmlFor="trip-route-select">
+            <div className="rt-trip-field__main">
+              <span className="rt-trip-field__label">{t('trips.routeBeat')}</span>
+              {routes.length > 0 ? (
+                <select
+                  id="trip-route-select"
+                  value={route}
+                  onChange={(e) => setRoute(e.target.value)}
+                  className="rt-trip-field__control"
+                >
+                  <option value="">{t('salesman.noBeatYet')}</option>
+                  {routes.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  id="trip-route-select"
+                  type="text"
+                  value={route}
+                  onChange={(e) => setRoute(e.target.value)}
+                  placeholder={t('trips.routeBeat')}
+                  className="rt-trip-field__control"
+                />
+              )}
+            </div>
+            {routes.length > 0 && <ChevronDown size={16} className="rt-trip-field__chev" aria-hidden="true" />}
+          </label>
+
+          {warehouses.length > 0 && (
+            <label className="rt-trip-field" htmlFor="trip-godown-select">
+              <div className="rt-trip-field__main">
+                <span className="rt-trip-field__label">{t('trips.loadFromGodown')}</span>
+                <select
+                  id="trip-godown-select"
+                  value={godownId}
+                  onChange={(e) => setGodownId(e.target.value)}
+                  className="rt-trip-field__control"
+                >
+                  {warehouses.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <ChevronDown size={16} className="rt-trip-field__chev" aria-hidden="true" />
+            </label>
+          )}
+
+          <div className="rt-trip-field">
+            <div className="rt-trip-field__main">
+              <label htmlFor="trip-date" className="rt-trip-field__label">
+                {t('trips.date')}
+              </label>
+              <div className="rt-trip-field__value">{formatTripDateDisplay(date)}</div>
+            </div>
+            <input
+              id="trip-date"
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value || todayISO())}
+              onClick={(e) => {
+                try {
+                  (e.currentTarget as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
+                } catch {
+                  /* ignore if browser handles picker natively */
+                }
+              }}
+              className="rt-trip-field__date-overlay"
+            />
+          </div>
+
+          {vehicle.trim() && (
+            <div className={vehicleOpenConflict ? 'hh-hist-card hh-hist-card--due text-[12px] font-semibold' : 'rt-noti'}>
+              {vehicleOpenConflict
+                ? t('trips.vehicleBusyNotice', { v: vehicle.trim() })
+                : t('trips.vehicleFreeNotice', { v: vehicle.trim() })}
+            </div>
+          )}
+
+          {attachList.length > 0 && (
+            <label
+              className="flex items-center justify-between gap-3 px-3.5 py-2 rounded-xl border cursor-pointer"
+              style={{ background: 'var(--surface)', borderColor: 'var(--border)', minHeight: '44px' }}
+            >
+              <span className="min-w-0 text-[12.5px] font-semibold" style={{ color: 'var(--text)' }}>
+                {autoAttach
+                  ? `${attachList.length} bill${attachList.length === 1 ? '' : 's'} of this date will join`
+                  : `Attach ${attachList.length} bill${attachList.length === 1 ? '' : 's'} of this date`}
+              </span>
+              <input
+                type="checkbox"
+                checked={autoAttach}
+                onChange={(e) => setAutoAttach(e.target.checked)}
+                className="hh-switch"
+              />
+            </label>
+          )}
+
+          {error && (
+            <div role="alert" className="rt-notice rt-notice--due">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <footer className="rt-flow-phone__footer">
+          <button type="button" onClick={goNext} className="rt-btn w-full">
+            {t('trips.nextLoadSheet')}
+          </button>
+        </footer>
+      </div>
+    );
+  }
+
+  if (isPhone && step === 'B') {
+    return (
+      <div
+        className={phoneSheetCls}
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('trips.step2Title')}
+        id="form-new-trip"
+      >
+        <div className="hh-sales-top">
+          <div className="hh-sales-top__row">
+            <div className="flex items-center gap-1 min-w-0">
+              <button
+                type="button"
+                onClick={() => setStep('A')}
+                className="hh-sales-top__iconbtn"
+                aria-label={t('common.back')}
+              >
+                <ChevronLeft size={24} strokeWidth={2.2} />
+              </button>
+              <h1 className="hh-sales-top__title truncate">{t('trips.step2Title')}</h1>
+            </div>
+            <span className="hh-sales-top__pill">{selectedGodownName}</span>
+          </div>
+          <div className="rt-seg" aria-hidden="true">
+            <span className="rt-seg__bar rt-seg__bar--on" />
+            <span className="rt-seg__bar rt-seg__bar--on" />
+          </div>
+          <p className="rt-stp m-0">{t('trips.step2Sub')}</p>
+        </div>
+
+        <div className="rt-flow-phone__body space-y-3">
+          <div className="flex items-center gap-2">
+            <div
+              className="flex items-center gap-2 flex-1 min-w-0 px-3 rounded-full border"
+              style={{ background: 'var(--surface)', borderColor: 'var(--border)', minHeight: '44px' }}
+            >
+              <Search size={16} style={{ color: 'var(--text-2)' }} />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={t('common.search')}
+                className="w-full bg-transparent border-0 outline-none text-sm"
+                style={{ color: 'var(--text)', minHeight: '42px', border: 0, boxShadow: 'none' }}
+              />
+            </div>
+            {previousTrip && (
+              <button
+                type="button"
+                onClick={copyPrevious}
+                className="rt-btn-outline rt-btn-outline--primary shrink-0 px-3"
+                title={t('trips.copyPrevLoad')}
+              >
+                <Copy size={15} /> {t('trips.copyPrevLoad')}
+              </button>
+            )}
+          </div>
+
+          {shown.length === 0 ? (
+            <div className="rt-card text-center py-8 text-[13px]" style={{ color: 'var(--text-2)' }}>
+              {search.trim()
+                ? 'No products match your search.'
+                : 'No products with stock available to load in this godown.'}
+            </div>
+          ) : (
+            <div className="rt-card p-0 overflow-hidden divide-y" style={{ borderColor: 'var(--divider)' }}>
+              {shown.map((p) => {
+                const n = qty[p.id] || 0;
+                const stock = godownStock(p.id);
+                const cap = maxLoad(p.id);
+                return (
+                  <div key={p.id} className="px-3 py-2.5 flex items-center gap-2.5 min-w-0">
+                    <div
+                      className="size-10 shrink-0 rounded-xl flex items-center justify-center"
+                      style={{ background: 'var(--bg)' }}
+                    >
+                      <PackIcon size="sm" pack={p.pack} name={p.name} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13.5px] font-bold leading-snug break-words" style={{ color: 'var(--text)' }}>
+                        <OdiaName name={p.name} nameOr={p.nameOr} />
+                      </div>
+                      <div
+                        className="text-[11.5px] font-medium mt-0.5"
+                        style={{ color: stock === 0 ? 'var(--due)' : 'var(--text-2)' }}
+                      >
+                        {t('trips.godownCases', { n: stock })}
+                      </div>
+                    </div>
+                    <div className="rt-st2">
+                      <button
+                        type="button"
+                        onClick={() => setLoad(p.id, n - 1)}
+                        disabled={n === 0}
+                        aria-label={`Less ${p.name}`}
+                        className="rt-st2__btn disabled:opacity-40"
+                      >
+                        <Minus size={14} strokeWidth={2.5} />
+                      </button>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={n === 0 ? '0' : String(n)}
+                        onChange={(e) => setLoad(p.id, Number(e.target.value.replace(/[^0-9]/g, '')) || 0, true)}
+                        onFocus={(e) => e.target.select()}
+                        aria-label={`Cases of ${p.name} to load`}
+                        className="rt-st2__qty w-10 text-center"
+                        style={{ borderRadius: 0 }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setLoad(p.id, n + 1)}
+                        disabled={n >= cap}
+                        aria-label={`More ${p.name}`}
+                        className="rt-st2__btn disabled:opacity-40"
+                      >
+                        <Plus size={14} strokeWidth={2.5} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {overStockItems.map(({ p, n, cap }) => (
+            <div key={p.id} role="alert" className="hh-hist-card hh-hist-card--due">
+              <div className="text-[13px] font-extrabold" style={{ color: 'var(--due)' }}>
+                {p.name}: only {cap} in godown
+              </div>
+              <div className="text-[12px] font-medium mt-0.5" style={{ color: 'var(--text-2)' }}>
+                Reduce by {n - cap} {n - cap === 1 ? 'case' : 'cases'} to continue.
+              </div>
+            </div>
+          ))}
+
+          {overCapacity && (
+            <div className="hh-hist-card hh-hist-card--due text-[12.5px] font-bold" style={{ color: 'var(--due)' }}>
+              Over capacity by {loadedCases - maxCapacity} cases.
+            </div>
+          )}
+
+          {error && (
+            <div role="alert" className="hh-hist-card hh-hist-card--due text-[12.5px] font-bold" style={{ color: 'var(--due)' }}>
+              {error}
+            </div>
+          )}
+
+          <div className="rt-card space-y-1.5">
+            <div className="flex items-center justify-between text-[13.5px]">
+              <span style={{ color: 'var(--text-2)' }}>{t('trips.totalCases')}</span>
+              <strong className="font-extrabold tabular-nums" style={{ color: 'var(--text)' }}>{loadedCases}</strong>
+            </div>
+            <div className="flex items-center justify-between text-[13.5px]">
+              <span style={{ color: 'var(--text-2)' }}>{t('trips.stockValue')}</span>
+              <strong className="font-extrabold tabular-nums" style={{ color: 'var(--text)' }}>{inr(loadValue)}</strong>
+            </div>
+          </div>
+        </div>
+
+        <footer className="rt-flow-phone__footer">
+          <button
+            type="button"
+            onClick={confirm}
+            disabled={loadedCases <= 0 || overStockItems.length > 0}
+            className="rt-btn w-full disabled:opacity-45"
+          >
+            {t('trips.startTrip')}
+          </button>
+        </footer>
+      </div>
+    );
+  }
 
   /* ================================ STEP A ================================ */
   if (step === 'A') {
@@ -576,7 +1076,7 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
             inputMode="numeric"
             value={n === 0 ? '' : String(n)}
             placeholder="0"
-            onChange={(e) => setLoad(p.id, Number(e.target.value.replace(/[^0-9]/g, '')) || 0)}
+            onChange={(e) => setLoad(p.id, Number(e.target.value.replace(/[^0-9]/g, '')) || 0, true)}
             onFocus={(e) => e.target.select()}
             aria-label={`Cases of ${p.name} to load`}
             className="min-h-[44px] w-16 text-center rounded-xl border border-gray-300 bg-white text-lg font-black tabular-nums focus:outline-none focus:border-[var(--flow-accent)]"
@@ -601,6 +1101,10 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
           <p className="text-[11px] font-bold text-red-700">
             Out of stock in {warehouses.find((w) => w.id === godownId)?.name || 'godown'}.
           </p>
+        ) : n > cap ? (
+          <p className="text-[11px] font-bold text-red-700">
+            Only {cap} in godown — reduce by {n - cap} {n - cap === 1 ? 'case' : 'cases'}.
+          </p>
         ) : n >= cap ? (
           <p className="text-[11px] font-bold text-amber-700">Maximum available is loaded.</p>
         ) : null}
@@ -612,7 +1116,7 @@ export const NewTripSheet: React.FC<NewTripSheetProps> = ({
     <button
       type="button"
       onClick={confirm}
-      disabled={loadedCases <= 0}
+      disabled={loadedCases <= 0 || overStockItems.length > 0}
       className="w-full min-h-[48px] rounded-xl bg-[var(--flow-accent)] hover:bg-[var(--flow-accent-hover)] text-white text-[15px] font-black disabled:opacity-50 cursor-pointer"
     >
       Confirm &amp; Start Trip

@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowRight, Check, Truck } from 'lucide-react';
+import { ArrowRight, ChevronDown, ChevronUp, Search, Truck, X } from 'lucide-react';
 import { Trip, Warehouse } from '../../../types';
 import { useLedger } from '../../../context/LedgerContext';
+import { money } from '../../../utils/billing';
 import { todayISO, toLocalISODate } from '../../../utils/dateLocal';
 import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
@@ -20,25 +21,8 @@ import {
   ReportStatGrid,
   ReportTitleBar,
 } from './ReportKit';
-import {
-  Chips,
-  EmptyNote,
-  HeroCard,
-  IconTile,
-  LegendDot,
-  MiniStat,
-  PhoneDownloadBar,
-  PhoneHeader,
-  PhoneSearch,
-  RowCard,
-  SplitBar,
-  Tag,
-  UnifiedPhoneFilterBar,
-  PhoneFilterBottomSheet,
-  PhonePeriodPicker,
-  isPeriodFilterActive,
-  type PhonePeriodControl,
-} from './mobile/PhoneKit';
+import { PhoneDownloadBar, type PhonePeriodControl } from './mobile/PhoneKit';
+import { MobileReportTopBar, useMobileReport } from './mobile/MobileReportContext';
 
 interface TripsReportProps {
   filteredTrips: Trip[];
@@ -48,6 +32,7 @@ interface TripsReportProps {
   periodControl?: PhonePeriodControl;
   /** Label of the period chosen at the top of Reports (e.g. "November 2026"). Falls back to `period`. */
   periodLabel?: string;
+  dateInPeriod?: (d: string) => boolean;
   warehouses?: Warehouse[];
   onNavigateTrips: () => void;
 }
@@ -110,9 +95,11 @@ export const TripsReport: React.FC<TripsReportProps> = ({
   period,
   periodControl,
   periodLabel,
+  dateInPeriod,
   onNavigateTrips,
 }) => {
-  const { orgProfile } = useLedger();
+  const { orgProfile, expenses } = useLedger();
+  const mobileCtx = useMobileReport();
   const label = periodLabel || period;
 
   const [viewMode, setViewMode] = useState<ViewMode>('daywise');
@@ -120,7 +107,14 @@ export const TripsReport: React.FC<TripsReportProps> = ({
   const [search, setSearch] = useState('');
   const [openDays, setOpenDays] = useState<Set<string>>(new Set());
   const [explainOpen, setExplainOpen] = useState(false);
-  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
+
+  const fuelTotal = useMemo(
+    () =>
+      (expenses || [])
+        .filter((e) => e.category === 'fuel' && (!dateInPeriod || dateInPeriod(String(e.date).slice(0, 10))))
+        .reduce((s, e) => s + (Number(e.amount) || 0), 0),
+    [expenses, dateInPeriod],
+  );
 
   const todayStr = useMemo(() => todayISO(), []);
   const yesterdayStr = useMemo(() => {
@@ -213,17 +207,9 @@ export const TripsReport: React.FC<TripsReportProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownLines, todayStr, yesterdayStr]);
 
-  const periodActive = !!periodControl && isPeriodFilterActive(periodControl.period);
-  const filterCount = (viewMode !== 'daywise' ? 1 : 0) + (statusFilter !== 'all' ? 1 : 0) + (periodActive ? 1 : 0);
-
   const resetFilters = () => {
     setStatusFilter('all');
     setSearch('');
-  };
-  const resetSheet = () => {
-    resetFilters();
-    setViewMode('daywise');
-    periodControl?.onPeriodChange('thisMonth');
   };
 
   const forceOpen = q.length > 0;
@@ -296,190 +282,200 @@ export const TripsReport: React.FC<TripsReportProps> = ({
 
   const hasAny = allLines.length > 0;
   const statusOptionsWithCount = STATUS_OPTIONS.map((o) => ({ ...o, count: statusCounts[o.id] }));
-  const phoneStatusOptions = STATUS_OPTIONS.map((o) => ({ id: o.id, label: o.id === 'all' ? o.label : `${o.label} ${statusCounts[o.id]}` }));
 
   const runSummary = (g: TripDay) => `${g.lines.length} run${g.lines.length === 1 ? '' : 's'}${g.vehicles.length ? ` · ${g.vehicles.join(', ')}` : ''}`;
   const runSub = (l: TripLine) => `Loaded ${l.nums.loaded} · Delivered ${l.nums.delivered} · Returned ${l.nums.returned} cs`;
 
   const emptyText = hasAny && isFiltered ? 'Nothing matches these filters' : 'No delivery trips in this period. Log trips under Vehicle Trips to see them here.';
 
+  const shortDate = (d: string) => {
+    const dt = new Date(`${d}T12:00:00`);
+    return isNaN(dt.getTime()) ? d : dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  };
+  const shortPeriodText = (mobileCtx?.shortPeriodLabel || label || 'this month').toLowerCase();
+  const periodHeading =
+    shortPeriodText === 'month' ? 'Trips this month' : shortPeriodText === 'all time' ? 'All trips' : `Trips · ${mobileCtx?.shortPeriodLabel || label}`;
+
+  const shareProps = {
+    reportTitle: 'Vehicle trips',
+    summaryLines: [
+      { label: 'Trips', value: String(allLines.length) },
+      ...(fuelTotal > 0 ? [{ label: 'Diesel', value: `₹${money(fuelTotal)}` }] : []),
+      { label: 'Loaded', value: `${totals.loaded} cases` },
+      { label: 'Sold', value: `${totals.delivered} cases` },
+      { label: 'Returned', value: `${totals.returned} cases` },
+    ],
+    sheets: [
+      {
+        name: 'Trips',
+        header: ['Trip', 'Date', 'Vehicle', 'Status', 'Loaded', 'Delivered', 'Returned'],
+        rows: shownLines.map((l) => [l.trip.id, l.trip.date, l.trip.vehicle || '', statusText(l.trip), l.nums.loaded, l.nums.delivered, l.nums.returned]),
+      },
+    ],
+    pdfSections: [
+      {
+        title: 'Trips',
+        header: ['Trip', 'Date', 'Vehicle', 'Loaded', 'Delivered', 'Returned'],
+        rows: shownLines.map((l) => [l.trip.id, l.trip.date, l.trip.vehicle || '', l.nums.loaded, l.nums.delivered, l.nums.returned]),
+        rightAlign: [3, 4, 5],
+      },
+    ],
+  };
+
   return (
     <>
       {/* ============================ PHONE ============================ */}
       <div className="md:hidden space-y-3" id="report-trips-phone">
-        <PhoneHeader title="Vehicle trips" sub="Deliveries and crate tracking" />
-
-        <HeroCard tone="navy" label="Delivered" value={cs(totals.delivered)}>
-          <SplitBar
-            label="Delivered, returned and missing crates"
-            parts={[
-              { value: totals.delivered, className: 'bg-emerald-400' },
-              { value: totals.returned, className: 'bg-sky-400' },
-              { value: totals.disc, className: 'bg-rose-400' },
-            ]}
-          />
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-white/90">
-            <LegendDot dot="bg-emerald-400">Delivered {cs(totals.delivered)}</LegendDot>
-            <LegendDot dot="bg-sky-400">Returned {cs(totals.returned)}</LegendDot>
-            {totals.disc > 0 && <LegendDot dot="bg-rose-400">Missing {cs(totals.disc)}</LegendDot>}
-          </div>
-        </HeroCard>
-
-        <div className="grid grid-cols-3 gap-2">
-          <MiniStat label="Trips" value={allLines.length} />
-          <MiniStat label="Loaded" value={cs(totals.loaded)} />
-          <MiniStat label="Variance" value={varText(totals.disc)} tone={totals.disc > 0 ? 'red' : 'green'} />
-        </div>
-
-        <UnifiedPhoneFilterBar
-          search={search}
-          onSearch={setSearch}
-          placeholder="Search trip, vehicle or driver…"
-          onOpenFilter={() => setIsFilterSheetOpen(true)}
-          activeFilterCount={filterCount}
+        <MobileReportTopBar
+          title="Vehicle trips"
+          sub={viewMode === 'daywise' ? 'Day-wise summary' : 'Trip log'}
+          showPeriod
+          shareProps={shareProps}
         />
 
-        <PhoneFilterBottomSheet
-          isOpen={isFilterSheetOpen}
-          onClose={() => setIsFilterSheetOpen(false)}
-          title="Filter Vehicle Trips"
-          activeCount={filterCount}
-          onReset={resetSheet}
-        >
-          {periodControl && <PhonePeriodPicker {...periodControl} />}
-
-          {/* View Mode */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              View Grouping
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              {VIEW_OPTIONS.map((opt) => {
-                const isSelected = viewMode === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setViewMode(opt.id)}
-                    className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer ${
-                      isSelected
-                        ? 'border-blue-600 bg-blue-50/70 text-blue-900 shadow-xs'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    <span>{opt.label}</span>
-                    {isSelected && <Check size={14} className="text-blue-600 shrink-0" />}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Status Filter */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Trip Status
-            </label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {STATUS_OPTIONS.map((opt) => {
-                const isSelected = statusFilter === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setStatusFilter(opt.id)}
-                    className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer ${
-                      isSelected
-                        ? 'border-blue-600 bg-blue-50/70 text-blue-900 shadow-xs'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    <span>{opt.label}</span>
-                    {isSelected && <Check size={14} className="text-blue-600 shrink-0" />}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </PhoneFilterBottomSheet>
-
-        {(viewMode === 'daywise' && dayGroups.length > 1 && !forceOpen) || isFiltered ? (
-          <div className="flex items-center justify-between px-1 text-xs text-slate-500">
-            <span>
-              {shownLines.length} trip{shownLines.length === 1 ? '' : 's'}
-              {isFiltered && (
-                <>
-                  {' · '}
-                  <button type="button" onClick={resetFilters} className="font-bold text-rose-600 cursor-pointer">
-                    Clear filters
-                  </button>
-                </>
-              )}
-            </span>
-            {viewMode === 'daywise' && dayGroups.length > 1 && !forceOpen && (
-              <button type="button" onClick={toggleAll} className="font-bold text-slate-700 cursor-pointer min-h-[36px]">
-                {allOpen ? 'Collapse all' : 'Expand all'}
-              </button>
-            )}
-          </div>
-        ) : null}
-
-        {shownLines.length === 0 && <EmptyNote>{emptyText}</EmptyNote>}
-
-        {viewMode === 'daywise' &&
-          dayGroups.map((g) => {
-            const open = isOpen(g.date);
+        {/* Row 1: View chips */}
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+          {VIEW_OPTIONS.map((opt) => {
+            const active = viewMode === opt.id;
             return (
-              <RowCard key={g.date}>
-                <button
-                  type="button"
-                  onClick={() => toggleDay(g.date)}
-                  aria-expanded={open}
-                  disabled={forceOpen}
-                  className="w-full text-left p-3 cursor-pointer active:bg-slate-50 disabled:cursor-default"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-[15px] font-extrabold text-slate-900 leading-snug break-words">{g.dateLabel}</div>
-                      <div className="text-xs text-slate-500 break-words">{runSummary(g)}</div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className="text-[17px] font-extrabold text-emerald-700 tabular-nums leading-tight">{cs(g.delivered)}</div>
-                      <div className="text-[11px] text-slate-500">delivered</div>
-                    </div>
-                  </div>
-                  <div className="mt-1.5 flex flex-wrap gap-x-3 text-[12px] font-semibold tabular-nums">
-                    <span className="text-slate-600">Loaded {cs(g.loaded)}</span>
-                    {g.disc > 0 && <span className="text-rose-700">Missing {cs(g.disc)}</span>}
-                  </div>
-                </button>
-                {open && (
-                  <ul className="divide-y divide-slate-100 border-t border-slate-100">
-                    {g.lines.map((l) => (
-                      <PhoneTripRow key={l.trip.id} l={l} statusText={statusText(l.trip)} />
-                    ))}
-                  </ul>
-                )}
-              </RowCard>
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setViewMode(opt.id)}
+                className={`shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                    : 'bg-white text-[var(--text)] border-[var(--border)]'
+                }`}
+              >
+                {opt.label}
+              </button>
             );
           })}
+        </div>
 
-        {viewMode === 'log' && shownLines.length > 0 && (
-          <RowCard>
-            <ul className="divide-y divide-slate-100">
-              {shownLines.map((l) => (
-                <PhoneTripRow key={l.trip.id} l={l} statusText={statusText(l.trip)} showDate />
-              ))}
-            </ul>
-          </RowCard>
+        {/* Row 2: Status chips */}
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+          {STATUS_OPTIONS.map((opt) => {
+            const active = statusFilter === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setStatusFilter(opt.id)}
+                className={`shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                    : 'bg-white text-[var(--text)] border-[var(--border)]'
+                }`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Trips summary card */}
+        <section className="rt-rep-card rt-rep-pad">
+          <div className="text-[12px] font-medium text-[var(--text-2)]">{periodHeading}</div>
+          <div className="text-[26px] font-extrabold text-[var(--text)] tracking-tight leading-tight tabular-nums mt-0.5">
+            {allLines.length}
+          </div>
+          <div className="text-[11.5px] text-[var(--text-2)] mt-1 tabular-nums">
+            {fuelTotal > 0 ? `Diesel ₹${money(fuelTotal)}` : `${statusCounts.out} in transit · ${statusCounts.closed} reconciled`}
+          </div>
+          <div className="rt-kv-grid grid-cols-3">
+            <div className="rt-kv">
+              <div className="rt-kv__l">Loaded</div>
+              <div className="rt-kv__v text-[var(--text)]">{totals.loaded.toLocaleString('en-IN')}</div>
+            </div>
+            <div className="rt-kv">
+              <div className="rt-kv__l">Sold</div>
+              <div className="rt-kv__v text-[var(--text)]">{totals.delivered.toLocaleString('en-IN')}</div>
+            </div>
+            <div className="rt-kv">
+              <div className="rt-kv__l">Returned</div>
+              <div className="rt-kv__v text-[var(--text)]">{totals.returned.toLocaleString('en-IN')}</div>
+            </div>
+          </div>
+        </section>
+
+        {/* Search bar */}
+        <div className="rt-search-bar">
+          <Search size={15} className="text-[var(--text-2)] shrink-0" aria-hidden="true" />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search trip, vehicle or driver…"
+          />
+          {search.trim() && (
+            <button
+              type="button"
+              onClick={() => setSearch('')}
+              className="text-[var(--text-2)] p-1 cursor-pointer"
+              aria-label="Clear search"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {shownLines.length === 0 ? (
+          <div className="rt-rep-card py-10 px-4 text-center text-[13px] font-semibold text-[var(--text-2)]">
+            {emptyText}
+          </div>
+        ) : viewMode === 'daywise' ? (
+          <div className="space-y-2.5">
+            {dayGroups.map((g) => {
+              const open = isOpen(g.date) || dayGroups.length === 1;
+              return (
+                <section key={g.date} className="rt-rep-card overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => toggleDay(g.date)}
+                    aria-expanded={open}
+                    className="w-full px-3.5 py-3 flex items-center justify-between gap-3 text-left cursor-pointer active:bg-[#f8fafc]"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-[13.5px] font-bold text-[var(--text)] truncate">{shortDate(g.date)}</div>
+                      <div className="text-[11.5px] text-[var(--text-2)] mt-0.5 truncate">{runSummary(g)}</div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div className="text-right">
+                        <div className="text-[13.5px] font-extrabold text-[var(--text)] tabular-nums">{g.loaded} cases</div>
+                        <div className="text-[11px] font-semibold text-[var(--paid)] tabular-nums">Sold {g.delivered}</div>
+                      </div>
+                      {dayGroups.length > 1 && (
+                        open ? <ChevronUp size={15} className="text-[var(--text-2)]" /> : <ChevronDown size={15} className="text-[var(--text-2)]" />
+                      )}
+                    </div>
+                  </button>
+                  {open && (
+                    <div className="border-t border-[var(--divider)] divide-y divide-[var(--divider)]">
+                      {g.lines.map((l) => (
+                        <PhoneTripRow key={l.trip.id} l={l} dateText={shortDate((l.trip.date || '').slice(0, 10))} />
+                      ))}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        ) : (
+          <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+            {shownLines.map((l) => (
+              <PhoneTripRow key={l.trip.id} l={l} dateText={shortDate((l.trip.date || '').slice(0, 10))} />
+            ))}
+          </section>
         )}
 
         <button
           type="button"
           onClick={onNavigateTrips}
-          className="w-full min-h-[48px] rounded-2xl border border-slate-200 bg-white text-[14px] font-bold text-slate-800 inline-flex items-center justify-center gap-2 cursor-pointer active:bg-slate-100"
+          className="w-full h-[46px] rounded-2xl border border-[var(--border)] bg-white text-[13.5px] font-bold text-[var(--text)] inline-flex items-center justify-center gap-2 cursor-pointer active:bg-[#f8fafc]"
         >
-          Open Trips manager <ArrowRight size={16} aria-hidden="true" />
+          Open Trips manager <ArrowRight size={15} aria-hidden="true" />
         </button>
 
         <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} disabled={!hasAny} />
@@ -620,26 +616,36 @@ export const TripsReport: React.FC<TripsReportProps> = ({
 };
 
 /** One trip line on the phone. */
-const PhoneTripRow: React.FC<{ l: TripLine; statusText: string; showDate?: boolean }> = ({ l, statusText, showDate }) => (
-  <li className="p-3 flex items-start gap-3">
-    <IconTile tone={l.trip.status === 'out' ? 'blue' : l.nums.disc > 0 ? 'red' : 'green'}>
-      <Truck size={20} />
-    </IconTile>
-    <div className="min-w-0 flex-1">
-      <div className="text-[15px] font-bold text-slate-900 leading-snug break-words">{l.trip.vehicle || 'Vehicle'}</div>
-      <div className="text-xs text-slate-500 leading-snug break-words">
-        #{l.trip.id}
-        {showDate && l.trip.date ? ` · ${formatDateHuman(l.trip.date.slice(0, 10))}` : ''}
-        {` · Loaded ${l.nums.loaded} · Returned ${l.nums.returned}`}
+const PhoneTripRow: React.FC<{ l: TripLine; dateText: string }> = ({ l, dateText }) => {
+  const isOut = l.trip.status === 'out';
+  const party = l.trip.driver || l.trip.salesman || l.trip.route || l.trip.vehicle || 'Trip';
+  return (
+    <div className="px-3.5 py-3 flex items-center gap-3">
+      <div
+        className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
+          isOut ? 'bg-[var(--soon-bg)] text-[var(--soon)]' : 'bg-[#eaf3fd] text-[var(--primary)]'
+        }`}
+      >
+        <Truck size={16} />
       </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-        <Tag tone={l.trip.status === 'out' ? 'amber' : 'green'}>{statusText}</Tag>
-        {l.nums.disc > 0 && <Tag tone="red">Missing {l.nums.disc} cs</Tag>}
+      <div className="min-w-0 flex-1">
+        <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug truncate">
+          Trip #{l.trip.id} · {party}
+        </div>
+        <div className="text-[11.5px] text-[var(--text-2)] mt-0.5 truncate">
+          {[l.trip.vehicle, dateText].filter(Boolean).join(' · ')}
+        </div>
+      </div>
+      <div className="text-right shrink-0">
+        <div className="text-[13.5px] font-extrabold text-[var(--text)] tabular-nums">{l.nums.loaded} cases</div>
+        <span
+          className={`inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+            isOut ? 'bg-[var(--paid-bg)] text-[var(--paid)]' : 'bg-[#eaf3fd] text-[var(--primary)]'
+          }`}
+        >
+          {isOut ? 'Out' : 'Reconciled'}
+        </span>
       </div>
     </div>
-    <div className="text-right shrink-0">
-      <div className="text-[17px] font-extrabold tabular-nums leading-tight text-emerald-700">{cs(l.nums.delivered)}</div>
-      <div className="text-[11px] text-slate-400">delivered</div>
-    </div>
-  </li>
-);
+  );
+};

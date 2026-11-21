@@ -269,16 +269,16 @@ export const OrderContextBar: React.FC<OrderContextBarProps> = ({
   };
 
   const pillBtn = (active: boolean) =>
-    `w-full min-h-[42px] sm:min-h-[44px] px-2.5 sm:px-3 rounded-full border text-[12px] sm:text-[13.5px] font-bold inline-flex items-center justify-between gap-1 sm:gap-2 transition-all cursor-pointer ${
+    `hh-context-pill w-full min-h-[42px] sm:min-h-[44px] px-2.5 sm:px-3 rounded-full border text-[12px] sm:text-[13.5px] font-bold inline-flex items-center justify-between gap-1 sm:gap-2 transition-all cursor-pointer ${
       active
         ? 'bg-[#0A2558] bg-gradient-to-b from-[#0D3984] to-[#082458] text-white! border-[#0A2C6B] shadow-sm'
         : 'bg-white text-[#0A1F44] border-[#DCE5F2] hover:bg-[#F5F8FD] shadow-2xs'
     }`;
 
   return (
-    <div ref={rootRef} className="space-y-2.5">
-      {/* Row 1: Dual source pill buttons (Trip / Van vs Warehouse) */}
-      <div className="grid grid-cols-2 gap-1.5 sm:gap-2.5" role="group" aria-label="Sale source">
+    <div ref={rootRef} className="hh-context-bar space-y-2.5">
+      {/* Row 1: Dual source pill buttons (Van vs Godown) */}
+      <div className="grid grid-cols-2 gap-1.5 sm:gap-2.5" role="group" aria-label="Stock source">
         <button
           type="button"
           aria-pressed={saleSource === 'trip'}
@@ -292,7 +292,9 @@ export const OrderContextBar: React.FC<OrderContextBarProps> = ({
                 saleSource === 'trip' ? 'text-white' : 'text-[#1A63DB]'
               }`}
             />
-            <span className="whitespace-nowrap">Trip / Van</span>
+            <span className="whitespace-nowrap">
+              {trips.length === 0 ? 'No trip' : 'Van trip'}
+            </span>
           </span>
           <ChevronDown
             className={`w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 transition-transform ${
@@ -310,7 +312,7 @@ export const OrderContextBar: React.FC<OrderContextBarProps> = ({
         >
           <span className="inline-flex items-center gap-1.5 min-w-0">
             <WarehouseGlyph active={saleSource === 'warehouse'} />
-            <span className="whitespace-nowrap">Warehouse</span>
+            <span className="whitespace-nowrap">Godown</span>
           </span>
           <ChevronDown
             className={`w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 transition-transform ${
@@ -323,7 +325,7 @@ export const OrderContextBar: React.FC<OrderContextBarProps> = ({
       {/* Dropdown chooser panel for Trip / Van */}
       {openMenu === 'trip' && (
         <div
-          className="rounded-2xl bg-white border border-[#D8E3F2] shadow-[0_10px_28px_-6px_rgba(10,31,68,0.14)] overflow-hidden"
+          className="hh-context-dropdown rounded-2xl bg-white border border-[#D8E3F2] shadow-[0_10px_28px_-6px_rgba(10,31,68,0.14)] overflow-hidden"
           role="listbox"
           aria-label="Choose active trip or van"
         >
@@ -415,7 +417,7 @@ export const OrderContextBar: React.FC<OrderContextBarProps> = ({
       {/* Dropdown chooser panel for Warehouse */}
       {openMenu === 'warehouse' && (
         <div
-          className="rounded-2xl bg-white border border-[#D8E3F2] shadow-[0_10px_28px_-6px_rgba(10,31,68,0.14)] overflow-hidden"
+          className="hh-context-dropdown rounded-2xl bg-white border border-[#D8E3F2] shadow-[0_10px_28px_-6px_rgba(10,31,68,0.14)] overflow-hidden"
           role="listbox"
           aria-label="Choose warehouse"
         >
@@ -506,9 +508,9 @@ export const OrderContextBar: React.FC<OrderContextBarProps> = ({
           onClick={openDatePicker}
           aria-expanded={dateOpen}
           aria-label="Change bill date"
-          className={`min-h-[38px] sm:min-h-[42px] px-3 rounded-2xl border text-[12.5px] sm:text-[13.5px] font-bold inline-flex items-center gap-1.5 sm:gap-2 cursor-pointer transition-colors shrink-0 shadow-2xs ${
+          className={`hh-context-date min-h-[38px] sm:min-h-[42px] px-3 rounded-2xl border text-[12.5px] sm:text-[13.5px] font-bold inline-flex items-center gap-1.5 sm:gap-2 cursor-pointer transition-colors shrink-0 shadow-2xs ${
             isBackDated
-              ? 'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100/70'
+              ? 'hh-context-date--back bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100/70'
               : dateOpen
                 ? 'bg-[#0A1F44] border-[#0A1F44] text-white!'
                 : 'bg-white border-[#DCE5F2] text-[#0A1F44] hover:bg-[#F5F8FD]'
@@ -522,7 +524,7 @@ export const OrderContextBar: React.FC<OrderContextBarProps> = ({
         </button>
 
         {activeSummary && (
-          <span className="text-[12px] font-semibold text-[#4A638D] leading-snug break-words tabular-nums">
+          <span className="hh-context-summary text-[12px] font-semibold text-[#4A638D] leading-snug break-words tabular-nums">
             {activeSummary}
           </span>
         )}
@@ -531,7 +533,7 @@ export const OrderContextBar: React.FC<OrderContextBarProps> = ({
       {/* Expandable Back-Date Picker Panel (quick presets + visible date input + calendar) */}
       {dateOpen && (
         <div
-          className="rounded-2xl border border-[#DCE5F2] bg-[#F7FAFF] p-3 space-y-3 shadow-xs"
+          className="hh-context-dropdown rounded-2xl border border-[#DCE5F2] bg-[#F7FAFF] p-3 space-y-3 shadow-xs"
           role="region"
           aria-label="Pick bill date"
         >
@@ -551,7 +553,7 @@ export const OrderContextBar: React.FC<OrderContextBarProps> = ({
                       onSaleDateChange(preset.iso);
                       setDateOpen(false);
                     }}
-                    className={`min-h-[34px] px-3 rounded-lg text-xs font-bold border cursor-pointer transition-colors ${
+                    className={`min-h-[44px] sm:min-h-[34px] px-3 rounded-lg text-xs font-bold border cursor-pointer transition-colors ${
                       active
                         ? 'bg-[#179B46] border-[#179B46] text-white'
                         : 'bg-white border-[#DCE5F2] text-[#0A1F44] hover:bg-slate-50'
@@ -577,13 +579,13 @@ export const OrderContextBar: React.FC<OrderContextBarProps> = ({
                     }
                   }
                 }}
-                className="min-h-[34px] px-2.5 rounded-lg border border-[#DCE5F2] bg-white text-xs font-bold text-[#0A1F44] focus:outline-none focus:border-[#1A63DB]"
+                className="min-h-[44px] sm:min-h-[34px] px-2.5 rounded-lg border border-[#DCE5F2] bg-white text-xs font-bold text-[#0A1F44] focus:outline-none focus:border-[#1A63DB]"
               />
               <button
                 type="button"
                 onClick={() => setDateOpen(false)}
                 aria-label="Done picking date"
-                className="min-h-[34px] px-2.5 rounded-lg bg-[#0A1F44] text-white text-xs font-bold cursor-pointer"
+                className="min-h-[44px] sm:min-h-[34px] px-2.5 rounded-lg bg-[#0A1F44] text-white text-xs font-bold cursor-pointer"
               >
                 Done
               </button>

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, Boxes, Check } from 'lucide-react';
+import { AlertTriangle, Boxes, Droplets, Package, Search, X } from 'lucide-react';
 import { Product } from '../../../types';
 import { useLedger } from '../../../context/LedgerContext';
 import { money, resolveProductGstRate } from '../../../utils/billing';
@@ -20,23 +20,8 @@ import {
   ReportStatGrid,
   ReportTitleBar,
 } from './ReportKit';
-import {
-  Chips,
-  EmptyNote,
-  HeroCard,
-  IconTile,
-  LegendDot,
-  MiniStat,
-  PhoneDownloadBar,
-  PhoneHeader,
-  PhoneSearch,
-  RowCard,
-  SplitBar,
-  Tag,
-  UnifiedPhoneFilterBar,
-  PhoneFilterBottomSheet,
-  rs,
-} from './mobile/PhoneKit';
+import { PhoneDownloadBar, rs } from './mobile/PhoneKit';
+import { MobileReportTopBar } from './mobile/MobileReportContext';
 
 interface InventoryReportProps {
   inventoryStats: {
@@ -91,17 +76,35 @@ interface CategoryGroup {
  * then one collapsed card per category (open it to see every item with its stock, cost and margin).
  */
 export const InventoryReport: React.FC<InventoryReportProps> = ({ inventoryStats, products, remainingStock, expiryRadar }) => {
-  const { orgProfile } = useLedger();
+  const { orgProfile, inventoryBatches, warehouses } = useLedger();
 
   const [stockFilter, setStockFilter] = useState<StockFilter>('all');
   const [category, setCategory] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [openCats, setOpenCats] = useState<Set<string>>(new Set());
   const [explainOpen, setExplainOpen] = useState(false);
-  const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false);
 
   const totalLanded = inventoryStats.totalCostValuationInclGst || inventoryStats.totalCostValuation;
   const inputGst = inventoryStats.totalInputGst || Math.max(0, totalLanded - inventoryStats.totalCostValuation);
+
+  const warehouseByProduct = useMemo(() => {
+    const whName = new Map<string, string>();
+    (warehouses || []).forEach((w) => whName.set(String(w.id), w.name));
+    const prodWh = new Map<number, Set<string>>();
+    (inventoryBatches || []).forEach((b) => {
+      if ((Number(b.quantity) || 0) > 0 && b.warehouseId) {
+        const nm = whName.get(String(b.warehouseId));
+        if (nm) {
+          const s = prodWh.get(b.productId) || new Set<string>();
+          s.add(nm);
+          prodWh.set(b.productId, s);
+        }
+      }
+    });
+    const out = new Map<number, string>();
+    prodWh.forEach((s, pid) => out.set(pid, Array.from(s).join(', ')));
+    return out;
+  }, [inventoryBatches, warehouses]);
 
   // ---- every product with its numbers ------------------------------------------------------------
   const allLines = useMemo<StockLine[]>(
@@ -223,16 +226,43 @@ export const InventoryReport: React.FC<InventoryReportProps> = ({ inventoryStats
   const hasAny = allLines.length > 0;
   const emptyText = hasAny && isFiltered ? 'Nothing matches these filters' : 'No products yet. Add products to see stock and value here.';
   const stockOptionsWithCount = STOCK_OPTIONS.map((o) => ({ ...o, count: stockCounts[o.id] }));
-  const phoneStockOptions = STOCK_OPTIONS.map((o) => ({ id: o.id, label: o.id === 'all' ? o.label : `${o.label} ${stockCounts[o.id]}` }));
   const stockTone = (rem: number) => (rem <= 0 ? ('red' as const) : rem < LOW_STOCK_BELOW ? ('amber' as const) : ('ink' as const));
-
   const rowSub = (l: StockLine) => `Rate ₹${money(l.cost)} · Wholesale ₹${money(l.whole)} · Margin +₹${money(l.margin)}/case`;
+  const phoneStockChips: { id: StockFilter; label: string }[] = [
+    { id: 'all', label: 'All items' },
+    { id: 'low', label: stockCounts.low > 0 ? `Low (${stockCounts.low})` : 'Low' },
+    { id: 'out', label: stockCounts.out > 0 ? `Out of stock (${stockCounts.out})` : 'Out of stock' },
+  ];
+
+  const shareProps = {
+    reportTitle: 'Inventory & value',
+    summaryLines: [
+      { label: 'Stock value', value: rs(inventoryStats.totalCostValuation) },
+      { label: 'In stock', value: `${inventoryStats.totalCrates} cases · ${products.length} products` },
+      { label: 'Wholesale value', value: rs(inventoryStats.totalSellingValuation) },
+    ],
+    sheets: [
+      {
+        name: 'Stock valuation',
+        header: ['Item', 'Category', 'In stock (cs)', 'Rate', 'Asset value'],
+        rows: shownLines.map((l) => [l.p.name, String(l.p.category || ''), l.rem, l.cost, l.costVal]),
+      },
+    ],
+    pdfSections: [
+      {
+        title: 'Stock valuation',
+        header: ['Item', 'In stock', 'Asset value'],
+        rows: shownLines.map((l) => [l.p.name, `${l.rem} cs`, money(l.costVal)]),
+        rightAlign: [1, 2],
+      },
+    ],
+  };
 
   const expirySoon = expiryRadar.critical;
 
   const expiryBox = expirySoon.length > 0 && (
-    <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-3 space-y-2">
-      <div className="flex items-center gap-2 font-bold text-amber-900 text-[13px]">
+    <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3 space-y-2">
+      <div className="flex items-center gap-2 font-bold text-amber-900 text-[12.5px]">
         <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" aria-hidden="true" />
         Expires soon · {expirySoon.length} batch{expirySoon.length === 1 ? '' : 'es'}
       </div>
@@ -254,184 +284,123 @@ export const InventoryReport: React.FC<InventoryReportProps> = ({ inventoryStats
     <>
       {/* ============================ PHONE ============================ */}
       <div className="md:hidden space-y-3" id="report-inventory-phone">
-        <PhoneHeader title="Inventory & value" sub="Stock as on today" />
+        <MobileReportTopBar
+          title="Inventory & value"
+          sub="Stock valuation"
+          showPeriod={false}
+          shareProps={shareProps}
+        />
 
-        <HeroCard tone="navy" label="Stock asset value (ex-tax)" value={rs(inventoryStats.totalCostValuation)}>
-          <SplitBar
-            label="Ex-tax value and input GST"
-            parts={[
-              { value: inventoryStats.totalCostValuation, className: 'bg-emerald-400' },
-              { value: inputGst, className: 'bg-amber-400' },
-            ]}
-          />
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-white/90">
-            <LegendDot dot="bg-emerald-400">Ex-tax {rs(inventoryStats.totalCostValuation)}</LegendDot>
-            <LegendDot dot="bg-amber-400">GST {rs(inputGst)}</LegendDot>
+        {/* Stock value card */}
+        <section className="rt-rep-card rt-rep-pad">
+          <div className="text-[12px] font-medium text-[var(--text-2)]">Stock value</div>
+          <div className="text-[26px] font-extrabold text-[var(--text)] tracking-tight leading-tight tabular-nums mt-0.5">
+            {rs(inventoryStats.totalCostValuation)}
           </div>
-        </HeroCard>
-
-        <div className="grid grid-cols-3 gap-2">
-          <MiniStat label="In stock" value={`${inventoryStats.totalCrates} cs`} />
-          <MiniStat label="Realisation" value={rs(inventoryStats.totalSellingValuation)} tone="green" />
-          <MiniStat label="Gross profit" value={rs(inventoryStats.potentialGrossProfit)} tone={inventoryStats.potentialGrossProfit < 0 ? 'red' : 'profit'} />
-        </div>
-        <button
-          type="button"
-          onClick={() => setExplainOpen(true)}
-          className="inline-flex items-center gap-1.5 min-h-[36px] px-1 text-[12.5px] font-semibold text-sky-700 cursor-pointer"
-        >
-          How is this calculated?
-        </button>
+          <div className="text-[11.5px] text-[var(--text-2)] mt-1">
+            {inventoryStats.totalCrates.toLocaleString('en-IN')} cases · {products.length} {products.length === 1 ? 'product' : 'products'}
+          </div>
+        </section>
 
         {expiryBox}
 
-        <UnifiedPhoneFilterBar
-          search={search}
-          onSearch={setSearch}
-          placeholder="Search item or category…"
-          onOpenFilter={() => setIsFilterSheetOpen(true)}
-          activeFilterCount={(stockFilter !== 'all' ? 1 : 0) + (category !== 'all' ? 1 : 0)}
-        />
+        {/* Filter chips */}
+        <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+          {phoneStockChips.map((opt) => {
+            const active = stockFilter === opt.id;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setStockFilter(opt.id)}
+                className={`shrink-0 px-3.5 py-1.5 rounded-full text-[12px] font-bold border transition-colors cursor-pointer ${
+                  active
+                    ? 'bg-[var(--text)] text-white border-[var(--text)]'
+                    : 'bg-white text-[var(--text)] border-[var(--border)]'
+                }`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
 
-        <PhoneFilterBottomSheet
-          isOpen={isFilterSheetOpen}
-          onClose={() => setIsFilterSheetOpen(false)}
-          title="Filter Inventory"
-          activeCount={(stockFilter !== 'all' ? 1 : 0) + (category !== 'all' ? 1 : 0)}
-          onReset={resetFilters}
-        >
-          {/* Stock Availability */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Stock Availability
-            </label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {STOCK_OPTIONS.map((opt) => {
-                const isSelected = stockFilter === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setStockFilter(opt.id)}
-                    className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer ${
-                      isSelected
-                        ? 'border-blue-600 bg-blue-50/70 text-blue-900 shadow-xs'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+        {/* Search bar */}
+        <div className="rt-search-bar">
+          <Search size={15} className="text-[var(--text-2)] shrink-0" aria-hidden="true" />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search item…"
+          />
+          {search.trim() && (
+            <button
+              type="button"
+              onClick={() => setSearch('')}
+              className="text-[var(--text-2)] p-1 cursor-pointer"
+              aria-label="Clear search"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {/* Product list */}
+        {shownLines.length === 0 ? (
+          <div className="rt-rep-card py-10 px-4 text-center text-[13px] font-semibold text-[var(--text-2)]">
+            {emptyText}
+          </div>
+        ) : (
+          <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+            {shownLines.map((l) => {
+              const isOut = l.rem <= 0;
+              const isLow = l.rem > 0 && l.rem < LOW_STOCK_BELOW;
+              const whLabel = warehouseByProduct.get(l.p.id) || String(l.p.category || 'Main godown');
+              return (
+                <div key={l.p.id} className="px-3.5 py-3 flex items-center gap-3">
+                  <div
+                    className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
+                      isOut
+                        ? 'bg-[#f1f5f9] text-[var(--text-2)]'
+                        : isLow
+                          ? 'bg-[var(--soon-bg)] text-[var(--soon)]'
+                          : 'bg-[#eaf3fd] text-[var(--primary)]'
                     }`}
                   >
-                    <span>{opt.label}</span>
-                    {isSelected && <Check size={14} className="text-blue-600 shrink-0" />}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Categories */}
-          {showCategoryFilter && (
-            <div className="space-y-2">
-              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Category
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                {categoryOptions.map((opt) => {
-                  const isSelected = category === opt.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => setCategory(opt.id)}
-                      className={`px-3 py-2.5 rounded-xl border text-xs font-bold transition-all text-left flex items-center justify-between cursor-pointer ${
-                        isSelected
-                          ? 'border-blue-600 bg-blue-50/70 text-blue-900 shadow-xs'
-                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      <span className="truncate">{opt.label}</span>
-                      {isSelected && <Check size={14} className="text-blue-600 shrink-0" />}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-        </PhoneFilterBottomSheet>
-
-        {(groups.length > 1 && !forceOpen) || isFiltered ? (
-          <div className="flex items-center justify-between px-1 text-xs text-slate-500">
-            <span>
-              {shownLines.length} item{shownLines.length === 1 ? '' : 's'}
-              {isFiltered && (
-                <>
-                  {' · '}
-                  <button type="button" onClick={resetFilters} className="font-bold text-rose-600 cursor-pointer">
-                    Clear filters
-                  </button>
-                </>
-              )}
-            </span>
-            {groups.length > 1 && !forceOpen && (
-              <button type="button" onClick={toggleAll} className="font-bold text-slate-700 cursor-pointer min-h-[36px]">
-                {allOpen ? 'Collapse all' : 'Expand all'}
-              </button>
-            )}
-          </div>
-        ) : null}
-
-        {groups.length === 0 && <EmptyNote>{emptyText}</EmptyNote>}
-
-        {groups.map((g) => {
-          const open = isOpen(g.category);
-          return (
-            <RowCard key={g.category}>
-              <button
-                type="button"
-                onClick={() => toggle(g.category)}
-                aria-expanded={open}
-                disabled={forceOpen}
-                className="w-full text-left p-3 cursor-pointer active:bg-slate-50 disabled:cursor-default"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-[15px] font-extrabold text-slate-900 leading-snug break-words">{g.category}</div>
-                    <div className="text-xs text-slate-500">
-                      {g.lines.length} item{g.lines.length === 1 ? '' : 's'} · {g.crates} cs in stock
+                    {isOut ? <Boxes size={16} /> : isLow ? <Package size={16} /> : <Droplets size={16} />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug truncate">
+                      {l.p.name}
+                    </div>
+                    <div className="text-[11.5px] text-[var(--text-2)] mt-0.5 truncate">
+                      {whLabel}
                     </div>
                   </div>
                   <div className="text-right shrink-0">
-                    <div className="text-[17px] font-extrabold text-emerald-700 tabular-nums leading-tight">{rs(g.sellVal)}</div>
-                    <div className="text-[11px] text-slate-500">wholesale value</div>
+                    <div className="text-[13.5px] font-extrabold text-[var(--text)] tabular-nums">
+                      {isOut ? '0' : `${l.rem} ${l.rem === 1 ? 'case' : 'cases'}`}
+                    </div>
+                    {isOut ? (
+                      <span className="inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[var(--due-bg)] text-[var(--due)]">
+                        Out
+                      </span>
+                    ) : isLow ? (
+                      <span className="inline-block mt-0.5 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[var(--soon-bg)] text-[var(--soon)]">
+                        Low
+                      </span>
+                    ) : (
+                      <div className="text-[11px] font-semibold text-[var(--text-2)] tabular-nums mt-0.5">
+                        {rs(l.costVal)}
+                      </div>
+                    )}
                   </div>
                 </div>
-              </button>
-              {open && (
-                <ul className="divide-y divide-slate-100 border-t border-slate-100">
-                  {g.lines.map((l) => (
-                    <li key={l.p.id} className="p-3 flex items-start gap-3">
-                      <IconTile tone={l.rem <= 0 ? 'red' : l.rem < LOW_STOCK_BELOW ? 'grey' : 'blue'}>
-                        <Boxes size={20} />
-                      </IconTile>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[15px] font-bold text-slate-900 leading-snug break-words">{l.p.name}</div>
-                        <div className="text-xs text-slate-500 leading-snug">{rowSub(l)}</div>
-                        <div className="mt-1.5 flex flex-wrap gap-1.5">
-                          <Tag tone={l.rem <= 0 ? 'red' : l.rem < LOW_STOCK_BELOW ? 'amber' : 'green'}>
-                            {l.rem <= 0 ? 'Out of stock' : `${l.rem} cs in stock`}
-                          </Tag>
-                          <Tag tone="grey">Asset {rs(l.costVal)}</Tag>
-                        </div>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <div className="text-[17px] font-extrabold tabular-nums leading-tight text-emerald-700">{rs(l.sellVal)}</div>
-                        <div className="text-[11px] text-slate-400">realisation</div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </RowCard>
-          );
-        })}
+              );
+            })}
+          </section>
+        )}
 
         <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} disabled={!hasAny} />
       </div>

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Share2, FileSpreadsheet, FileText, MessageSquare, Check, Download } from 'lucide-react';
-import { downloadPdf, downloadXlsx, fileStamp, fileSlug, type SheetSpec, type PdfSection } from '../../../utils/reportDownload';
+import { Share, Share2, FileSpreadsheet, FileText, MessageSquare, Check, Download } from 'lucide-react';
+import { downloadPdf, downloadXlsx, fileSlug, fileStamp, type SheetSpec, type PdfSection } from '../../../utils/reportDownload';
 
 export interface ReportShareMenuProps {
   reportTitle: string;
@@ -15,6 +15,7 @@ export interface ReportShareMenuProps {
   className?: string;
   triggerClassName?: string;
   iconClassName?: string;
+  iconOnly?: boolean;
 }
 
 export const ReportShareMenu: React.FC<ReportShareMenuProps> = ({
@@ -30,6 +31,7 @@ export const ReportShareMenu: React.FC<ReportShareMenuProps> = ({
   className = '',
   triggerClassName,
   iconClassName,
+  iconOnly = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isExporting, setIsExporting] = useState<'pdf' | 'excel' | null>(null);
@@ -241,11 +243,19 @@ export const ReportShareMenu: React.FC<ReportShareMenuProps> = ({
         aria-expanded={isOpen}
         className={
           triggerClassName ||
-          "flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold shadow-xs transition-colors cursor-pointer"
+          (iconOnly
+            ? "inline-flex items-center justify-center w-9 h-9 rounded-full text-white hover:bg-white/15 active:scale-95 transition-all cursor-pointer"
+            : "flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold shadow-xs transition-colors cursor-pointer")
         }
       >
-        <Share2 size={14} className={iconClassName || "text-slate-600"} />
-        <span className="font-bold">Share</span>
+        {iconOnly ? (
+          <Share size={17} strokeWidth={2.2} className={iconClassName || "text-white"} />
+        ) : (
+          <>
+            <Share2 size={14} className={iconClassName || "text-slate-600"} />
+            <span className="font-bold">Share</span>
+          </>
+        )}
       </button>
 
       {/* Mobile: full-width bottom sheet to avoid clipping */}

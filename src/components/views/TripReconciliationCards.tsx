@@ -3,7 +3,6 @@ import { LayoutGrid, List } from 'lucide-react';
 import { PaletteTokens } from '../../types';
 import { SizeChip } from '../common/SizeChip';
 import { PackIcon } from '../common/PackIcon';
-import { sizeTheme } from '../../utils/sizeColor';
 
 export interface TripProductReconciliationRow {
   productId: number;
@@ -87,17 +86,11 @@ export const TripReconciliationCards: React.FC<TripReconciliationCardsProps> = (
             const deliveries = customerDeliveriesByProduct[r.productId] || [];
             const remainingOnVan = Math.max(0, r.loaded - r.sold);
 
-            const sTheme = sizeTheme(r.volume, r.name);
-
             return (
               <div
                 key={r.productId}
-                className="border-2 rounded-lg p-3 bg-white shadow-xs flex flex-col justify-between transition-all hover:border-slate-400"
-                style={{
-                  borderColor: bad ? `${palette.bad}70` : palette.line,
-                  borderLeftWidth: 6,
-                  borderLeftColor: sTheme.hex,
-                }}
+                data-card-tone={bad ? 'due' : tripStatus === 'closed' ? 'received' : 'sales'}
+                className="border rounded-2xl p-3.5 shadow-xs flex flex-col justify-between transition-all"
               >
                 <div>
                   {/* Card Header: Product Name & Status Badge */}
@@ -135,28 +128,22 @@ export const TripReconciliationCards: React.FC<TripReconciliationCardsProps> = (
                   </div>
 
                   {/* 3-Column Metrics Grid */}
-                  <div className="grid grid-cols-3 gap-1.5 mt-2.5 pt-2 border-t border-slate-100 text-center text-xs">
-                    <div className="bg-slate-50 p-1.5 rounded border border-slate-200">
+                  <div className="grid grid-cols-3 gap-1.5 mt-2.5 pt-2 border-t border-black/5 text-center text-xs tabular-nums">
+                    <div className="bg-white/80 p-1.5 rounded-xl border border-black/5">
                       <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
                         Loaded
                       </div>
                       <div className="font-black text-slate-900 mt-0.5">{r.loaded} cs</div>
                     </div>
 
-                    <div className="bg-emerald-50/50 p-1.5 rounded border border-emerald-200">
+                    <div className="bg-white/80 p-1.5 rounded-xl border border-black/5">
                       <div className="text-[10px] text-emerald-700 font-bold uppercase tracking-wider">
                         Delivered
                       </div>
                       <div className="font-black text-emerald-800 mt-0.5">{r.sold} cs</div>
                     </div>
 
-                    <div
-                      className="p-1.5 rounded border"
-                      style={{
-                        backgroundColor: bad ? `${palette.bad}10` : '#F8FAFC',
-                        borderColor: bad ? `${palette.bad}40` : '#E2E8F0',
-                      }}
-                    >
+                    <div className="bg-white/80 p-1.5 rounded-xl border border-black/5">
                       <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
                         {tripStatus === 'closed' ? 'Returned' : 'Remaining'}
                       </div>
@@ -216,18 +203,13 @@ export const TripReconciliationCards: React.FC<TripReconciliationCardsProps> = (
                 const deliveries = customerDeliveriesByProduct[r.productId] || [];
                 const remainingOnVan = Math.max(0, r.loaded - r.sold);
 
-                const sTheme = sizeTheme(r.volume, r.name);
-
                 return (
                   <tr
                     key={r.productId}
                     className="border-t hover:bg-slate-50/60"
                     style={{ borderColor: palette.line }}
                   >
-                    <td
-                      className="px-3 py-2"
-                      style={{ borderLeftWidth: 6, borderLeftStyle: 'solid', borderLeftColor: sTheme.hex }}
-                    >
+                    <td className="px-3 py-2">
                       <div className="flex items-start gap-2">
                         <PackIcon size="sm" pack={r.pack} name={r.name} className="mt-0.5" />
                         <div className="min-w-0">

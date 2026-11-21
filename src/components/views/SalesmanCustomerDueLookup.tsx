@@ -26,6 +26,7 @@ import { useLedger } from '../../context/LedgerContext';
 import { isSpeechRecognitionSupported, startSpeechRecognition } from '../../utils/speechRecognition';
 import { billBalance } from '../../utils/salesReturns';
 import { OdiaName } from '../common/OdiaName';
+import { getInitials } from '../ui/HomeKit';
 import { todayISO, toLocalISODate } from "../../utils/dateLocal";
 
 export interface CustomerDueRecord {
@@ -350,16 +351,18 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
       {/* Top Banner & Stat Cards (Clean 2-card layout without redundant 3rd card) */}
       <div className="grid grid-cols-2 gap-3">
         <div
-          className="p-3.5 sm:p-4 rounded-xl border-2 shadow-sm"
-          style={{
-            backgroundColor: palette.panel,
-            borderColor: palette.line,
-          }}
+          data-card-tone={totalDueSum > 0 ? 'due' : 'received'}
+          className="p-3.5 sm:p-4 rounded-2xl border shadow-xs"
         >
-          <div className="text-[11px] sm:text-xs font-black uppercase tracking-wider text-slate-500">
-            Total Outstanding
+          <div className="flex items-center justify-between gap-1.5">
+            <div className="text-[11px] sm:text-xs font-extrabold uppercase tracking-wider text-rose-900/75">
+              Total Outstanding
+            </div>
+            <span className={`hh-icon-badge hh-icon-badge--sm shrink-0 ${totalDueSum > 0 ? 'hh-icon-badge--rose' : 'hh-icon-badge--green'}`}>
+              <IndianRupee size={14} />
+            </span>
           </div>
-          <div className="text-xl sm:text-3xl font-black text-rose-700 mt-1 font-mono">
+          <div className="text-xl sm:text-3xl font-black text-rose-700 mt-1.5 font-mono tabular-nums">
             ₹{money(totalDueSum)}
           </div>
           <div className="text-xs font-bold text-slate-500 mt-0.5">
@@ -368,16 +371,18 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
         </div>
 
         <div
-          className="p-3.5 sm:p-4 rounded-xl border-2 shadow-sm"
-          style={{
-            backgroundColor: palette.panel,
-            borderColor: palette.line,
-          }}
+          data-card-tone="sales"
+          className="p-3.5 sm:p-4 rounded-2xl border shadow-xs"
         >
-          <div className="text-[11px] sm:text-xs font-black uppercase tracking-wider text-slate-500">
-            Accounts
+          <div className="flex items-center justify-between gap-1.5">
+            <div className="text-[11px] sm:text-xs font-extrabold uppercase tracking-wider text-blue-900/75">
+              Accounts
+            </div>
+            <span className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--blue shrink-0">
+              <UserCheck size={14} />
+            </span>
           </div>
-          <div className="text-xl sm:text-3xl font-black text-slate-900 mt-1 font-mono">
+          <div className="text-xl sm:text-3xl font-black text-slate-900 mt-1.5 font-mono tabular-nums">
             {customerRecords.length}
           </div>
           <div className="text-xs font-bold text-slate-500 mt-0.5">
@@ -407,11 +412,8 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
 
       {/* Search & Quick Filters (Add Customer button removed from this row per user image) */}
       <div
-        className="p-3.5 rounded-xl border-2 shadow-sm space-y-3"
-        style={{
-          backgroundColor: palette.panel,
-          borderColor: palette.line,
-        }}
+        data-card-tone="neutral"
+        className="p-3.5 rounded-2xl border shadow-xs space-y-3"
       >
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
@@ -491,8 +493,8 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
       <div className="space-y-2.5">
         {filteredCustomers.length === 0 ? (
           <div
-            className="p-8 text-center rounded-xl border-2 border-dashed space-y-2 text-slate-500"
-            style={{ borderColor: palette.line, backgroundColor: palette.panel }}
+            data-card-tone="neutral"
+            className="p-8 text-center rounded-2xl border border-dashed space-y-2 text-slate-500"
           >
             <UserCheck size={36} className="mx-auto text-slate-400" />
             <div className="font-black text-sm text-slate-700">No customers found</div>
@@ -514,23 +516,27 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
         ) : (
           filteredCustomers.map((cust) => {
             const hasDue = cust.balanceDue > 0;
+            const hasAdvance = (cust.advance || 0) > 0.004;
+            const cardTone = hasDue ? 'due' : hasAdvance ? 'sales' : 'received';
+            const avatarTone = hasDue ? 'hh-avatar--rose' : hasAdvance ? 'hh-avatar--blue' : 'hh-avatar--green';
 
             return (
               <div
                 key={cust.name}
                 id={`customer-due-card-${cust.name.replace(/\s+/g, '-').toLowerCase()}`}
-                className="rounded-xl border-2 p-3.5 sm:p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 transition-all"
-                style={{
-                  backgroundColor: palette.panel,
-                  borderColor: hasDue ? '#FCA5A5' : palette.line,
-                }}
+                data-card-tone={cardTone}
+                className="rounded-2xl border p-3.5 sm:p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 transition-all"
               >
                 {/* Left: Customer Info, Balance Due, Last Bill */}
-                <div className="min-w-0 flex-1 space-y-1.5">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="font-black text-slate-900 text-base sm:text-lg leading-tight">
-                      <OdiaName name={cust.name} kind="person" />
-                    </h3>
+                <div className="flex items-start gap-3 min-w-0 flex-1">
+                  <span className={`hh-avatar hh-avatar--sm shrink-0 mt-0.5 ${avatarTone}`}>
+                    {getInitials(cust.name, 'C')}
+                  </span>
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-black text-slate-900 text-base sm:text-lg leading-tight">
+                        <OdiaName name={cust.name} kind="person" />
+                      </h3>
 
                     {hasDue ? (
                       <span className="px-2.5 py-0.5 rounded-full text-xs font-black uppercase bg-rose-100 text-rose-800 border border-rose-300">
@@ -569,6 +575,7 @@ export const SalesmanCustomerDueLookup: React.FC<SalesmanCustomerDueLookupProps>
                     ) : (
                       <span className="text-slate-400 italic">No bill history recorded</span>
                     )}
+                  </div>
                   </div>
                 </div>
 

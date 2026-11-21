@@ -74,6 +74,7 @@ export function buildReceiptRows(
     id: newId(),
     billId: a.billId,
     amount: a.amount,
+    entryKind: "receipt" as const,
   }));
   if (result.advance > 0) {
     rows.push({
@@ -81,6 +82,7 @@ export function buildReceiptRows(
       id: newId(),
       billId: undefined,
       isAdvance: true,
+      entryKind: "advance" as const,
       amount: result.advance,
       referenceNote: [base.referenceNote, "Advance / on account"]
         .filter(Boolean)
@@ -229,11 +231,64 @@ export function billPaymentGaps(
 
 
 /**
- * Rows made by "Use advance / credit on invoices" carry this note. They are an internal transfer
- * (money the customer already paid, moved onto an invoice), not a new receipt.
+ * Rows made by "Use advance / credit on invoices" carry this note or entryKind.
+ * They are an internal transfer (money the customer already paid, moved onto an invoice), not a new receipt.
  */
-export function isAdvanceAdjustmentRow(p: Pick<PaymentRecord, "billId" | "amount" | "referenceNote">): boolean {
-  return !!p.billId && (Number(p.amount) || 0) > 0 && (p.referenceNote || "").startsWith("Advance / credit adjusted against invoice");
+export function isAdvanceAdjustmentRow(
+  p: Pick<PaymentRecord, "billId" | "amount" | "referenceNote" | "entryKind">,
+): boolean {
+  if (p.entryKind === "advance_adjustment") return true;
+  return (
+    !!p.billId &&
+    (Number(p.amount) || 0) > 0 &&
+    (p.referenceNote || "").startsWith("Advance / credit adjusted against invoice")
+  );
+}
+
+/**
+ * Unapplied balance remaining on an advance / on-account row.
+ * When an advance is used on an invoice, its original cash `amount` stays intact for Collections
+ * while `appliedAmount` (and `isAdvanceApplied`) tracks how much has already been allocated.
+ */
+export function remainingAdvanceAmount(
+  p: Pick<PaymentRecord, "amount" | "appliedAmount" | "isAdvanceApplied">,
+): number {
+  const total = Number(p.amount) || 0;
+  if (total <= 0) return 0;
+  const applied = Number(p.appliedAmount) || 0;
+  if (p.isAdvanceApplied && applied <= 0) return 0;
+  return Math.max(0, round2(total - applied));
+}
+
+/**
+ * Total money actually paid by a customer across their payment rows, without double-counting
+ * advance-adjustment rows whose original advance receipt was kept at full value.
+ *
+ * - Legacy adjustment rows (no `sourcePaymentId`, where the advance row was previously shrunk/deleted)
+ *   still count in full so historical balances stay exact.
+ * - Balanced overpaid-invoice credit transfer pairs (`-amt` out of source bill, `+amt` onto target bill)
+ *   cancel out naturally (`-amt + amt = 0`).
+ */
+export function sumCustomerRecordedPaid(
+  custPayments: Pick<
+    PaymentRecord,
+    "id" | "billId" | "amount" | "referenceNote" | "entryKind" | "sourcePaymentId"
+  >[],
+): number {
+  const presentIds = new Set(custPayments.map((p) => p.id));
+  let total = 0;
+  for (const p of custPayments) {
+    if (
+      p.sourcePaymentId &&
+      isAdvanceAdjustmentRow(p) &&
+      (Number(p.amount) || 0) > 0 &&
+      presentIds.has(p.sourcePaymentId)
+    ) {
+      continue;
+    }
+    total += Number(p.amount) || 0;
+  }
+  return round2(total);
 }
 
 /**
@@ -253,6 +308,7 @@ export function buildAdvanceRestoreRow(
     paymentDate: deleted.paymentDate,
     amount: round2(Number(deleted.amount) || 0),
     mode: "other",
+    entryKind: "advance",
     billId: undefined,
     isAdvance: true,
     referenceNote: `Advance / on account · restored (adjustment against invoice #${deleted.billId} was deleted)`,
@@ -260,3 +316,4 @@ export function buildAdvanceRestoreRow(
     createdAt: new Date().toISOString(),
   } as PaymentRecord;
 }
+

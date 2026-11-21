@@ -1,5 +1,5 @@
 import React from 'react';
-import { Home, Menu, ShoppingCart, Users } from 'lucide-react';
+import { Home, Menu, ShoppingCart, Truck, Users } from 'lucide-react';
 import { useLedger } from '../../context/LedgerContext';
 import { useLanguage } from '../../i18n/LanguageContext';
 import { TabId } from '../../types';
@@ -20,7 +20,7 @@ export interface MobileNavProps {
   onOpenMenu?: () => void;
 }
 
-/** Phone (0-767px): floating bottom bar, inset 20px from the edges. Hidden from 768px up by CSS. */
+/** Phone (0-767px): 5-tab flat bottom bar. Hidden from 768px up by CSS. */
 export const MobileNav: React.FC<MobileNavProps> = ({ onOpenMenu }) => {
   const { tab, setTab } = useLedger();
   const { t } = useLanguage();
@@ -28,8 +28,9 @@ export const MobileNav: React.FC<MobileNavProps> = ({ onOpenMenu }) => {
 
   const PRIMARY_ITEMS: PrimaryNavItem[] = [
     { id: 'dashboard', label: t('nav.home'), icon: Home },
-    { id: 'billing', label: t('nav.sell'), icon: ShoppingCart },
+    { id: 'billing', label: t('nav.sellTab'), icon: ShoppingCart },
     { id: 'customers', label: t('nav.parties'), icon: Users },
+    { id: 'trips', label: t('nav.trips'), icon: Truck },
   ];
 
   return (
@@ -45,14 +46,20 @@ export const MobileNav: React.FC<MobileNavProps> = ({ onOpenMenu }) => {
             onClick={() => setTab(id)}
             className="hh-bottombar__item"
           >
-            <Icon size={24} aria-hidden="true" strokeWidth={isActive ? 2.4 : 1.9} />
+            <Icon size={19} aria-hidden="true" strokeWidth={isActive ? 2.4 : 1.9} />
             <span>{label}</span>
           </button>
         );
       })}
 
-      <button type="button" onClick={() => onOpenMenu?.()} aria-label={t('nav.openMenu')} className="hh-bottombar__item" data-active="false">
-        <Menu size={24} aria-hidden="true" strokeWidth={2} />
+      <button
+        type="button"
+        onClick={() => onOpenMenu?.()}
+        aria-label={t('nav.openMenu')}
+        className="hh-bottombar__item"
+        data-active={PRIMARY_ITEMS.some((item) => item.id === active) ? 'false' : 'true'}
+      >
+        <Menu size={19} aria-hidden="true" strokeWidth={PRIMARY_ITEMS.some((item) => item.id === active) ? 2 : 2.4} />
         <span>{t('nav.menu')}</span>
       </button>
     </nav>

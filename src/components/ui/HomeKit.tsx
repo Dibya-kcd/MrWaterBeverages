@@ -1,5 +1,17 @@
 import React, { useId } from 'react';
-import { Delete, Minus, Plus, Receipt } from 'lucide-react';
+import {
+  AlertCircle,
+  AlertTriangle,
+  Bell,
+  ChevronRight,
+  Delete,
+  Minus,
+  Plus,
+  ShoppingBag,
+  TrendingUp,
+  Truck,
+  Wallet,
+} from 'lucide-react';
 import { useLanguage } from '../../i18n/LanguageContext';
 
 /**
@@ -9,23 +21,47 @@ import { useLanguage } from '../../i18n/LanguageContext';
 
 export type Tone = 'sales' | 'profit' | 'received' | 'due' | 'warning' | 'blue' | 'green' | 'orange' | 'purple';
 
+/** Clean 1-2 character uppercase monogram for circular avatars across Home, Parties, and Sales. */
+export function getInitials(name: string | null | undefined, fallback = 'P'): string {
+  const clean = String(name || '')
+    .replace(/[^a-zA-Z0-9\u0B00-\u0B7F\s]/g, ' ')
+    .trim();
+  if (!clean) return fallback;
+  const parts = clean.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
+}
+
 /* ------------------------------------------------------------ ProgressRing */
-export const ProgressRing: React.FC<{ pct: number; label?: string; size?: number }> = ({ pct, label, size = 120 }) => {
+export const ProgressRing: React.FC<{
+  pct: number;
+  label?: string;
+  size?: number;
+  variant?: 'default' | 'hero';
+}> = ({ pct, label, size = 120, variant = 'default' }) => {
   const id = useId().replace(/:/g, '');
   const clamped = Math.max(0, Math.min(100, Math.round(Number.isFinite(pct) ? pct : 0)));
-  const stroke = 12;
+  const stroke = 11;
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
+  const isHero = variant === 'hero';
   return (
     <div className="hh-ring" style={{ width: size, height: size }} role="img" aria-label={label || `${clamped}%`}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
         <defs>
           <linearGradient id={`g${id}`} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="var(--ring-from)" />
-            <stop offset="100%" stopColor="var(--primary)" />
+            <stop offset="0%" stopColor={isHero ? '#34d399' : 'var(--ring-from)'} />
+            <stop offset="100%" stopColor={isHero ? '#10b981' : 'var(--primary)'} />
           </linearGradient>
         </defs>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--primary-soft)" strokeWidth={stroke} />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke={isHero ? 'rgba(255, 255, 255, 0.18)' : 'var(--primary-soft)'}
+          strokeWidth={stroke}
+        />
         <circle
           className="hh-ring__arc"
           cx={size / 2}
@@ -55,36 +91,149 @@ export interface HeroCollectionCardProps {
   pillTone?: 'due' | 'received';
   pct: number;
   ringLabel?: string;
+  phoneLabel?: string;
+  phoneSub?: string;
+  trendLabel?: string;
+  trendTone?: 'paid' | 'due';
+  cashLabel?: string;
+  cashDisplay?: string;
+  upiLabel?: string;
+  upiDisplay?: string;
+  dueLabel?: string;
+  dueDisplay?: string;
 }
-export const HeroCollectionCard: React.FC<HeroCollectionCardProps> = ({ label, amount, sub, duePill, pillTone = 'due', pct, ringLabel }) => (
-  <section className="hh-hero" aria-label={label}>
-    <div className="hh-hero__text">
-      <p className="hh-label">{label}</p>
-      <p className="hh-hero__amount">{amount}</p>
-      <p className="hh-hero__sub">{sub}</p>
-      {duePill && <span className={`hh-pill hh-pill--${pillTone}`}>{duePill}</span>}
-    </div>
-    <ProgressRing pct={pct} label={ringLabel} />
-  </section>
-);
+export const HeroCollectionCard: React.FC<HeroCollectionCardProps> = ({
+  label,
+  amount,
+  sub,
+  duePill,
+  pillTone = 'due',
+  pct,
+  ringLabel,
+  phoneLabel,
+  phoneSub,
+  trendLabel,
+  trendTone = 'paid',
+  cashLabel,
+  cashDisplay,
+  upiLabel,
+  upiDisplay,
+  dueLabel,
+  dueDisplay,
+}) => {
+  const clampedPct = Math.max(0, Math.min(100, Math.round(Number.isFinite(pct) ? pct : 0)));
+  return (
+    <>
+      <section className="hh-hero hh-hero-desktop" aria-label={label}>
+        <div className="hh-hero__text">
+          <p className="hh-label">{label}</p>
+          <p className="hh-hero__amount">{amount}</p>
+          <p className="hh-hero__sub">{sub}</p>
+          {duePill && <span className={`hh-pill hh-pill--${pillTone}`}>{duePill}</span>}
+        </div>
+        <ProgressRing pct={pct} label={ringLabel} variant="hero" />
+      </section>
+
+      <section className="rt-card hh-hero-phone" aria-label={phoneLabel || label}>
+        <div className="hh-hero-phone__head">
+          <p className="hh-hero-phone__label">{phoneLabel || label}</p>
+          {trendLabel && <span className={`rt-tag rt-tag--${trendTone}`}>{trendLabel}</span>}
+        </div>
+        <p className="hh-hero-phone__amount">{amount}</p>
+        <p className="hh-hero-phone__sub">{phoneSub || sub}</p>
+        <div
+          className="rt-meter"
+          role="progressbar"
+          aria-valuenow={clampedPct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={ringLabel || `${clampedPct}%`}
+        >
+          <div className="rt-meter__fill" style={{ width: `${clampedPct}%` }} />
+        </div>
+        {cashDisplay !== undefined && upiDisplay !== undefined && dueDisplay !== undefined && (
+          <div className="rt-three">
+            <div className="rt-three__item">
+              <span className="rt-three__label">{cashLabel}</span>
+              <span className="rt-three__val">{cashDisplay}</span>
+            </div>
+            <div className="rt-three__item">
+              <span className="rt-three__label">{upiLabel}</span>
+              <span className="rt-three__val">{upiDisplay}</span>
+            </div>
+            <div className="rt-three__item">
+              <span className="rt-three__label">{dueLabel}</span>
+              <span className="rt-three__val rt-three__val--due">{dueDisplay}</span>
+            </div>
+          </div>
+        )}
+      </section>
+    </>
+  );
+};
 
 /* ------------------------------------------------------------ ShortcutTile */
 export const ShortcutTile: React.FC<{
   tone: 'blue' | 'green' | 'orange' | 'purple';
   icon: React.ReactNode;
+  phoneIcon?: React.ReactNode;
   label: string;
+  phoneLabel?: string;
   onClick: () => void;
-}> = ({ tone, icon, label, onClick }) => (
+}> = ({ tone, icon, phoneIcon, label, phoneLabel, onClick }) => (
   <button type="button" className={`hh-shortcut hh-tone-${tone}`} onClick={onClick}>
-    <span className="hh-shortcut__icon" aria-hidden="true">{icon}</span>
-    <span className="hh-shortcut__label">{label}</span>
+    <span className="hh-shortcut__icon" aria-hidden="true">
+      {phoneIcon ? (
+        <>
+          <span className="hh-hide-phone-inline">{icon}</span>
+          <span className="hh-only-phone-inline">{phoneIcon}</span>
+        </>
+      ) : icon}
+    </span>
+    <span className="hh-shortcut__label">
+      {phoneLabel ? (
+        <>
+          <span className="hh-hide-phone-inline">{label}</span>
+          <span className="hh-only-phone-inline">{phoneLabel}</span>
+        </>
+      ) : label}
+    </span>
   </button>
 );
 
 /* -------------------------------------------------------------- MetricCard */
-export const HubMetricCard: React.FC<{ tone: Tone; label: string; value: string; sub?: string }> = ({ tone, label, value, sub }) => (
+function defaultMetricIcon(tone: Tone): React.ReactNode {
+  switch (tone) {
+    case 'profit':
+    case 'purple':
+      return <TrendingUp size={16} strokeWidth={2.3} />;
+    case 'due':
+      return <AlertCircle size={16} strokeWidth={2.3} />;
+    case 'received':
+    case 'green':
+      return <Wallet size={16} strokeWidth={2.3} />;
+    case 'warning':
+    case 'orange':
+      return <Truck size={16} strokeWidth={2.3} />;
+    default:
+      return <ShoppingBag size={16} strokeWidth={2.3} />;
+  }
+}
+
+export const HubMetricCard: React.FC<{
+  tone: Tone;
+  label: string;
+  value: string;
+  sub?: string;
+  icon?: React.ReactNode;
+}> = ({ tone, label, value, sub, icon }) => (
   <div className={`hh-metric hh-tone-${tone}`}>
-    <p className="hh-label hh-metric__label">{label}</p>
+    <div className="hh-metric__head">
+      <span className="hh-metric__icon" aria-hidden="true">
+        {icon ?? defaultMetricIcon(tone)}
+      </span>
+      <p className="hh-label hh-metric__label">{label}</p>
+    </div>
     <p className="hh-metric__value">{value}</p>
     {sub && <p className="hh-metric__sub">{sub}</p>}
   </div>
@@ -135,21 +284,32 @@ export interface BillRowData {
 }
 export const BillsList: React.FC<{ rows: BillRowData[]; onOpen?: (id: BillRowData['id']) => void }> = ({ rows, onOpen }) => (
   <ul className="hh-bills">
-    {rows.map((r) => (
-      <li key={r.id}>
-        <button type="button" className="hh-bill" onClick={() => onOpen?.(r.id)}>
-          <span className="hh-bill__icon" aria-hidden="true"><Receipt size={20} /></span>
-          <span className="hh-bill__main">
-            <span className="hh-bill__party">{r.party}</span>
-            <span className="hh-bill__no">{r.billNo}</span>
-          </span>
-          <span className="hh-bill__right">
-            <span className="hh-bill__amount">{r.amount}</span>
-            <StatusPill status={r.status} />
-          </span>
-        </button>
-      </li>
-    ))}
+    {rows.map((r) => {
+      const cardTone = r.status === 'paid' ? 'received' : r.status === 'due' ? 'due' : 'warning';
+      const avatarTone = r.status === 'paid' ? 'green' : r.status === 'due' ? 'rose' : 'amber';
+      return (
+        <li key={r.id}>
+          <button
+            type="button"
+            className="hh-bill"
+            data-card-tone={cardTone}
+            onClick={() => onOpen?.(r.id)}
+          >
+            <span className={`hh-avatar hh-avatar--${avatarTone}`} aria-hidden="true">
+              {getInitials(r.party)}
+            </span>
+            <span className="hh-bill__main">
+              <span className="hh-bill__party">{r.party}</span>
+              <span className="hh-bill__no">{r.billNo}</span>
+            </span>
+            <span className="hh-bill__right">
+              <span className="hh-bill__amount">{r.amount}</span>
+              <StatusPill status={r.status} />
+            </span>
+          </button>
+        </li>
+      );
+    })}
   </ul>
 );
 
@@ -215,12 +375,29 @@ export const DueByBeatCard: React.FC<{ rows: { name: string; amount: number; dis
 };
 
 /* ------------------------------------------------------------ SalesBarsCard */
-export const SalesBarsCard: React.FC<{ title: string; bars: { label: string; value: number; display: string }[] }> = ({ title, bars }) => {
+export const SalesBarsCard: React.FC<{
+  title: string;
+  phoneTitle?: string;
+  totalDisplay?: string;
+  bars: { label: string; value: number; display: string }[];
+}> = ({ title, phoneTitle, totalDisplay, bars }) => {
   const max = Math.max(1, ...bars.map((b) => b.value));
   const summary = bars.map((b) => `${b.label} ${b.display}`).join(', ');
   return (
     <section className="hh-card" aria-label={title}>
-      <h2 className="hh-card__title">{title}</h2>
+      <div className="hh-card__head">
+        <h2 className="hh-card__title">
+          {phoneTitle ? (
+            <>
+              <span className="hh-hide-phone-inline">{title}</span>
+              <span className="hh-only-phone-inline">{phoneTitle}</span>
+            </>
+          ) : (
+            title
+          )}
+        </h2>
+        {totalDisplay && <span className="rt-tag hh-only-phone-inline">{totalDisplay}</span>}
+      </div>
       <div className="hh-bars" role="img" aria-label={`${title}: ${summary}`}>
         {bars.map((b, i) => (
           <div key={`${b.label}-${i}`} className="hh-bars__col">
@@ -257,7 +434,9 @@ export const NeedsAttentionCard: React.FC<{ title: string; rows: AttentionRow[];
         {rows.map((r) => (
           <li key={r.id}>
             <button type="button" className={`hh-attn__row hh-attn__row--${r.tone}`} onClick={r.onClick}>
-              <span className="hh-attn__dot" aria-hidden="true" />
+              <span className="hh-attn__dot" aria-hidden="true">
+                {r.tone === 'info' ? <Bell size={15} /> : <AlertTriangle size={15} />}
+              </span>
               <span className="hh-attn__text">
                 <span className="hh-attn__title">{r.title}</span>
                 <span className="hh-attn__sub">{r.sub}</span>
@@ -270,10 +449,48 @@ export const NeedsAttentionCard: React.FC<{ title: string; rows: AttentionRow[];
   </section>
 );
 
+/** Phone Needs Attention card: title + See all link, 2-3 rows (icon circle, bold line, grey sub-line, chevron). Hidden when empty. */
+export const PhoneNeedsAttentionCard: React.FC<{
+  title: string;
+  seeAllLabel: string;
+  onSeeAll: () => void;
+  rows: AttentionRow[];
+}> = ({ title, seeAllLabel, onSeeAll, rows }) => {
+  if (rows.length === 0) return null;
+  return (
+    <section className="rt-card hh-attn-phone" aria-label={title}>
+      <div className="hh-card__head">
+        <h2 className="hh-card__title">{title}</h2>
+        <button type="button" className="hh-linkbtn hh-linkbtn--primary" onClick={onSeeAll}>
+          {seeAllLabel}
+        </button>
+      </div>
+      <ul className="hh-attn-phone__list">
+        {rows.map((r) => (
+          <li key={r.id} className="hh-attn-phone__item">
+            <button type="button" className="hh-attn-phone__row" onClick={r.onClick}>
+              <span className={`hh-attn-phone__icon hh-attn-phone__icon--${r.tone}`} aria-hidden="true">
+                {r.tone === 'info' ? <Bell size={16} /> : <AlertTriangle size={16} />}
+              </span>
+              <span className="hh-attn-phone__text">
+                <span className="hh-attn-phone__title">{r.title}</span>
+                <span className="hh-attn-phone__sub">{r.sub}</span>
+              </span>
+              <ChevronRight size={18} className="hh-attn-phone__chev" aria-hidden="true" />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+};
+
 /** Amber strip (phone): the single most important attention row. */
 export const AlertStrip: React.FC<{ text: string; onClick: () => void }> = ({ text, onClick }) => (
   <button type="button" className="hh-alertstrip" onClick={onClick}>
-    <span aria-hidden="true" className="hh-alertstrip__dot" />
+    <span aria-hidden="true" className="hh-alertstrip__dot">
+      <AlertTriangle size={15} strokeWidth={2.4} />
+    </span>
     <span>{text}</span>
   </button>
 );

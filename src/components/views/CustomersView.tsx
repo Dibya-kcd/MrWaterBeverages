@@ -1,11 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   Building2,
   Check,
+  ChevronDown,
+  ChevronLeft,
   CreditCard,
   Edit2,
   FileText,
+  MessageCircle,
   Phone,
   Plus,
   Receipt,
@@ -13,15 +17,17 @@ import {
   Route,
   Search,
   Share2,
+  SlidersHorizontal,
   Trash2,
-  User,
   X,
   Languages,
   Loader2,
 } from "lucide-react";
+import { getInitials } from "../ui/HomeKit";
 import { useLedger } from "../../context/LedgerContext";
 import { useLanguage } from "../../i18n/LanguageContext";
 import { useAutoOdiaNameMap, nameFromMap } from "../../hooks/useAutoOdiaName";
+import { useIsMobile } from "../../hooks/useIsMobile";
 import {
   Bill,
   Customer,
@@ -270,12 +276,19 @@ export const CustomersView: React.FC = () => {
     orgProfile,
     customerNameClash,
   } = useLedger();
-  const { language } = useLanguage();
+  const { language, t } = useLanguage();
+  const isPhone = useIsMobile(767);
   const customerNameMap = useAutoOdiaNameMap(customers || []);
 
   const [partyTab, setPartyTab] = useState<PartyTab>("customers");
   const [searchTerm, setSearchTerm] = useState("");
   const [formOpen, setFormOpen] = useState(false);
+  const [phoneDetailTab, setPhoneDetailTab] = useState<"summary" | "ledger">("summary");
+  const [ledgerFilter, setLedgerFilter] = useState<"all" | "bill" | "payment" | "return">("all");
+  const [expandedLedgerEntryId, setExpandedLedgerEntryId] = useState<string | null>(null);
+  const [phoneFilterSheetOpen, setPhoneFilterSheetOpen] = useState(false);
+  const [waPhonePrompt, setWaPhonePrompt] = useState<{ text: string; input: string } | null>(null);
+  const [showMoreFormFields, setShowMoreFormFields] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [editingDerivedCustomer, setEditingDerivedCustomer] =
     useState<ExistingCustomer | null>(null);
@@ -449,6 +462,37 @@ export const CustomersView: React.FC = () => {
     });
     return map;
   }, [grns]);
+
+  const { customerTypeById, customerTypeByName, beatNameById } = useMemo(() => {
+    const byId = new Map<string, string>();
+    const byName = new Map<string, string>();
+    const beatNames = new Map<string, string>();
+    for (const b of beats) beatNames.set(b.id, b.name);
+    for (const c of customers || []) {
+      const tp = parseCustomerNotes(c.notes).customerType || "Retail";
+      byId.set(c.id, tp);
+      const k = normCustName(c.name);
+      if (k && !byName.has(k)) byName.set(k, tp);
+    }
+    return { customerTypeById: byId, customerTypeByName: byName, beatNameById: beatNames };
+  }, [customers, beats]);
+
+  const oldestDueDaysByCustomer = useMemo(() => {
+    const map = new Map<string, number>();
+    const now = Date.now();
+    for (const b of bills || []) {
+      if (b.status === "cancelled" || b.cancelled) continue;
+      if (billBalance(b) <= 0.004) continue;
+      const k = normCustName(b.retailer || "");
+      if (!k || !b.date) continue;
+      const dt = new Date(b.date.length === 10 ? `${b.date}T12:00:00` : b.date);
+      if (isNaN(dt.getTime())) continue;
+      const days = Math.max(0, Math.floor((now - dt.getTime()) / 86400000));
+      const prev = map.get(k);
+      if (prev === undefined || days > prev) map.set(k, days);
+    }
+    return map;
+  }, [bills]);
 
   /* ─── Customer form handlers ─── */
   const openAddCustomer = () => {
@@ -811,11 +855,21 @@ export const CustomersView: React.FC = () => {
       return { ...e, runningBalance: Math.round(running * 100) / 100 };
     });
 
+    const formatPhoneLedgerDate = (dateStr: string) => {
+      if (!dateStr) return "—";
+      const d = new Date(
+        dateStr.length === 10 ? `${dateStr}T12:00:00` : dateStr,
+      );
+      if (isNaN(d.getTime())) return dateStr;
+      const nowY = new Date().getFullYear();
+      if (d.getFullYear() === nowY) {
+        return d.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+      }
+      return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "2-digit" });
+    };
+
     // WhatsApp Statement text builder
-    const statementWaUrl = (() => {
-      const cleanPhone = (c.phone || "").replace(/\D/g, "");
-      const destPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
-      if (!destPhone) return null;
+    const statementWaText = (() => {
       const orgName = orgProfile?.name || "MrWater Distribution";
       const lines = [
         `*Customer Ledger Statement - ${nameFromMap(customerNameMap, c, language)}*`,
@@ -833,11 +887,586 @@ export const CustomersView: React.FC = () => {
         ``,
         `Please verify your ledger records. Thank you!`,
       ].filter(Boolean);
-      return `https://wa.me/${destPhone}?text=${encodeURIComponent(lines.join("\n"))}`;
+      return lines.join("\n");
     })();
 
+    const statementWaUrl = (() => {
+      const cleanPhone = (c.phone || "").replace(/\D/g, "");
+      const destPhone = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
+      if (!destPhone) return null;
+      return `https://wa.me/${destPhone}?text=${encodeURIComponent(statementWaText)}`;
+    })();
+
+    const customerTypeLabel =
+      (c.id && customerTypeById.get(c.id)) ||
+      customerTypeByName.get(normCustName(c.name)) ||
+      "Retail";
+    const creditSummary = getCustomerCreditSummary(c.name);
+    const hasAdvanceScreen =
+      rawBalance < -0.004 ||
+      (creditSummary.refundable > 0.004 && balanceDue <= 0.004);
+    const creditLimitPct =
+      creditLimit > 0
+        ? Math.min(100, Math.max(0, Math.round((balanceDue / creditLimit) * 100)))
+        : 0;
+    const filteredLedgerEntries = entriesWithBalance.filter((e) => {
+      if (ledgerFilter === "all") return true;
+      return e.kind === ledgerFilter;
+    });
+    const phoneLedgerEntries = [...filteredLedgerEntries].reverse();
+
     return (
-      <div className="hh-view w-full min-w-0 pb-24">
+      <div id="view-customers" className="hh-view w-full min-w-0 pb-24">
+        {isPhone ? (
+          <>
+            <div className="hh-sales-top">
+              <div className="hh-sales-top__row">
+                <div className="flex items-center gap-1 min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (phoneDetailTab === "ledger") {
+                        setPhoneDetailTab("summary");
+                        setExpandedLedgerEntryId(null);
+                        return;
+                      }
+                      setSelectedCustomer(null);
+                      setPhoneDetailTab("summary");
+                      setExpandedLedgerEntryId(null);
+                      setShowRecordPayment(false);
+                      setPaymentToEdit(null);
+                      setPaymentToDelete(null);
+                      setBillToEdit(null);
+                      setBillToDelete(null);
+                    }}
+                    className="hh-sales-top__iconbtn"
+                    aria-label={t("common.back")}
+                  >
+                    <ChevronLeft className="w-6 h-6" strokeWidth={2.2} />
+                  </button>
+                  <h1 className="hh-sales-top__title break-words min-w-0">
+                    {nameFromMap(customerNameMap, c, language)}
+                  </h1>
+                </div>
+                <span className="hh-sales-top__pill shrink-0">
+                  {phoneDetailTab === "ledger"
+                    ? t("parties.ledger")
+                    : hasAdvanceScreen
+                      ? t("parties.credit")
+                      : customerTypeLabel}
+                </span>
+              </div>
+            </div>
+
+            {phoneDetailTab === "ledger" ? (
+              <div className="space-y-3 mt-1">
+                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+                  {([
+                    { id: "all", label: t("common.all") },
+                    { id: "bill", label: t("parties.bills") },
+                    { id: "payment", label: t("parties.payments") },
+                    { id: "return", label: t("parties.returns") },
+                  ] as const).map((chip) => (
+                    <button
+                      key={chip.id}
+                      type="button"
+                      aria-pressed={ledgerFilter === chip.id}
+                      onClick={() => setLedgerFilter(chip.id)}
+                      className="rt-chip shrink-0"
+                    >
+                      {chip.label}
+                    </button>
+                  ))}
+                </div>
+
+                {phoneLedgerEntries.length === 0 ? (
+                  <div className="rt-card px-5 py-10 text-center text-[13px]" style={{ color: "var(--text-2)" }}>
+                    {t("parties.noLedgerItems")}
+                  </div>
+                ) : (
+                  <div className="hh-timeline pt-1">
+                    {phoneLedgerEntries.map((entry) => {
+                      if (entry.kind === "opening") {
+                        return (
+                          <div key={entry.id} className="hh-timeline__item">
+                            <span className="hh-timeline__dot" />
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="text-[13.5px] font-bold" style={{ color: "var(--text)" }}>
+                                  {t("parties.openingBalance")}
+                                </div>
+                                <div className="text-[11.5px] mt-0.5" style={{ color: "var(--text-2)" }}>
+                                  {formatPhoneLedgerDate(entry.date)}
+                                </div>
+                              </div>
+                              <div
+                                className="text-[13.5px] font-extrabold tabular-nums shrink-0"
+                                style={{ color: entry.amount > 0 ? "var(--due)" : "var(--paid)" }}
+                              >
+                                {entry.amount > 0 ? "+" : "−"}₹{money(Math.abs(entry.amount))}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      if (entry.kind === "return") {
+                        const ret = entry.salesReturn;
+                        return (
+                          <div key={entry.id} className="hh-timeline__item">
+                            <span className="hh-timeline__dot" />
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="text-[13.5px] font-bold break-words" style={{ color: "var(--text)" }}>
+                                  {t("parties.salesReturn")}
+                                </div>
+                                <div className="text-[11.5px] mt-0.5" style={{ color: "var(--text-2)" }}>
+                                  {formatPhoneLedgerDate(entry.date)}
+                                  {ret.creditNoteNo ? ` · CN-${ret.creditNoteNo}` : ""}
+                                </div>
+                              </div>
+                              <div className="text-[13.5px] font-extrabold tabular-nums shrink-0" style={{ color: "var(--paid)" }}>
+                                −₹{money(entry.amount)}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      if (entry.kind === "bill") {
+                        const b = entry.bill;
+                        const invNo = formatBillNumber(b, billingSettings);
+                        const qtyCases = (b.items || []).reduce((s, it) => s + (Number(it.qty) || 0), 0);
+                        const isExpanded = expandedLedgerEntryId === entry.id;
+                        return (
+                          <div key={entry.id} className="hh-timeline__item">
+                            <span className="hh-timeline__dot" />
+                            <button
+                              type="button"
+                              onClick={() => setExpandedLedgerEntryId(isExpanded ? null : entry.id)}
+                              className="w-full text-left flex items-start justify-between gap-2 bg-transparent border-0 p-0 cursor-pointer"
+                              style={{ minHeight: "36px" }}
+                            >
+                              <span className="min-w-0 flex-1">
+                                <span className="block text-[13.5px] font-bold break-words" style={{ color: "var(--text)" }}>
+                                  {t("parties.billPrefix")} {invNo}
+                                </span>
+                                <span className="block text-[11.5px] mt-0.5" style={{ color: "var(--text-2)" }}>
+                                  {formatPhoneLedgerDate(entry.date)} · {t("trips.casesCount", { n: qtyCases })}
+                                </span>
+                              </span>
+                              <span className="text-[13.5px] font-extrabold tabular-nums shrink-0" style={{ color: "var(--due)" }}>
+                                +₹{money(entry.amount)}
+                              </span>
+                            </button>
+                            {isExpanded && (
+                              <div className="flex items-center gap-3 mt-1.5 pb-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setBillToEdit(b)}
+                                  className="text-[11.5px] font-bold bg-transparent border-0 p-0 cursor-pointer"
+                                  style={{ color: "var(--primary)", minHeight: "28px" }}
+                                >
+                                  {t("common.edit")}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setBillToDelete(b)}
+                                  className="text-[11.5px] font-bold bg-transparent border-0 p-0 cursor-pointer"
+                                  style={{ color: "var(--due)", minHeight: "28px" }}
+                                >
+                                  {t("common.delete")}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+
+                      const p = entry.payment;
+                      const isExpanded = expandedLedgerEntryId === entry.id;
+                      const modeText =
+                        String(p.mode || "cash").toLowerCase() === "upi"
+                          ? "UPI"
+                          : String(p.mode || "cash").toLowerCase() === "bank"
+                            ? "Bank"
+                            : String(p.mode || "cash").toLowerCase() === "cheque"
+                              ? "Cheque"
+                              : String(p.mode || "cash").toLowerCase() === "other"
+                                ? "Other"
+                                : "Cash";
+                      return (
+                        <div key={entry.id} className="hh-timeline__item">
+                          <span className={`hh-timeline__dot ${entry.amount < 0 ? "hh-timeline__dot--due" : "hh-timeline__dot--paid"}`} />
+                          <button
+                            type="button"
+                            onClick={() => !entry.isLegacy && setExpandedLedgerEntryId(isExpanded ? null : entry.id)}
+                            className="w-full text-left flex items-start justify-between gap-2 bg-transparent border-0 p-0 cursor-pointer"
+                            style={{ minHeight: "36px" }}
+                          >
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-[13.5px] font-bold break-words" style={{ color: "var(--text)" }}>
+                                {p.isRefund ? t("pay.refundTag") : t("parties.paymentPrefix")} · {modeText}
+                              </span>
+                              <span className="block text-[11.5px] mt-0.5" style={{ color: "var(--text-2)" }}>
+                                {formatPhoneLedgerDate(entry.date)}
+                                {p.referenceNote ? ` · ${p.referenceNote}` : p.billId ? ` · INV-${p.billId}` : ` · RCT-${String(p.id).slice(-4).toUpperCase()}`}
+                              </span>
+                            </span>
+                            <span
+                              className="text-[13.5px] font-extrabold tabular-nums shrink-0"
+                              style={{ color: entry.amount < 0 ? "var(--due)" : "var(--paid)" }}
+                            >
+                              {entry.amount < 0 ? "+" : "−"}₹{money(Math.abs(entry.amount))}
+                            </span>
+                          </button>
+                          {!entry.isLegacy && isExpanded && (
+                            <div className="flex items-center gap-3 mt-1.5 pb-1">
+                              {!p.isRefund && (
+                                <button
+                                  type="button"
+                                  onClick={() => setPaymentToEdit(p)}
+                                  className="text-[11.5px] font-bold bg-transparent border-0 p-0 cursor-pointer"
+                                  style={{ color: "var(--primary)", minHeight: "28px" }}
+                                >
+                                  {t("common.edit")}
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setPaymentToDelete(p)}
+                                className="text-[11.5px] font-bold bg-transparent border-0 p-0 cursor-pointer"
+                                style={{ color: "var(--due)", minHeight: "28px" }}
+                              >
+                                {t("common.delete")}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : hasAdvanceScreen ? (
+              <div className="space-y-3 mt-1">
+                <div className="hh-hist-card hh-hist-card--paid space-y-1.5">
+                  <div className="text-[12px] font-semibold" style={{ color: "var(--text-2)" }}>
+                    {t("parties.netCreditOwed")}
+                  </div>
+                  <div className="text-[30px] font-extrabold tracking-tight tabular-nums leading-none" style={{ color: "var(--paid)" }}>
+                    ₹{money(Math.abs(rawBalance) || creditSummary.refundable)}
+                  </div>
+                  <div className="text-[12px] pt-1" style={{ color: "var(--text-2)" }}>
+                    {t("parties.advanceOnAccount", {
+                      amt: `₹${money(creditSummary.advance || Math.abs(rawBalance))}`,
+                    })}
+                  </div>
+                </div>
+
+                <div className="rt-noti">
+                  <span>{t("parties.advanceNotice")}</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => startBillForCustomer(c.name, c.phone)}
+                    className="rt-btn"
+                  >
+                    {t("parties.newSale")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowRefund(true)}
+                    disabled={creditSummary.refundable <= 0.004}
+                    className="rt-btn-outline rt-btn-outline--primary"
+                  >
+                    {t("parties.refundAmt", {
+                      amt: `₹${money(creditSummary.refundable || Math.abs(rawBalance))}`,
+                    })}
+                  </button>
+                </div>
+
+                {creditSummary.canApply && (
+                  <button
+                    type="button"
+                    onClick={() => applyAdvanceToInvoices(c.name)}
+                    className="rt-btn-outline w-full"
+                  >
+                    {t("parties.applyToUnpaid")}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setPhoneDetailTab("ledger")}
+                  className="rt-btn-outline w-full"
+                >
+                  {t("parties.customerLedger")}
+                </button>
+
+                {statementWaUrl ? (
+                  <a
+                    href={statementWaUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rt-btn-outline w-full flex items-center justify-center gap-2 no-underline"
+                    style={{ borderColor: "var(--paid)", color: "var(--paid)" }}
+                  >
+                    <MessageCircle size={16} />
+                    {t("parties.whatsappReminder")}
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setWaPhonePrompt({ text: statementWaText, input: "" })}
+                    className="rt-btn-outline w-full flex items-center justify-center gap-2"
+                    style={{ borderColor: "var(--paid)", color: "var(--paid)" }}
+                  >
+                    <MessageCircle size={16} />
+                    {t("parties.whatsappReminder")}
+                  </button>
+                )}
+
+                <div className="flex items-center justify-center gap-5 pt-1">
+                  {c.phone && (
+                    <a
+                      href={`tel:${c.phone}`}
+                      className="inline-flex items-center gap-1.5 text-[13px] font-bold no-underline"
+                      style={{ color: "var(--primary)", minHeight: "44px" }}
+                    >
+                      <Phone size={14} /> {c.phone}
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => openEditCustomer(c)}
+                    className="inline-flex items-center gap-1.5 text-[13px] font-bold bg-transparent border-0 cursor-pointer"
+                    style={{ color: "var(--primary)", minHeight: "44px" }}
+                  >
+                    <Edit2 size={14} /> {t("common.edit")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCustomerToDelete(c)}
+                    className="inline-flex items-center gap-1.5 text-[13px] font-bold bg-transparent border-0 cursor-pointer"
+                    style={{ color: "var(--due)", minHeight: "44px" }}
+                  >
+                    <Trash2 size={14} /> {t("common.delete")}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3 mt-1">
+                <div className="rt-kv-grid">
+                  <div className="rt-kv">
+                    <div className="rt-kv__label">{t("parties.totalBilled")}</div>
+                    <div className="rt-kv__val">₹{money(ledger.totalBilled)}</div>
+                  </div>
+                  <div className="rt-kv">
+                    <div className="rt-kv__label">{t("parties.totalPaid")}</div>
+                    <div className="rt-kv__val" style={{ color: "var(--paid)" }}>₹{money(ledger.totalPaid)}</div>
+                  </div>
+                  <div className="rt-kv">
+                    <div className="rt-kv__label">{t("parties.openingBal")}</div>
+                    <div className="rt-kv__val">₹{money(openingBal)}</div>
+                  </div>
+                  <div className="rt-kv">
+                    <div className="rt-kv__label">{t("parties.salesReturns")}</div>
+                    <div className="rt-kv__val">₹{money(ledger.totalReturns || 0)}</div>
+                  </div>
+                </div>
+
+                <div className="rt-card">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-[12px] font-semibold" style={{ color: "var(--text-2)" }}>
+                        {t("parties.balanceDue")}
+                      </div>
+                      <div
+                        className="text-[28px] font-extrabold tracking-tight tabular-nums leading-tight mt-0.5"
+                        style={{ color: balanceDue > 0.004 ? "var(--due)" : "var(--paid)" }}
+                      >
+                        ₹{money(balanceDue)}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-[12px] font-semibold" style={{ color: "var(--text-2)" }}>
+                        {t("parties.creditLimit")}
+                      </div>
+                      <div className="text-[15px] font-extrabold tabular-nums mt-0.5" style={{ color: "var(--text)" }}>
+                        {creditLimit > 0 ? `₹${money(creditLimit)}` : "—"}
+                      </div>
+                      {creditLimit > 0 && (
+                        <div className="rt-meter mt-2 ml-auto w-24" aria-hidden="true">
+                          <div
+                            className="rt-meter__fill"
+                            style={{
+                              width: `${creditLimitPct}%`,
+                              background: isOverLimit ? "var(--due)" : "var(--primary)",
+                            }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {(creditSummary.canApply || creditSummary.advance > 0.004) && (
+                  <div className="rt-noti flex-col items-stretch gap-2">
+                    <span>
+                      {t("parties.advanceOnAccount", {
+                        amt: `₹${money(creditSummary.advance)}`,
+                      })}
+                    </span>
+                    <div className="flex gap-2">
+                      {creditSummary.canApply && (
+                        <button
+                          type="button"
+                          onClick={() => applyAdvanceToInvoices(c.name)}
+                          className="rt-btn flex-1"
+                          style={{ minHeight: "38px", fontSize: "12px" }}
+                        >
+                          {t("parties.applyToUnpaid")}
+                        </button>
+                      )}
+                      {creditSummary.refundable > 0.004 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowRefund(true)}
+                          className="rt-btn-outline flex-1"
+                          style={{ minHeight: "38px", fontSize: "12px" }}
+                        >
+                          {t("parties.refundAmt", { amt: `₹${money(creditSummary.refundable)}` })}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowRecordPayment(true)}
+                    className="rt-btn"
+                  >
+                    {t("parties.recordPayment")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => startBillForCustomer(c.name, c.phone)}
+                    className="rt-btn-outline rt-btn-outline--primary"
+                  >
+                    {t("parties.newSale")}
+                  </button>
+                </div>
+
+                {statementWaUrl ? (
+                  <a
+                    href={statementWaUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rt-btn-outline w-full flex items-center justify-center gap-2 no-underline"
+                    style={{ borderColor: "var(--paid)", color: "var(--paid)" }}
+                  >
+                    {t("parties.whatsappReminder")}
+                  </a>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setWaPhonePrompt({ text: statementWaText, input: "" })}
+                    className="rt-btn-outline w-full flex items-center justify-center gap-2"
+                    style={{ borderColor: "var(--paid)", color: "var(--paid)" }}
+                  >
+                    {t("parties.whatsappReminder")}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setPhoneDetailTab("ledger")}
+                  className="rt-btn-outline w-full"
+                >
+                  {t("parties.customerLedger")}
+                </button>
+
+                <div className="flex items-center justify-center gap-5 pt-1">
+                  {c.phone && (
+                    <a
+                      href={`tel:${c.phone}`}
+                      className="inline-flex items-center gap-1.5 text-[13px] font-bold no-underline"
+                      style={{ color: "var(--primary)", minHeight: "44px" }}
+                    >
+                      <Phone size={14} /> {c.phone}
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => openEditCustomer(c)}
+                    className="inline-flex items-center gap-1.5 text-[13px] font-bold bg-transparent border-0 cursor-pointer"
+                    style={{ color: "var(--primary)", minHeight: "44px" }}
+                  >
+                    <Edit2 size={14} /> {t("common.edit")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCustomerToDelete(c)}
+                    className="inline-flex items-center gap-1.5 text-[13px] font-bold bg-transparent border-0 cursor-pointer"
+                    style={{ color: "var(--due)", minHeight: "44px" }}
+                  >
+                    <Trash2 size={14} /> {t("common.delete")}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {waPhonePrompt &&
+              createPortal(
+                <div
+                  className="rt-bsheet-scrim"
+                  onClick={() => setWaPhonePrompt(null)}
+                  role="dialog"
+                  aria-modal="true"
+                >
+                  <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+                    <div className="hh-grab" />
+                    <div className="text-[16px] font-extrabold" style={{ color: "var(--text)" }}>
+                      {t("parties.whatsappReminder")}
+                    </div>
+                    <label className="rt-in">
+                      <span className="rt-in__label uppercase">{t("parties.phoneLabel")}</span>
+                      <input
+                        className="rt-in__control"
+                        type="tel"
+                        inputMode="tel"
+                        placeholder="98765 43210"
+                        value={waPhonePrompt.input}
+                        onChange={(e) => setWaPhonePrompt((prev) => (prev ? { ...prev, input: e.target.value } : null))}
+                        autoFocus
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      disabled={waPhonePrompt.input.replace(/\D/g, "").length < 10}
+                      onClick={() => {
+                        const digits = waPhonePrompt.input.replace(/\D/g, "");
+                        const dest = digits.length === 10 ? `91${digits}` : digits;
+                        const url = `https://wa.me/${dest}?text=${encodeURIComponent(waPhonePrompt.text)}`;
+                        window.location.assign(url);
+                        setWaPhonePrompt(null);
+                      }}
+                      className="rt-btn rt-btn--wa w-full"
+                    >
+                      <MessageCircle size={16} /> {t("parties.whatsappReminder")}
+                    </button>
+                  </div>
+                </div>,
+                document.body,
+              )}
+          </>
+        ) : (
+          <>
         {/* Sticky header — works on mobile & desktop */}
         <div className="sticky top-0 z-20 bg-[var(--bg)]/95 backdrop-blur border-b border-black/5 px-0 py-3 flex items-center gap-2 sm:gap-3 w-full">
           <button
@@ -875,17 +1504,20 @@ export const CustomersView: React.FC = () => {
         <div className="hh-detail-cols px-0 py-4 space-y-3 w-full">
           {/* Summary card */}
           <div
-            className={`rounded-2xl border shadow-sm p-4 space-y-3 transition-colors ${
-              rawBalance < 0
-                ? "bg-gradient-to-br from-emerald-50 via-teal-50/40 to-white border-emerald-300 shadow-emerald-500/10"
-                : "bg-white border-black/5"
-            }`}
+            data-card-tone={
+              rawBalance < 0 ? "received" : balanceDue > 0 ? "due" : "sales"
+            }
+            className="rounded-2xl border shadow-sm p-4 space-y-3 transition-colors"
           >
             <div className="flex flex-wrap justify-between items-baseline gap-2">
               <div className="flex items-center gap-2">
                 <span
                   className={`text-xs font-bold uppercase tracking-wider ${
-                    rawBalance < 0 ? "text-emerald-800" : "text-slate-500"
+                    rawBalance < 0
+                      ? "text-emerald-800"
+                      : balanceDue > 0
+                        ? "text-rose-800"
+                        : "text-slate-600"
                   }`}
                 >
                   {rawBalance < 0 ? "Advance on Account" : "Balance due"}
@@ -903,7 +1535,7 @@ export const CustomersView: React.FC = () => {
                   </span>
                 )}
                 <span
-                  className={`text-xl sm:text-2xl font-black ${
+                  className={`text-xl sm:text-2xl font-black tabular-nums ${
                     rawBalance < 0
                       ? "text-emerald-700"
                       : balanceDue > 0
@@ -917,38 +1549,38 @@ export const CustomersView: React.FC = () => {
                 </span>
               </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-              <div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+              <div className="rounded-xl bg-white/75 border border-black/5 px-2.5 py-2">
                 <div className="text-[11px] text-slate-500">Total billed</div>
-                <div className="font-semibold text-slate-800">
+                <div className="font-bold text-slate-900 tabular-nums">
                   ₹{money(ledger.totalBilled)}
                 </div>
               </div>
               {(ledger.totalReturns || 0) > 0 && (
-                <div>
+                <div className="rounded-xl bg-white/75 border border-black/5 px-2.5 py-2">
                   <div className="text-[11px] text-slate-500">Sales returns</div>
-                  <div className="font-semibold text-blue-700">
+                  <div className="font-bold text-blue-700 tabular-nums">
                     -₹{money(ledger.totalReturns)}
                   </div>
                 </div>
               )}
               {openingBal !== 0 && (
-                <div>
+                <div className="rounded-xl bg-white/75 border border-black/5 px-2.5 py-2">
                   <div className="text-[11px] text-slate-500">Opening bal.</div>
-                  <div className="font-semibold text-slate-800">
+                  <div className="font-bold text-slate-900 tabular-nums">
                     ₹{money(openingBal)}
                   </div>
                 </div>
               )}
-              <div>
+              <div className="rounded-xl bg-white/75 border border-black/5 px-2.5 py-2">
                 <div className="text-[11px] text-slate-500">Total paid</div>
-                <div className="font-semibold text-slate-800">
+                <div className="font-bold text-emerald-700 tabular-nums">
                   ₹{money(ledger.totalPaid)}
                 </div>
               </div>
-              <div>
+              <div className="rounded-xl bg-white/75 border border-black/5 px-2.5 py-2">
                 <div className="text-[11px] text-slate-500">Credit limit</div>
-                <div className="font-semibold text-slate-800">
+                <div className="font-bold text-slate-900 tabular-nums">
                   {creditLimit > 0 ? `₹${money(creditLimit)}` : "No limit"}
                 </div>
               </div>
@@ -957,7 +1589,10 @@ export const CustomersView: React.FC = () => {
 
           {/* Address */}
           {(c.address || c.city || c.gstin) && (
-            <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-4 space-y-1.5 text-sm">
+            <div
+              data-card-tone="neutral"
+              className="rounded-2xl border shadow-sm p-4 space-y-1.5 text-sm"
+            >
               {c.address && <p className="text-slate-700">{c.address}</p>}
               {c.city && <p className="text-slate-500">{c.city}</p>}
               {c.gstin && (
@@ -1081,8 +1716,8 @@ export const CustomersView: React.FC = () => {
                         key={entry.id}
                         className="px-3 sm:px-4 py-3 flex gap-3 items-start"
                       >
-                        <div className="mt-0.5 w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
-                          <Building2 className="w-4 h-4 text-slate-500" />
+                        <div className="mt-0.5 hh-icon-badge hh-icon-badge--sm hh-icon-badge--slate">
+                          <Building2 className="w-4 h-4" />
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
@@ -1120,8 +1755,8 @@ export const CustomersView: React.FC = () => {
                         key={entry.id}
                         className="px-3 sm:px-4 py-3 flex gap-3 items-start group"
                       >
-                        <div className="mt-0.5 w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center shrink-0">
-                          <RotateCcw className="w-4 h-4 text-blue-700" />
+                        <div className="mt-0.5 hh-icon-badge hh-icon-badge--sm hh-icon-badge--blue">
+                          <RotateCcw className="w-4 h-4" />
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
@@ -1162,8 +1797,8 @@ export const CustomersView: React.FC = () => {
                         key={entry.id}
                         className="px-3 sm:px-4 py-3 flex gap-3 items-start group"
                       >
-                        <div className="mt-0.5 w-8 h-8 rounded-full bg-amber-50 flex items-center justify-center shrink-0">
-                          <FileText className="w-4 h-4 text-amber-700" />
+                        <div className="mt-0.5 hh-icon-badge hh-icon-badge--sm hh-icon-badge--amber">
+                          <FileText className="w-4 h-4" />
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
@@ -1226,8 +1861,8 @@ export const CustomersView: React.FC = () => {
                       key={entry.id}
                       className="px-3 sm:px-4 py-3 flex gap-3 items-start group"
                     >
-                      <div className="mt-0.5 w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center shrink-0">
-                        <CreditCard className="w-4 h-4 text-emerald-700" />
+                      <div className="mt-0.5 hh-icon-badge hh-icon-badge--sm hh-icon-badge--green">
+                        <CreditCard className="w-4 h-4" />
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
@@ -1288,6 +1923,8 @@ export const CustomersView: React.FC = () => {
             )}
           </div>
         </div>
+          </>
+        )}
 
         {/* Delete customer */}
         {customerToDelete && (
@@ -1448,7 +2085,92 @@ export const CustomersView: React.FC = () => {
     const s = selectedSupplier;
     const grnN = grnCountBySupplier.get(s.name.trim().toLowerCase()) || 0;
     return (
-      <div className="min-h-[100dvh] bg-[var(--bg)] pb-24">
+      <div id="view-customers" className="hh-view min-h-[100dvh] bg-[var(--bg)] pb-24">
+        {isPhone ? (
+          <>
+            <div className="hh-sales-top">
+              <div className="hh-sales-top__row">
+                <div className="flex items-center gap-1 min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSupplier(null)}
+                    className="hh-sales-top__iconbtn"
+                    aria-label={t("common.back")}
+                  >
+                    <ChevronLeft className="w-6 h-6" strokeWidth={2.2} />
+                  </button>
+                  <h1 className="hh-sales-top__title break-words min-w-0">{s.name}</h1>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => openEditSupplier(s)}
+                  className="hh-sales-top__iconbtn shrink-0"
+                  aria-label={t("common.edit")}
+                >
+                  <Edit2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-3 mt-1">
+              <div className="rt-card space-y-2">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-[12px] font-semibold" style={{ color: "var(--text-2)" }}>
+                    Inward GRNs
+                  </span>
+                  <span className="text-[22px] font-extrabold tabular-nums" style={{ color: "var(--text)" }}>
+                    {grnN}
+                  </span>
+                </div>
+                {s.contactPerson && (
+                  <p className="text-[13px] m-0" style={{ color: "var(--text)" }}>Contact: {s.contactPerson}</p>
+                )}
+                {s.phone && (
+                  <p className="text-[13px] m-0" style={{ color: "var(--text-2)" }}>{s.phone}</p>
+                )}
+                {s.gstin && (
+                  <p className="font-mono text-[12px] m-0" style={{ color: "var(--text-2)" }}>GSTIN {s.gstin}</p>
+                )}
+                {s.pan && (
+                  <p className="font-mono text-[12px] m-0" style={{ color: "var(--text-2)" }}>PAN {s.pan}</p>
+                )}
+              </div>
+
+              {(s.address || s.city || s.state) && (
+                <div className="rt-card space-y-1 text-[13px]">
+                  {s.address && <p className="m-0" style={{ color: "var(--text)" }}>{s.address}</p>}
+                  {(s.city || s.state) && (
+                    <p className="m-0" style={{ color: "var(--text-2)" }}>
+                      {[s.city, s.state].filter(Boolean).join(" · ")}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {s.notes && (
+                <div className="rt-card text-[13px]" style={{ color: "var(--text-2)" }}>
+                  {s.notes}
+                </div>
+              )}
+
+              <div className="flex gap-2.5 pt-1">
+                {s.phone && (
+                  <a href={`tel:${s.phone}`} className="rt-btn flex-1 no-underline">
+                    <Phone size={16} /> Call
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSupplierToDelete(s)}
+                  className="rt-btn-outline rt-btn-outline--due flex-1"
+                >
+                  <Trash2 size={16} /> {t("common.delete")}
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
         <div className="sticky top-0 z-20 bg-[var(--bg)]/95 backdrop-blur border-b border-black/5 px-0 py-3 flex items-center gap-3 w-full">
           <button
             type="button"
@@ -1528,6 +2250,8 @@ export const CustomersView: React.FC = () => {
             </button>
           </div>
         </div>
+          </>
+        )}
 
         {supplierToDelete && (
           <ConfirmModal
@@ -1551,6 +2275,412 @@ export const CustomersView: React.FC = () => {
   /* ═══════════ Forms ═══════════ */
   if (formOpen) {
     const isSupplier = partyTab === "suppliers" || !!editingSupplier;
+    const closePartyForm = () => {
+      setFormOpen(false);
+      setEditingCustomer(null);
+      setEditingDerivedCustomer(null);
+      setEditingSupplier(null);
+      setClashConfirm(null);
+      setShowMoreFormFields(false);
+    };
+
+    if (isPhone) {
+      return (
+        <div className="rt-flow-phone">
+          <div className="hh-sales-top">
+            <div className="hh-sales-top__row">
+              <div className="flex items-center gap-1 min-w-0">
+                <button
+                  type="button"
+                  onClick={closePartyForm}
+                  className="hh-sales-top__iconbtn"
+                  aria-label={t("common.back")}
+                >
+                  <ChevronLeft className="w-6 h-6" strokeWidth={2.2} />
+                </button>
+                <h1 className="hh-sales-top__title">
+                  {isSupplier
+                    ? editingSupplier
+                      ? "Edit supplier"
+                      : "New supplier"
+                    : editingCustomer || editingDerivedCustomer
+                      ? t("parties.editCustomer")
+                      : t("parties.newCustomer")}
+                </h1>
+              </div>
+            </div>
+          </div>
+
+          <div className="rt-flow-phone__body space-y-2.5">
+            {formError && (
+              <div className="hh-hist-card hh-hist-card--due text-[12.5px] font-semibold" style={{ color: "var(--due)" }}>
+                {formError}
+              </div>
+            )}
+
+            {isSupplier ? (
+              <>
+                <label className="rt-in">
+                  <span className="rt-in__label uppercase">Company / Supplier name *</span>
+                  <input
+                    className="rt-in__control"
+                    value={supplierForm.name}
+                    onChange={(e) => setSField("name", e.target.value)}
+                    autoFocus
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="rt-in">
+                    <span className="rt-in__label uppercase">{t("parties.phoneLabel")}</span>
+                    <input
+                      className="rt-in__control"
+                      type="tel"
+                      inputMode="tel"
+                      placeholder="10-digit phone"
+                      value={supplierForm.phone}
+                      onChange={(e) => setSField("phone", e.target.value)}
+                    />
+                  </label>
+                  <label className="rt-in">
+                    <span className="rt-in__label uppercase">{t("parties.gstinLabel")}</span>
+                    <input
+                      autoCapitalize="characters"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="rt-in__control uppercase"
+                      value={supplierForm.gstin}
+                      onChange={(e) => {
+                        const v = e.target.value.toUpperCase();
+                        setSField("gstin", v);
+                        setSField("gstRegistered", Boolean(v.trim()));
+                      }}
+                      placeholder="22AAAAA0000A1Z5"
+                    />
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="rt-in">
+                    <span className="rt-in__label uppercase">Contact person</span>
+                    <input
+                      className="rt-in__control"
+                      value={supplierForm.contactPerson}
+                      onChange={(e) => setSField("contactPerson", e.target.value)}
+                    />
+                  </label>
+                  <label className="rt-in">
+                    <span className="rt-in__label uppercase">City</span>
+                    <input
+                      className="rt-in__control"
+                      value={supplierForm.city}
+                      onChange={(e) => setSField("city", e.target.value)}
+                    />
+                  </label>
+                </div>
+                <label className="rt-in">
+                  <span className="rt-in__label uppercase">{t("parties.addressLabel")}</span>
+                  <input
+                    className="rt-in__control"
+                    value={supplierForm.address}
+                    onChange={(e) => setSField("address", e.target.value)}
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="rt-in">
+                    <span className="rt-in__label uppercase">Email</span>
+                    <input
+                      className="rt-in__control"
+                      type="email"
+                      value={supplierForm.email}
+                      onChange={(e) => setSField("email", e.target.value)}
+                    />
+                  </label>
+                  <label className="rt-in">
+                    <span className="rt-in__label uppercase">PAN</span>
+                    <input
+                      className="rt-in__control uppercase"
+                      value={supplierForm.pan}
+                      onChange={(e) => setSField("pan", e.target.value.toUpperCase())}
+                    />
+                  </label>
+                </div>
+                <label className="rt-in">
+                  <span className="rt-in__label uppercase">Notes</span>
+                  <input
+                    className="rt-in__control"
+                    value={supplierForm.notes}
+                    onChange={(e) => setSField("notes", e.target.value)}
+                  />
+                </label>
+              </>
+            ) : (
+              <>
+                <label className="rt-in">
+                  <span className="rt-in__label uppercase">{t("parties.shopPartyName")}</span>
+                  <input
+                    className="rt-in__control"
+                    value={customerForm.name}
+                    onChange={(e) => setCField("name", e.target.value)}
+                    autoFocus
+                  />
+                </label>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="rt-in">
+                    <span className="rt-in__label uppercase">{t("parties.phoneLabel")}</span>
+                    <input
+                      className="rt-in__control"
+                      type="tel"
+                      inputMode="tel"
+                      placeholder="98765 43210"
+                      value={customerForm.phone}
+                      onChange={(e) => setCField("phone", e.target.value)}
+                    />
+                  </label>
+                  <label className="rt-in">
+                    <span className="rt-in__label uppercase">{t("parties.gstinLabel")}</span>
+                    <input
+                      autoCapitalize="characters"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="rt-in__control uppercase"
+                      value={customerForm.gstin}
+                      onChange={(e) => {
+                        const val = e.target.value.toUpperCase();
+                        setCField("gstin", val);
+                        if (val.trim()) setCField("gstRegistered", true);
+                      }}
+                      placeholder="22AAAAA0000A1Z5"
+                    />
+                  </label>
+                </div>
+
+                <div>
+                  <div className="text-[12px] font-semibold mb-1.5" style={{ color: "var(--text-2)" }}>
+                    {t("parties.customerType")}
+                  </div>
+                  <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+                    {["Retail", "Wholesale", "Distributor", "Institution", "Special"].map((tp) => (
+                      <button
+                        key={tp}
+                        type="button"
+                        aria-pressed={customerForm.customerType === tp}
+                        onClick={() => setCField("customerType", tp)}
+                        className="rt-chip shrink-0"
+                      >
+                        {tp}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label className="rt-in">
+                  <span className="rt-in__label uppercase">{t("parties.routeBeatLabel")}</span>
+                  <div className="rt-in__select-wrap">
+                    <select
+                      className="rt-in__control"
+                      value={customerForm.beat}
+                      onChange={(e) => setCField("beat", e.target.value)}
+                    >
+                      <option value="">—</option>
+                      {activeBeats.map((b) => (
+                        <option key={b.id || b.name} value={b.name}>
+                          {b.name}
+                        </option>
+                      ))}
+                      {customerForm.beat && !activeBeats.some((b) => b.name === customerForm.beat) && (
+                        <option value={customerForm.beat}>{customerForm.beat}</option>
+                      )}
+                    </select>
+                    <ChevronDown size={15} className="rt-in__select-chev" />
+                  </div>
+                </label>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="rt-in">
+                    <span className="rt-in__label uppercase">{t("parties.creditLimitLabel")}</span>
+                    <input
+                      className="rt-in__control tabular-nums"
+                      inputMode="decimal"
+                      value={customerForm.creditLimit}
+                      onChange={(e) => setCField("creditLimit", e.target.value)}
+                    />
+                  </label>
+                  <label className="rt-in">
+                    <span className="rt-in__label uppercase">{t("parties.openingBalanceLabel")}</span>
+                    <input
+                      className="rt-in__control tabular-nums"
+                      inputMode="decimal"
+                      value={customerForm.openingBalance}
+                      onChange={(e) => setCField("openingBalance", e.target.value)}
+                    />
+                  </label>
+                </div>
+
+                <label className="rt-in">
+                  <span className="rt-in__label uppercase">{t("parties.addressLabel")}</span>
+                  <input
+                    className="rt-in__control"
+                    placeholder={t("parties.addressPlaceholder")}
+                    value={customerForm.address}
+                    onChange={(e) => setCField("address", e.target.value)}
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => setShowMoreFormFields((v) => !v)}
+                  className="rt-card w-full flex items-center justify-between gap-2 text-left cursor-pointer"
+                  style={{ minHeight: "44px" }}
+                >
+                  <span className="text-[12.5px] font-bold" style={{ color: "var(--primary)" }}>
+                    {t("parties.moreDetails")}
+                  </span>
+                  <ChevronDown
+                    size={16}
+                    style={{
+                      color: "var(--primary)",
+                      transform: showMoreFormFields ? "rotate(180deg)" : "none",
+                      transition: "transform 0.15s",
+                    }}
+                  />
+                </button>
+
+                {showMoreFormFields && (
+                  <div className="space-y-2.5">
+                    <label className="rt-in">
+                      <span className="rt-in__label uppercase">Name in Odia (ଓଡ଼ିଆ)</span>
+                      <input
+                        className="rt-in__control"
+                        value={customerForm.nameOr || ""}
+                        onChange={(e) => setCField("nameOr", e.target.value)}
+                        placeholder="ଉଦାହରଣ: ମାଆ ଦୁର୍ଗା ଷ୍ଟୋର୍"
+                        dir="auto"
+                      />
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="rt-in">
+                        <span className="rt-in__label uppercase">Contact person</span>
+                        <input
+                          className="rt-in__control"
+                          value={customerForm.contactPerson}
+                          onChange={(e) => setCField("contactPerson", e.target.value)}
+                        />
+                      </label>
+                      <label className="rt-in">
+                        <span className="rt-in__label uppercase">Price list</span>
+                        <div className="rt-in__select-wrap">
+                          <select
+                            className="rt-in__control"
+                            value={customerForm.priceList}
+                            onChange={(e) => setCField("priceList", e.target.value)}
+                          >
+                            <option>Retail</option>
+                            <option>Wholesale</option>
+                            <option>Special</option>
+                          </select>
+                          <ChevronDown size={15} className="rt-in__select-chev" aria-hidden="true" />
+                        </div>
+                      </label>
+                    </div>
+                    <div className="rt-card flex items-center justify-between gap-3">
+                      <span className="text-[13px] font-bold" style={{ color: "var(--text)" }}>
+                        GST registered (B2B)
+                      </span>
+                      <Toggle
+                        on={customerForm.gstRegistered}
+                        onChange={(v) => setCField("gstRegistered", v)}
+                      />
+                    </div>
+                    <label className="rt-in">
+                      <span className="rt-in__label uppercase">State</span>
+                      <div className="rt-in__select-wrap">
+                        <select
+                          className="rt-in__control"
+                          value={customerForm.state}
+                          onChange={(e) => setCField("state", e.target.value)}
+                        >
+                          {INDIAN_STATES.map((st) => (
+                            <option key={st} value={st}>
+                              {st}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown size={15} className="rt-in__select-chev" aria-hidden="true" />
+                      </div>
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="rt-in">
+                        <span className="rt-in__label uppercase">PAN</span>
+                        <input
+                          className="rt-in__control uppercase"
+                          value={customerForm.pan}
+                          onChange={(e) => setCField("pan", e.target.value.toUpperCase())}
+                        />
+                      </label>
+                      <label className="rt-in">
+                        <span className="rt-in__label uppercase">FSSAI</span>
+                        <input
+                          className="rt-in__control"
+                          value={customerForm.fssai}
+                          onChange={(e) => setCField("fssai", e.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="rt-in">
+                        <span className="rt-in__label uppercase">Visit order</span>
+                        <input
+                          className="rt-in__control"
+                          inputMode="numeric"
+                          value={customerForm.visitOrder}
+                          onChange={(e) => setCField("visitOrder", e.target.value)}
+                        />
+                      </label>
+                      <label className="rt-in">
+                        <span className="rt-in__label uppercase">Credit days</span>
+                        <input
+                          className="rt-in__control"
+                          inputMode="numeric"
+                          value={customerForm.creditDays}
+                          onChange={(e) => setCField("creditDays", e.target.value)}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="rt-flow-phone__footer">
+            <button
+              type="button"
+              onClick={isSupplier ? saveSupplier : saveCustomer}
+              className="rt-btn w-full"
+            >
+              {isSupplier ? t("common.save") : t("parties.saveCustomer")}
+            </button>
+          </div>
+
+          {clashConfirm && (
+            <ConfirmModal
+              isOpen
+              title="Duplicate customer name"
+              message={`Another customer is already named "${clashConfirm.clash.name}"${clashConfirm.clash.phone ? ` (phone ${clashConfirm.clash.phone})` : ""}. Their bills stay with them and are NOT merged, but the two will look the same in lists. Save this name anyway?`}
+              confirmButtonLabel="Save anyway"
+              cancelButtonLabel="Go back"
+              variant="warning"
+              confirmIcon={<Edit2 className="w-3.5 h-3.5" />}
+              onConfirm={clashConfirm.commit}
+              onClose={() => setClashConfirm(null)}
+            />
+          )}
+        </div>
+      );
+    }
+
     return (
       <div className="fixed inset-0 z-50 bg-[var(--bg)] flex flex-col">
         <div className="sticky top-0 z-10 bg-[var(--bg)] border-b border-black/5 px-4 sm:px-6 py-3 flex items-center justify-between max-w-none lg:max-w-3xl mx-auto w-full">
@@ -1744,6 +2874,7 @@ export const CustomersView: React.FC = () => {
                     <option>Wholesale</option>
                     <option>Distributor</option>
                     <option>Institution</option>
+                    <option>Special</option>
                   </select>
                 </Field>
                 <Field label="Price list">
@@ -1907,8 +3038,341 @@ export const CustomersView: React.FC = () => {
   }
 
   /* ═══════════ Main Parties list ═══════════ */
+  const selectedBeatName =
+    beatFilter === "all"
+      ? t("parties.allBeats", { n: existingCustomers.length })
+      : beatFilter === "none"
+        ? t("parties.noBeatYet")
+        : beatNameById.get(beatFilter) || beatFilter;
+
   return (
-    <div className="hh-view w-full min-w-0 pb-24">
+    <div id="view-customers" className="hh-view w-full min-w-0 pb-24">
+      {isPhone ? (
+        <div className="space-y-3">
+          <div className="hh-sales-top">
+            <div className="hh-sales-top__row">
+              <h1 className="hh-sales-top__title">{t("parties.title")}</h1>
+              <button
+                type="button"
+                onClick={openAdd}
+                className="hh-sales-top__iconbtn"
+                aria-label={partyTab === "suppliers" ? "Add supplier" : t("parties.newCustomer")}
+              >
+                <Plus className="w-6 h-6" strokeWidth={2.5} />
+              </button>
+            </div>
+          </div>
+
+          <div className="rt-search-bar">
+            <Search size={16} style={{ color: "var(--text-2)", flexShrink: 0 }} />
+            <input
+              enterKeyHint="search"
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder={t("parties.searchPlaceholder")}
+            />
+            {searchTerm && (
+              <button
+                type="button"
+                onClick={() => setSearchTerm("")}
+                aria-label="Clear search"
+                className="p-1 bg-transparent border-0 cursor-pointer"
+                style={{ color: "var(--text-2)" }}
+              >
+                <X size={15} />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setPhoneFilterSheetOpen(true)}
+              aria-label="Filter parties"
+              className="relative p-1.5 bg-transparent border-0 cursor-pointer inline-flex items-center justify-center shrink-0"
+              style={{
+                color: customerFilter !== "all" || partyTab === "suppliers" ? "var(--primary)" : "var(--text-2)",
+                minHeight: "34px",
+                minWidth: "34px",
+              }}
+            >
+              <SlidersHorizontal size={16} />
+              {(customerFilter !== "all" || partyTab === "suppliers") && (
+                <span
+                  aria-hidden="true"
+                  className="absolute top-1 right-1 size-2 rounded-full"
+                  style={{ background: "var(--primary)" }}
+                />
+              )}
+            </button>
+          </div>
+
+          {partyTab === "customers" && (
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+              {[
+                { id: "all", label: t("parties.allBeats", { n: existingCustomers.length }) },
+                ...beats
+                  .filter((b) => b.active !== false)
+                  .map((b) => ({ id: b.id, label: `${b.name} ${beatCounts.counts.get(b.id) || 0}` })),
+                { id: "none", label: `${t("parties.noBeatYet")} ${beatCounts.none}` },
+              ].map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  aria-pressed={beatFilter === chip.id}
+                  onClick={() => setBeatFilter(chip.id)}
+                  className="rt-chip shrink-0"
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {partyTab === "customers" && customerFilter !== "all" && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCustomerFilter("all")}
+                className="rt-tag rt-tag--mode cursor-pointer border-0"
+              >
+                {customerFilter === "due" ? `Due (${dueCount})` : `${t("parties.credit")} (${advanceCount})`} ×
+              </button>
+            </div>
+          )}
+
+          {partyTab === "suppliers" && (
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+              <button
+                type="button"
+                aria-pressed={false}
+                onClick={() => {
+                  setPartyTab("customers");
+                  setSearchTerm("");
+                }}
+                className="rt-chip shrink-0"
+              >
+                {t("parties.customers")} ({existingCustomers.length})
+              </button>
+              <button
+                type="button"
+                aria-pressed={true}
+                onClick={() => setPartyTab("suppliers")}
+                className="rt-chip shrink-0"
+              >
+                {t("parties.suppliers")} ({suppliers.length})
+              </button>
+            </div>
+          )}
+
+          {phoneFilterSheetOpen &&
+            createPortal(
+              <div
+                className="rt-bsheet-scrim"
+                onClick={() => setPhoneFilterSheetOpen(false)}
+                role="dialog"
+                aria-modal="true"
+              >
+                <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+                  <div className="hh-grab" />
+                  <div className="space-y-2">
+                    <div className="text-[11px] font-bold uppercase tracking-wider" style={{ color: "var(--text-2)" }}>
+                      {t("parties.title")}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        aria-pressed={partyTab === "customers"}
+                        onClick={() => {
+                          setPartyTab("customers");
+                          setPhoneFilterSheetOpen(false);
+                        }}
+                        className="rt-pay-pill text-[13px] font-bold cursor-pointer bg-white"
+                      >
+                        {t("parties.customers")} ({existingCustomers.length})
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={partyTab === "suppliers"}
+                        onClick={() => {
+                          setPartyTab("suppliers");
+                          setPhoneFilterSheetOpen(false);
+                        }}
+                        className="rt-pay-pill text-[13px] font-bold cursor-pointer bg-white"
+                      >
+                        {t("parties.suppliers")} ({suppliers.length})
+                      </button>
+                    </div>
+                  </div>
+                  {partyTab === "customers" && (
+                    <div className="space-y-2">
+                      <div className="text-[11px] font-bold uppercase tracking-wider" style={{ color: "var(--text-2)" }}>
+                        {t("parties.balanceDue")}
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <button
+                          type="button"
+                          aria-pressed={customerFilter === "all"}
+                          onClick={() => {
+                            setCustomerFilter("all");
+                            setPhoneFilterSheetOpen(false);
+                          }}
+                          className="rt-pay-pill text-[12.5px] font-bold cursor-pointer bg-white"
+                        >
+                          {t("common.all")} ({existingCustomers.length})
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={customerFilter === "due"}
+                          onClick={() => {
+                            setCustomerFilter("due");
+                            setPhoneFilterSheetOpen(false);
+                          }}
+                          className="rt-pay-pill text-[12.5px] font-bold cursor-pointer bg-white"
+                        >
+                          Due ({dueCount})
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={customerFilter === "advance"}
+                          onClick={() => {
+                            setCustomerFilter("advance");
+                            setPhoneFilterSheetOpen(false);
+                          }}
+                          className="rt-pay-pill text-[12.5px] font-bold cursor-pointer bg-white"
+                        >
+                          {t("parties.credit")} ({advanceCount})
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>,
+              document.body,
+            )}
+
+          {partyTab === "suppliers" ? (
+            filteredSuppliers.length === 0 ? (
+              <div className="rt-card px-5 py-10 text-center text-[13px]" style={{ color: "var(--text-2)" }}>
+                {t("parties.noPartiesFound")}
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {filteredSuppliers.map((s) => {
+                  const grnN = grnCountBySupplier.get(s.name.trim().toLowerCase()) || 0;
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => setSelectedSupplier(s)}
+                      className="hh-hist-card hh-hist-card--primary w-full text-left flex items-center gap-3 cursor-pointer"
+                    >
+                      <span className="rt-ico shrink-0">{getInitials(s.name, "S")}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[14px] font-bold break-words" style={{ color: "var(--text)" }}>
+                          {s.name}
+                        </span>
+                        <span className="block text-[12px] mt-0.5 break-words" style={{ color: "var(--text-2)" }}>
+                          {[s.phone || s.city || s.gstin].filter(Boolean).join(" · ") || "—"}
+                        </span>
+                      </span>
+                      <span className="text-right shrink-0">
+                        <span className="block text-[15px] font-extrabold tabular-nums" style={{ color: "var(--text)" }}>
+                          {grnN}
+                        </span>
+                        <span className="rt-tag mt-0.5">GRNs</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )
+          ) : filteredCustomers.length === 0 ? (
+            <div className="rt-card px-5 py-10 text-center space-y-1">
+              <div className="text-[14px] font-bold" style={{ color: "var(--text)" }}>
+                {t("parties.noPartiesFound")}
+              </div>
+              <div className="text-[12.5px]" style={{ color: "var(--text-2)" }}>
+                {selectedBeatName}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {filteredCustomers.map((c) => {
+                const hasAdvance = (c.advance || 0) > 0.004 && c.balanceDue <= 0.004;
+                const hasDue = c.balanceDue > 0.004;
+                const dueDays = hasDue ? (oldestDueDaysByCustomer.get(normCustName(c.name)) ?? 0) : 0;
+                const overdueHigh = hasDue && dueDays > 14;
+                const cardEdge = hasAdvance
+                  ? "hh-hist-card--paid"
+                  : hasDue
+                    ? overdueHigh
+                      ? "hh-hist-card--due"
+                      : "hh-hist-card--amber"
+                    : "hh-hist-card--paid";
+                const displayName = nameFromMap(customerNameMap, c, language);
+                const bid = beatIdForExisting(c);
+                const beatLabel = (bid && beatNameById.get(bid)) || c.city || "";
+                const tpLabel =
+                  (c.id && customerTypeById.get(c.id)) ||
+                  customerTypeByName.get(normCustName(c.name)) ||
+                  "Retail";
+                const subLine = [beatLabel || c.phone, tpLabel].filter(Boolean).join(" · ");
+
+                return (
+                  <button
+                    key={c.id || c.name}
+                    type="button"
+                    onClick={() => {
+                      setPhoneDetailTab("summary");
+                      setSelectedCustomer(c);
+                    }}
+                    className={`hh-hist-card ${cardEdge} w-full text-left flex items-center gap-3 cursor-pointer`}
+                  >
+                    <span className="rt-ico shrink-0">{getInitials(displayName, "C")}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[14px] font-bold break-words leading-snug" style={{ color: "var(--text)" }}>
+                        {displayName}
+                      </span>
+                      <span className="block text-[12px] mt-0.5 break-words" style={{ color: "var(--text-2)" }}>
+                        {subLine}
+                      </span>
+                    </span>
+                    <span className="text-right shrink-0">
+                      {hasAdvance ? (
+                        <>
+                          <span className="block text-[15px] font-extrabold tabular-nums" style={{ color: "var(--paid)" }}>
+                            ₹{money(c.advance || 0)}
+                          </span>
+                          <span className="rt-tag rt-tag--paid mt-0.5">{t("parties.credit")}</span>
+                        </>
+                      ) : hasDue ? (
+                        <>
+                          <span className="block text-[15px] font-extrabold tabular-nums" style={{ color: "var(--text)" }}>
+                            ₹{money(c.balanceDue)}
+                          </span>
+                          <span className={`rt-tag mt-0.5 ${overdueHigh ? "rt-tag--due" : "rt-tag--soon"}`}>
+                            {dueDays === 1
+                              ? t("parties.dayCount")
+                              : dueDays > 1
+                                ? t("parties.daysCount", { n: dueDays })
+                                : t("status.due")}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="block text-[15px] font-extrabold tabular-nums" style={{ color: "var(--text)" }}>
+                            ₹0
+                          </span>
+                          <span className="rt-tag rt-tag--paid mt-0.5">{t("parties.clear")}</span>
+                        </>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="w-full min-w-0">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
@@ -2161,24 +3625,25 @@ export const CustomersView: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setSelectedSupplier(s)}
-                      className="w-full text-left bg-white rounded-2xl border border-black/5 shadow-sm px-4 py-3.5 flex items-center gap-3 hover:border-black/10 cursor-pointer active:scale-[0.99] transition"
+                      data-card-tone="profit"
+                      className="w-full text-left rounded-2xl border shadow-sm px-4 py-3.5 flex items-center gap-3 cursor-pointer active:scale-[0.99] transition"
                     >
-                      <div className="size-10 rounded-full bg-[#ebe8e1] text-[var(--primary)] flex items-center justify-center shrink-0">
+                      <div className="hh-icon-badge hh-icon-badge--purple">
                         <Building2 className="w-5 h-5" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="font-semibold text-slate-900 break-words leading-snug">
+                        <div className="font-bold text-slate-900 break-words leading-snug">
                           {s.name}
                         </div>
-                        <div className="text-xs text-slate-500 min-w-0 break-words lg:truncate">
+                        <div className="text-xs text-slate-600 min-w-0 break-words lg:truncate">
                           {s.phone || s.city || s.gstin || "—"}
                         </div>
                       </div>
                       <div className="text-right shrink-0">
-                        <div className="text-sm font-bold text-slate-800">
+                        <div className="text-sm font-extrabold text-violet-900 tabular-nums">
                           {grnN}
                         </div>
-                        <div className="text-[10px] text-slate-400 uppercase tracking-wide">
+                        <div className="text-[10px] font-bold text-violet-600 uppercase tracking-wide">
                           GRNs
                         </div>
                       </div>
@@ -2194,30 +3659,25 @@ export const CustomersView: React.FC = () => {
           <ul className="hh-list-grid">
             {filteredCustomers.map((c) => {
               const hasAdvance = (c.advance || 0) > 0.004 && c.balanceDue <= 0.004;
+              const hasDue = c.balanceDue > 0.004;
+              const cardTone = hasAdvance ? "received" : hasDue ? "due" : "sales";
+              const avatarTone = hasAdvance ? "green" : hasDue ? "rose" : "blue";
+              const displayName = nameFromMap(customerNameMap, c, language);
               return (
               <li key={c.id || c.name}>
                 <button
                   type="button"
                   onClick={() => setSelectedCustomer(c)}
-                  className={`w-full text-left rounded-2xl border shadow-sm px-4 py-3.5 flex items-center gap-3 cursor-pointer active:scale-[0.99] transition ${
-                    hasAdvance
-                      ? "bg-gradient-to-r from-emerald-50/80 via-teal-50/30 to-white border-emerald-300 hover:border-emerald-400 shadow-emerald-500/5"
-                      : "bg-white border-black/5 hover:border-black/10"
-                  }`}
+                  data-card-tone={cardTone}
+                  className="w-full text-left rounded-2xl border shadow-sm px-4 py-3.5 flex items-center gap-3 cursor-pointer active:scale-[0.99] transition"
                 >
-                  <div
-                    className={`size-10 rounded-full flex items-center justify-center shrink-0 ${
-                      hasAdvance
-                        ? "bg-emerald-100 text-emerald-800 ring-2 ring-emerald-300/60"
-                        : "bg-[#ebe8e1] text-[var(--primary)]"
-                    }`}
-                  >
-                    <User className="w-5 h-5" />
+                  <div className={`hh-avatar hh-avatar--${avatarTone}`}>
+                    {getInitials(displayName, "C")}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="font-semibold text-slate-900 break-words leading-snug">
-                        {nameFromMap(customerNameMap, c, language)}
+                      <span className="font-bold text-slate-900 break-words leading-snug">
+                        {displayName}
                       </span>
                       {hasAdvance && (
                         <span className="px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0">
@@ -2225,14 +3685,14 @@ export const CustomersView: React.FC = () => {
                         </span>
                       )}
                     </div>
-                    <div className="text-xs text-slate-500 min-w-0 break-words lg:truncate">
+                    <div className="text-xs text-slate-600 min-w-0 break-words lg:truncate">
                       {c.phone || c.city || "—"}
                     </div>
                   </div>
                   <div className="text-right shrink-0">
                     {hasAdvance ? (
                       <>
-                        <div className="text-sm font-black text-emerald-700">
+                        <div className="text-sm font-black text-emerald-700 tabular-nums">
                           ₹{money(c.advance || 0)}
                         </div>
                         <div className="text-[10px] font-bold text-emerald-700 uppercase tracking-wide">
@@ -2242,14 +3702,18 @@ export const CustomersView: React.FC = () => {
                     ) : (
                       <>
                         <div
-                          className={`text-sm font-bold ${
-                            c.balanceDue > 0 ? "text-rose-600" : "text-slate-700"
+                          className={`text-sm font-extrabold tabular-nums ${
+                            hasDue ? "text-rose-600" : "text-slate-800"
                           }`}
                         >
                           ₹{money(c.balanceDue)}
                         </div>
-                        <div className="text-[10px] text-slate-400 uppercase tracking-wide">
-                          due
+                        <div
+                          className={`text-[10px] font-bold uppercase tracking-wide ${
+                            hasDue ? "text-rose-500" : "text-slate-500"
+                          }`}
+                        >
+                          {hasDue ? "due" : "settled"}
                         </div>
                       </>
                     )}
@@ -2260,6 +3724,7 @@ export const CustomersView: React.FC = () => {
           </ul>
         )}
       </div>
+      )}
 
       {customerToDelete && (
         <ConfirmModal
@@ -2350,7 +3815,10 @@ function Toggle({
 
 function EmptyCard({ title, hint }: { title: string; hint: string }) {
   return (
-    <div className="bg-white rounded-2xl border border-black/5 shadow-sm px-6 py-12 text-center">
+    <div
+      data-card-tone="neutral"
+      className="rounded-2xl border shadow-sm px-6 py-12 text-center"
+    >
       <p className="text-base font-bold text-slate-900">{title}</p>
       <p className="text-sm text-slate-500 mt-1.5">{hint}</p>
     </div>

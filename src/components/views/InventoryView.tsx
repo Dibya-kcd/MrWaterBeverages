@@ -2,8 +2,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDownToLine,
+  ArrowRight,
   ArrowRightLeft,
   Boxes,
+  Check,
   Package,
   Building2,
   Calendar,
@@ -18,6 +20,7 @@ import {
   Filter,
   Gift,
   Info,
+  Minus,
   Plus,
   PlusCircle,
   RefreshCw,
@@ -30,6 +33,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { CATS } from '../../constants/initialData';
 import { useLedger } from '../../context/LedgerContext';
 import { GRN } from '../../types';
@@ -39,7 +43,6 @@ import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { EmptyState } from '../common/EmptyState';
 import { SizeChip } from '../common/SizeChip';
 import { PackIcon } from '../common/PackIcon';
-import { sizeStripe } from '../../utils/sizeColor';
 import { LoadingSkeleton } from '../common/LoadingSkeleton';
 import { AuditView } from './AuditView';
 import { OversoldInspectorModal } from './OversoldInspectorModal';
@@ -201,6 +204,32 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
   const [expandedBatchProductIds, setExpandedBatchProductIds] = useState<Record<number, boolean>>({});
   const [notification, setNotification] = useState<string | null>(null);
 
+  const isPhone = useIsMobile(767);
+  const [auditWhId, setAuditWhId] = useState<string>('');
+  const [showWhSheet, setShowWhSheet] = useState(false);
+  const [lastNewGrnId, setLastNewGrnId] = useState<string | null>(null);
+  const [darkToast, setDarkToast] = useState<string | null>(null);
+  const [showTransferPicker, setShowTransferPicker] = useState(false);
+  const [xferJustDone, setXferJustDone] = useState<{
+    fromName: string;
+    toName: string;
+    totalCases: number;
+    summary: string;
+    timeLabel: string;
+    count: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!auditWhId && warehouses[0]?.id) {
+      setAuditWhId(warehouses[0].id);
+    }
+  }, [warehouses, auditWhId]);
+
+  const showPhoneToast = (msg: string) => {
+    setDarkToast(msg);
+    setTimeout(() => setDarkToast(null), 4500);
+  };
+
   // ── Multi-line inter-godown transfer (Inventory control → Transfer) ──
   type TransferLine = { key: string; productId: number; qty: number };
   const [xferFromId, setXferFromId] = useState('');
@@ -248,6 +277,10 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
   };
 
   const showToast = (msg: string) => {
+    if (isPhone) {
+      showPhoneToast(msg);
+      return;
+    }
     setNotification(msg);
     setTimeout(() => setNotification(null), 4000);
   };
@@ -364,37 +397,128 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
     (p) => remainingStock(p.id) < (billingSettings?.lowStockThreshold ?? 5)
   ).length;
 
+  const fmtCompactInr = (val: number) => {
+    const abs = Math.abs(val);
+    const sign = val < 0 ? '-' : '';
+    if (abs >= 100000) return `${sign}₹${(abs / 100000).toFixed(2).replace(/\.00$/, '')}L`;
+    if (abs >= 1000) return `${sign}₹${(abs / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+    return `${sign}₹${Math.round(abs).toLocaleString('en-IN')}`;
+  };
+
+  const selectedWhObj = warehouses.find((w) => w.id === selectedWarehouse);
+  const auditWhObj = warehouses.find((w) => w.id === auditWhId) || warehouses[0];
+  const sortedGrnsForHeader = [...(grns || [])].sort((a, b) => {
+    const da = a.inwardDate || a.invoiceDate || '';
+    const db = b.inwardDate || b.invoiceDate || '';
+    if (da !== db) return db.localeCompare(da);
+    return String(b.id).localeCompare(String(a.id));
+  });
+
   return (
-    <div id="view-inventory" className="hh-view mw-workspace flex flex-col gap-4 w-full min-w-0 max-w-full pb-24">
-      {/* Toast Notification */}
-      {notification && (
+    <div id="view-inventory" className={`hh-view mw-workspace flex flex-col gap-4 w-full min-w-0 max-w-full ${isPhone ? 'pb-24' : 'pb-24'}`}>
+      {/* Desktop Toast Notification */}
+      {!isPhone && notification && (
         <div className="flex items-center gap-2 p-3 bg-[var(--primary)] text-white rounded-2xl shadow-md animate-fade-in text-sm font-semibold">
           <CheckCircle2 size={18} />
           <span>{notification}</span>
         </div>
       )}
 
-      {/* Consistent Page Header (matches Parties & Sale) */}
-      <div className="flex items-center justify-between gap-3 min-h-10 sm:min-h-11">
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
-          Inventory
-        </h1>
-        {activeTab === 'consignments' && (
-          <button
-            type="button"
-            id="btn-add-inward"
-            onClick={() => {
-              setSelectedGrnToEdit(null);
-              setIsInwardModalOpen(true);
-            }}
-            className="size-10 sm:size-11 rounded-full bg-[var(--primary)] text-white flex items-center justify-center shadow-md cursor-pointer active:scale-95 transition-transform shrink-0"
-            aria-label="New inward purchase"
-            title="New inward purchase"
-          >
-            <Plus className="w-5 h-5" strokeWidth={2.5} />
-          </button>
-        )}
-      </div>
+      {isPhone ? (
+        <div className="hh-sales-top hh-sales-top--flush hh-inv-top">
+          <div className="hh-sales-top__row">
+            <h1 className="hh-sales-top__title">Inventory</h1>
+            {(activeTab === 'realtime' || activeTab === 'dispositions') && (
+              <button
+                type="button"
+                onClick={() => setShowWhSheet(true)}
+                className="hh-inv-glass-pill"
+              >
+                <span>{selectedWhObj ? selectedWhObj.name : 'All locations'}</span>
+                <ChevronDown size={13} aria-hidden="true" />
+              </button>
+            )}
+            {activeTab === 'consignments' && (
+              <button
+                type="button"
+                onClick={() => downloadAllGrnsCsv(sortedGrnsForHeader, warehouses)}
+                className="hh-inv-glass-pill"
+                aria-label="Download all GRNs as CSV"
+              >
+                <Download size={12} aria-hidden="true" />
+                <span>CSV</span>
+              </button>
+            )}
+            {activeTab === 'audit' && auditWhObj && (
+              <button
+                type="button"
+                onClick={() => setShowWhSheet(true)}
+                className="hh-inv-glass-pill"
+              >
+                <span>{auditWhObj.name}</span>
+                <ChevronDown size={13} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+
+          <div className="rt-utabs" role="tablist" aria-label="Inventory sections">
+            {(
+              [
+                { id: 'realtime' as const, label: 'Stock', alertCount: 0 },
+                { id: 'consignments' as const, label: 'Inward', alertCount: 0 },
+                { id: 'audit' as const, label: 'Audit', alertCount: 0 },
+                { id: 'dispositions' as const, label: 'Returns', alertCount: pendingExpiryReturns || 0 },
+                { id: 'transfers' as const, label: 'Transfer', alertCount: 0 },
+              ] as const
+            ).map((t) => {
+              const active = activeTab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  id={`tab-${t.id}`}
+                  onClick={() => {
+                    setActiveTab(t.id);
+                    if (t.id === 'transfers') setXferJustDone(null);
+                  }}
+                  className="hh-inv-utab"
+                >
+                  <span>{t.label}</span>
+                  {t.alertCount > 0 && (
+                    <span className="hh-inv-tab-badge">{t.alertCount}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Consistent Page Header (Desktop / Tablet) */}
+          <div className="flex items-center justify-between gap-3 min-h-10 sm:min-h-11">
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
+              Inventory
+            </h1>
+            {activeTab === 'consignments' && (
+              <button
+                type="button"
+                id="btn-add-inward"
+                onClick={() => {
+                  setSelectedGrnToEdit(null);
+                  setIsInwardModalOpen(true);
+                }}
+                className="size-10 sm:size-11 rounded-full bg-[var(--primary)] text-white flex items-center justify-center shadow-md cursor-pointer active:scale-95 transition-transform shrink-0"
+                aria-label="New inward purchase"
+                title="New inward purchase"
+              >
+                <Plus className="w-5 h-5" strokeWidth={2.5} />
+              </button>
+            )}
+          </div>
+        </>
+      )}
 
       {crossWhPlan.affectedBillCount > 0 && (
         <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-2">
@@ -433,7 +557,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         </div>
       )}
 
-      {oversoldReport.length > 0 && (
+      {!isPhone && oversoldReport.length > 0 && (
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-2xl border border-rose-200 bg-rose-50/90 px-3.5 py-3">
           <div className="flex items-start sm:items-center gap-2 text-xs font-semibold text-rose-900 min-w-0">
             <AlertTriangle size={15} className="shrink-0 text-rose-600 mt-0.5 sm:mt-0" />
@@ -451,46 +575,48 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         </div>
       )}
 
-      {/* Consistent Segmented Tabs (matches Parties & Sale) */}
-      <div
-        className="grid grid-cols-5 w-full bg-[#ebe8e1] rounded-full p-1"
-        role="tablist"
-        aria-label="Inventory sections"
-      >
-        {(
-          [
-            { id: 'realtime' as const, label: 'Stock', alertCount: 0 },
-            { id: 'consignments' as const, label: 'Inward', alertCount: 0 },
-            { id: 'audit' as const, label: 'Audit', alertCount: 0 },
-            { id: 'dispositions' as const, label: 'Returns', alertCount: pendingExpiryReturns || 0 },
-            { id: 'transfers' as const, label: 'Transfer', alertCount: 0 },
-          ] as const
-        ).map((t) => {
-          const active = activeTab === t.id;
-          return (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              id={`tab-${t.id}`}
-              onClick={() => setActiveTab(t.id)}
-              className={`min-w-0 py-2.5 px-1 sm:px-3 rounded-full text-[11.5px] sm:text-sm font-semibold transition-colors cursor-pointer whitespace-nowrap truncate ${
-                active
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              {t.label}
-              {t.alertCount > 0 && (
-                <span className="ml-1 text-[10.5px] font-bold text-amber-700 tabular-nums">
-                  {t.alertCount}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
+      {!isPhone && (
+        /* Consistent Segmented Tabs (Desktop / Tablet) */
+        <div
+          className="grid grid-cols-5 w-full bg-[#ebe8e1] rounded-full p-1"
+          role="tablist"
+          aria-label="Inventory sections"
+        >
+          {(
+            [
+              { id: 'realtime' as const, label: 'Stock', alertCount: 0 },
+              { id: 'consignments' as const, label: 'Inward', alertCount: 0 },
+              { id: 'audit' as const, label: 'Audit', alertCount: 0 },
+              { id: 'dispositions' as const, label: 'Returns', alertCount: pendingExpiryReturns || 0 },
+              { id: 'transfers' as const, label: 'Transfer', alertCount: 0 },
+            ] as const
+          ).map((t) => {
+            const active = activeTab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                id={`tab-${t.id}`}
+                onClick={() => setActiveTab(t.id)}
+                className={`min-w-0 py-2.5 px-1 sm:px-3 rounded-full text-[11.5px] sm:text-sm font-semibold transition-colors cursor-pointer whitespace-nowrap truncate ${
+                  active
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                {t.label}
+                {t.alertCount > 0 && (
+                  <span className="ml-1 text-[10.5px] font-bold text-amber-700 tabular-nums">
+                    {t.alertCount}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* TAB 1: REAL-TIME CRATE COUNTS */}
       {activeTab === 'realtime' && (() => {
@@ -564,6 +690,214 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
           })
           .sort((a, b) => a.p.name.localeCompare(b.p.name));
 
+        if (isPhone) {
+          const lowThreshold = billingSettings?.lowStockThreshold ?? 10;
+          const phoneTotalCases = stockProducts.reduce((s, r) => s + Math.max(0, r.headerQty), 0);
+          const phoneTotalValue = stockProducts.reduce((s, r) => s + Math.max(0, r.headerQty) * (Number(r.p.wholesale) || 0), 0);
+          const oversoldProductCount = new Set(oversoldReport.map((o) => o.productId)).size;
+
+          return (
+            <div className="flex flex-col gap-3 w-full">
+              <div className="rt-search-bar">
+                <Search size={16} className="text-slate-400 shrink-0" />
+                <input
+                  enterKeyHint="search"
+                  type="search"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search product"
+                />
+              </div>
+
+              <div className="hh-inv-card flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-[12px] font-medium text-slate-500">Total stock</div>
+                  <div className="text-[22px] font-extrabold text-slate-900 leading-tight tabular-nums mt-0.5">
+                    {phoneTotalCases.toLocaleString()} cs
+                  </div>
+                </div>
+                <div className="text-right min-w-0">
+                  <div className="text-[12px] font-medium text-slate-500">Value</div>
+                  <div className="text-[20px] font-extrabold text-slate-900 leading-tight tabular-nums mt-0.5">
+                    {fmtCompactInr(phoneTotalValue)}
+                  </div>
+                </div>
+              </div>
+
+              {oversoldReport.length > 0 && (
+                <div className="hh-inv-card hh-inv-card--alert-red flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[13.5px] font-bold text-rose-600 leading-snug">
+                      {oversoldProductCount} product{oversoldProductCount === 1 ? '' : 's'} oversold
+                    </div>
+                    <div className="text-[12px] text-slate-500 leading-snug mt-0.5">
+                      Book stock is below zero in a godown
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setOversoldInspect({ open: true })}
+                    className="text-[13px] font-bold text-[#2864d9] px-2 py-1 min-w-0 shrink-0 cursor-pointer"
+                  >
+                    Fix
+                  </button>
+                </div>
+              )}
+
+              {stockProducts.length === 0 ? (
+                <div className="hh-inv-card py-10 text-center">
+                  <p className="text-sm font-semibold text-slate-700">No stock to show</p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Adjust search or location, or receive inward stock.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {stockProducts.map(({ p, batches, headerQty }) => {
+                    const expanded = !!expandedBatchProductIds[p.id];
+                    const whNames = Array.from(
+                      new Set(
+                        productWarehouseStock(p.id)
+                          .filter((r) => r.crates > 0 && (selectedWarehouse === 'all' || r.warehouseId === selectedWarehouse))
+                          .map((r) => r.warehouseName)
+                      )
+                    );
+                    if (whNames.length === 0) {
+                      const batchWh = Array.from(
+                        new Set(
+                          batches.map((b) => warehouses.find((w) => w.id === b.warehouseId)?.name || b.warehouseName).filter(Boolean)
+                        )
+                      );
+                      whNames.push(...(batchWh as string[]));
+                    }
+                    const hasExpiredOrSoon = batches.some((b) => {
+                      const d = daysUntil(b.expiryDate);
+                      return b.availableQty > 0 && d !== null && d <= 30;
+                    });
+                    const isLow = headerQty > 0 && headerQty <= lowThreshold;
+                    const batchCount = batches.filter((b) => b.availableQty !== 0).length || batches.length;
+
+                    let statusPill: React.ReactNode = null;
+                    if (hasExpiredOrSoon) {
+                      statusPill = (
+                        <span className="inline-block px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[10.5px] font-bold">
+                          Expiring
+                        </span>
+                      );
+                    } else if (isLow) {
+                      statusPill = (
+                        <span className="inline-block px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10.5px] font-bold">
+                          Low
+                        </span>
+                      );
+                    } else if (batchCount > 0) {
+                      statusPill = (
+                        <span className="inline-block px-2 py-0.5 rounded-full bg-sky-50 text-[#2864d9] text-[10.5px] font-bold">
+                          {batchCount} batch{batchCount === 1 ? '' : 'es'}
+                        </span>
+                      );
+                    } else {
+                      statusPill = (
+                        <span className="inline-block px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[10.5px] font-bold">
+                          {headerQty === 0 ? 'Out' : 'Book'}
+                        </span>
+                      );
+                    }
+
+                    return (
+                      <div key={p.id} className="hh-inv-card p-0 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedBatchProductIds((prev) => ({
+                              ...prev,
+                              [p.id]: !prev[p.id],
+                            }))
+                          }
+                          aria-expanded={expanded}
+                          className="w-full flex items-center justify-between gap-2.5 px-3.5 py-3 text-left cursor-pointer"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <PackIcon pack={p.pack} name={p.name} />
+                            <div className="min-w-0">
+                              <div className="text-[14px] font-bold text-slate-900 leading-snug truncate">
+                                {p.name}
+                              </div>
+                              <div className="text-[12px] font-medium text-slate-500 truncate mt-0.5">
+                                {whNames.length > 0 ? whNames.join(' · ') : warehouses[0]?.name || 'Main'}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0 space-y-0.5">
+                            <div className="text-[14.5px] font-extrabold text-slate-900 tabular-nums leading-tight">
+                              {headerQty} cs
+                            </div>
+                            <div>{statusPill}</div>
+                          </div>
+                        </button>
+
+                        {expanded && (
+                          <div className="border-t border-slate-100 px-3.5 pb-3 pt-2">
+                            {productWarehouseStock(p.id)
+                              .filter((r) => r.crates < 0 && (selectedWarehouse === 'all' || r.warehouseId === selectedWarehouse))
+                              .map((r) => (
+                                <div key={`neg_${r.warehouseId}`} className="mb-2 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 flex items-center justify-between gap-2 text-[11.5px]">
+                                  <span className="font-semibold text-rose-800">
+                                    {r.warehouseName}: book balance {r.crates} cs
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setOversoldInspect({ open: true, productId: p.id, warehouseId: r.warehouseId })}
+                                    className="font-bold text-[#2864d9] shrink-0 cursor-pointer"
+                                  >
+                                    Fix
+                                  </button>
+                                </div>
+                              ))}
+                            {batches.length > 0 ? (
+                              <>
+                                <div className="flex items-center justify-between text-[11px] font-medium text-slate-400 pb-1.5">
+                                  <span>Batch · expiry · godown</span>
+                                  <span>Cases</span>
+                                </div>
+                                <div className="divide-y divide-slate-100">
+                                  {batches.map((b) => {
+                                    const wh = warehouses.find((w) => w.id === b.warehouseId);
+                                    const days = daysUntil(b.expiryDate);
+                                    const qty = b.availableQty;
+                                    return (
+                                      <div key={b.key} className="py-2 flex items-center justify-between gap-2 text-[12.5px]">
+                                        <div className="min-w-0 truncate text-slate-700">
+                                          <strong className="font-bold text-slate-900">{b.batchNumber || '—'}</strong>
+                                          <span> · {formatExp(b.expiryDate)} · {wh?.name || b.warehouseName || 'Main'}</span>
+                                        </div>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                          <span className={`font-bold tabular-nums ${qty < 0 ? 'text-rose-600' : 'text-slate-900'}`}>
+                                            {qty} cs
+                                          </span>
+                                          {expBadge(days)}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            ) : (
+                              <div className="py-1.5 text-[12px] text-slate-500">
+                                Book stock: <strong className="text-slate-800">{headerQty} cs</strong>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        }
+
         return (
           <div className="flex flex-col gap-4 max-w-none mx-auto w-full">
             <div className="flex flex-col sm:flex-row gap-2">
@@ -595,7 +929,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
             </div>
 
             {stockProducts.length === 0 ? (
-              <div className="rounded-2xl border border-black/8 bg-white shadow-sm px-6 py-12 text-center">
+              <div data-card-tone="neutral" className="rounded-2xl border shadow-sm px-6 py-12 text-center">
                 <p className="text-sm font-semibold text-slate-700">No stock to show</p>
                 <p className="text-xs text-slate-500 mt-1">
                   Adjust search or location, or receive inward stock.
@@ -606,15 +940,23 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                 <div className="px-1 text-xs font-semibold text-slate-500 tabular-nums">
                   {totalStockCases.toLocaleString()} units on hand · {stockProducts.length} product{stockProducts.length === 1 ? '' : 's'}
                 </div>
-              <ul className="space-y-2">
+              <ul className="space-y-2.5">
                 {stockProducts.map(({ p, batches, headerQty }) => {
                   const expanded = !!expandedBatchProductIds[p.id];
                   const hasDetail = batches.length > 0;
+                  const stockTone =
+                    headerQty < 0
+                      ? 'due'
+                      : headerQty === 0
+                        ? 'neutral'
+                        : headerQty <= 5
+                          ? 'warning'
+                          : 'received';
                   return (
                     <li
                       key={p.id}
-                      className="rounded-2xl border border-black/8 bg-white shadow-sm overflow-hidden"
-                      style={sizeStripe(p.volume, p.name)}
+                      data-card-tone={stockTone}
+                      className="rounded-2xl border shadow-sm overflow-hidden transition-shadow"
                     >
                       <button
                         type="button"
@@ -624,7 +966,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                             [p.id]: !prev[p.id],
                           }))
                         }
-                        className="w-full flex items-center justify-between gap-3 px-3 sm:px-4 py-3 sm:py-3.5 text-left cursor-pointer hover:bg-slate-50/80 transition-colors"
+                        className="w-full flex items-center justify-between gap-3 px-3 sm:px-4 py-3 sm:py-3.5 text-left cursor-pointer transition-colors"
                         aria-expanded={expanded}
                       >
                         <span className="flex items-center gap-2.5 min-w-0">
@@ -635,12 +977,14 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                           </span>
                         </span>
                         <span
-                          className={`text-sm font-extrabold tabular-nums shrink-0 ${
+                          className={`px-2.5 py-1 rounded-xl text-xs sm:text-sm font-extrabold tabular-nums shrink-0 border ${
                             headerQty < 0
-                              ? 'text-rose-600'
+                              ? 'bg-rose-100/90 text-rose-700 border-rose-200'
                               : headerQty === 0
-                                ? 'text-slate-400'
-                                : 'text-slate-900'
+                                ? 'bg-white/80 text-slate-500 border-slate-200/80'
+                                : headerQty <= 5
+                                  ? 'bg-amber-100/90 text-amber-800 border-amber-200'
+                                  : 'bg-white/85 text-emerald-800 border-emerald-200/80'
                           }`}
                         >
                           {headerQty} cs
@@ -648,7 +992,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                       </button>
 
                       {expanded && (
-                        <div className="border-t border-black/5 bg-[#faf9f6]/80">
+                        <div className="border-t border-black/5 bg-white/85">
                           {productWarehouseStock(p.id)
                             .filter((r) => r.crates < 0 && (selectedWarehouse === 'all' || r.warehouseId === selectedWarehouse))
                             .map((r) => (
@@ -751,10 +1095,189 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
           return String(b.id).localeCompare(String(a.id));
         });
 
+        if (isPhone) {
+          return (
+            <div className="flex flex-col gap-3 w-full hh-inv-pb">
+              {sortedGrns.length === 0 ? (
+                <div className="hh-inv-card py-10 text-center">
+                  <p className="text-sm font-bold text-slate-800">No purchases yet</p>
+                  <p className="text-xs text-slate-500 mt-1">Record an inward bill or import an invoice.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="text-[13px] font-bold text-slate-700 px-0.5">
+                    {sortedGrns.length} inward purchase record{sortedGrns.length === 1 ? '' : 's'}
+                  </div>
+                  <div className="space-y-2.5">
+                    {sortedGrns.map((g, idx) => {
+                      const isNew = g.id === lastNewGrnId;
+                      const expanded = !!expandedGrnIds[g.id];
+                      const total = Number(g.grandTotal) || 0;
+                      const invLabel = g.invoiceNo || '—';
+                      const grnLabel = g.grnNumber || `GRN-${g.id}`;
+                      const dateLabel = isNew && (g.inwardDate === todayISO() || g.invoiceDate === todayISO())
+                        ? 'today'
+                        : formatInvDate(g.inwardDate || g.invoiceDate);
+                      const whName = warehouses.find((w) => w.id === g.warehouseId)?.name || g.warehouseId || 'Main';
+                      const totalCs =
+                        Number(g.totalReceivedQty) ||
+                        (g.items || []).reduce(
+                          (s, it) => s + (Number((it as any).totalReceivedQty) || Number((it as any).qty) || 0),
+                          0
+                        );
+                      const taxable = Number(g.totalTaxable) || 0;
+
+                      return (
+                        <div
+                          key={g.id}
+                          className={`hh-inv-card p-0 overflow-hidden ${isNew ? 'hh-inv-card--alert-blue' : ''}`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedGrnIds((prev) => ({
+                                ...prev,
+                                [g.id]: !prev[g.id],
+                              }))
+                            }
+                            aria-expanded={expanded}
+                            className="w-full px-3.5 py-3 text-left cursor-pointer"
+                          >
+                            <div className="flex items-start justify-between gap-2.5">
+                              <div className="min-w-0">
+                                <div className="text-[13.5px] font-extrabold text-slate-900 uppercase leading-snug break-words">
+                                  {(g.supplierName || 'Supplier').toUpperCase()}
+                                </div>
+                                <div className="text-[11.5px] font-medium text-slate-500 mt-0.5 leading-snug">
+                                  {grnLabel} · Inv {invLabel} · {dateLabel}
+                                </div>
+                                {isNew && (
+                                  <span className="inline-block mt-1.5 px-2.5 py-0.5 rounded-full bg-sky-50 text-[#2864d9] text-[10.5px] font-bold">
+                                    New
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[14px] font-extrabold text-slate-900 tabular-nums shrink-0">
+                                ₹{money(total)}
+                              </div>
+                            </div>
+                            {idx === 0 && !isNew && !expanded && (
+                              <div className="grid grid-cols-3 gap-2 pt-2.5 mt-2.5 border-t border-slate-100">
+                                <div>
+                                  <div className="text-[10.5px] text-slate-400 font-medium">Cases</div>
+                                  <div className="text-[13px] font-bold text-slate-900 tabular-nums">{totalCs}</div>
+                                </div>
+                                <div>
+                                  <div className="text-[10.5px] text-slate-400 font-medium">Godown</div>
+                                  <div className="text-[13px] font-bold text-slate-900 truncate">{whName}</div>
+                                </div>
+                                <div>
+                                  <div className="text-[10.5px] text-slate-400 font-medium">Taxable</div>
+                                  <div className="text-[13px] font-bold text-slate-900 tabular-nums">₹{money(taxable)}</div>
+                                </div>
+                              </div>
+                            )}
+                          </button>
+
+                          {expanded && (
+                            <div className="px-3.5 pb-3.5 pt-2.5 border-t border-slate-100 space-y-2.5">
+                              <div className="grid grid-cols-3 gap-2 text-xs">
+                                <div>
+                                  <div className="text-[10.5px] text-slate-400 font-medium">Cases</div>
+                                  <div className="text-[13px] font-bold text-slate-900 tabular-nums">{totalCs}</div>
+                                </div>
+                                <div>
+                                  <div className="text-[10.5px] text-slate-400 font-medium">Godown</div>
+                                  <div className="text-[13px] font-bold text-slate-900 truncate">{whName}</div>
+                                </div>
+                                <div>
+                                  <div className="text-[10.5px] text-slate-400 font-medium">Taxable</div>
+                                  <div className="text-[13px] font-bold text-slate-900 tabular-nums">₹{money(taxable)}</div>
+                                </div>
+                              </div>
+
+                              {(g.items || []).length > 0 && (
+                                <div className="rounded-xl border border-slate-200 divide-y divide-slate-100 overflow-hidden">
+                                  {(g.items || []).map((item, lineIdx) => (
+                                    <div key={item.id || lineIdx} className="px-3 py-2 flex items-center justify-between gap-2 text-[12.5px]">
+                                      <div className="min-w-0">
+                                        <div className="font-bold text-slate-800 truncate">{item.productName}</div>
+                                        <div className="text-[11px] text-slate-500">
+                                          {item.qty} cs{item.freeQty ? ` + ${item.freeQty} free` : ''}
+                                          {item.unitPrice != null ? ` · ₹${money(item.unitPrice)}/cs` : ''}
+                                        </div>
+                                      </div>
+                                      <div className="font-bold text-slate-900 tabular-nums shrink-0">
+                                        ₹{money(Number(item.lineTotal) || 0)}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              <div className="grid grid-cols-3 gap-2 pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => downloadSingleGrnCsv(g, warehouses)}
+                                  className="min-h-[38px] rounded-full border border-slate-200 bg-white text-slate-700 text-[12px] font-bold flex items-center justify-center gap-1 cursor-pointer"
+                                >
+                                  <Download size={13} /> CSV
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedGrnToEdit(g);
+                                    setIsInwardModalOpen(true);
+                                  }}
+                                  className="min-h-[38px] rounded-full border border-[#2864d9] bg-white text-[#2864d9] text-[12px] font-bold flex items-center justify-center gap-1 cursor-pointer"
+                                >
+                                  <Edit2 size={13} /> Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setGrnToDelete(g)}
+                                  className="min-h-[38px] rounded-full border border-rose-200 bg-rose-50 text-rose-700 text-[12px] font-bold flex items-center justify-center gap-1 cursor-pointer"
+                                >
+                                  <Trash2 size={13} /> Delete
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+              <div className="hh-inv-cta-dock">
+                <button
+                  type="button"
+                  onClick={() => setIsBulkModalOpen(true)}
+                  className="hh-inv-btn-outline flex-1"
+                >
+                  Bulk import
+                </button>
+                <button
+                  type="button"
+                  id="btn-add-inward"
+                  onClick={() => {
+                    setSelectedGrnToEdit(null);
+                    setIsInwardModalOpen(true);
+                  }}
+                  className="hh-inv-btn-primary flex-1"
+                >
+                  + New purchase
+                </button>
+              </div>
+            </div>
+          );
+        }
+
         return (
           <div className="flex flex-col gap-4 max-w-none mx-auto w-full">
             {sortedGrns.length === 0 ? (
-              <div className="rounded-2xl border border-black/8 bg-white shadow-sm px-6 py-12 text-center">
+              <div data-card-tone="neutral" className="rounded-2xl border shadow-sm px-6 py-12 text-center">
                 <p className="text-sm font-semibold text-slate-800">No purchases yet</p>
                 <div className="mt-4 flex flex-wrap justify-center gap-2">
                   <button
@@ -795,7 +1318,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                     </button>
                   </div>
                 </div>
-              <ul className="rounded-2xl border border-black/8 bg-white shadow-sm overflow-hidden divide-y divide-black/5">
+              <ul className="space-y-2.5">
                 {sortedGrns.map((g) => {
                   const expanded = !!expandedGrnIds[g.id];
                   const total = Number(g.grandTotal) || 0;
@@ -803,7 +1326,11 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                   const grnLabel = g.grnNumber || `GRN-${g.id}`;
                   const dateLabel = formatInvDate(g.inwardDate || g.invoiceDate);
                   return (
-                    <li key={g.id}>
+                    <li
+                      key={g.id}
+                      data-card-tone="received"
+                      className="rounded-2xl border shadow-sm overflow-hidden"
+                    >
                       <button
                         type="button"
                         onClick={() =>
@@ -812,24 +1339,29 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                             [g.id]: !prev[g.id],
                           }))
                         }
-                        className="w-full flex items-center justify-between gap-3 px-3 sm:px-4 py-3 sm:py-3.5 text-left hover:bg-slate-50/80 cursor-pointer transition-colors"
+                        className="w-full flex items-center justify-between gap-3 px-3 sm:px-4 py-3 sm:py-3.5 text-left cursor-pointer transition-colors"
                         aria-expanded={expanded}
                       >
-                        <div className="min-w-0">
-                          <div className="text-[13px] sm:text-sm font-bold text-slate-900 leading-snug break-words">
-                            {(g.supplierName || 'Supplier').toUpperCase()}
-                          </div>
-                          <div className="text-[11px] sm:text-[12px] text-slate-500 mt-0.5 break-words">
-                            {grnLabel} · Inv {invLabel} · {dateLabel}
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="hh-icon-badge hh-icon-badge--green">
+                            <ArrowDownToLine size={18} />
+                          </span>
+                          <div className="min-w-0">
+                            <div className="text-[13px] sm:text-sm font-bold text-slate-900 leading-snug break-words">
+                              {(g.supplierName || 'Supplier').toUpperCase()}
+                            </div>
+                            <div className="text-[11px] sm:text-[12px] text-slate-600 mt-0.5 break-words">
+                              {grnLabel} · Inv {invLabel} · {dateLabel}
+                            </div>
                           </div>
                         </div>
-                        <div className="text-sm font-extrabold text-slate-900 tabular-nums shrink-0">
+                        <div className="text-sm font-extrabold text-emerald-900 tabular-nums shrink-0">
                           ₹{money(total)}
                         </div>
                       </button>
 
                       {expanded && (
-                        <div className="px-3 sm:px-4 pb-4 pt-2 border-t border-black/5 bg-[#faf9f6]/90 space-y-3">
+                        <div className="px-3 sm:px-4 pb-4 pt-3 border-t border-black/5 bg-white/85 space-y-3">
                           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                             <div>
                               <div className="text-slate-500 font-medium">Godown</div>
@@ -959,21 +1491,30 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
 
 
       {activeTab === 'dispositions' && (
-        <DispositionsView />
+        <DispositionsView
+          selectedWarehouseFilter={isPhone ? selectedWarehouse : undefined}
+          onChangeWarehouseFilter={isPhone ? setSelectedWarehouse : undefined}
+        />
       )}
 
       {activeTab === 'audit' && (
         <div className="flex flex-col gap-3 max-w-none mx-auto w-full">
           {/* Phone-first batch-level count. No fixed/floating bars: the keyboard never covers a row. */}
-          <StockAuditScreen onGoInventoryTab={(t) => setActiveTab(t)} />
-          <details className="text-xs text-slate-500 my-2">
-            <summary className="cursor-pointer font-semibold text-slate-600 py-1 hover:text-slate-900">
-              Audit history &amp; reconciliation
-            </summary>
-            <div className="mt-3">
-              <AuditView embedded />
-            </div>
-          </details>
+          <StockAuditScreen
+            onGoInventoryTab={(t) => setActiveTab(t)}
+            selectedWhId={isPhone ? auditWhId : undefined}
+            onChangeWhId={isPhone ? setAuditWhId : undefined}
+          />
+          {!isPhone && (
+            <details className="text-xs text-slate-500 my-2">
+              <summary className="cursor-pointer font-semibold text-slate-600 py-1 hover:text-slate-900">
+                Audit history &amp; reconciliation
+              </summary>
+              <div className="mt-3">
+                <AuditView embedded />
+              </div>
+            </details>
+          )}
         </div>
       )}
 
@@ -1013,17 +1554,15 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
           setXferBusy(true);
           let okCount = 0;
           let failCount = 0;
+          let movedTotal = 0;
+          const movedParts: string[] = [];
           for (const line of xferLines) {
             const qty = Math.floor(Number(line.qty) || 0);
             if (qty <= 0) continue;
             const avail = availableFor(line.productId);
+            const prodName = products.find((p) => p.id === line.productId)?.name || `Product #${line.productId}`;
             if (qty > avail) {
-              const name =
-                products.find((p) => p.id === line.productId)?.name ||
-                `Product #${line.productId}`;
-              showToast(
-                `Cannot transfer ${qty} of ${name} — only ${avail} available at source.`,
-              );
+              showToast(`Cannot transfer ${qty} of ${prodName} — only ${avail} available at source.`);
               failCount++;
               continue;
             }
@@ -1037,13 +1576,32 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
               referenceNote: xferNote.trim() || undefined,
             });
             if (result === false) failCount++;
-            else okCount++;
+            else {
+              okCount++;
+              movedTotal += qty;
+              movedParts.push(`${prodName} ${qty} cs`);
+            }
           }
           setXferBusy(false);
           if (okCount > 0) {
-            showToast(
-              `Transferred ${okCount} product line${okCount === 1 ? '' : 's'}${failCount ? ` (${failCount} failed)` : ''}.`,
-            );
+            const fromName = warehouses.find((w) => w.id === fromId)?.name || 'Source';
+            const toName = warehouses.find((w) => w.id === toId)?.name || 'Destination';
+            const nowStr = new Date().toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
+            if (isPhone) {
+              setXferJustDone({
+                fromName,
+                toName,
+                totalCases: movedTotal,
+                summary: movedParts.join(' · '),
+                timeLabel: `Today ${nowStr}`,
+                count: okCount,
+              });
+              showPhoneToast(`${movedTotal} cs moved from ${fromName} to ${toName}.`);
+            } else {
+              showToast(
+                `Transferred ${okCount} product line${okCount === 1 ? '' : 's'}${failCount ? ` (${failCount} failed)` : ''}.`,
+              );
+            }
             setXferLines([]);
             setXferNote('');
           } else if (failCount === 0) {
@@ -1055,11 +1613,288 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
           (p) => !xferLines.some((l) => l.productId === p.id),
         );
 
+        if (isPhone) {
+          const fromWhName = warehouses.find((w) => w.id === fromId)?.name || 'Main';
+          const totalMovingCases = xferLines.reduce((s, l) => s + Math.max(0, Math.floor(Number(l.qty) || 0)), 0);
+
+          if (xferJustDone) {
+            return (
+              <div className="flex flex-col gap-3 w-full">
+                <div className="hh-inv-card hh-inv-card--alert-blue">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-[14.5px] font-extrabold text-slate-900 flex items-center gap-1.5">
+                        <span>{xferJustDone.fromName}</span>
+                        <ArrowRight size={14} className="text-slate-400" />
+                        <span>{xferJustDone.toName}</span>
+                      </div>
+                      <div className="text-[12px] text-slate-500 mt-0.5">
+                        {xferJustDone.timeLabel} · {xferJustDone.count} product{xferJustDone.count === 1 ? '' : 's'}
+                      </div>
+                      <div className="text-[12px] font-medium text-slate-700 mt-1">
+                        {xferJustDone.summary}
+                      </div>
+                    </div>
+                    <div className="text-[14.5px] font-extrabold text-slate-900 tabular-nums shrink-0">
+                      {xferJustDone.totalCases} cs
+                    </div>
+                  </div>
+                </div>
+
+                {stockTransfers.slice(xferJustDone.count, xferJustDone.count + 8).map((st) => {
+                  const from = warehouses.find((w) => w.id === st.fromWarehouseId);
+                  const to = warehouses.find((w) => w.id === st.toWarehouseId);
+                  const prod = products.find((p) => p.id === st.productId);
+                  return (
+                    <div key={st.id} className="hh-inv-card">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[14px] font-bold text-slate-900 flex items-center gap-1.5">
+                            <span>{from?.name || '?'}</span>
+                            <ArrowRight size={13} className="text-slate-400" />
+                            <span>{to?.name || '?'}</span>
+                          </div>
+                          <div className="text-[12px] text-slate-500 mt-0.5">
+                            {st.date} · {prod?.name || `Product #${st.productId}`}
+                          </div>
+                        </div>
+                        <div className="text-[14px] font-extrabold text-slate-900 tabular-nums shrink-0">
+                          {st.quantity} cs
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <button
+                  type="button"
+                  onClick={() => setXferJustDone(null)}
+                  className="hh-inv-btn-outline w-full mt-1"
+                >
+                  + New transfer
+                </button>
+              </div>
+            );
+          }
+
+          return (
+            <div className="flex flex-col gap-3 w-full">
+              {/* FROM -> TO godown card */}
+              <div className="hh-inv-card flex items-center gap-2.5">
+                <label className="hh-inv-field flex-1">
+                  <span className="hh-inv-field__label">From</span>
+                  <select
+                    value={fromId}
+                    onChange={(e) => setXferFromId(e.target.value)}
+                  >
+                    {warehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <ArrowRight size={18} className="text-[#2864d9] shrink-0" />
+                <label className="hh-inv-field flex-1">
+                  <span className="hh-inv-field__label">To</span>
+                  <select
+                    value={toId}
+                    onChange={(e) => setXferToId(e.target.value)}
+                  >
+                    {warehouses.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              {/* Products card */}
+              <div className="hh-inv-card space-y-2.5">
+                {xferLines.length === 0 ? (
+                  <p className="text-[12.5px] text-slate-500 py-1">
+                    No products selected yet. Add beverages below to move stock.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {xferLines.map((line) => {
+                      const prod = products.find((p) => p.id === line.productId);
+                      const avail = availableFor(line.productId);
+                      const over = line.qty > avail;
+                      return (
+                        <div key={line.key} className="py-2.5 first:pt-0 flex items-center justify-between gap-2.5">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <PackIcon pack={prod?.pack} name={prod?.name} />
+                            <div className="min-w-0">
+                              <div className="text-[13.5px] font-bold text-slate-900 leading-snug truncate">
+                                {prod?.name || `Product #${line.productId}`}
+                              </div>
+                              <div className={`text-[11.5px] font-medium mt-0.5 ${avail <= 0 || over ? 'text-rose-600' : 'text-slate-500'}`}>
+                                Available in {fromWhName}: {avail} cs
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <div className="inline-flex items-center rounded-full border border-[#2864d9] bg-white overflow-hidden">
+                              <button
+                                type="button"
+                                aria-label="Decrease quantity"
+                                onClick={() => {
+                                  if (line.qty <= 1) {
+                                    setXferLines((prev) => prev.filter((l) => l.key !== line.key));
+                                  } else {
+                                    setXferLines((prev) =>
+                                      prev.map((l) => (l.key === line.key ? { ...l, qty: l.qty - 1 } : l))
+                                    );
+                                  }
+                                }}
+                                className="w-8 h-8 min-w-0 min-h-0 flex items-center justify-center text-[#2864d9] font-bold cursor-pointer"
+                              >
+                                <Minus size={14} />
+                              </button>
+                              <input
+                                type="number"
+                                inputMode="numeric"
+                                min={0}
+                                max={avail > 0 ? avail : undefined}
+                                value={line.qty}
+                                onChange={(e) => {
+                                  const v = Math.max(0, Number(e.target.value) || 0);
+                                  setXferLines((prev) =>
+                                    prev.map((l) => (l.key === line.key ? { ...l, qty: v } : l))
+                                  );
+                                }}
+                                className="w-10 text-center text-[13.5px] font-extrabold text-slate-900 tabular-nums border-0 bg-transparent p-0 focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                aria-label="Increase quantity"
+                                onClick={() =>
+                                  setXferLines((prev) =>
+                                    prev.map((l) => (l.key === line.key ? { ...l, qty: l.qty + 1 } : l))
+                                  )
+                                }
+                                className="w-8 h-8 min-w-0 min-h-0 flex items-center justify-center text-[#2864d9] font-bold cursor-pointer"
+                              >
+                                <Plus size={14} />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  disabled={!fromId}
+                  onClick={() => setShowTransferPicker(true)}
+                  className="text-[13px] font-bold text-[#2864d9] py-1 min-h-0 cursor-pointer disabled:opacity-40"
+                >
+                  + Add product
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between px-1 py-1 text-[13.5px]">
+                <span className="font-medium text-slate-500">Total moving</span>
+                <span className="font-extrabold text-slate-900 tabular-nums">{totalMovingCases} cs</span>
+              </div>
+
+              <button
+                type="button"
+                disabled={xferBusy || xferLines.length === 0 || !fromId || !toId || totalMovingCases <= 0}
+                onClick={executeTransfer}
+                className="hh-inv-btn-primary w-full"
+              >
+                Transfer stock
+              </button>
+
+              {stockTransfers.length > 0 && (
+                <div className="space-y-2 pt-2">
+                  <div className="text-[11.5px] font-bold uppercase tracking-wider text-slate-500 px-0.5">
+                    Recent transfers
+                  </div>
+                  {stockTransfers.slice(0, 8).map((st) => {
+                    const from = warehouses.find((w) => w.id === st.fromWarehouseId);
+                    const to = warehouses.find((w) => w.id === st.toWarehouseId);
+                    const prod = products.find((p) => p.id === st.productId);
+                    return (
+                      <div key={st.id} className="hh-inv-card flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[13.5px] font-bold text-slate-900 flex items-center gap-1.5">
+                            <span>{from?.name || '?'}</span>
+                            <ArrowRight size={13} className="text-slate-400" />
+                            <span>{to?.name || '?'}</span>
+                          </div>
+                          <div className="text-[12px] text-slate-500 mt-0.5">
+                            {st.date} · {prod?.name || `Product #${st.productId}`}
+                          </div>
+                        </div>
+                        <div className="text-[13.5px] font-extrabold text-slate-900 tabular-nums shrink-0">
+                          {st.quantity} cs
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {showTransferPicker && (
+                <div className="rt-bsheet-scrim" onClick={() => setShowTransferPicker(false)}>
+                  <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+                    <div className="hh-grab" />
+                    <h3 className="text-[17px] font-extrabold text-slate-900">Select product</h3>
+                    <div className="divide-y divide-slate-100 max-h-[55vh] overflow-y-auto bg-white rounded-2xl border border-slate-200">
+                      {[...productsNotOnList]
+                        .sort((a, b) => availableFor(b.id) - availableFor(a.id) || a.name.localeCompare(b.name))
+                        .map((p) => {
+                          const q = availableFor(p.id);
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => {
+                                addProductLine(p.id);
+                                setShowTransferPicker(false);
+                              }}
+                              className="w-full px-3.5 py-3 flex items-center justify-between gap-2 text-left cursor-pointer"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <PackIcon size="sm" pack={p.pack} name={p.name} />
+                                <div className="min-w-0">
+                                  <div className="text-[13.5px] font-bold text-slate-900 truncate">{p.name}</div>
+                                  <div className="text-[11.5px] text-slate-500">Available in {fromWhName}: {q} cs</div>
+                                </div>
+                              </div>
+                              <span className="text-[12.5px] font-bold text-[#2864d9] shrink-0">Add</span>
+                            </button>
+                          );
+                        })}
+                      {productsNotOnList.length === 0 && (
+                        <div className="px-4 py-6 text-center text-xs text-slate-500">
+                          All products are already added.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        }
+
         return (
           <div className="flex flex-col gap-3 max-w-none mx-auto w-full">
-            <div className="rounded-2xl border border-black/8 bg-white shadow-sm p-3 sm:p-5 space-y-3 sm:space-y-4">
+            <div data-card-tone="warning" className="rounded-2xl border shadow-sm p-3.5 sm:p-5 space-y-3 sm:space-y-4">
               <div className="flex items-center justify-between gap-2">
-                <h2 className="text-sm font-bold text-slate-800">Move stock between godowns</h2>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--amber">
+                    <ArrowRightLeft size={15} />
+                  </span>
+                  <h2 className="text-sm font-bold text-slate-900">Move stock between godowns</h2>
+                </div>
                 <InfoTip title="How transfers work" size="sm">
                   <p>Earliest-expiry batches move first, so the oldest stock leaves the source godown first.</p>
                 </InfoTip>
@@ -1116,8 +1951,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                   return (
                     <div
                       key={line.key}
-                      className="flex items-center gap-2 sm:gap-3 py-2.5 pl-2 border-b border-black/5 last:border-0"
-                      style={sizeStripe(prod?.volume, prod?.name)}
+                      className="flex items-center gap-2 sm:gap-3 py-2.5 px-2.5 rounded-xl bg-white/80 border border-black/5"
                     >
                       <PackIcon size="sm" pack={prod?.pack} name={prod?.name} />
                       <div className="min-w-0 flex-1">
@@ -1227,11 +2061,14 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
 
             {/* Recent transfers */}
             {stockTransfers.length > 0 && (
-              <div className="rounded-2xl border border-black/8 bg-white shadow-sm overflow-hidden">
-                <div className="px-3 sm:px-4 py-2.5 border-b border-black/5 text-sm font-bold text-slate-800">
-                  Recent transfers
+              <div data-card-tone="sales" className="rounded-2xl border shadow-sm overflow-hidden">
+                <div className="px-3.5 sm:px-4 py-3 border-b border-black/5 flex items-center gap-2.5">
+                  <span className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--blue">
+                    <Truck size={15} />
+                  </span>
+                  <span className="text-sm font-bold text-slate-900">Recent transfers</span>
                 </div>
-                <ul className="divide-y divide-black/5 sm:max-h-64 sm:overflow-y-auto">
+                <ul className="bg-white/80 divide-y divide-black/5 sm:max-h-64 sm:overflow-y-auto">
                   {stockTransfers.slice(0, 12).map((st) => {
                     const from = warehouses.find((w) => w.id === st.fromWarehouseId);
                     const to = warehouses.find((w) => w.id === st.toWarehouseId);
@@ -1239,8 +2076,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
                     return (
                       <li
                         key={st.id}
-                        className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm"
-                        style={sizeStripe(prod?.volume, prod?.name)}
+                        className="px-3.5 sm:px-4 py-2.5 text-xs sm:text-sm"
                       >
                         <div className="flex items-start justify-between gap-3">
                           <span className="flex items-start gap-2 min-w-0">
@@ -1266,6 +2102,59 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
         );
       })()}
 
+      {/* Shared Phone Warehouse Selector Sheet (Stock, Returns & Audit) */}
+      {isPhone && showWhSheet && (
+        <div className="rt-bsheet-scrim" onClick={() => setShowWhSheet(false)}>
+          <div className="rt-bsheet" onClick={(e) => e.stopPropagation()}>
+            <div className="hh-grab" />
+            <h3 className="text-[17px] font-extrabold text-slate-900">
+              {activeTab === 'audit' ? 'Select audit godown' : 'Select godown'}
+            </h3>
+            <div className="rounded-2xl border border-slate-200 bg-white divide-y divide-slate-100">
+              {activeTab !== 'audit' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedWarehouse('all');
+                    setShowWhSheet(false);
+                  }}
+                  className="w-full px-3.5 py-3 flex items-center justify-between text-left text-[14px] font-bold text-slate-900 cursor-pointer"
+                >
+                  <span>All locations</span>
+                  {selectedWarehouse === 'all' && <Check size={16} className="text-[#2864d9]" />}
+                </button>
+              )}
+              {warehouses.map((w) => {
+                const isSel = activeTab === 'audit' ? auditWhId === w.id : selectedWarehouse === w.id;
+                return (
+                  <button
+                    key={w.id}
+                    type="button"
+                    onClick={() => {
+                      if (activeTab === 'audit') setAuditWhId(w.id);
+                      else setSelectedWarehouse(w.id);
+                      setShowWhSheet(false);
+                    }}
+                    className="w-full px-3.5 py-3 flex items-center justify-between text-left text-[14px] font-bold text-slate-900 cursor-pointer"
+                  >
+                    <span>{w.name}</span>
+                    {isSel && <Check size={16} className="text-[#2864d9]" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dark Bottom Toast (phone) */}
+      {isPhone && darkToast && (
+        <div className="hh-inv-toast" role="status" aria-live="polite">
+          <Check size={16} className="text-emerald-400 shrink-0" />
+          <span className="leading-snug">{darkToast}</span>
+        </div>
+      )}
+
       {/* Inward Consignment Modal */}
       <InwardConsignmentModal
         isOpen={isInwardModalOpen}
@@ -1281,16 +2170,32 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
           setIsInwardModalOpen(false);
           setIsBulkModalOpen(true);
         }}
+        onSaved={(info) => {
+          if (info.grnId) setLastNewGrnId(info.grnId);
+          setActiveTab('consignments');
+          if (isPhone) {
+            showPhoneToast(
+              info.isEdit
+                ? `Purchase updated. Stock ${info.cases} cs in ${info.warehouseName}.`
+                : `Purchase saved. Stock +${info.cases} cs in ${info.warehouseName}.`
+            );
+          }
+        }}
       />
 
       {/* Bulk Inward Modal */}
       <BulkInwardModal
         isOpen={isBulkModalOpen}
         onClose={() => setIsBulkModalOpen(false)}
-        onSuccess={(grnNumber, itemCount) => {
-          showToast(`Recorded inward consignment ${grnNumber} with ${itemCount} items. Stock and products updated!`);
+        onSuccess={(grnNumber, itemCount, extra) => {
+          if (extra?.grnId) setLastNewGrnId(extra.grnId);
           setIsBulkModalOpen(false);
           setActiveTab('consignments');
+          if (isPhone && extra?.totalCases !== undefined && extra?.warehouseName) {
+            showPhoneToast(`Imported ${itemCount} lines as ${grnNumber}. Stock +${extra.totalCases} cs in ${extra.warehouseName}.`);
+          } else {
+            showToast(`Recorded inward consignment ${grnNumber} with ${itemCount} items. Stock and products updated!`);
+          }
         }}
       />
 
@@ -1347,6 +2252,17 @@ export const InventoryView: React.FC<InventoryViewProps> = ({ initialSubTab = 'r
           onReassign={reassignBillsProductWarehouse}
           onUndoReassign={undoLastOversoldReassign}
           hasUndo={hasOversoldReassignUndo}
+          onStartAudit={(whId) => {
+            if (whId) setAuditWhId(whId);
+            setActiveTab('audit');
+          }}
+          onGoTransfer={(pid, fromWh, toWh) => {
+            if (fromWh) setXferFromId(fromWh);
+            if (toWh) setXferToId(toWh);
+            setXferJustDone(null);
+            setXferLines([{ key: `line_${pid}_${Date.now()}`, productId: pid, qty: 1 }]);
+            setActiveTab('transfers');
+          }}
         />
       )}
     </div>

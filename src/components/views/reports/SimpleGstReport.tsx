@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { AlertTriangle, ArrowLeft, ChevronRight, Download, Zap } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ChevronRight, Download, MessageSquare, Zap } from 'lucide-react';
 import { Bill, Customer, OrganizationProfile, Product } from '../../../types';
 import { money, resolveProductGstRate } from '../../../utils/billing';
 import { billTaxBasis } from '../../../utils/billTaxBasis';
@@ -16,6 +16,7 @@ import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
 import { ReportTitleBar, reportCard } from './ReportKit';
 import { useLedger } from '../../../context/LedgerContext';
 import { isGstExcludedBill } from '../../../utils/invoiceCommon';
+import { MobileReportTopBar } from './mobile/MobileReportContext';
 
 /**
  * GST in one screen:
@@ -282,10 +283,19 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
   if (showDetail && detail) {
     return (
       <div className="space-y-3">
+        <div className="md:hidden">
+          <MobileReportTopBar
+            title="Invoice lists"
+            sub="GST"
+            doubleBack
+            onBack={() => setShowDetail(false)}
+            showPeriod={false}
+          />
+        </div>
         <button
           type="button"
           onClick={() => setShowDetail(false)}
-          className="inline-flex items-center gap-1.5 text-sm font-bold text-sky-700 hover:underline cursor-pointer"
+          className="hidden md:inline-flex items-center gap-1.5 text-sm font-bold text-sky-700 hover:underline cursor-pointer"
         >
           <ArrowLeft size={15} /> Back to GST summary
         </button>
@@ -295,9 +305,172 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
   }
 
   const owes = payable > 0.004;
+  const whatsappText = `🧾 *GST — ${periodLabel}*\nGST on sales: ₹${money(netOutput)}\nInput credit: ₹${money(inputCredit)}\n*${owes ? 'GST to pay' : 'Credit carried forward'}: ₹${money(owes ? payable : carryForward)}*`;
+  const whatsappUrl = `https://api.whatsapp.com/send?text=${encodeURIComponent(whatsappText)}`;
+
+  const compactRs = (n: number) => {
+    const abs = Math.abs(n);
+    if (abs >= 100000) return `₹${(abs / 100000).toFixed(1)}L`;
+    if (abs >= 1000) return `₹${(abs / 1000).toFixed(1)}k`;
+    return `₹${Math.round(abs)}`;
+  };
+
+  const shareProps = {
+    reportTitle: 'GST summary',
+    summaryLines: [
+      { label: owes ? 'GST payable' : 'Credit carried forward', value: `₹${money(owes ? payable : carryForward)}` },
+      { label: 'Output GST', value: `₹${money(netOutput)}` },
+      { label: 'Input credit', value: `₹${money(inputCredit)}` },
+    ],
+    sheets: [
+      {
+        name: 'GST',
+        header: ['Item', 'Amount (Rs.)'],
+        rows: [['Period', periodLabel], ...exportRows().map(([a, b]) => [a, Math.round(b * 100) / 100] as (string | number)[])],
+      },
+    ],
+    pdfSections: [
+      { header: ['Item', 'Amount (Rs.)'], rows: exportRows().map(([a, b]) => [a, money(b)]), rightAlign: [1] },
+    ],
+  };
 
   return (
-    <div className="flex flex-col gap-3 w-full max-w-3xl" id="report-gst">
+    <>
+    {/* ============================ PHONE ============================ */}
+    <div className="md:hidden space-y-3" id="report-gst-phone">
+      <MobileReportTopBar
+        title="GST"
+        sub="Summary"
+        showPeriod
+        shareProps={shareProps}
+      />
+
+      {/* GST payable summary card */}
+      <section className="rt-rep-card rt-rep-pad">
+        <div className="text-[12px] font-medium text-[var(--text-2)]">
+          {owes ? 'GST payable' : 'No GST to pay'}
+        </div>
+        <div className={`text-[26px] font-extrabold tracking-tight leading-tight tabular-nums mt-0.5 ${owes ? 'text-[var(--text)]' : 'text-[var(--paid)]'}`}>
+          ₹{money(owes ? payable : 0)}
+        </div>
+        <div className="text-[11.5px] text-[var(--text-2)] mt-1 tabular-nums">
+          {owes
+            ? `Output ₹${money(netOutput)} − input credit ₹${money(inputCredit)}`
+            : carryForward > 0.004
+              ? `Output ₹${money(netOutput)} − input credit ₹${money(inputCredit)} (₹${money(carryForward)} credit carried forward)`
+              : 'Output GST and input credit are equal'}
+        </div>
+      </section>
+
+      {effectiveExcludedCount > 0 && (
+        <div className="rounded-xl border border-teal-200 bg-teal-50 px-3.5 py-2.5 text-[11.5px] text-teal-900">
+          <b>{effectiveExcludedCount} Non-GST / Trading cash memo{effectiveExcludedCount === 1 ? '' : 's'}</b> (NG-… · ₹{money(effectiveExcludedTotal)}) excluded from GST filings.
+        </div>
+      )}
+
+      {mismatches.length > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-[11.5px] text-amber-900 flex gap-2">
+          <AlertTriangle size={15} className="shrink-0 mt-0.5 text-amber-600" />
+          <div>
+            <b>{mismatches.length} invoice{mismatches.length === 1 ? '' : 's'}</b> differ from their lines ({mismatches.slice(0, 2).map((m) => m.invoiceNo).join(', ')}{mismatches.length > 2 ? '…' : ''}).
+            {detail && (
+              <>
+                {' '}
+                <button type="button" onClick={() => setShowDetail(true)} className="font-bold underline cursor-pointer">
+                  Review and fix
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Sales by GST rate */}
+      {byRate.length > 0 && (
+        <section className="rt-rep-card overflow-hidden">
+          <div className="px-3.5 pt-3 pb-2 text-[13px] font-bold text-[var(--text)]">
+            Sales by GST rate
+          </div>
+          <div className="divide-y divide-[var(--divider)]">
+            {byRate.map((r) => {
+              const rateTax = r.cgst + r.sgst + r.igst + r.cess;
+              const isZeroWithFix = r.rate === 0 && zeroGstBills.length > 0;
+              return (
+                <div key={r.rate} className={`px-3.5 py-2.5 flex items-center justify-between gap-3 text-[13px] ${isZeroWithFix ? 'bg-amber-50/80' : ''}`}>
+                  <div className="min-w-0">
+                    <span className="font-medium text-[var(--text-2)]">
+                      {r.rate}% · {compactRs(r.taxable)} sales
+                    </span>
+                    {isZeroWithFix && (
+                      <span className="ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded bg-[var(--due-bg)] text-[var(--due)]">
+                        Non-GST Error
+                      </span>
+                    )}
+                  </div>
+                  <span className="font-extrabold text-[var(--text)] tabular-nums shrink-0">
+                    ₹{money(rateTax)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {zeroGstBills.length > 0 && (
+            <div className="p-3 bg-amber-50 border-t border-amber-200 space-y-2">
+              <div className="text-[11.5px] text-amber-900">
+                <b>{zeroGstBills.length} Bill(s)</b> recorded as 0% Non-GST ({zeroGstUnits} units).
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const r = convertBillsToTaxInvoices(zeroGstBills.map((b) => b.id));
+                  setMsg(`Done! ${r.fixed} invoice(s) converted to B2C Tax Invoices.`);
+                }}
+                className="w-full py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Zap size={13} className="text-amber-300 fill-current" />
+                <span>Fix 0% Bills (Convert to Tax Invoices)</span>
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Primary CTA pills */}
+      <button
+        type="button"
+        onClick={downloadForCa}
+        className="w-full h-[46px] rounded-full bg-[var(--primary)] text-white text-[14px] font-bold flex items-center justify-center gap-2 cursor-pointer active:opacity-90"
+      >
+        <Download size={16} aria-hidden="true" />
+        <span>Download for CA</span>
+      </button>
+
+      <a
+        href={whatsappUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="w-full h-[46px] rounded-full bg-white border border-[var(--primary)] text-[var(--primary)] text-[14px] font-bold flex items-center justify-center gap-2 active:bg-[#f0f7ff]"
+      >
+        <MessageSquare size={15} aria-hidden="true" />
+        <span>Share on WhatsApp</span>
+      </a>
+
+      {detail && (
+        <button
+          type="button"
+          onClick={() => setShowDetail(true)}
+          className="rt-rep-card w-full px-3.5 py-3 flex items-center justify-between gap-2 text-[13px] font-bold text-[var(--text)] cursor-pointer active:bg-[#f8fafc]"
+        >
+          <span>Invoice lists: B2B, B2C, HSN, purchases</span>
+          <ChevronRight size={16} className="text-[var(--text-2)]" aria-hidden="true" />
+        </button>
+      )}
+
+      {msg && <div className="text-xs font-semibold text-emerald-700 px-1">{msg}</div>}
+    </div>
+
+    {/* ======================= TABLET / DESKTOP ======================= */}
+    <div className="hidden md:flex flex-col gap-3 w-full max-w-3xl" id="report-gst">
       <ReportTitleBar
         title="GST"
         sub={periodLabel}
@@ -475,5 +648,6 @@ export const SimpleGstReport: React.FC<SimpleGstReportProps> = ({
       </div>
       {msg && <div className="text-xs font-semibold text-emerald-700 px-1">{msg}</div>}
     </div>
+    </>
   );
 };

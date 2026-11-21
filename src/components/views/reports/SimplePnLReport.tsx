@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ArrowLeft, AlertTriangle, ChevronRight } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, Calendar, ChevronRight, Package, Users, Wallet } from 'lucide-react';
 import { Bill, Product } from '../../../types';
 import { useLedger } from '../../../context/LedgerContext';
 import { money } from '../../../utils/billing';
@@ -7,9 +7,11 @@ import { EXPENSE_LABELS, computeNetProfit } from '../../../utils/netProfit';
 import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
 import { ReportTitleBar, reportCard } from './ReportKit';
-import { useSalesMarginPnl } from './SalesMarginPnLReport';
+import { useSalesMarginPnl, type ProfitViewBasis } from './SalesMarginPnLReport';
 import { BillCostRepairModal } from './BillCostRepairModal';
 import { buildCrossWarehouseShiftPlan } from '../../../utils/billCostRepair';
+import { MobileReportTopBar, useMobileReport } from './mobile/MobileReportContext';
+import { PhoneDownloadBar, rs } from './mobile/PhoneKit';
 
 /**
  * Profit & Loss in the usual accounting order, one screen, nothing repeated:
@@ -84,7 +86,9 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
   detail,
 }) => {
   const { expenses, bills: allActiveBills, inventoryBatches, warehouses, restoreCrossWarehouseAllocations } = useLedger();
+  const mobileCtx = useMobileReport();
   const [showDetail, setShowDetail] = useState(false);
+  const [mobileBasis, setMobileBasis] = useState<ProfitViewBasis>('exGst');
   const [repairModalOpen, setRepairModalOpen] = useState(false);
 
   const crossWhPlan = useMemo(
@@ -105,6 +109,15 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
     gstTaxSummary,
     purchaseStats,
     viewBasis: 'exGst',
+  });
+
+  const { pnl: mobilePnl } = useSalesMarginPnl({
+    filteredBills,
+    products,
+    dateInPeriod,
+    gstTaxSummary,
+    purchaseStats,
+    viewBasis: mobileBasis,
   });
 
   const periodExpenses = useMemo(
@@ -178,13 +191,26 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
     `Expenses: ₹${money(totalExpenses)}\n` +
     `*Net profit: ₹${money(netProfit)}*`;
 
-  if (showDetail && detail) {
+  const mobileSales = mobileBasis === 'exGst' ? mobilePnl.taxableSalesNet : mobilePnl.billedSalesNet;
+  const mobileGrossProfit = mobileBasis === 'exGst' ? mobilePnl.operatingGrossProfit : mobilePnl.billedGrossProfit;
+  const mobileNetProfit = useMemo(
+    () => computeNetProfit({ grossProfitAfterLosses: mobileGrossProfit, expenses: periodExpenses }).netProfit,
+    [mobileGrossProfit, periodExpenses],
+  );
+  const mobilePct = (n: number) => (mobileSales > 0 ? `${((n / mobileSales) * 100).toFixed(1)}%` : '—');
+
+  const isDetailOpen = (showDetail || mobileCtx?.pnlTargetTab !== null) && Boolean(detail);
+
+  if (isDetailOpen) {
     return (
       <div className="space-y-3">
         <button
           type="button"
-          onClick={() => setShowDetail(false)}
-          className="inline-flex items-center gap-1.5 text-sm font-bold text-sky-700 hover:underline cursor-pointer"
+          onClick={() => {
+            setShowDetail(false);
+            mobileCtx?.setPnlTargetTab(null);
+          }}
+          className="hidden md:inline-flex items-center gap-1.5 text-sm font-bold text-sky-700 hover:underline cursor-pointer"
         >
           <ArrowLeft size={15} /> Back to Profit &amp; Loss
         </button>
@@ -193,8 +219,214 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
     );
   }
 
+  const shareProps = {
+    reportTitle: 'Profit & Loss',
+    summaryMetrics: [
+      { label: 'Sales (Ex-GST)', value: rs(sales) },
+      { label: 'Gross profit', value: rs(grossProfit) },
+      { label: 'Expenses', value: rs(totalExpenses) },
+      { label: 'Net profit', value: rs(netProfit) },
+    ],
+    sheets: [
+      {
+        name: 'Profit & Loss',
+        header: ['Item', 'Amount (Rs.)'],
+        rows: [['Period', periodLabel], ...exportRows().map(([a, b]) => [a, Math.round(b * 100) / 100] as (string | number)[])],
+      },
+    ],
+    pdfSections: [
+      {
+        header: ['Item', 'Amount (Rs.)'],
+        rows: exportRows().map(([a, b]) => [a, money(b)]),
+        rightAlign: [1],
+      },
+    ],
+  };
+
   return (
-    <div className="flex flex-col gap-3 w-full max-w-3xl" id="report-pnl">
+    <>
+      {/* ============================ PHONE ============================ */}
+      <div className="md:hidden space-y-3" id="report-pnl-phone">
+        <MobileReportTopBar
+          title="Profit & Loss"
+          sub="Sales, cost, expenses and net profit"
+          showPeriod
+          shareProps={shareProps}
+        />
+
+        {/* Ex-GST | Incl-GST segmented control */}
+        <div className="rt-seg-pill-wrap" role="group" aria-label="Profit basis">
+          <button
+            type="button"
+            aria-pressed={mobileBasis === 'exGst'}
+            onClick={() => setMobileBasis('exGst')}
+            className="rt-seg-pill-btn cursor-pointer"
+          >
+            Ex-GST
+          </button>
+          <button
+            type="button"
+            aria-pressed={mobileBasis === 'inclGst'}
+            onClick={() => setMobileBasis('inclGst')}
+            className="rt-seg-pill-btn cursor-pointer"
+          >
+            Incl-GST
+          </button>
+        </div>
+
+        {/* Net profit summary card */}
+        <section className="rt-rep-card rt-rep-pad">
+          <div className="text-[12px] font-medium text-[var(--text-2)]">
+            {mobileNetProfit < 0 ? 'Net loss' : 'Net profit'}
+          </div>
+          <div
+            className={`text-[26px] font-extrabold tracking-tight leading-tight tabular-nums mt-0.5 ${
+              mobileNetProfit < 0 ? 'text-[var(--due)]' : 'text-[var(--paid)]'
+            }`}
+          >
+            {mobileNetProfit < 0 ? '−' : ''}
+            {rs(Math.abs(mobileNetProfit))}
+          </div>
+          <div className="text-[11.5px] font-semibold text-[var(--paid)] mt-1">
+            {mobilePct(mobileNetProfit)} of sales · {mobilePnl.invoiceCount} invoice{mobilePnl.invoiceCount === 1 ? '' : 's'}
+          </div>
+        </section>
+
+        {/* Alert banners preserved on mobile */}
+        {crossWhPlan.affectedBillCount > 0 && (
+          <div className="rt-rep-card rt-rep-pad bg-[var(--soon-bg)] border-amber-200 space-y-2 text-[12px] text-amber-950">
+            <div className="font-bold text-amber-900 flex items-center gap-1.5">
+              <AlertTriangle size={14} className="shrink-0" />
+              <span>Godown stock shift on {crossWhPlan.affectedBillCount} bill(s)</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => restoreCrossWarehouseAllocations(crossWhPlan)}
+              className="w-full py-2 rounded-lg bg-amber-900 text-white text-[11.5px] font-bold cursor-pointer"
+            >
+              Restore Exact Inventory ({crossWhPlan.totalShiftedCases} cs)
+            </button>
+          </div>
+        )}
+
+        {(missingCost || estimatedCost) && (
+          <div className="rt-rep-card rt-rep-pad bg-[var(--soon-bg)] border-amber-200 space-y-2 text-[12px] text-amber-950">
+            {missingCost && (
+              <div>
+                <b>{pnl.costChecks.zeroCostCases} cases</b> have no purchase cost entered.
+              </div>
+            )}
+            {estimatedCost && (
+              <div className="flex items-center justify-between gap-2">
+                <span>{pnl.costChecks.estimatedCostCases} cases use average product cost.</span>
+                <button
+                  type="button"
+                  onClick={() => setRepairModalOpen(true)}
+                  className="shrink-0 px-2.5 py-1.5 rounded-lg bg-amber-900 text-white text-[11px] font-bold cursor-pointer"
+                >
+                  Preview &amp; Fix
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Statement card */}
+        <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+          <div className="px-3.5 py-2.5 flex items-center justify-between gap-3 text-[13px]">
+            <span className="text-[var(--text-2)] font-medium">Sales</span>
+            <span className="font-bold text-[var(--text)] tabular-nums">{rs(mobileSales)}</span>
+          </div>
+          <div className="px-3.5 py-2.5 flex items-center justify-between gap-3 text-[13px]">
+            <span className="text-[var(--text-2)] font-medium">Cost of goods</span>
+            <span className="font-bold text-[var(--text)] tabular-nums">−{rs(mobilePnl.cogs)}</span>
+          </div>
+          <div className="px-3.5 py-2.5 flex items-center justify-between gap-3 text-[13.5px]">
+            <span className="font-extrabold text-[var(--text)]">Gross profit</span>
+            <span
+              className={`font-extrabold tabular-nums ${
+                mobileGrossProfit < 0 ? 'text-[var(--due)]' : 'text-[var(--paid)]'
+              }`}
+            >
+              {mobileGrossProfit < 0 ? '−' : ''}
+              {rs(Math.abs(mobileGrossProfit))}
+            </span>
+          </div>
+          <div className="px-3.5 py-2.5 flex items-center justify-between gap-3 text-[13px]">
+            <span className="text-[var(--text-2)] font-medium">Expenses</span>
+            <span className="font-bold text-[var(--text)] tabular-nums">−{rs(totalExpenses)}</span>
+          </div>
+          <div className="px-3.5 py-3 flex items-center justify-between gap-3 text-[14px]">
+            <span className="font-extrabold text-[var(--text)]">
+              {mobileNetProfit < 0 ? 'Net loss' : 'Net profit'}
+            </span>
+            <span
+              className={`font-extrabold tabular-nums ${
+                mobileNetProfit < 0 ? 'text-[var(--due)]' : 'text-[var(--paid)]'
+              }`}
+            >
+              {mobileNetProfit < 0 ? '−' : ''}
+              {rs(Math.abs(mobileNetProfit))}
+            </span>
+          </div>
+        </section>
+
+        {/* Sub-section drill-down menu */}
+        {detail && (
+          <section className="rt-rep-card divide-y divide-[var(--divider)] overflow-hidden">
+            {[
+              {
+                id: 'products' as const,
+                title: 'Products',
+                sub: 'Margin by product',
+                icon: <Package size={16} />,
+              },
+              {
+                id: 'customers' as const,
+                title: 'Customers',
+                sub: 'Profit by customer',
+                icon: <Users size={16} />,
+              },
+              {
+                id: 'days' as const,
+                title: 'By day',
+                sub: 'Daily profit & margin',
+                icon: <Calendar size={16} />,
+              },
+              {
+                id: 'netProfit' as const,
+                title: 'Salary budget',
+                sub: 'Running costs & pay pool',
+                icon: <Wallet size={16} />,
+              },
+            ].map((nav) => (
+              <button
+                key={nav.id}
+                type="button"
+                onClick={() => {
+                  mobileCtx?.setPnlTargetTab(nav.id);
+                  setShowDetail(true);
+                }}
+                className="w-full text-left px-3.5 py-3 flex items-center gap-3 active:bg-[#f8fafc] transition-colors cursor-pointer"
+              >
+                <div className="w-9 h-9 rounded-full bg-[#f1f5f9] text-[var(--text-2)] flex items-center justify-center shrink-0">
+                  {nav.icon}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13.5px] font-bold text-[var(--text)] leading-snug">{nav.title}</div>
+                  <div className="text-[11.5px] text-[var(--text-2)] mt-0.5 leading-snug">{nav.sub}</div>
+                </div>
+                <ChevronRight size={16} className="text-[var(--text-2)] shrink-0" />
+              </button>
+            ))}
+          </section>
+        )}
+
+        <PhoneDownloadBar onExcel={exportExcel} onPdf={exportPdf} />
+      </div>
+
+      {/* ======================= TABLET / DESKTOP ======================= */}
+      <div className="hidden md:flex flex-col gap-3 w-full max-w-3xl" id="report-pnl">
       <ReportTitleBar
         title="Profit & Loss"
         sub={periodLabel}
@@ -346,6 +578,7 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
           <ChevronRight size={16} className="text-slate-400" />
         </button>
       )}
+    </div>
 
       <BillCostRepairModal
         open={repairModalOpen}
@@ -354,6 +587,6 @@ export const SimplePnLReport: React.FC<SimplePnLReportProps> = ({
         products={products}
         periodLabel={periodLabel}
       />
-    </div>
+    </>
   );
 };

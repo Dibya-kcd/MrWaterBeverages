@@ -313,25 +313,28 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
 
       {/* Overview Metrics Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
-        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3 sm:p-3.5">
-          <div className="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider">Total Audits</div>
-          <div className="text-xl font-extrabold mt-1 text-slate-900">{auditStats.totalAudits}</div>
-          <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Stocktakes stored</div>
+        <div data-card-tone="sales" className="rounded-2xl border shadow-xs p-3 sm:p-3.5">
+          <div className="text-[10px] sm:text-xs font-bold text-blue-900/75 uppercase tracking-wider">Total Audits</div>
+          <div className="text-xl font-extrabold mt-1 text-slate-900 tabular-nums">{auditStats.totalAudits}</div>
+          <div className="text-[11px] text-slate-600 mt-0.5 font-medium">Stocktakes stored</div>
         </div>
-        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3 sm:p-3.5">
-          <div className="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider">Audit Dates</div>
-          <div className="text-xl font-extrabold mt-1 text-slate-900">{auditStats.uniqueDays} days</div>
-          <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Grouped date-wise</div>
+        <div data-card-tone="profit" className="rounded-2xl border shadow-xs p-3 sm:p-3.5">
+          <div className="text-[10px] sm:text-xs font-bold text-purple-900/75 uppercase tracking-wider">Audit Dates</div>
+          <div className="text-xl font-extrabold mt-1 text-slate-900 tabular-nums">{auditStats.uniqueDays} days</div>
+          <div className="text-[11px] text-slate-600 mt-0.5 font-medium">Grouped date-wise</div>
         </div>
-        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3 sm:p-3.5">
-          <div className="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider">Variances</div>
-          <div className="text-xl font-extrabold mt-1 text-slate-900">{auditStats.totalVariances} items</div>
-          <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Count differences</div>
+        <div
+          data-card-tone={auditStats.totalVariances > 0 ? 'warning' : 'received'}
+          className="rounded-2xl border shadow-xs p-3 sm:p-3.5"
+        >
+          <div className="text-[10px] sm:text-xs font-bold text-amber-900/75 uppercase tracking-wider">Variances</div>
+          <div className="text-xl font-extrabold mt-1 text-slate-900 tabular-nums">{auditStats.totalVariances} items</div>
+          <div className="text-[11px] text-slate-600 mt-0.5 font-medium">Count differences</div>
         </div>
-        <div className="bg-white rounded-2xl border border-black/5 shadow-sm p-3 sm:p-3.5">
-          <div className="text-[10px] sm:text-xs font-bold text-slate-500 uppercase tracking-wider">Catalog</div>
-          <div className="text-xl font-extrabold mt-1 text-slate-900">{products.length}</div>
-          <div className="text-[11px] text-slate-500 mt-0.5 font-medium">Products to count</div>
+        <div data-card-tone="received" className="rounded-2xl border shadow-xs p-3 sm:p-3.5">
+          <div className="text-[10px] sm:text-xs font-bold text-emerald-900/75 uppercase tracking-wider">Catalog</div>
+          <div className="text-xl font-extrabold mt-1 text-slate-900 tabular-nums">{products.length}</div>
+          <div className="text-[11px] text-slate-600 mt-0.5 font-medium">Products to count</div>
         </div>
       </div>
 
@@ -389,8 +392,9 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
 
       {/* Product-level counting was retired: counts now go through Smart Reconciliation (every difference is matched and approved before stock changes). Past audits stay readable below. */}
       <div
-        className="border-2 rounded px-4 py-3 flex items-center justify-between flex-wrap gap-3"
-        style={{ borderColor: palette.line, backgroundColor: palette.panel, color: palette.ink, ...fz(13.5) }}
+        data-card-tone="sales"
+        className="border rounded-2xl px-4 py-3.5 shadow-xs flex items-center justify-between flex-wrap gap-3"
+        style={{ color: palette.ink, ...fz(13.5) }}
       >
         <span>
           New stock counts are done in <strong>Smart Reconciliation</strong>. This page keeps the history of earlier quick audits.
@@ -636,8 +640,8 @@ export const AuditView: React.FC<AuditViewProps> = ({ embedded = false }) => {
                         return (
                           <div
                             key={a.id}
-                            className="border-2 rounded p-4 bg-white shadow-sm hover:border-slate-400 transition-colors"
-                            style={{ borderColor: palette.line }}
+                            data-card-tone={isBalanced ? 'received' : 'warning'}
+                            className="border rounded-2xl p-4 shadow-xs transition-colors"
                           >
                             {/* Audit Card Header */}
                             <div className="flex items-center justify-between mb-3 flex-wrap gap-2 pb-2.5 border-b" style={{ borderColor: palette.line }}>

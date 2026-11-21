@@ -83,12 +83,39 @@ export function buildSalesSummary(args: {
       perProduct.set(it.productId, cur);
       lineDiscounts += Number(it.discount) || 0;
     }
+    const entries: { id: number; name: string; netQty: number; rawNetAmt: number }[] = [];
     perProduct.forEach((p, id) => {
       const netQty = Math.max(0, p.qty - (retQty[id] || 0));
-      const netAmt = Math.max(0, p.amount - (retCredit[id] || 0));
+      const rawNetAmt = Math.max(0, p.amount - (retCredit[id] || 0));
       cases += netQty;
-      add(prod, String(id), p.name, { bills: 1, cases: netQty, netSales: netAmt });
+      entries.push({ id, name: p.name, netQty, rawNetAmt });
     });
+
+    const rawProductSum = entries.reduce((s, e) => s + e.rawNetAmt, 0);
+    if (rawProductSum > 0) {
+      let remainingNet = net;
+      const positiveIdx = entries.reduce((last, e, idx) => (e.rawNetAmt > 0 ? idx : last), -1);
+      entries.forEach((e, idx) => {
+        let allocated = 0;
+        if (e.rawNetAmt > 0) {
+          if (idx === positiveIdx) {
+            allocated = Math.max(0, round2(remainingNet));
+          } else {
+            allocated = round2((net * e.rawNetAmt) / rawProductSum);
+            remainingNet = round2(remainingNet - allocated);
+          }
+        }
+        add(prod, String(e.id), e.name, { bills: 1, cases: e.netQty, netSales: allocated });
+      });
+    } else {
+      entries.forEach((e, idx) => {
+        add(prod, String(e.id), e.name, {
+          bills: 1,
+          cases: e.netQty,
+          netSales: idx === 0 ? net : 0,
+        });
+      });
+    }
 
     const row: Partial<SalesGroupRow> = { bills: 1, cases, netSales: net, gst: basis.gst, paid, unpaid };
     const customerName = (b.retailer || 'Cash / Walk-in').trim() || 'Cash / Walk-in';

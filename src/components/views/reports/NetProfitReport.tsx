@@ -10,7 +10,7 @@ import { RegisterCard } from './mobile/ReportCards';
 import { downloadPdf, downloadXlsx, fileStamp } from '../../../utils/reportDownload';
 import { ReportDownloadButtons } from '../../common/ReportDownloadButtons';
 import { ReportBreakdownLine, ReportStat, ReportStatGrid, ReportTitleBar, reportCard } from './ReportKit';
-import { HeroCard, LegendDot, MiniStat, PhoneDownloadBar, PhoneHeader, SplitBar } from './mobile/PhoneKit';
+import { PhoneDownloadBar } from './mobile/PhoneKit';
 import {
   EXPENSE_LABELS,
   PAY_CATEGORIES,
@@ -202,27 +202,35 @@ export const NetProfitReport: React.FC<NetProfitReportProps> = ({
     <div className="space-y-3" id="report-net-profit">
       {/* ============================ PHONE ============================ */}
       <div className="md:hidden space-y-3">
-        <PhoneHeader title="Net profit" sub="Gross margin minus operating expenses" />
-        <HeroCard tone={netNeg ? 'red' : 'profit'} label="Net profit" value={rs(np.netProfit)} negative={netNeg}>
-          <SplitBar
-            label="Running costs, pay and net profit"
-            parts={[
-              { value: runningCosts, className: 'bg-amber-300' },
-              { value: np.payPaid, className: 'bg-sky-300' },
-              { value: Math.max(0, np.netProfit), className: 'bg-emerald-300' },
-            ]}
-          />
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12.5px] text-white/90">
-            <LegendDot dot="bg-amber-300">Costs {rs(runningCosts)}</LegendDot>
-            <LegendDot dot="bg-sky-300">Pay {rs(np.payPaid)}</LegendDot>
+        <section className="rt-rep-card rt-rep-pad">
+          <div className="text-[12px] font-medium text-[var(--text-2)]">Net profit</div>
+          <div
+            className={`text-[26px] font-extrabold tracking-tight leading-tight tabular-nums mt-0.5 ${
+              netNeg ? 'text-[var(--due)]' : 'text-[var(--paid)]'
+            }`}
+          >
+            {netNeg ? `−₹${money(Math.abs(np.netProfit))}` : rs(np.netProfit)}
           </div>
-        </HeroCard>
-        <div className="grid grid-cols-3 gap-2">
-          <MiniStat label="Gross profit" value={rs(pnl.operatingGrossProfit)} tone={pnl.operatingGrossProfit < 0 ? 'red' : 'profit'} />
-          <MiniStat label="For pay" value={rs(np.profitBeforePay)} tone={np.profitBeforePay < 0 ? 'red' : 'ink'} />
-          <MiniStat label="Pay given" value={rs(np.payPaid)} tone="amber" />
-        </div>
-        <p className="px-1 text-xs text-slate-500">After stock costs, write-offs, running costs and pay already given. GST collected is not profit.</p>
+          <div className="text-[11.5px] text-[var(--text-2)] mt-1">
+            After stock costs, write-offs, running costs and pay already given.
+          </div>
+          <div className="rt-kv-grid grid-cols-3">
+            <div className="rt-kv">
+              <div className="rt-kv__l">Gross profit</div>
+              <div className={`rt-kv__v ${pnl.operatingGrossProfit < 0 ? 'text-[var(--due)]' : 'text-[var(--text)]'}`}>
+                {rs(pnl.operatingGrossProfit)}
+              </div>
+            </div>
+            <div className="rt-kv">
+              <div className="rt-kv__l">Running costs</div>
+              <div className="rt-kv__v text-[var(--text)]">{rs(runningCosts)}</div>
+            </div>
+            <div className="rt-kv">
+              <div className="rt-kv__l">Pay given</div>
+              <div className="rt-kv__v text-[var(--text)]">{rs(np.payPaid)}</div>
+            </div>
+          </div>
+        </section>
       </div>
 
       {/* ======================= TABLET / DESKTOP ======================= */}

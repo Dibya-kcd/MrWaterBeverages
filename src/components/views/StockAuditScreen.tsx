@@ -20,10 +20,10 @@ import { useLedger } from '../../context/LedgerContext';
 import { SizeChip } from '../common/SizeChip';
 import { PackIcon } from '../common/PackIcon';
 import { InfoTip } from '../common/InfoTip';
-import { sizeStripe } from '../../utils/sizeColor';
 import { batchLineKey } from '../../utils/stockLocations';
 import { todayISO } from '../../utils/dateLocal';
 import { confirmDialog } from '../../utils/dialogs';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import type { Product } from '../../types';
 
 /**
@@ -117,9 +117,17 @@ const signed = (n: number) => (n > 0 ? `+${n}` : String(n));
 export interface StockAuditScreenProps {
   /** Open another Inventory tab (used by the "fix the cause" links on oversold lines). */
   onGoInventoryTab?: (tab: 'consignments' | 'transfers') => void;
+  /** Phone header warehouse sync from InventoryView */
+  selectedWhId?: string;
+  onChangeWhId?: (id: string) => void;
 }
 
-export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventoryTab }) => {
+export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({
+  onGoInventoryTab,
+  selectedWhId,
+  onChangeWhId,
+}) => {
+  const isPhone = useIsMobile(767);
   const {
     products,
     warehouses,
@@ -140,11 +148,14 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
 
   const isAdmin = currentRole === 'admin';
 
-  const [step, setStep] = useState<Step>('setup');
-  const [whId, setWhId] = useState<string>(warehouses[0]?.id || '');
+  const [step, setStep] = useState<Step>(() => (typeof window !== 'undefined' && window.innerWidth <= 767 ? 'count' : 'setup'));
+  const [whId, setWhId] = useState<string>(selectedWhId || warehouses[0]?.id || '');
   const [counts, setCounts] = useState<Record<string, string>>({});
   const [found, setFound] = useState<FoundLine[]>([]);
   const [note, setNote] = useState('');
+  const [batchNotes, setBatchNotes] = useState<Record<string, string>>({});
+  const [showPostSheet, setShowPostSheet] = useState(false);
+  const [postReason, setPostReason] = useState('');
   const [oversold, setOversold] = useState<Record<number, OversoldState>>({});
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
@@ -162,8 +173,27 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!whId && warehouses[0]?.id) setWhId(warehouses[0].id);
-  }, [warehouses, whId]);
+    if (!whId && (selectedWhId || warehouses[0]?.id)) {
+      setWhId(selectedWhId || warehouses[0].id);
+    }
+  }, [warehouses, whId, selectedWhId]);
+
+  useEffect(() => {
+    if (isPhone && selectedWhId && selectedWhId !== whId) {
+      setWhId(selectedWhId);
+      setCounts({});
+      setFound([]);
+      setBatchNotes({});
+      setSaveError('');
+      if (step === 'setup' || step === 'done') setStep('count');
+    }
+  }, [isPhone, selectedWhId, whId, step]);
+
+  useEffect(() => {
+    if (isPhone && step === 'setup' && (whId || warehouses[0]?.id)) {
+      setStep('count');
+    }
+  }, [isPhone, step, whId, warehouses]);
 
   // Keep the count on the phone while the person works, so a closed tab or a phone call loses nothing.
   useEffect(() => {
@@ -350,10 +380,12 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
     }
     if (id !== whId) {
       setWhId(id);
+      onChangeWhId?.(id);
     }
     setCounts({});
     setFound([]);
     setNote('');
+    setBatchNotes({});
     setOversold({});
     setSearch('');
     setFilter('all');
@@ -368,6 +400,7 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
   const resumeDraft = () => {
     if (!pendingDraft) return;
     setWhId(pendingDraft.whId);
+    onChangeWhId?.(pendingDraft.whId);
     setCounts(pendingDraft.counts);
     setFound(pendingDraft.found);
     setNote(pendingDraft.note);
@@ -437,7 +470,7 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
   const oversoldUnresolved = oversoldList.filter((o) => oversoldChoice(o.product.id).choice === 'fix');
   const nothingToSave = stats.counted === 0 && oversoldToSave.length === 0;
 
-  const confirmSave = () => {
+  const confirmSave = (explicitReason?: string) => {
     setSaveError('');
     for (const o of oversoldToSave) {
       const st = oversoldChoice(o.product.id);
@@ -449,6 +482,15 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
         setSaveError(`Choose a reason for the ${o.product.name} adjustment.`);
         return;
       }
+    }
+    if (isPhone && stats.differ > 0 && !isAdmin) {
+      setSaveError('Owner login required to post stock adjustments.');
+      return;
+    }
+    const reasonText = (explicitReason ?? postReason ?? '').trim();
+    if (isPhone && stats.differ > 0 && !reasonText) {
+      setSaveError('Enter a reason for the stock adjustment.');
+      return;
     }
     const lines: Parameters<typeof saveBatchAudit>[0]['lines'] = [];
     for (const r of allRows) {
@@ -492,7 +534,11 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
         notes: 'Found during stock audit',
       });
     }
-    const id = saveBatchAudit({ date: todayISO(), warehouseId: whId, referenceNote: note, lines });
+    const extraLineNotes = Object.entries(batchNotes)
+      .filter(([, val]) => val.trim().length > 0)
+      .map(([, val]) => val.trim());
+    const combinedNote = [reasonText, note.trim(), ...extraLineNotes].filter(Boolean).join(' · ');
+    const id = saveBatchAudit({ date: todayISO(), warehouseId: whId, referenceNote: combinedNote, lines });
     if (id === null) {
       setSaveError('Nothing could be saved. Count at least one batch.');
       return;
@@ -502,6 +548,9 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
     setCounts({});
     setFound([]);
     setNote('');
+    setBatchNotes({});
+    setPostReason('');
+    setShowPostSheet(false);
     setOversold({});
     setStep('done');
   };
@@ -642,8 +691,14 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
     return (
       <div
         key={product.id}
-        className="rounded-2xl border border-black/10 bg-white shadow-sm overflow-hidden"
-        style={sizeStripe(product.volume, product.name)}
+        data-card-tone={
+          oversoldIds.has(product.id)
+            ? 'due'
+            : doneCount > 0
+              ? 'received'
+              : 'sales'
+        }
+        className="rounded-2xl border shadow-sm overflow-hidden"
       >
         {multi ? (
           <div className="px-3 pt-2.5 pb-2 flex items-start gap-2">
@@ -741,7 +796,7 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
       { id: 'adjust', label: `Post adjustment +${Math.abs(o.raw)}`, sub: isAdmin ? 'Owner only · needs a reason' : 'Owner login only' },
     ];
     return (
-      <div key={o.product.id} className="rounded-2xl border-2 border-rose-200 bg-rose-50/50 p-3 space-y-2">
+      <div key={o.product.id} data-card-tone="due" className="rounded-2xl border p-3.5 space-y-2.5 shadow-sm">
         <div className="flex items-start gap-2">
           <AlertTriangle size={18} className="text-rose-600 mt-0.5 shrink-0" />
           <div className="min-w-0">
@@ -810,35 +865,584 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
   };
 
   // ── Screens ─────────────────────────────────────────────────────────────────────────────────
+  if (isPhone) {
+    // ── PHONE: Done confirmation ─────────────────────────────────────────────────────────────
+    if (step === 'done' && savedInfo) {
+      return (
+        <div className="space-y-3 hh-inv-pb">
+          <div className="hh-inv-card hh-inv-card--alert-blue space-y-2.5">
+            <div className="flex items-center gap-2 text-[#101D3A] font-extrabold text-[15px]">
+              <CheckCircle2 size={18} className="text-[#16A34A] shrink-0" />
+              <span>Audit #{savedInfo.id} posted</span>
+            </div>
+            <p className="text-[13px] text-slate-600 leading-relaxed">
+              {savedInfo.counted} batch{savedInfo.counted === 1 ? '' : 'es'} counted ·{' '}
+              {savedInfo.differ === 0
+                ? 'every counted batch matched the system'
+                : `${savedInfo.differ} differ (${signed(savedInfo.net)} cs net)`}
+              . Live stock for {whName(whId)} has been updated.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setSavedInfo(null);
+                setStep('count');
+              }}
+              className="hh-inv-btn-primary w-full"
+            >
+              Start another count
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── PHONE: Differences Review & Post Sheet (Full-screen overlay) ─────────────────────────
+    if (step === 'review') {
+      return (
+        <div className="rt-flow-phone">
+          <div className="hh-sales-top hh-sales-top--flush hh-inv-top hh-inv-top--flow">
+            <div className="hh-sales-top__row">
+              <button
+                type="button"
+                onClick={() => setStep('count')}
+                className="hh-inv-backbtn"
+              >
+                <ArrowLeft size={20} strokeWidth={2.3} />
+                <span>Differences</span>
+              </button>
+              {stats.differ > 0 && (
+                <span className="hh-inv-danger-pill">{stats.differ} differ</span>
+              )}
+            </div>
+          </div>
+
+          <div className="rt-flow-phone__body space-y-2.5" style={{ paddingBottom: '120px' }}>
+            {review.diffs.length === 0 ? (
+              <div className="hh-inv-card text-center py-6 space-y-1.5">
+                <div className="text-[14px] font-extrabold text-[#16A34A]">
+                  Every counted batch matches the system.
+                </div>
+                <p className="text-[12px] text-slate-500">
+                  {stats.counted} batch{stats.counted === 1 ? '' : 'es'} verified in {whName(whId)}.
+                </p>
+              </div>
+            ) : (
+              review.diffs.map(({ product, rows }) =>
+                rows.map(({ r, c }) => {
+                  const d = c - r.systemQty;
+                  return (
+                    <div key={r.key} className="hh-inv-card space-y-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1 text-[14px] font-extrabold text-[#101D3A] leading-snug">
+                          {product.name}
+                          {!r.noBatch ? ` · ${r.batchNumber}` : ' · No batch'}
+                        </div>
+                        <span
+                          className={`shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-extrabold tabular-nums ${
+                            d < 0 ? 'bg-rose-50 text-[#DC2626]' : 'bg-amber-50 text-amber-800'
+                          }`}
+                        >
+                          {signed(d)} cs
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 pt-0.5">
+                        <div>
+                          <div className="text-[11px] text-slate-500 font-semibold">System</div>
+                          <div className="text-[16px] font-extrabold text-[#101D3A] tabular-nums mt-0.5">
+                            {r.systemQty}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[11px] text-slate-500 font-semibold">Counted</div>
+                          <div className="text-[16px] font-extrabold text-[#101D3A] tabular-nums mt-0.5">
+                            {c}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[11px] text-slate-500 font-semibold">Diff</div>
+                          <div
+                            className={`text-[16px] font-extrabold tabular-nums mt-0.5 ${
+                              d < 0 ? 'text-[#DC2626]' : 'text-amber-700'
+                            }`}
+                          >
+                            {signed(d)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <input
+                        type="text"
+                        value={batchNotes[r.key] ?? ''}
+                        onChange={(e) =>
+                          setBatchNotes((prev) => ({ ...prev, [r.key]: e.target.value }))
+                        }
+                        placeholder="Note (optional)"
+                        className="w-full text-[12px] text-slate-700 placeholder:text-slate-400 bg-transparent border-0 border-t border-slate-100 pt-2 focus:outline-none"
+                      />
+                    </div>
+                  );
+                })
+              )
+            )}
+
+            {oversoldList.length > 0 && (
+              <div className="hh-inv-card hh-inv-card--alert-amber space-y-1.5" style={{ background: '#FFFBEB' }}>
+                <div className="text-[13px] font-bold text-amber-950">
+                  Oversold products ({oversoldList.length}): fix these first from the Stock tab.
+                </div>
+                {oversoldList.map((o) => {
+                  const st = oversoldChoice(o.product.id);
+                  return (
+                    <div key={o.product.id} className="text-[11.5px] text-amber-900 flex justify-between gap-2">
+                      <span>{o.product.name} ({o.raw} cs)</span>
+                      <span className="font-bold">
+                        {st.choice === 'fix' ? 'Fix on Stock tab' : st.choice === 'open' ? 'Under investigation' : `Adjust +${Math.abs(o.raw)}`}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {review.uncounted.length > 0 && (
+              <div className="hh-inv-card hh-inv-card--alert-amber space-y-2">
+                <div className="text-[12.5px] font-bold text-slate-900">
+                  {review.uncounted.length} batch{review.uncounted.length === 1 ? '' : 'es'} with stock not counted
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setStep('count')}
+                    className="px-3 py-1.5 rounded-full border border-slate-300 bg-white text-[12px] font-bold text-slate-700"
+                  >
+                    Go count
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCounts((prev) => {
+                        const next = { ...prev };
+                        for (const r of review.uncounted) next[r.key] = String(r.systemQty);
+                        return next;
+                      })
+                    }
+                    className="px-3 py-1.5 rounded-full border border-emerald-300 bg-emerald-50 text-[12px] font-bold text-emerald-800"
+                  >
+                    Mark all matching
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {review.matches.length > 0 && review.diffs.length > 0 && (
+              <details className="hh-inv-card text-[12px] text-slate-600">
+                <summary className="cursor-pointer font-bold text-slate-700">
+                  {review.matches.length} batch{review.matches.length === 1 ? '' : 'es'} match system
+                </summary>
+                <ul className="mt-2 space-y-1 border-t border-slate-100 pt-2">
+                  {review.matches.map(({ product, r, c }) => (
+                    <li key={r.key} className="flex justify-between gap-2">
+                      <span className="truncate">{product.name}{!r.noBatch ? ` · ${r.batchNumber}` : ''}</span>
+                      <span className="font-bold tabular-nums">{c} cs</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+
+          <div className="rt-flow-phone__footer flex gap-2.5">
+            <button
+              type="button"
+              onClick={() => setStep('count')}
+              className="hh-inv-btn-outline flex-1"
+            >
+              Save count
+            </button>
+            <button
+              type="button"
+              disabled={nothingToSave}
+              onClick={() => {
+                setSaveError('');
+                setPostReason((prev) => prev || note);
+                setShowPostSheet(true);
+              }}
+              className="hh-inv-btn-primary flex-1"
+            >
+              Post adjustment
+            </button>
+          </div>
+
+          {showPostSheet && (
+            <div
+              className="rt-bsheet-scrim"
+              role="presentation"
+              onClick={() => setShowPostSheet(false)}
+            >
+              <div
+                className="rt-bsheet"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Post adjustment"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="hh-grab" />
+                <div className="space-y-3 pb-1">
+                  <div>
+                    <h3 className="text-[18px] font-extrabold text-[#101D3A] leading-tight">
+                      Post adjustment
+                    </h3>
+                    <p className="text-[12.5px] text-slate-500 mt-0.5">
+                      Stock will change by {signed(stats.net)} cs in {whName(whId)} godown
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border-2 border-[#2864D9] bg-white px-3.5 py-2.5">
+                    <div className="text-[14px] font-extrabold text-[#101D3A]">
+                      Post adjustment {signed(stats.net)} cs
+                    </div>
+                    <div className="text-[11.5px] text-slate-500 mt-0.5">
+                      Owner only · needs a reason
+                    </div>
+                  </div>
+
+                  {!isAdmin && (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-semibold text-amber-900">
+                      Owner login required to post stock adjustments.
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <label className="text-[12px] font-bold text-[#101D3A] block">
+                      Reason {stats.differ > 0 ? '(required)' : '(optional)'}
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={postReason}
+                      onChange={(e) => {
+                        setPostReason(e.target.value);
+                        setNote(e.target.value);
+                      }}
+                      placeholder="Breakage found during count..."
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-[13px] font-semibold text-[#101D3A] focus:outline-none focus:border-[#2864D9]"
+                    />
+                  </div>
+
+                  {saveError && (
+                    <div className="text-[12px] font-bold text-[#DC2626]" role="alert">
+                      {saveError}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowPostSheet(false)}
+                      className="hh-inv-btn-outline flex-1"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => confirmSave(postReason)}
+                      className="hh-inv-btn-primary flex-1"
+                    >
+                      Post
+                    </button>
+                  </div>
+
+                  <p className="text-center text-[11px] text-slate-500">
+                    If everything matches: &ldquo;Every counted batch matches the system.&rdquo;
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── PHONE: Audit Count Screen ─────────────────────────────────────────────────────────────
+    return (
+      <div className="flex flex-col gap-2.5 w-full hh-inv-pb">
+        {pendingDraft && (
+          <div className="hh-inv-card hh-inv-card--alert-amber flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[13.5px] font-extrabold text-[#101D3A]">
+                Unfinished count found
+              </div>
+              <div className="text-[11.5px] text-slate-500 mt-0.5 truncate">
+                {whName(pendingDraft.whId)} · {Object.values(pendingDraft.counts).filter((v) => v !== '').length} batches counted ·{' '}
+                {new Date(pendingDraft.savedAt).toLocaleString('en-IN', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={resumeDraft}
+              className="shrink-0 text-[13px] font-extrabold text-[#2864D9] px-2 py-1.5 cursor-pointer"
+            >
+              Resume
+            </button>
+          </div>
+        )}
+
+        <div className="hh-inv-card grid grid-cols-3 gap-2">
+          <div>
+            <div className="text-[11px] font-semibold text-slate-500">Counted</div>
+            <div className="text-[19px] font-extrabold text-[#101D3A] tabular-nums mt-0.5">
+              {stats.counted}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] font-semibold text-slate-500">Differ</div>
+            <div
+              className={`text-[19px] font-extrabold tabular-nums mt-0.5 ${
+                stats.differ > 0 ? 'text-[#DC2626]' : 'text-[#101D3A]'
+              }`}
+            >
+              {stats.differ}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] font-semibold text-slate-500">Net cs</div>
+            <div
+              className={`text-[19px] font-extrabold tabular-nums mt-0.5 ${
+                stats.net < 0 ? 'text-[#DC2626]' : stats.net > 0 ? 'text-amber-700' : 'text-[#101D3A]'
+              }`}
+            >
+              {signed(stats.net)}
+            </div>
+          </div>
+        </div>
+
+        <div className="rt-search-bar">
+          <Search size={16} className="text-slate-400 shrink-0" />
+          <input
+            type="search"
+            enterKeyHint="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search product or batch"
+          />
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch('')}
+              aria-label="Clear search"
+              className="text-slate-400 p-1"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {oversoldList.length > 0 && (
+          <div className="hh-inv-card hh-inv-card--alert-red flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-[13px] font-extrabold text-[#DC2626]">
+                {oversoldList.length} oversold in {whName(whId)}
+              </div>
+              <div className="text-[11.5px] text-slate-500">
+                Book balance below zero before counting
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div ref={listRef} className="flex flex-col gap-2.5">
+          {warehouses.length === 0 ? (
+            <div className="hh-inv-card text-center py-6 text-[13px] text-slate-500">
+              Add a godown first in Settings → Godowns.
+            </div>
+          ) : (
+            (() => {
+              const phoneCards = productRows
+                .map(({ product, rows }) => {
+                  const visible = rows.filter((r) => rowVisible(product, r));
+                  if (visible.length === 0) return null;
+                  return (
+                    <div key={product.id} className="hh-inv-card space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <PackIcon size="sm" pack={product.pack} name={product.name} />
+                          <span className="text-[14.5px] font-extrabold text-[#101D3A] truncate">
+                            {product.name}
+                          </span>
+                        </div>
+                        {visible.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => markProductMatch(visible)}
+                            className="shrink-0 text-[11px] font-bold text-[#2864D9] px-2 py-1 rounded-full bg-blue-50 cursor-pointer"
+                          >
+                            All match
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="divide-y divide-dashed divide-slate-200">
+                        {visible.map((r, idx) => {
+                          const c = num(r.key);
+                          const diff = c === null ? null : c - r.systemQty;
+                          return (
+                            <div
+                              key={r.key}
+                              className={`flex items-center justify-between gap-2.5 ${
+                                idx > 0 ? 'pt-2.5 mt-2.5' : 'pt-0.5'
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="text-[13px] text-slate-700 leading-snug">
+                                  <strong className="font-extrabold text-[#101D3A]">
+                                    {r.noBatch ? 'Book' : r.batchNumber || '—'}
+                                  </strong>{' '}
+                                  <span className="text-slate-500 font-medium">
+                                    · system {r.systemQty} cs
+                                  </span>
+                                </div>
+                                {!r.noBatch && r.expiryDate && (
+                                  <div className={`text-[11px] mt-0.5 ${expiryClass(r.expiryStatus)}`}>
+                                    {r.expiryStatus === 'expired' ? 'EXPIRED · ' : 'Exp '}
+                                    {fmtExp(r.expiryDate)}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <input
+                                  data-audit-input
+                                  type="text"
+                                  inputMode="numeric"
+                                  pattern="[0-9]*"
+                                  enterKeyHint="next"
+                                  value={counts[r.key] ?? ''}
+                                  placeholder="—"
+                                  aria-label={`Counted quantity, batch ${r.batchNumber || 'none'}`}
+                                  onFocus={(e) => e.currentTarget.select()}
+                                  onChange={(e) => setCount(r.key, e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      focusNext(e.currentTarget);
+                                    }
+                                  }}
+                                  className={`w-[74px] h-[42px] rounded-xl border-2 text-center text-[15px] font-extrabold tabular-nums focus:outline-none ${
+                                    diff === null
+                                      ? 'border-slate-300 bg-white text-[#101D3A]'
+                                      : diff === 0
+                                        ? 'border-[#16A34A] bg-white text-[#15803D]'
+                                        : 'border-[#DC2626] bg-white text-[#DC2626]'
+                                  }`}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => markMatch(r)}
+                                  aria-label="Matches system"
+                                  title="Matches system"
+                                  className={`w-9 h-[42px] rounded-xl border flex items-center justify-center cursor-pointer ${
+                                    diff === 0
+                                      ? 'border-[#16A34A] bg-emerald-50 text-[#16A34A]'
+                                      : 'border-slate-200 bg-slate-50 text-slate-500'
+                                  }`}
+                                >
+                                  <Check size={16} />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })
+                .filter(Boolean);
+
+              if (phoneCards.length === 0) {
+                return (
+                  <div className="hh-inv-card text-center py-6 text-[13px] text-slate-500">
+                    {q ? 'No batches match your search.' : `No stock lines in ${whName(whId)}.`}
+                  </div>
+                );
+              }
+              return phoneCards;
+            })()
+          )}
+        </div>
+
+        {(hiddenEmptyTotal > 0 || showEmpty) && (
+          <button
+            type="button"
+            onClick={() => {
+              setShowEmpty((v) => !v);
+              setOpenEmpty({});
+            }}
+            className="self-center text-[12px] font-bold text-[#2864D9] py-1 cursor-pointer"
+          >
+            {showEmpty
+              ? 'Hide empty batches'
+              : `Show ${hiddenEmptyTotal} empty batch${hiddenEmptyTotal === 1 ? '' : 'es'}`}
+          </button>
+        )}
+
+        <div className="hh-inv-cta-dock">
+          <button
+            type="button"
+            onClick={() => setStep('review')}
+            className="hh-inv-btn-primary w-full"
+          >
+            Review differences{stats.counted > 0 ? ` (${stats.counted})` : ''}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Screens (Desktop / Tablet preserved intact) ─────────────────────────────────────────────
   if (step === 'setup') {
     return (
       <div className="flex flex-col gap-3 w-full">
         {pendingDraft && (
-          <div className="rounded-2xl border-2 border-amber-300 bg-amber-50 p-3 space-y-2">
-            <div className="text-[14px] font-bold text-slate-900">Unfinished count found</div>
-            <div className="text-[12px] text-slate-600">
-              {whName(pendingDraft.whId)} · {Object.values(pendingDraft.counts).filter((v) => v !== '').length} counted ·{' '}
-              {new Date(pendingDraft.savedAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+          <div data-card-tone="warning" className="rounded-2xl border p-3.5 space-y-2.5 shadow-sm">
+            <div className="flex items-center gap-2.5">
+              <span className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--amber">
+                <ClipboardCheck size={16} />
+              </span>
+              <div className="min-w-0">
+                <div className="text-[14px] font-bold text-slate-900">Unfinished count found</div>
+                <div className="text-[12px] text-slate-600">
+                  {whName(pendingDraft.whId)} · {Object.values(pendingDraft.counts).filter((v) => v !== '').length} counted ·{' '}
+                  {new Date(pendingDraft.savedAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                </div>
+              </div>
             </div>
             <div className="flex gap-2">
               <button type="button" onClick={resumeDraft} className="h-11 px-4 rounded-xl bg-[var(--primary)] text-white text-sm font-semibold cursor-pointer">
                 Continue count
               </button>
-              <button type="button" onClick={discardDraft} className="h-11 px-4 rounded-xl border border-slate-300 bg-white text-sm font-semibold text-slate-700 cursor-pointer">
+              <button type="button" onClick={discardDraft} className="h-11 px-4 rounded-xl border border-black/10 bg-white/85 text-sm font-semibold text-slate-700 cursor-pointer">
                 Discard
               </button>
             </div>
           </div>
         )}
-        <div className="rounded-2xl border border-slate-200/90 bg-white shadow-xs overflow-hidden">
-          <div className="flex items-start justify-between gap-3 px-4 py-3.5 border-b border-slate-100">
-            <div className="min-w-0">
-              <h2 className="text-base font-bold text-slate-900 leading-snug">
-                Which godown are you counting?
-              </h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Choose a godown to start a physical shelf count.
-              </p>
+        <div data-card-tone="profit" className="rounded-2xl border shadow-sm p-4 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-start gap-2.5 min-w-0">
+              <span className="hh-icon-badge hh-icon-badge--purple mt-0.5">
+                <ClipboardCheck size={18} />
+              </span>
+              <div className="min-w-0">
+                <h2 className="text-base font-extrabold text-slate-900 leading-snug">
+                  Which godown are you counting?
+                </h2>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Choose a godown to start a physical shelf count.
+                </p>
+              </div>
             </div>
             <div className="shrink-0 mt-0.5">
               <InfoTip title="How the stock audit works">
@@ -849,34 +1453,48 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
           </div>
 
           {warehouses.length === 0 ? (
-            <div className="px-4 py-6 text-sm text-slate-500">
+            <div className="rounded-xl bg-white/80 border border-black/5 px-4 py-6 text-sm text-slate-500">
               Add a godown first (Settings → Godowns).
             </div>
           ) : (
-            <div className="divide-y divide-slate-100">
+            <div className="space-y-2.5">
               {warehouses.map((w) => {
                 const qty = warehouseStock(w.id);
+                const hasStock = qty > 0;
                 return (
                   <button
                     key={w.id}
                     type="button"
                     onClick={() => startCount(w.id)}
-                    className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-left hover:bg-slate-50/90 active:bg-slate-100/80 transition-colors cursor-pointer"
+                    data-card-tone={hasStock ? 'sales' : 'neutral'}
+                    className="w-full flex items-center justify-between gap-3 px-3.5 py-3.5 rounded-2xl border shadow-xs text-left active:scale-[0.99] transition cursor-pointer"
                   >
                     <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <div className="size-9 rounded-xl bg-slate-100 text-[var(--primary)] flex items-center justify-center shrink-0">
-                        <Warehouse size={17} />
+                      <div
+                        className={`hh-icon-badge ${
+                          hasStock ? 'hh-icon-badge--blue' : 'hh-icon-badge--slate'
+                        }`}
+                      >
+                        <Warehouse size={18} />
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-bold text-slate-900 leading-snug break-words">
                           {w.name}
                         </div>
-                        <div className="text-xs text-slate-500 mt-0.5 tabular-nums">
-                          {qty.toLocaleString()} cs in stock
+                        <div className="mt-1">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold tabular-nums ${
+                              hasStock
+                                ? 'bg-blue-100/90 text-blue-800'
+                                : 'bg-white/80 text-slate-500 border border-slate-200/80'
+                            }`}
+                          >
+                            {qty.toLocaleString()} cs in stock
+                          </span>
                         </div>
                       </div>
                     </div>
-                    <ChevronRight size={18} className="text-slate-400 shrink-0" />
+                    <ChevronRight size={18} className="text-slate-500 shrink-0" />
                   </button>
                 );
               })}
@@ -889,9 +1507,12 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
 
   if (step === 'done' && savedInfo) {
     return (
-      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 space-y-3">
-        <div className="flex items-center gap-2 text-emerald-800 font-bold text-base">
-          <CheckCircle2 size={20} /> Audit #{savedInfo.id} saved
+      <div data-card-tone="received" className="rounded-2xl border p-4 space-y-3 shadow-sm">
+        <div className="flex items-center gap-2.5 text-emerald-900 font-bold text-base">
+          <span className="hh-icon-badge hh-icon-badge--sm hh-icon-badge--green">
+            <CheckCircle2 size={17} />
+          </span>
+          <span>Audit #{savedInfo.id} saved</span>
         </div>
         <div className="text-sm text-slate-700">
           {savedInfo.counted} batch{savedInfo.counted === 1 ? '' : 'es'} counted ·{' '}
@@ -927,19 +1548,19 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
         </div>
 
         <div className="grid grid-cols-3 gap-2 text-center">
-          <div className="rounded-xl bg-white border border-black/10 py-2.5">
-            <div className="text-lg font-extrabold text-slate-900">{stats.counted}</div>
-            <div className="text-[10px] font-bold uppercase text-slate-500">Counted</div>
+          <div data-card-tone="sales" className="rounded-2xl border py-2.5 shadow-2xs">
+            <div className="text-lg font-extrabold text-slate-900 tabular-nums">{stats.counted}</div>
+            <div className="text-[10px] font-bold uppercase text-blue-800/80">Counted</div>
           </div>
-          <div className="rounded-xl bg-white border border-black/10 py-2.5">
-            <div className={`text-lg font-extrabold ${stats.differ ? 'text-amber-700' : 'text-emerald-700'}`}>{stats.differ}</div>
-            <div className="text-[10px] font-bold uppercase text-slate-500">Differ</div>
+          <div data-card-tone={stats.differ ? 'warning' : 'received'} className="rounded-2xl border py-2.5 shadow-2xs">
+            <div className={`text-lg font-extrabold tabular-nums ${stats.differ ? 'text-amber-700' : 'text-emerald-700'}`}>{stats.differ}</div>
+            <div className="text-[10px] font-bold uppercase text-slate-600">Differ</div>
           </div>
-          <div className="rounded-xl bg-white border border-black/10 py-2.5">
-            <div className={`text-lg font-extrabold ${stats.net < 0 ? 'text-rose-700' : stats.net > 0 ? 'text-amber-700' : 'text-slate-900'}`}>
+          <div data-card-tone={stats.net < 0 ? 'due' : stats.net > 0 ? 'warning' : 'neutral'} className="rounded-2xl border py-2.5 shadow-2xs">
+            <div className={`text-lg font-extrabold tabular-nums ${stats.net < 0 ? 'text-rose-700' : stats.net > 0 ? 'text-amber-700' : 'text-slate-900'}`}>
               {signed(stats.net)}
             </div>
-            <div className="text-[10px] font-bold uppercase text-slate-500">Net cs</div>
+            <div className="text-[10px] font-bold uppercase text-slate-600">Net cs</div>
           </div>
         </div>
 
@@ -1055,7 +1676,7 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
           )}
           <button
             type="button"
-            onClick={confirmSave}
+            onClick={() => confirmSave()}
             disabled={nothingToSave}
             className="w-full h-12 rounded-xl bg-[var(--primary)] text-white text-[15px] font-bold disabled:opacity-50 cursor-pointer"
           >
@@ -1098,14 +1719,14 @@ export const StockAuditScreen: React.FC<StockAuditScreenProps> = ({ onGoInventor
         </button>
       </div>
 
-      <div className="rounded-2xl border border-black/10 bg-white px-3 py-2.5">
-        <div className="flex items-center justify-between text-[12px] font-semibold text-slate-600">
+      <div data-card-tone="sales" className="rounded-2xl border px-3.5 py-3 shadow-2xs">
+        <div className="flex items-center justify-between text-[12px] font-bold text-slate-700">
           <span>
             {stats.counted} of {stats.total} counted
           </span>
           {stats.differ > 0 && <span className="text-amber-700">{stats.differ} differ</span>}
         </div>
-        <div className="mt-1.5 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+        <div className="mt-1.5 h-2 rounded-full bg-white/80 overflow-hidden">
           <div className="h-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
         </div>
       </div>

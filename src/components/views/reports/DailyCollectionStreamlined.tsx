@@ -183,13 +183,13 @@ export const DailyCollectionStreamlined: React.FC<DailyCollectionStreamlinedProp
   // Group by DAY and work out the money for each day
   // =========================================================================
   const { dayGroups, allLines, periodTotals } = useMemo(() => {
-    const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled);
+    const liveBills = (bills || []).filter((b) => b.status !== 'cancelled' && !b.cancelled && !b.cancellation);
     const billById = new Map(liveBills.map((b) => [b.id, b]));
 
-    // Map payments by bill ID
+    // Map positive non-refund payments by bill ID
     const billPaymentsMap = new Map<number, PaymentRecord[]>();
     (payments || []).forEach((p) => {
-      if (!p.billId || p.isRefund) return;
+      if (!p.billId || p.isRefund || (Number(p.amount) || 0) <= 0) return;
       const list = billPaymentsMap.get(p.billId) || [];
       list.push(p);
       billPaymentsMap.set(p.billId, list);
@@ -227,12 +227,12 @@ export const DailyCollectionStreamlined: React.FC<DailyCollectionStreamlinedProp
     // 1. Process Bills for period (grouped by bill date)
     liveBills.forEach((b) => {
       const bDate = String(b.date || '').slice(0, 10);
-      if (!inPeriod(bDate)) return;
+      if (!bDate || !inPeriod(bDate)) return;
 
       const net = billNetTotal(b);
       const rows = billPaymentsMap.get(b.id) || [];
       const sameDayRows = rows.filter(
-        (p) => String(p.paymentDate || '').slice(0, 10) <= bDate && p.mode !== 'credit'
+        (p) => String(p.paymentDate || p.createdAt || '').slice(0, 10) === bDate && p.mode !== 'credit'
       );
 
       let paid = 0;
@@ -243,13 +243,15 @@ export const DailyCollectionStreamlined: React.FC<DailyCollectionStreamlinedProp
       let primaryMode: string = b.paymentMode || 'cash';
 
       if (rows.length === 0) {
-        paid = Math.min(net, Number(b.amountPaid) || 0);
-        const m = b.paymentMode || 'cash';
-        primaryMode = m;
-        if (m === 'cash') billCash = paid;
-        else if (m === 'cheque') billCheque = paid;
-        else billDigital = paid;
-        modeStr = MODE_LABEL[m] || m;
+        if (b.paymentMode !== 'credit') {
+          paid = Math.min(net, Math.max(0, Number(b.amountPaid) || 0));
+          const m = b.paymentMode || 'cash';
+          primaryMode = m;
+          if (m === 'cash') billCash = paid;
+          else if (m === 'cheque') billCheque = paid;
+          else billDigital = paid;
+          modeStr = MODE_LABEL[m] || m;
+        }
       } else {
         sameDayRows.forEach((p) => {
           const a = Number(p.amount) || 0;
@@ -298,7 +300,7 @@ export const DailyCollectionStreamlined: React.FC<DailyCollectionStreamlinedProp
     // 2. Process Later Payments & Advances (grouped by payment date)
     (payments || []).forEach((p) => {
       const pDate = String(p.paymentDate || p.createdAt || '').slice(0, 10);
-      if (!inPeriod(pDate) || p.mode === 'credit') return;
+      if (!pDate || !inPeriod(pDate) || p.mode === 'credit') return;
 
       const amt = Number(p.amount) || 0;
       if (amt === 0) return;
@@ -330,10 +332,12 @@ export const DailyCollectionStreamlined: React.FC<DailyCollectionStreamlinedProp
         return;
       }
 
+      if (isAdvanceAdjustmentRow(p)) return;
+
       // Check if already counted on the same sale date upfront
       const linkedBill = p.billId ? billById.get(p.billId) : undefined;
       const billDay = linkedBill ? String(linkedBill.date || '').slice(0, 10) : '';
-      if (linkedBill && pDate <= billDay) return;
+      if (linkedBill && pDate === billDay) return;
 
       if (p.mode === 'cash') day.cashIn += amt;
       else if (p.mode === 'cheque') day.chequeIn += amt;

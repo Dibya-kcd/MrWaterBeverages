@@ -407,6 +407,8 @@ export interface BillCancellation {
 
 export type PaymentMode = 'cash' | 'upi' | 'cheque' | 'bank' | 'credit' | 'other';
 
+export type PaymentEntryKind = 'receipt' | 'advance' | 'refund' | 'advance_adjustment';
+
 export interface PaymentRecord {
   id: string; // Unique ID e.g. "pay_k9f3j2"
   billId?: number; // Linked invoice ID if applicable
@@ -416,11 +418,20 @@ export interface PaymentRecord {
   paymentDate: string; // YYYY-MM-DD - accurately maintained payment date
   amount: number; // Payment amount in INR
   mode: PaymentMode; // cash, upi, cheque, bank, credit, other
+  entryKind?: PaymentEntryKind; // Classification for dedicated payments table & reporting
   referenceNote?: string; // Cheque #, UTR, UPI Txn ID, notes
   recordedBy?: string; // Salesman name or 'Admin'
   salesmanId?: string;
   /** True for money received on account that is NOT applied to any invoice (customer advance). */
   isAdvance?: boolean;
+  /** True once an advance row's full amount has been applied onto invoices (original cash amount stays intact for Collections). */
+  isAdvanceApplied?: boolean;
+  /** Amount of this advance row already applied onto invoices (<= amount). */
+  appliedAmount?: number;
+  /** For an advance adjustment row: the original advance receipt ID it drew from (so Collections & Ledger never double-count). */
+  sourcePaymentId?: string;
+  /** For an overpaid-invoice credit transfer row: the overpaid source bill ID it drew from. */
+  sourceBillId?: number;
   /** True for money paid back to the customer out of their credit. Stored as a NEGATIVE amount. */
   isRefund?: boolean;
   createdAt: string; // ISO timestamp
@@ -520,8 +531,10 @@ export interface Trip {
   vehicle: string;
   salesman?: string; // Fallback string for legacy records created before migration
   salesmanId?: string; // Foreign key to salesmen.id
+  salesmanPhone?: string;
   route?: string;
   driver?: string;
+  driverPhone?: string;
   date: string;
   loaded: Record<number, number>;
   returned: Record<number, number>;

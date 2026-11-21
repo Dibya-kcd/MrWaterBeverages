@@ -95,7 +95,7 @@ export function useCreateTrip() {
     const salesman = salesmen.find((s) => s.id === p.salesmanId);
     const initialBillIds = attachedBills.map((b) => b.id);
 
-    const trip = addTrip(p.vehicle, p.date, loaded, primary, initialBillIds, salesman?.name || p.salesmanName, p.route || undefined, p.salesmanId || undefined, warehouseLoads, p.driver);
+    const trip = addTrip(p.vehicle, p.date, loaded, primary, initialBillIds, salesman?.name || p.salesmanName, p.route || undefined, p.salesmanId || undefined, warehouseLoads, p.driver, p.driverPhone, p.salesmanPhone);
     return { ok: true, trip, total: perWh.reduce((s, [, q]) => s + q, 0), godowns: perWh.length };
   };
 

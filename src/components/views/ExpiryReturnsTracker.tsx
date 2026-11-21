@@ -157,7 +157,7 @@ export const ExpiryReturnsTracker: React.FC<Props> = ({ onRecordCn }) => {
 
   if (rows.length === 0) {
     return (
-      <section className="rounded-2xl border border-dashed border-slate-300 bg-white p-4 space-y-1.5" aria-label="Customer expiry returns">
+      <section data-card-tone="neutral" className="rounded-2xl border border-dashed p-4 space-y-1.5" aria-label="Customer expiry returns">
         <h3 className="text-sm font-bold text-slate-900">Customer expired / damaged returns</h3>
         <p className="text-xs text-slate-600 leading-relaxed">
           Nothing to track yet. When a customer gives back expired or damaged crates, tap <strong>Customer return</strong> above
@@ -273,9 +273,10 @@ export const ExpiryReturnsTracker: React.FC<Props> = ({ onRecordCn }) => {
     id: Filter;
     label: string;
     data: { n: number; qty: number; value: number };
-    tone: string;
+    cardTone: string;
+    textTone: string;
     activeRing: string;
-    iconBg: string;
+    iconBadge: string;
     Icon: React.ElementType;
     spanClass?: string;
   }[] = [
@@ -283,45 +284,50 @@ export const ExpiryReturnsTracker: React.FC<Props> = ({ onRecordCn }) => {
       id: 'decide',
       label: 'To decide',
       data: tiles.decide,
-      tone: 'bg-amber-50/80 border-amber-200 text-amber-950',
+      cardTone: 'warning',
+      textTone: 'text-amber-950',
       activeRing: 'ring-2 ring-amber-500 border-amber-400',
-      iconBg: 'bg-amber-100 text-amber-700',
+      iconBadge: 'hh-icon-badge--amber',
       Icon: Clock,
     },
     {
       id: 'to_send',
       label: 'To hand over',
       data: tiles.toSend,
-      tone: 'bg-orange-50/80 border-orange-200 text-orange-950',
+      cardTone: 'orange',
+      textTone: 'text-orange-950',
       activeRing: 'ring-2 ring-orange-500 border-orange-400',
-      iconBg: 'bg-orange-100 text-orange-700',
+      iconBadge: 'hh-icon-badge--amber',
       Icon: PackageCheck,
     },
     {
       id: 'with_company',
       label: 'With company',
       data: tiles.withCo,
-      tone: 'bg-sky-50/80 border-sky-200 text-sky-950',
+      cardTone: 'sales',
+      textTone: 'text-sky-950',
       activeRing: 'ring-2 ring-sky-500 border-sky-400',
-      iconBg: 'bg-sky-100 text-sky-700',
+      iconBadge: 'hh-icon-badge--blue',
       Icon: Truck,
     },
     {
       id: 'settled',
       label: 'Credit received',
       data: tiles.settled,
-      tone: 'bg-emerald-50/80 border-emerald-200 text-emerald-950',
+      cardTone: 'received',
+      textTone: 'text-emerald-950',
       activeRing: 'ring-2 ring-emerald-500 border-emerald-400',
-      iconBg: 'bg-emerald-100 text-emerald-700',
+      iconBadge: 'hh-icon-badge--green',
       Icon: CheckCircle2,
     },
     {
       id: 'closed',
       label: 'Thrown out / refused',
       data: tiles.lost,
-      tone: 'bg-slate-50 border-slate-200 text-slate-900',
+      cardTone: 'neutral',
+      textTone: 'text-slate-900',
       activeRing: 'ring-2 ring-slate-600 border-slate-400',
-      iconBg: 'bg-slate-200/80 text-slate-700',
+      iconBadge: 'hh-icon-badge--slate',
       Icon: Trash2,
       spanClass: 'col-span-2 sm:col-span-1',
     },
@@ -332,7 +338,8 @@ export const ExpiryReturnsTracker: React.FC<Props> = ({ onRecordCn }) => {
 
   return (
     <section
-      className="rounded-2xl border border-[#DCE5F2] bg-white shadow-sm p-3.5 sm:p-4 space-y-3.5"
+      data-card-tone="neutral"
+      className="rounded-2xl border shadow-xs p-3.5 sm:p-4 space-y-3.5"
       aria-label="Customer expiry returns"
     >
       {/* Header + clear totals (entries vs cases) */}
@@ -363,19 +370,20 @@ export const ExpiryReturnsTracker: React.FC<Props> = ({ onRecordCn }) => {
             <button
               key={c.id}
               type="button"
+              data-card-tone={c.cardTone}
               onClick={() => {
                 setFilter((prev) => (prev === c.id ? 'all' : c.id));
                 setShowAll(false);
               }}
               aria-pressed={isSelected}
-              className={`text-left rounded-2xl border p-3 transition-all cursor-pointer active:scale-[0.99] min-w-0 ${c.tone} ${
+              className={`text-left rounded-2xl border p-3 transition-all cursor-pointer active:scale-[0.99] min-w-0 shadow-2xs ${c.textTone} ${
                 isSelected ? c.activeRing : 'hover:shadow-sm'
               } ${c.spanClass || ''}`}
             >
               <div className="flex items-center justify-between gap-1.5">
                 <span className="text-xs font-semibold leading-tight truncate">{c.label}</span>
-                <span className={`size-6 rounded-lg inline-flex items-center justify-center shrink-0 ${c.iconBg}`}>
-                  <Icon size={13} />
+                <span className={`hh-icon-badge hh-icon-badge--sm shrink-0 ${c.iconBadge}`}>
+                  <Icon size={14} />
                 </span>
               </div>
               <div className="mt-2 flex items-baseline gap-1.5 flex-wrap">
@@ -489,10 +497,21 @@ export const ExpiryReturnsTracker: React.FC<Props> = ({ onRecordCn }) => {
             const prod = products.find((p) => p.id === d.productId);
             const logOpen = !!expandedLogIds[d.id];
 
+            const rowTone =
+              stage === 'settled'
+                ? 'received'
+                : stage === 'rejected'
+                  ? 'due'
+                  : stage === 'sent'
+                    ? 'sales'
+                    : stage === 'held'
+                      ? 'warning'
+                      : 'neutral';
             return (
               <li
                 key={d.id}
-                className="rounded-2xl border border-[#DCE5F2] bg-white p-3.5 space-y-2.5 shadow-[0_1px_3px_rgba(10,31,68,0.04)]"
+                data-card-tone={rowTone}
+                className="rounded-2xl border p-3.5 space-y-2.5 shadow-xs"
               >
                 {/* Top row: full product title + qty pill + status & value */}
                 <div className="flex items-start justify-between gap-2.5">

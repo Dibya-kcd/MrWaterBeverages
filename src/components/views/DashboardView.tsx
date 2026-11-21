@@ -21,6 +21,7 @@ import {
   Package,
   PackageMinus,
   RotateCcw,
+  ShoppingCart,
   Sparkles,
   TrendingUp,
   Truck,
@@ -33,6 +34,7 @@ import { money, statusOf } from "../../utils/billing";
 import { collectExpiryAlerts } from "../../utils/fefo";
 import { trackedStage } from "./ExpiryReturnsTracker";
 import { billBalance, billNetTotal, returnedQtyByProduct } from "../../utils/salesReturns";
+import { summarizeCollections } from "../../utils/collectionSummary";
 import { createPortal } from "react-dom";
 import { useBeats } from "../../hooks/useBeats";
 import { useNeedsAttention } from "../../hooks/useNeedsAttention";
@@ -49,6 +51,7 @@ import {
   HeroCollectionCard,
   HubMetricCard,
   NeedsAttentionCard,
+  PhoneNeedsAttentionCard,
   SalesBarsCard,
   SegmentedPeriod,
   ShortcutTile,
@@ -61,6 +64,7 @@ import { MetricCard, MetricGrid } from "../mobile/MobileKit";
 import { buildMonthlyIncentiveReport, isClaimLinkedNote } from "../../utils/supplierSchemes";
 import { Bill } from "../../types";
 import { TaxInvoiceModal } from "../common/TaxInvoiceModal";
+import { NotificationPanel } from "../common/NotificationPanel";
 
 import {
   PeriodFilter,
@@ -323,18 +327,27 @@ export const DashboardView: React.FC = () => {
     setEndDate(today);
   };
 
-  // Filter bills by selected period
-  const activeBills = useMemo(() => {
-    if (currentCycle.id === "all" || periodPreset === "all" || (!startDate && !endDate)) {
-      return bills;
-    }
-    return bills.filter((b) => {
-      const bDate = (b.date || "").slice(0, 10);
-      if (startDate && bDate < startDate) return false;
-      if (endDate && bDate > endDate) return false;
+  const dateInPeriod = useCallback(
+    (date: string) => {
+      if (currentCycle.id === "all" || periodPreset === "all" || (!startDate && !endDate)) return true;
+      const d = String(date || "").slice(0, 10);
+      if (startDate && d < startDate) return false;
+      if (endDate && d > endDate) return false;
       return true;
-    });
-  }, [bills, currentCycle.id, periodPreset, startDate, endDate]);
+    },
+    [currentCycle.id, periodPreset, startDate, endDate],
+  );
+
+  // Filter live (non-cancelled) bills by selected period
+  const activeBills = useMemo(() => {
+    const live = bills.filter(
+      (b) => b.status !== "cancelled" && !(b as { cancelled?: boolean }).cancelled && !b.cancellation,
+    );
+    if (currentCycle.id === "all" || periodPreset === "all" || (!startDate && !endDate)) {
+      return live;
+    }
+    return live.filter((b) => dateInPeriod((b.date || "").slice(0, 10)));
+  }, [bills, currentCycle.id, periodPreset, startDate, endDate, dateInPeriod]);
 
   // Filter GRNs by selected period
   const activeGrns = useMemo(() => {
@@ -349,15 +362,18 @@ export const DashboardView: React.FC = () => {
     });
   }, [grns, currentCycle.id, periodPreset, startDate, endDate]);
 
-  // Computed metrics for active period
+  // Computed metrics for active period (same collection engine as Reports)
   const periodRevenue = useMemo(
     () => activeBills.reduce((s, b) => s + billNetTotal(b), 0),
     [activeBills],
   );
-  const periodPaid = useMemo(
-    () => activeBills.reduce((s, b) => s + (Number(b.amountPaid) || 0), 0),
-    [activeBills],
+  const collectionSummary = useMemo(
+    () => summarizeCollections({ bills, payments, inPeriod: dateInPeriod }),
+    [bills, payments, dateInPeriod],
   );
+  const periodPaid = collectionSummary.total;
+  const periodCash = collectionSummary.cash;
+  const periodUpi = collectionSummary.nonCash;
   const periodOutstanding = useMemo(
     () => activeBills.reduce((s, b) => s + billBalance(b), 0),
     [activeBills],
@@ -509,7 +525,13 @@ export const DashboardView: React.FC = () => {
   }, [periodPreset, customDays, startDate, endDate]);
   // ---- Smart insights (read-only; does not change any ledger logic) ----------
   const todayBills = useMemo(
-    () => bills.filter((b) => (b.date || "").slice(0, 10) === today),
+    () =>
+      bills.filter(
+        (b) =>
+          b.status !== "cancelled" &&
+          !(b as { cancelled?: boolean }).cancelled &&
+          (b.date || "").slice(0, 10) === today,
+      ),
     [bills, today],
   );
   const todayRevenue = useMemo(
@@ -618,6 +640,7 @@ export const DashboardView: React.FC = () => {
       { name: string; due: number; route: string; city: string; phone: string }
     >();
     for (const b of bills) {
+      if (b.status === "cancelled" || (b as { cancelled?: boolean }).cancelled) continue;
       const due = Math.max(0, (b.total || 0) - (b.amountPaid || 0));
       if (due < 1) continue;
       const name = (b.retailer || "").trim();
@@ -771,34 +794,36 @@ export const DashboardView: React.FC = () => {
   const displayUnits = periodCasesSold;
 
   // Comparison with prior equivalent period for truthful trend calculation
+  const prevDateInPeriod = useCallback(
+    (date: string): boolean => {
+      const d = String(date || "").slice(0, 10);
+      if (!d) return false;
+      if (currentCycle.id === "today") return d === getPastDateStr(1);
+      if (currentCycle.id === "yesterday") return d === getPastDateStr(2);
+      if (currentCycle.id === "week") {
+        const s = getPastDateStr(13);
+        const e = getPastDateStr(7);
+        return d >= s && d <= e;
+      }
+      if (currentCycle.id === "month") {
+        const s = getPastDateStr(59);
+        const e = getPastDateStr(30);
+        return d >= s && d <= e;
+      }
+      return false;
+    },
+    [currentCycle.id],
+  );
+
   const previousPeriodBills = useMemo(() => {
     if (currentCycle.id === "all") return [];
-    if (currentCycle.id === "today") {
-      const y = getPastDateStr(1);
-      return bills.filter((b) => (b.date || "").slice(0, 10) === y);
-    }
-    if (currentCycle.id === "yesterday") {
-      const prev = getPastDateStr(2);
-      return bills.filter((b) => (b.date || "").slice(0, 10) === prev);
-    }
-    if (currentCycle.id === "week") {
-      const s = getPastDateStr(13);
-      const e = getPastDateStr(7);
-      return bills.filter((b) => {
-        const d = (b.date || "").slice(0, 10);
-        return d >= s && d <= e;
-      });
-    }
-    if (currentCycle.id === "month") {
-      const s = getPastDateStr(60);
-      const e = getPastDateStr(31);
-      return bills.filter((b) => {
-        const d = (b.date || "").slice(0, 10);
-        return d >= s && d <= e;
-      });
-    }
-    return [];
-  }, [bills, currentCycle.id]);
+    return bills.filter(
+      (b) =>
+        b.status !== "cancelled" &&
+        !(b as { cancelled?: boolean }).cancelled &&
+        prevDateInPeriod((b.date || "").slice(0, 10)),
+    );
+  }, [bills, currentCycle.id, prevDateInPeriod]);
 
   const previousRevenue = useMemo(
     () => previousPeriodBills.reduce((s, b) => s + billNetTotal(b), 0),
@@ -830,7 +855,12 @@ export const DashboardView: React.FC = () => {
     for (let i = 6; i >= 0; i--) {
       const dStr = getPastDateStr(i);
       const dayRev = bills
-        .filter((b) => (b.date || "").slice(0, 10) === dStr)
+        .filter(
+          (b) =>
+            b.status !== "cancelled" &&
+            !(b as { cancelled?: boolean }).cancelled &&
+            (b.date || "").slice(0, 10) === dStr,
+        )
         .reduce((s, b) => s + billNetTotal(b), 0);
       days.push({ date: dStr, revenue: dayRev });
     }
@@ -862,16 +892,6 @@ export const DashboardView: React.FC = () => {
 
 
   /* ---------------- Presentation-only derivations for the redesigned Home ---------------- */
-  const dateInPeriod = useCallback(
-    (date: string) => {
-      if (currentCycle.id === "all" || periodPreset === "all" || (!startDate && !endDate)) return true;
-      const d = String(date || "").slice(0, 10);
-      if (startDate && d < startDate) return false;
-      if (endDate && d > endDate) return false;
-      return true;
-    },
-    [currentCycle.id, periodPreset, startDate, endDate],
-  );
 
   // Same engine as Reports > Profit, so Home and Reports agree.
   const { pnl } = useSalesMarginPnl({ filteredBills: activeBills, products, dateInPeriod, viewBasis: "exGst" });
@@ -896,7 +916,7 @@ export const DashboardView: React.FC = () => {
     return names.size;
   }, [activeBills]);
 
-  const collectedPct = periodRevenue > 0 ? (periodPaid / periodRevenue) * 100 : 0;
+  const collectedPct = periodRevenue > 0 ? Math.min(100, (periodPaid / periodRevenue) * 100) : periodPaid > 0 ? 100 : 0;
 
   const beatRows = useMemo(() => {
     const summary = buildBeatSummary({
@@ -975,6 +995,44 @@ export const DashboardView: React.FC = () => {
     return rows;
   }, [attention.items, expiryReturnCounts, openClaims.length, openClaimValue, t, setTab]);
 
+  // Phone-only presentation derivations (read-only)
+  const [showAllAttention, setShowAllAttention] = useState(false);
+
+  const previousPaid = useMemo(
+    () =>
+      currentCycle.id === "all" || currentCycle.id === "custom"
+        ? 0
+        : summarizeCollections({ bills, payments, inPeriod: prevDateInPeriod }).total,
+    [bills, payments, currentCycle.id, prevDateInPeriod],
+  );
+  const collectionTrend = useMemo(() => {
+    if (previousPaid <= 0) return undefined;
+    const pct = Math.round(((periodPaid - previousPaid) / previousPaid) * 100);
+    return {
+      label: pct >= 0 ? t("home.trendUp", { pct: Math.abs(pct) }) : t("home.trendDown", { pct: Math.abs(pct) }),
+      tone: (pct >= 0 ? "paid" : "due") as "paid" | "due",
+    };
+  }, [previousPaid, periodPaid, t]);
+
+  const phoneAttentionRows: AttentionRow[] = useMemo(
+    () =>
+      attention.items.slice(0, 3).map((it) => ({
+        id: it.id,
+        tone: it.tone,
+        title: t(it.titleKey, { n: it.count }),
+        sub: t(it.subKey),
+        onClick: () => {
+          if (it.session) {
+            try { sessionStorage.setItem(it.session[0], it.session[1]); } catch { /* ignore */ }
+          }
+          setTab(it.tab);
+        },
+      })),
+    [attention.items, t, setTab],
+  );
+
+  const last7Total = useMemo(() => salesBars.reduce((s, b) => s + b.value, 0), [salesBars]);
+
   // Desktop: the period switch lives in the top bar (portal), everywhere else it sits in the page.
   const [isDesktop, setIsDesktop] = useState<boolean>(() => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches);
   useEffect(() => {
@@ -1020,7 +1078,7 @@ export const DashboardView: React.FC = () => {
               <div
                 role="dialog"
                 aria-label="Filter period"
-                className="absolute right-0 mt-2 z-50 w-72 sm:w-80 max-w-[calc(100vw-1.5rem)] rounded-2xl bg-white text-slate-800 shadow-2xl border border-slate-200/90 p-3.5 animate-in fade-in zoom-in-95 duration-150"
+                className="hh-period-popover absolute right-0 mt-2 z-50 w-72 sm:w-80 max-w-[calc(100vw-2rem)] rounded-2xl bg-white text-slate-800 shadow-2xl border border-slate-200/90 p-3.5 animate-in fade-in zoom-in-95 duration-150"
                 onClick={(e) => e.stopPropagation()}
               >
                 {/* Header */}
@@ -1210,28 +1268,49 @@ export const DashboardView: React.FC = () => {
         <div className="hh-area-hero">
           <HeroCollectionCard
             label={collectionLabel}
+            phoneLabel={periodPreset === "today" ? t("home.collectedToday") : collectionLabel}
             amount={`₹${money(periodPaid)}`}
             sub={t("home.ofSales", { sales: money(periodRevenue), bills: activeBills.length })}
+            phoneSub={t("home.ofBilled", { sales: money(periodRevenue) })}
             duePill={duePill}
             pillTone={periodOutstanding > 0 ? "due" : "received"}
             pct={collectedPct}
             ringLabel={t("home.collectedPct", { pct: Math.round(collectedPct) })}
+            trendLabel={collectionTrend?.label}
+            trendTone={collectionTrend?.tone}
+            cashLabel={t("home.cash")}
+            cashDisplay={`₹${money(periodCash)}`}
+            upiLabel={t("home.upi")}
+            upiDisplay={`₹${money(periodUpi)}`}
+            dueLabel={t("home.dueLabel")}
+            dueDisplay={`₹${money(periodOutstanding)}`}
           />
         </div>
 
-        <div className="hh-area-shortcuts hh-hide-desktop" aria-label={t("home.shortcuts")}>
-          <ShortcutTile tone="blue" icon={<Receipt size={24} />} label={t("shortcut.newBill")} onClick={() => setTab("billing")} />
-          <ShortcutTile tone="green" icon={<Wallet size={24} />} label={t("shortcut.collect")} onClick={() => setTab("payments")} />
-          <ShortcutTile tone="orange" icon={<Truck size={24} />} label={t("shortcut.trip")} onClick={() => setTab("trips")} />
+        <div className="hh-area-shortcuts hh-hide-desktop" aria-label={t("home.quickActions")}>
+          <ShortcutTile tone="blue" icon={<Receipt size={24} />} phoneIcon={<ShoppingCart size={22} />} label={t("shortcut.newBill")} phoneLabel={t("shortcut.newSale")} onClick={() => setTab("billing")} />
+          <ShortcutTile tone="green" icon={<Wallet size={24} />} label={t("shortcut.collect")} phoneLabel={t("shortcut.receive")} onClick={() => setTab("payments")} />
+          <ShortcutTile tone="orange" icon={<Truck size={24} />} label={t("shortcut.trip")} phoneLabel={t("shortcut.trips")} onClick={() => setTab("trips")} />
           <ShortcutTile tone="purple" icon={<Package size={24} />} label={t("shortcut.stock")} onClick={() => setTab("inventory")} />
         </div>
 
+        {phoneAttentionRows.length > 0 && (
+          <div className="hh-area-attn-phone hh-only-phone">
+            <PhoneNeedsAttentionCard
+              title={t("attn.title")}
+              seeAllLabel={t("bills.seeAll")}
+              onSeeAll={() => setShowAllAttention(true)}
+              rows={phoneAttentionRows}
+            />
+          </div>
+        )}
+
         <div className="hh-area-metrics">
-          <div className="hh-show-desktop"><HubMetricCard tone="sales" label={t("metric.sales")} value={`₹${money(periodRevenue)}`} sub={t("metric.billsCount", { n: activeBills.length })} /></div>
-          <HubMetricCard tone="profit" label={t("metric.profit")} value={`₹${money(netProfit)}`} sub={t("metric.afterExpenses")} />
-          <div className="hh-show-desktop"><HubMetricCard tone="received" label={t("metric.received")} value={`₹${money(periodPaid)}`} sub={t("metric.collectedSub")} /></div>
-          <HubMetricCard tone="due" label={t("metric.due")} value={`₹${money(periodOutstanding)}`} sub={customersWithDue === 1 ? t("metric.customerOne") : t("metric.customersDue", { n: customersWithDue })} />
-          <div className="hh-only-tablet"><HubMetricCard tone="warning" label={t("metric.expenses")} value={`₹${money(periodExpenseTotal)}`} sub={t("metric.inPeriod")} /></div>
+          <div className="hh-show-phone-desktop hh-metric-slot--sales"><HubMetricCard tone="sales" label={t("metric.sales")} value={`₹${money(periodRevenue)}`} sub={t("metric.billsCount", { n: activeBills.length })} /></div>
+          <div className="hh-metric-slot--profit"><HubMetricCard tone="profit" label={t("metric.profit")} value={`₹${money(netProfit)}`} sub={t("metric.afterExpenses")} /></div>
+          <div className="hh-show-phone-desktop hh-metric-slot--received"><HubMetricCard tone="received" label={t("metric.received")} value={`₹${money(periodPaid)}`} sub={t("metric.collectedSub")} /></div>
+          <div className="hh-metric-slot--due"><HubMetricCard tone="due" label={t("metric.due")} value={`₹${money(periodOutstanding)}`} sub={customersWithDue === 1 ? t("metric.customerOne") : t("metric.customersDue", { n: customersWithDue })} /></div>
+          <div className="hh-only-tablet hh-metric-slot--expenses"><HubMetricCard tone="warning" label={t("metric.expenses")} value={`₹${money(periodExpenseTotal)}`} sub={t("metric.inPeriod")} /></div>
         </div>
       </div>
 
@@ -1241,7 +1320,14 @@ export const DashboardView: React.FC = () => {
             <AlertStrip text={topAlert.title} onClick={topAlert.onClick} />
           </div>
         )}
-        <div className="hh-area-chart hh-show-desktop"><SalesBarsCard title={t("chart.sales7")} bars={salesBars} /></div>
+        <div className="hh-area-chart hh-show-phone-desktop">
+          <SalesBarsCard
+            title={t("chart.sales7")}
+            phoneTitle={t("chart.sales7Short")}
+            totalDisplay={`₹${money(last7Total)}`}
+            bars={salesBars}
+          />
+        </div>
         <div className="hh-area-beats hh-hide-phone"><DueByBeatCard title={t("beat.title")} rows={beatRows} empty={t("beat.empty")} /></div>
         <div className="hh-area-attn hh-show-desktop"><NeedsAttentionCard id="needs-attention" title={t("attn.title")} rows={attentionRows} empty={t("attn.allClear")} /></div>
         <section className="hh-card hh-area-bills" aria-label={t("bills.recent")}>
@@ -1272,6 +1358,11 @@ export const DashboardView: React.FC = () => {
           }}
         />
       )}
+
+      <NotificationPanel
+        isOpen={showAllAttention}
+        onClose={() => setShowAllAttention(false)}
+      />
 
       {(products.length === 0 || customers.length === 0 || bills.length === 0) && (
         <section className="hh-card hh-getstarted">
